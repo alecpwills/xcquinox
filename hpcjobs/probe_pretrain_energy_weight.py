@@ -45,9 +45,10 @@ so dropping either channel from the sum fails the cell rather than quietly
 changing the number the campaign is handed.
 
 Identity: the sweep runs at ``--basis``/``--grid-level`` with the pretraining
-set of spec Section 7 (the DFS inventory in its entirety plus every atom of
-the BH76 / W4-11 pools), the per-channel exchange footing, the polarized
-correlation objective every production configuration under ``hpcjobs/configs/``
+set of spec Section 7 (the DFS inventory in its entirety, every atom of the
+BH76 / W4-11 pools, and the campaign's own explicit atom list), the
+per-channel exchange footing, the polarized correlation objective every
+production configuration under ``hpcjobs/configs/``
 sets (``--no-polarized`` measures the unpolarized one instead), and the
 orientation lock the data generator locks degenerate open shells with. The
 architectures carrying no meta-GGA descriptor pretrain against the PBE parent
@@ -55,11 +56,33 @@ and the meta-GGA rung against SCAN, because the certificate is per rung and a
 meta-GGA network fit on a PBE density is fit to a density its own SCF never
 visits.
 
-The default identity is def2-svp / grid level 3. Level 3 is a floor, not a
-preference: the generator refuses a degenerate open-shell atom below it (the
-quadrature does not resolve the P term, so the file would not have the
-identity its manifest claims), and the set contains O, C, N and every other
-open p-shell pool atom.
+The SET is the campaign's, exactly: ``resolve_pretrain_systems`` is called
+with the same ``dfs_set`` / ``pool_atoms`` / ``atoms`` triple campaign v6
+states, giving 38 systems on the PBE parent and 36 on SCAN. The explicit list
+matters for one row -- free Na, which neither inventory carries and on which
+Na2's atomization energy rests -- and the weight balances a squared system
+energy against an integration-weighted point-wise residual, so a system
+missing from the set is a gate quantity that was never measured.
+
+The IDENTITY, by contrast, is REDUCED on purpose. The sweep runs at
+def2-svp / grid level 3, 1000 optimizer steps and no validation hold-out,
+where the campaign runs at 6-311++G(3df,2pd), 2500 steps and a 20 percent
+hold-out, and it measures six of the campaign's 31 architectures (the six
+largest recorded parent offsets). At the production identity the sweep would
+cost more than the campaign it parameterizes, for a number that is only ever
+a starting point: the weight is dimensionful, so it does not transfer
+exactly across a change of basis or grid, and the per-architecture
+CERTIFICATE at the production identity -- not this table -- remains the
+arbiter of whether a pretrained network reached its parent. A certificate
+FAIL on one of the 25 unmeasured architectures is therefore a transfer
+question to be answered by re-running this sweep on that architecture, not
+evidence of a code fault. ``recommend()`` already names the architectures a
+verdict covers and the sweep defaults it did not measure.
+
+Grid level 3 is a floor rather than a preference, at either identity: the
+generator refuses a degenerate open-shell atom below it (the quadrature does
+not resolve the P term, so the file would not have the identity its manifest
+claims), and the set contains O, C, N and every other open p-shell pool atom.
 
 Usage (cluster; see hpcjobs/probe_pretrain_energy_weight.sbatch):
 
@@ -165,6 +188,20 @@ POINTWISE_FACTOR = 3.0
 DEFAULT_ARCHS = ("deep_3x16", "deep_cusp_3x16", "deep_rung35_3x16",
                  "deep_rung35_attn_3x16", "deep_rung35ms_3x16",
                  "deep_mgga_3x16")
+
+#: The campaign's explicit pretraining atom list, verbatim from
+#: ``hpcjobs/configs/dfs_step7.dfs6311_grid3_v6.yaml`` (``pretrain.atoms``) and
+#: pinned against it by test. Under ``dfs_set`` + ``pool_atoms`` it is almost
+#: entirely redundant -- H, C, N, O and F are pool atoms and Li is one of the
+#: DFS inventory's eight -- and contributes exactly ONE system neither
+#: inventory supplies: the free Na atom, on which Na2's atomization energy
+#: rests. Passing it here is what makes the swept set the campaign's own,
+#: 38 systems on the PBE parent and 36 on SCAN.
+#:
+#: He is absent and must stay absent: PySCF has no He in the campaign's
+#: 6-311++G(3df,2pd), and the set Section 7 binds does not contain it.
+CAMPAIGN_ATOMS = (("H", 1), ("Li", 1), ("C", 2), ("N", 3), ("O", 2),
+                  ("F", 1), ("Na", 1))
 DEFAULT_WEIGHTS = (0.0, 0.1, 1.0, 10.0, 100.0)
 DEFAULT_BASIS = "def2-svp"
 DEFAULT_GRID_LEVEL = 3
@@ -1070,6 +1107,7 @@ def ensure_data(data_dir, *, polarized, reference_xc, basis, grid_level,
     os.makedirs(target_dir, exist_ok=True)
     kwargs = dict(basis=basis, grid_level=grid_level, polarized=polarized,
                   descriptors=True, dfs_set=True, pool_atoms=True,
+                  atoms=CAMPAIGN_ATOMS,
                   reference_xc=reference_xc,
                   exchange_footing="spin_channel",
                   orientation_lock_strength=lock_strength,
@@ -1178,8 +1216,13 @@ def build_identity(args, lock, smoke_atoms):
         "orientation_lock_strength": float(lock),
         "exchange_footing": "spin_channel",
         "dfs_set": smoke_atoms is None, "pool_atoms": smoke_atoms is None,
-        "atoms": (None if smoke_atoms is None
-                  else [list(a) for a in smoke_atoms]),
+        # The explicit list is part of what a row MEASURES, so it is part of
+        # the identity: a table written before the campaign's list was
+        # carried (``atoms: null``, i.e. the two inventories alone, without
+        # free Na) is refused on resume rather than merged into one whose
+        # rows saw a different set.
+        "atoms": [list(a) for a in (smoke_atoms if smoke_atoms is not None
+                                    else CAMPAIGN_ATOMS)],
         "n_steps": int(args.n_steps), "seed": int(args.seed),
         "loss_weighting": args.loss_weighting,
         "polarized": bool(args.polarized),

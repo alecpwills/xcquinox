@@ -1872,6 +1872,47 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"pretrain.energy_term_weight must be a FINITE number >= 0, got "
             f"{pt.energy_term_weight}"
         )
+    # The OBJECTIVE, read against the certificate it is fitted for. At
+    # EXACTLY zero the per-system energy term is not small but absent:
+    # ``run_pretrain`` short-circuits it (``pretrain.py``: ``if
+    # self.energy_weight == 0.0 or self.energy_target is None``), leaving the
+    # integration-weighted point-wise residual alone. That is the
+    # pre-protocol objective, and it is the one
+    # SPEC_pretrain_fidelity_program.md Section 2 measured 2.3 to
+    # 56.1 kcal/mol of atomization offset under -- no architecture reached
+    # its parent inside the certificate's tolerances at weight zero, the
+    # descriptor-free ones included. Refused at submit because the cost is
+    # paid before the failure is visible: the datagen job and every
+    # architecture's pretraining run first, then a certificate FAIL on all of
+    # them and a train array whose afterok dependency never releases.
+    #
+    # The CONJUNCTION is what is refused, not any of its three parts. Each is
+    # legal and shipped on its own: the templates run the point-wise
+    # objective on the historical four-atom set (``dfs_set`` off), and the
+    # workflow-verification matrix runs the protocol set with the gate waived
+    # (``enforce`` false, which already demands a written override_reason).
+    if pt.dfs_set and cfg.fidelity.enforce and pt.energy_term_weight == 0.0:
+        raise ValueError(
+            "pretrain.energy_term_weight is 0.0 with pretrain.dfs_set: true "
+            "and fidelity.enforce: true. At exactly zero the per-system "
+            "energy term is not small, it is NOT EVALUATED (pretrain.py "
+            "short-circuits on `energy_weight == 0.0`), so this run would "
+            "fit the protocol pretraining set with the integration-weighted "
+            "point-wise objective ALONE -- the pre-protocol objective under "
+            "which NO architecture reached its parent inside these "
+            "tolerances: SPEC_pretrain_fidelity_program.md Section 2 records "
+            "atomization-energy offsets of 2.3 to 56.1 kcal/mol against "
+            f"fidelity.tol_AE = {cfg.fidelity.tol_AE} kcal/mol. The "
+            "certificate would then FAIL on every architecture, after the "
+            "datagen job and the whole pretrain array had run. The weight is "
+            "dimensionful (inverse Hartree^2) and is measured, not derived: "
+            "hpcjobs/probe_pretrain_energy_weight.py sweeps it and prints "
+            "the chosen value on its `recommendation:` line. Land that "
+            "number and this refusal clears, e.g. "
+            r"sed -i 's/^  energy_term_weight: 0\.0$/  energy_term_weight: "
+            "<W>/' <config>.yaml. To run this set WITHOUT the gate instead "
+            "-- a workflow-verification run, never a quantitative result -- "
+            "set fidelity.enforce: false with a fidelity.override_reason")
     if not (0.0 <= pt.validation_fraction < 1.0):
         raise ValueError(
             f"pretrain.validation_fraction must be in [0, 1), got "

@@ -86,6 +86,7 @@ import subprocess
 import sys
 
 from xcquinox.alec import parallel
+from xcquinox.alec.config import get_architecture
 from xcquinox.alec.cluster.fidelity import gate_certificate
 from xcquinox.alec.cluster.grid_config import load_grid_config
 from xcquinox.alec.cluster.domain import get_domain_profile
@@ -119,17 +120,78 @@ _materialize_specs = _materialize_materialize_specs
 # Optional compile-smoke gate
 # ---------------------------------------------------------------------------
 
+def _arch_compile_size(arch_name):
+    """``(network size, descriptor feature columns)`` for an architecture name.
+
+    The two quantities that decide how large the epoch-0 fused kernel is, once
+    the molecule set is fixed: the network's own size (``depth * nodes``, the
+    parameter-count proxy) and the number of EXTRA feature columns its
+    descriptors add to every grid row (``n_extra_features``).
+
+    A name the registry does not carry contributes ``(0, 0)`` rather than
+    raising: this selector runs inside the preflight, ahead of the train
+    array, and an unresolvable name must not be the thing that blocks it. Such
+    a name is refused earlier anyway, by ``validate_grid_semantics`` on the
+    login node and by ``build_training_specs`` here.
+    """
+    try:
+        arch = get_architecture(str(arch_name))
+        return (int(arch.depth) * int(arch.nodes), int(arch.n_extra_features))
+    except (KeyError, AttributeError, TypeError, ValueError):
+        return (0, 0)
+
+
+def _select_smoke_cell(specs):
+    """Pick the single heaviest cell to compile-smoke. Returns ``(index, cell)``.
+
+    ``specs`` is the preflight's ``[(cell, spec), ...]`` list. The heaviest cell
+    is the one whose epoch-0 XLA/LLVM compile is most likely to exhaust node
+    RAM: among the attention archs (``str(cell.arch)`` contains ``"attn"``),
+    which compile the largest fused kernels, otherwise over every cell.
+
+    Within that pool the order is TOTAL and reads only the cell's own
+    properties, so the choice depends on neither the axis order nor which
+    equal-subset cell happens to appear first:
+
+      1. ``subset_size`` -- the molecule count, which dominates everything else;
+      2. network size, ``depth * nodes``;
+      3. descriptor feature columns, ``n_extra_features``;
+      4. the architecture name, purely to make a full tie deterministic.
+
+    Rules 2 and 3 are the correction of a real gap. With ONE attention
+    architecture on the axis (through v5) the subset size identified the cell
+    outright; with twelve (v6) it does not, and Python's ``max`` returns the
+    FIRST maximal element -- over v6's canonical, alphabetically sorted axis
+    that is ``deep_attn``, depth 4 / width 32 with NO descriptors, while
+    ``deep_combined_attn`` sits at the same shape with four descriptor columns.
+    The descriptor-carrying attention forms are both the heavier compile and
+    the architectures whose parent offsets SPEC_pretrain_fidelity_program.md
+    Section 2 records as the largest, so they are exactly the cells the gate
+    exists to fail cheaply on.
+    """
+    attn = [
+        (i, cell) for i, (cell, _spec) in enumerate(specs)
+        if "attn" in str(cell.arch)
+    ]
+    pool = attn if attn else [(i, cell) for i, (cell, _spec) in enumerate(specs)]
+
+    def _weight(item):
+        _i, cell = item
+        size, columns = _arch_compile_size(cell.arch)
+        return (int(cell.subset_size), size, columns, str(cell.arch))
+
+    return max(pool, key=_weight)
+
+
 def _compile_smoke_impl(specs, paths, run_dir) -> bool:
     """Compile-smoke the single heaviest grid cell before the train array.
 
     ``specs`` is the preflight's ``[(cell, spec), ...]`` list; ``paths`` are the
-    same-indexed materialized spec-file paths. The heaviest cell is the one whose
-    epoch-0 XLA/LLVM compile is most likely to exhaust node RAM: among the
-    attention archs (``str(cell.arch)`` contains ``"attn"``) the largest
-    ``subset_size``; if no attention arch is present, the max-subset cell overall.
-    That spec is run through ``_train_one_spec --smoke`` (n_steps=1, throwaway
-    checkpoint dir) on the CPU so the heaviest per-molecule kernel is actually
-    compiled once on this exclusive preflight node.
+    same-indexed materialized spec-file paths. The cell is chosen by
+    :func:`_select_smoke_cell`, whose docstring states the order. That spec is
+    run through ``_train_one_spec --smoke`` (n_steps=1, throwaway checkpoint
+    dir) on the CPU so the heaviest per-molecule kernel is actually compiled
+    once on this exclusive preflight node.
 
     Returns ``True`` iff the probe compiled and ran its single epoch without a
     host OOM; ``False`` on a host/GPU OOM or any other non-completion. A ``False``
@@ -137,18 +199,12 @@ def _compile_smoke_impl(specs, paths, run_dir) -> bool:
     dependency blocks -- one cheap failure instead of the whole array OOMing at
     compile time (the 6-311++G(3df,2pd)+grid3 regression this gate guards).
     """
-    # Attention specs compile the largest fused kernels, so probe the
-    # biggest-subset attention cell; fall back to the biggest subset overall when
-    # the sweep has no attention arch.
-    attn = [
-        (i, cell) for i, (cell, _spec) in enumerate(specs)
-        if "attn" in str(cell.arch)
-    ]
-    pool = attn if attn else [(i, cell) for i, (cell, _spec) in enumerate(specs)]
-    i_heavy, heavy = max(pool, key=lambda ic: ic[1].subset_size)
+    i_heavy, heavy = _select_smoke_cell(specs)
+    _size, _columns = _arch_compile_size(heavy.arch)
     _log(
         f"compile-smoke: heaviest cell is index {i_heavy} "
-        f"(arch={heavy.arch!r}, subset_size={heavy.subset_size}); compiling it "
+        f"(arch={heavy.arch!r}, subset_size={heavy.subset_size}, "
+        f"depth*nodes={_size}, descriptor columns={_columns}); compiling it "
         f"once via _train_one_spec --smoke on the CPU"
     )
 

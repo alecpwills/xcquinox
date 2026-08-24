@@ -781,3 +781,115 @@ def test_preflight_refuses_a_waiver_that_states_no_reason(tmp_path, patched,
     out = capsys.readouterr().out
     assert "fidelity gate FAILED" in out
     assert "override_reason" in out
+
+
+# ---------------------------------------------------------------------------
+# The compile-smoke selector: which cell is "the heaviest attention cell"
+# ---------------------------------------------------------------------------
+
+def _cell(arch, subset_size):
+    return GridCell(arch=arch, loss="L5_gradnorm_vxc_step7", metric="jsd",
+                    subset_size=subset_size, solver="full_3")
+
+
+def test_the_smoke_selector_breaks_the_subset_tie_on_size_then_descriptors():
+    """The gate's own description is "the heaviest attention cell", and with
+    more than one attention architecture on the axis the subset size does not
+    decide it on its own.
+
+    The selection is a total order on the cell's OWN properties -- subset
+    size, then network size (depth x width), then the number of descriptor
+    feature columns, then the architecture name -- so it depends on neither
+    the axis order nor which equal-subset cell happens to come first. The
+    descriptor-carrying attention forms are the ones that have to be probed:
+    they compile a wider fused kernel than the descriptor-free network of the
+    same shape, and they are the architectures spec Section 2 records with
+    the largest parent offsets.
+    """
+    from xcquinox.alec.cluster._preflight import _select_smoke_cell
+    # Deliberately ordered so a first-maximal `max` returns the WRONG cell:
+    # the descriptor-free 4x32 attention network sits before its
+    # descriptor-carrying twin at the same subset.
+    specs = [
+        (_cell("deep_3x16", 26), object()),           # no attention at all
+        (_cell("deep_attn_3x16", 26), object()),      # attention, 3x16
+        (_cell("deep_attn", 26), object()),           # attention, 4x32, no desc
+        (_cell("deep_dm_attn", 26), object()),        # 4x32 + 2 desc columns
+        (_cell("deep_combined_attn", 26), object()),  # 4x32 + 4 desc columns
+        (_cell("deep_combined_attn", 15), object()),  # same arch, smaller subset
+    ]
+    i, cell = _select_smoke_cell(specs)
+    assert cell.arch == "deep_combined_attn" and cell.subset_size == 26
+    assert i == 4
+    # The subset size still dominates: a bigger subset on a lighter attention
+    # architecture outranks a smaller one on the heaviest.
+    bigger = specs + [(_cell("deep_attn_3x16", 40), object())]
+    _i, cell = _select_smoke_cell(bigger)
+    assert cell.arch == "deep_attn_3x16" and cell.subset_size == 40
+
+
+def test_the_smoke_selector_is_order_independent():
+    """Reversing the spec list must not change the cell that is probed: the
+    tie-break is a property of the cells, not of their positions."""
+    from xcquinox.alec.cluster._preflight import _select_smoke_cell
+    specs = [(_cell(name, 26), object()) for name in
+             ("deep_attn", "deep_cusp_attn", "deep_dm_attn",
+              "deep_combined_attn", "deep_notransform_attn")]
+    forward = _select_smoke_cell(specs)[1]
+    backward = _select_smoke_cell(list(reversed(specs)))[1]
+    assert forward.arch == backward.arch == "deep_combined_attn"
+
+
+def test_the_smoke_selector_falls_back_when_no_attention_arch_is_swept():
+    """With no attention architecture the biggest-subset cell overall is
+    probed, and the same total order breaks ITS ties."""
+    from xcquinox.alec.cluster._preflight import _select_smoke_cell
+    specs = [(_cell("deep_3x16", 26), object()),
+             (_cell("deep_combined_3x16", 26), object()),
+             (_cell("shallow", 12), object())]
+    _i, cell = _select_smoke_cell(specs)
+    assert cell.arch == "deep_combined_3x16" and cell.subset_size == 26
+
+
+def test_the_smoke_selector_survives_a_name_the_registry_does_not_carry():
+    """The selector must never be the thing that breaks the preflight: an
+    architecture name it cannot resolve contributes no descriptor columns and
+    no size rather than raising, and the subset size still decides."""
+    from xcquinox.alec.cluster._preflight import _select_smoke_cell
+    specs = [(_cell("not_an_arch_attn", 26), object()),
+             (_cell("deep_attn", 12), object())]
+    _i, cell = _select_smoke_cell(specs)
+    assert cell.arch == "not_an_arch_attn"
+
+
+def test_the_smoke_selector_probes_a_descriptor_carrying_cell_on_the_v6_axis():
+    """The selection on the REAL campaign-v6 grid, not a synthetic one.
+
+    v6 puts twelve attention architectures on the axis where v5 had one, so
+    "the heaviest attention cell" became a choice rather than an
+    identification. The cell probed is a depth-4 / width-32 attention network
+    carrying descriptor columns, at the whole-pool subset -- not the
+    descriptor-free `deep_attn` a first-maximal `max` returned.
+    """
+    pytest.importorskip("yaml")
+    import xcquinox.alec.cluster as cluster_pkg
+    from xcquinox.alec.cluster._preflight import _select_smoke_cell
+    from xcquinox.alec.cluster.grid_config import (expand_grid,
+                                                   load_grid_config)
+    from xcquinox.alec.config import get_architecture
+    pkg_dir = os.path.dirname(os.path.abspath(cluster_pkg.__file__))
+    path = os.path.normpath(os.path.join(
+        pkg_dir, "..", "..", "..", "hpcjobs", "configs",
+        "dfs_step7.dfs6311_grid3_v6.yaml"))
+    if not os.path.isfile(path):
+        pytest.skip("no hpcjobs/configs in this checkout")
+    cells = expand_grid(load_grid_config(path))
+    specs = [(c, object()) for c in cells]
+    idx, cell = _select_smoke_cell(specs)
+    assert cell.subset_size == max(c.subset_size for c in cells) == 26
+    assert "attn" in cell.arch
+    arch = get_architecture(cell.arch)
+    assert arch.n_extra_features > 0, cell.arch
+    assert (arch.depth, arch.nodes) == (4, 32), cell.arch
+    assert cell.arch == "deep_combined_attn", cell.arch
+    assert cells[idx] is cell

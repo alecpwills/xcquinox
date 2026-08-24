@@ -1978,6 +1978,83 @@ def test_validate_grid_semantics_refuses_a_non_finite_protocol_weight(
 
 
 # ---------------------------------------------------------------------------
+# The pre-protocol objective under an enforced certificate
+# ---------------------------------------------------------------------------
+
+def _dfs_set_cfg(fidelity_kwargs=None, **pretrain_kwargs):
+    """``_cfg()`` with the protocol set switched on, and the objective's
+    placeholder weight still in place unless overridden."""
+    import dataclasses
+    base = _cfg()
+    pt = dict(dfs_set=True, pool_atoms=True, energy_term_weight=0.0)
+    pt.update(pretrain_kwargs)
+    cfg = dataclasses.replace(
+        base, pretrain=dataclasses.replace(base.pretrain, **pt))
+    if fidelity_kwargs:
+        cfg = dataclasses.replace(
+            cfg, fidelity=dataclasses.replace(cfg.fidelity,
+                                              **fidelity_kwargs))
+    return cfg
+
+
+def test_validate_refuses_the_pre_protocol_objective_under_an_enforced_gate():
+    """``energy_term_weight: 0.0`` is not a small energy term, it is no energy
+    term: ``pretrain.py`` short-circuits the per-system contribution on
+    ``energy_weight == 0.0``, so the objective reduces to the integration-
+    weighted point-wise residual alone -- the pre-protocol objective under
+    which no architecture reached its parent (SPEC_pretrain_fidelity_program
+    Section 2). Combined with the protocol set and an enforced certificate at
+    the binding tolerances, that is a whole-campaign FAIL that costs the
+    datagen job and the entire pretrain array before it is discovered, so it
+    is refused at submit rather than at the gate.
+
+    The message has to carry both halves of the fix: WHY the load is refused
+    (the offsets the certificate exists to close) and HOW to clear it (the
+    measurement that fills the value).
+    """
+    cfg = _dfs_set_cfg()
+    with pytest.raises(ValueError) as excinfo:
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+    message = str(excinfo.value)
+    # every key of the refused combination is named, so the reader knows
+    # which three settings produced it
+    assert "pretrain.energy_term_weight" in message
+    assert "pretrain.dfs_set" in message
+    assert "fidelity.enforce" in message
+    # the physics: the offsets Section 2 records at weight zero
+    assert "56.1 kcal/mol" in message
+    assert "2.3" in message
+    # the remedy: the measurement, and the edit that lands its answer
+    assert "hpcjobs/probe_pretrain_energy_weight.py" in message
+    assert "recommendation:" in message
+    assert "sed -i" in message
+    assert "energy_term_weight:" in message
+
+
+def test_the_pre_protocol_refusal_needs_all_three_of_its_conditions():
+    """Each of the three settings alone is a legal configuration, and two of
+    them are shipped: the templates run the point-wise objective on the
+    historical four-atom set, and the workflow matrix runs the protocol set
+    with the gate waived. The refusal is the CONJUNCTION -- the protocol set
+    fitted for a certificate nothing can pass -- so dropping any one of the
+    three has to load."""
+    domain = _StubDomain(pool_size=40)
+    # (a) the weight has been measured and landed
+    validate_grid_semantics(_dfs_set_cfg(energy_term_weight=1.0), domain)
+    # (b) the historical set: the point-wise objective is what those files
+    # have always run, and no protocol certificate is claimed of them
+    validate_grid_semantics(_dfs_set_cfg(dfs_set=False, pool_atoms=False),
+                            domain)
+    # (c) a non-enforcing run -- the workflow-verification matrix, whose
+    # 50-step pretraining cannot meet the tolerance and says so in writing
+    validate_grid_semantics(
+        _dfs_set_cfg(fidelity_kwargs=dict(
+            enforce=False,
+            override_reason="workflow matrix: wiring check, never a campaign")),
+        domain)
+
+
+# ---------------------------------------------------------------------------
 # _build_pretrain: coercion hardening (the fidelity block's house pattern)
 # ---------------------------------------------------------------------------
 

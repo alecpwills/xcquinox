@@ -6,6 +6,14 @@
 # *-28core queues only on login1/login2:
 #   sbatch --partition=long-96core-shared --cpus-per-task=96 ...
 #   sbatch --partition=long-28core        --cpus-per-task=28 ...
+# VERIFY THE 24 h REQUEST AGAINST THE QUEUE CAP BEFORE THE FIRST SUBMISSION.
+# SEAWULF_RUNBOOK.md records caps for short-* (4 h), medium-* (12 h) and
+# long-28core (2 days) but states none for long-40core, and an over-cap
+# --time is rejected at submit -- which would stall the whole v6 chain at its
+# first step, since this table is prerequisite (a) of the campaign YAML:
+#   sinfo -o "%20P %10l" -p long-40core
+# If the cap is under 24 h, SPLIT the sweep with EWSWEEP_ARCHS rather than
+# shortening the schedule (see the wall derivation below).
 #SBATCH --partition=long-40core
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
@@ -49,7 +57,21 @@
 # campaign runs at all. Both additions are PBE-parent, so the sweep still
 # generates two data files and the data allowance below is unchanged.
 #
-# WHY A JOB: the sweep is ~30 pretrainings over ~2.4e6 rows each. It is not
+# THE SET AND THE IDENTITY ARE DIFFERENT DECISIONS. The SET is the
+# campaign's, exactly -- the DFS inventory in its entirety, every atom of the
+# BH76 / W4-11 pools and v6's explicit atom list, 38 systems on the PBE
+# parent and 36 on SCAN -- because a system missing from it is a gate
+# quantity that was never measured. The IDENTITY is REDUCED on purpose:
+# def2-svp / grid level 3, 1000 steps, no validation hold-out, six of the 31
+# architectures. At 6-311++G(3df,2pd) the sweep would cost more than the
+# campaign it parameterizes, and the weight is dimensionful, so it does not
+# transfer exactly across a change of basis or grid in any case. The number
+# this table returns is a STARTING POINT; the per-architecture certificate at
+# the production identity remains the arbiter. Read a certificate FAIL on one
+# of the 25 unmeasured architectures as a transfer question -- re-run this
+# sweep on that architecture with EWSWEEP_ARCHS -- not as a code fault.
+#
+# WHY A JOB: the sweep is ~30 pretrainings over ~2.5e6 rows each. It is not
 # a workstation task, and its result is a committed campaign parameter, so it
 # runs once at a stated identity with the log kept beside the table.
 #
@@ -75,12 +97,18 @@
 # (xcquinox/alec/pretrain.py, _train_pretrain_network). The larger of the two
 # sessions' slopes, 0.5218 us/row, is the one carried below.
 #
-# Row count of the production sweep. The 37-system set at def2-svp level 3
-# carries 1287200 Becke-Lebedev points, of which the mean field integrates
-# 1149856: pyscf drops the negligible-density points of the initial guess
+# Row count of the production sweep, on the CAMPAIGN's own pretraining set:
+# the DFS inventory in its entirety, every atom of the BH76 / W4-11 pools and
+# campaign v6's explicit atom list, which contributes the one system neither
+# inventory carries -- free Na, on which Na2's atomization energy rests. That
+# is 38 systems on the PBE parent (36 on SCAN).
+#
+# The 38-system set at def2-svp level 3
+# carries 1305304 Becke-Lebedev points, of which the mean field integrates
+# 1167512: pyscf drops the negligible-density points of the initial guess
 # before its first get_veff, and that pruned grid is the one the generator
-# rebuilds and the rows are drawn from. Twelve of the 37 systems are open
-# shell (168344 pruned points, 14.6 percent); the other 25 are closed
+# rebuilds and the rows are drawn from. Thirteen of the 38 systems are open
+# shell (186000 pruned points, 15.9 percent); the other 25 are closed
 # (981512).
 #
 # ONLY an open shell contributes two exchange blocks, and one open shell in
@@ -88,37 +116,39 @@
 # rows under the spin_channel footing when the system is UKS and falls back to
 # the total-density rows otherwise ("x_rows is None for a closed-shell system,
 # whose total-density rows already are that footing"), so the exchange block
-# spans 2 x open + 1 x closed = 1318200 points, not 2 x 1287200. The exception
+# spans 2 x open + 1 x closed = 1353512 points, not 2 x 1305304. The exception
 # is the HYDROGEN atom: its beta channel is empty, spin_channel_exchange_rows
 # writes no rows for it, and H measures rows_x = 9176 = 1x its 9176 pruned
-# points rather than 2x. The doubled term below keeps H's grid in it, which
-# leaves the exchange row estimate about 8.9e3 rows high -- 0.69 percent, in
-# the CONSERVATIVE direction, so the figures are carried as they stand.
+# points rather than 2x. (Na is not a second exception: at 11 electrons both
+# of its channels are occupied.) The doubled term below keeps H's grid in it,
+# which leaves the exchange row estimate about 8.9e3 rows high -- 0.67
+# percent, in the CONSERVATIVE direction, so the figures are carried as they
+# stand.
 #
 # The generator then drops the points under its density floor. Measured at
 # this identity as rows over pruned points: 0.9775 on closed shells (Be, CH4,
 # C2H2), and on open shells 0.9743 for the correlation block and 0.9663 per
 # exchange CHANNEL (Li, Cl, O). The He/Li smoke pair is not a proxy for the
 # exchange block -- it is 63 percent open shell by grid mass against the
-# production set's 15, and the open/closed split is exactly what decides one
+# production set's 16, and the open/closed split is exactly what decides one
 # exchange block or two. Weighting the measured fractions by the set's own
 # grid mass:
 #
-#     correlation ~ 0.9775 x 981512 + 0.9743 x 168344         = 1.123e6 rows
-#     exchange    ~ 0.9775 x 981512 + 2 x 0.9663 x 168344     = 1.285e6 rows
-#     total       ~ 2.41e6 rows
+#     correlation ~ 0.9775 x 981512 + 0.9743 x 186000         = 1.141e6 rows
+#     exchange    ~ 0.9775 x 981512 + 2 x 0.9663 x 186000     = 1.319e6 rows
+#     total       ~ 2.46e6 rows
 #
-# One cell is then 1000 x 2.41e6 x 0.5218 us = 1257 s, and thirty cells
-# (6 architectures x 5 weights) are 10.5 h. Generating the two parent-density
+# One cell is then 1000 x 2.46e6 x 0.5218 us = 1284 s, and thirty cells
+# (6 architectures x 5 weights) are 10.7 h. Generating the two parent-density
 # files is allowed 1 h -- the allowance is a property of the PARENT set, not
 # of the architecture count, and both architectures added to the default set
-# are PBE-parent. Estimate 11.5 h, so a 2x margin is 23.0 h, inside the wall.
+# are PBE-parent. Estimate 11.7 h, so a 2x margin is 23.4 h, inside the wall.
 #
 # The superseded pre-rework path, before the training loop moved in-module,
 # re-compiled its update step every optimizer step at a fixed 648 ms measured:
-# a production step of 1.91 s, the sweep at 15.9 h and the estimate at 16.9 h.
+# a production step of 1.93 s, the sweep at 16.1 h and the estimate at 17.1 h.
 # Thirty cells on that path still fit the 24 h wall, but at 1.4x rather than
-# 2x -- at twenty cells it was 23.2 h and the margin held. So if the loop ever
+# 2x -- at twenty cells it was 23.5 h and the margin held. So if the loop ever
 # regresses to recompiling per step, SPLIT the sweep with EWSWEEP_ARCHS rather
 # than trusting the wall. The four-thread measurement is itself conservative
 # for a forty-core node.

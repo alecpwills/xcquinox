@@ -662,3 +662,243 @@ def test_v6_carries_the_stony_brook_job_mail():
     path, cfg = _v6_config()
     assert cfg.cluster.mail_user == "alec.wills@stonybrook.edu", path
     assert cfg.cluster.mail_type == "BEGIN,END,FAIL", path
+
+
+def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
+    """The header states a MEASURED diff -- 13 of 135 resolved fields -- and
+    names all thirteen. It is the file's own claim that everything except the
+    method, the roots and the walls is v5's, which is what makes v5-vs-v6 on
+    the five meta-GGA architectures a controlled comparison; a hyperparameter
+    or a solver knob that drifted in would break that reading while loading,
+    submitting and running exactly as before.
+
+    Both trees are flattened, so DEFAULTS are compared too: a field v5 leaves
+    unstated and v6 states at the same value is not a difference, and one v6
+    states at a different value is.
+    """
+    path6, cfg6 = _v6_config()
+    path5 = os.path.join(os.path.dirname(path6),
+                         "dfs_step7.dfs6311_grid3_v5.yaml")
+    if not os.path.isfile(path5):
+        pytest.skip("no v5 configuration in this checkout")
+    cfg5 = load_grid_config(path5)
+
+    def _flat(obj, prefix=""):
+        out = {}
+        if dataclasses.is_dataclass(obj):
+            for f in dataclasses.fields(obj):
+                out.update(_flat(getattr(obj, f.name), f"{prefix}{f.name}."))
+        elif isinstance(obj, dict):
+            for key in sorted(obj):
+                out.update(_flat(obj[key], f"{prefix}{key}."))
+        else:
+            out[prefix.rstrip(".")] = obj
+        return out
+
+    a, b = _flat(cfg5), _flat(cfg6)
+    keys = sorted(set(a) | set(b))
+    differing = sorted(k for k in keys
+                       if a.get(k, "<absent>") != b.get(k, "<absent>"))
+    assert len(keys) == 135, len(keys)
+    assert differing == [
+        "cluster.datagen_time",
+        "cluster.pretrain_throttle",
+        "cluster.time",
+        "cluster.timeout_retry_time",
+        "inputs.output_root",
+        "pretrain.data_dir",
+        "pretrain.dfs_set",
+        "pretrain.exchange_footing",
+        "pretrain.parent_density",
+        "pretrain.patience",
+        "pretrain.pool_atoms",
+        "pretrain.validation_fraction",
+        "sweep.arch",
+    ], differing
+    # ... and the file says so, in the count it states.
+    text = open(path6).read()
+    assert "THIRTEEN differ" in text, path6
+    assert "The remaining 122 fields are identical" in text, path6
+
+
+def _v6_semantics(cfg):
+    """Run the login-node semantic check on ``cfg``, swallowing the advisory
+    path warnings the campaign's ``/gpfs`` roots raise off-cluster."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
+
+
+def test_v6_is_refused_at_submit_until_the_measured_weight_lands():
+    """AS COMMITTED the file is REFUSED by the semantic check, and the
+    refusal is the point.
+
+    ``pretrain.energy_term_weight`` ships at 0.0, which is not a small energy
+    term but no energy term at all (``pretrain.py`` short-circuits on
+    ``energy_weight == 0.0``). With the protocol set on and the certificate
+    enforced at 1.0 / 1.0, submitting the file unedited buys the datagen job
+    and all 31 pretrainings and then fails every certificate, because that is
+    the objective SPEC_pretrain_fidelity_program Section 2 measured 2.3 to
+    56.1 kcal/mol of atomization offset under. Nothing downstream catches it:
+    the file LOADS (it is a legal configuration, and the value's own bounds
+    admit zero), so the refusal has to be semantic.
+
+    ``validate_grid_semantics`` is re-run by every submission surface --
+    ``prepare``, ``submit``, ``resubmit``, ``resubmit-preflight`` and the
+    deferred-eval path -- so the refusal reaches the operator wherever the
+    file is used, and clears the moment the measured weight is written in.
+    """
+    path, cfg = _v6_config()
+    assert cfg.pretrain.dfs_set is True
+    assert cfg.fidelity.enforce is True
+    assert cfg.pretrain.energy_term_weight == 0.0, (
+        f"{path}: the placeholder has been filled; this pin describes the "
+        "file as it ships and must be retired in the same change")
+    with pytest.raises(ValueError) as excinfo:
+        _v6_semantics(cfg)
+    message = str(excinfo.value)
+    assert "pretrain.energy_term_weight" in message
+    assert "hpcjobs/probe_pretrain_energy_weight.py" in message
+    assert "56.1 kcal/mol" in message
+    # ... and the SAME file with the measured weight in it is accepted, so
+    # the refusal is the placeholder and not the protocol block.
+    filled = dataclasses.replace(
+        cfg, pretrain=dataclasses.replace(cfg.pretrain,
+                                          energy_term_weight=1.0))
+    _v6_semantics(filled)
+
+
+def test_v6_states_the_refusal_beside_the_placeholder():
+    """The YAML says, at the key itself, that the file does not submit as it
+    stands. A banner at the top of a 435-line file is read once; the comment
+    on the line being edited is read by whoever edits it."""
+    path, _cfg = _v6_config()
+    with open(path) as f:
+        lines = f.read().splitlines()
+    i = next(i for i, ln in enumerate(lines)
+             if ln.strip().startswith("energy_term_weight:"))
+    block = "\n".join(lines[max(0, i - 30):i])
+    assert "validate_grid_semantics" in block, path
+    assert "REFUSES" in block or "refuses" in block, path
+
+
+def test_v6_pins_the_pretraining_validation_block_and_the_mesh_share():
+    """The stop criterion, the validation hold-out and the mesh share are
+    protocol decisions of Section 7 / Section 6, each of which loads at a
+    DIFFERENT dataclass default: ``validation_fraction`` 0.0 (no hold-out at
+    all, i.e. no stop criterion), ``patience`` 0, ``mesh_fraction`` 0.3. A
+    file that dropped them would still load and would run the pre-protocol
+    schedule, so they are read from the text as well as the parse.
+
+    The schedule also has to be non-degenerate: the training-side guard
+    refuses a patience that cannot be reached in the number of checks the run
+    performs, so the ratio is asserted rather than the values alone.
+    """
+    path, cfg = _v6_config()
+    raw = _raw_yaml(path)["pretrain"]
+    assert raw["validation_fraction"] == 0.2
+    assert raw["validation_seed"] == 0
+    assert raw["validate_every"] == 50
+    assert raw["patience"] == 10
+    assert cfg.pretrain.validation_fraction == 0.2
+    assert cfg.pretrain.validation_seed == 0
+    assert cfg.pretrain.validate_every == 50
+    assert cfg.pretrain.patience == 10
+    n_checks = cfg.pretrain.n_steps // cfg.pretrain.validate_every
+    assert n_checks == 50
+    assert cfg.pretrain.patience < n_checks - 1, (
+        f"{path}: patience {cfg.pretrain.patience} against {n_checks} checks "
+        "is the degenerate regime the training-side guard rejects")
+    # The mesh is a regularizer at its anchored share, not a fitted knob.
+    from xcquinox.alec.pretrain_data_gen import MESH_WEIGHT_FRACTION
+    assert raw["mesh_fraction"] == 0.3
+    assert cfg.pretrain.mesh_fraction == MESH_WEIGHT_FRACTION == 0.3
+
+
+def test_v6_keeps_the_one_atom_neither_inventory_supplies():
+    """``pretrain.atoms`` is all but redundant under ``dfs_set`` +
+    ``pool_atoms`` and is kept for exactly one row: free Na, which neither
+    inventory carries and on which Na2's atomization energy rests. Dropping
+    the list loads, changes the set by one system, and is invisible in every
+    other pin -- so the resolved set is asserted, not the list.
+
+    He must stay OUT: PySCF has no He in 6-311++G(3df,2pd).
+    """
+    from xcquinox.alec.pretrain_data_gen import resolve_pretrain_systems
+    path, cfg = _v6_config()
+    raw = _raw_yaml(path)["pretrain"]
+    assert raw["atoms"] == {"H": 1, "Li": 1, "C": 2, "N": 3, "O": 2, "F": 1,
+                            "Na": 1}, path
+    resolved = {
+        ref: resolve_pretrain_systems(
+            atoms=cfg.pretrain.atoms, dfs_set=cfg.pretrain.dfs_set,
+            pool_atoms=cfg.pretrain.pool_atoms, reference_xc=ref)
+        for ref in ("pbe", "scan")}
+    assert len(resolved["pbe"]) == 38, path
+    assert len(resolved["scan"]) == 36, path
+    for ref, systems in resolved.items():
+        names = {s.name for s in systems}
+        assert "Na" in names, (path, ref)
+        assert "He" not in names, (path, ref)
+    # ... and Na is the only system the explicit list contributes.
+    without = resolve_pretrain_systems(
+        atoms=(), dfs_set=True, pool_atoms=True, reference_xc="pbe")
+    assert {s.name for s in resolved["pbe"]} - {s.name for s in without} == \
+        {"Na"}, path
+
+
+def test_v6_train_wall_covers_the_four_channel_inline_eval():
+    """The train wall has to hold the train AND the eval, because
+    ``inline_eval`` runs the eval inside the train task.
+
+    The anchor is v3's own measurement at this basis, grid and solver:
+    ``deep_attn_3x16`` at subset 26 took 42.14 h under a THREE-channel inline
+    eval (v3's config states ``inline_eval: true``, ``eval_time: 02:00:00``
+    and no ``eval_coldstart``). v6 runs FOUR channels, one of them the
+    25-cycle coldstart diagnostic, and budgets 08:00:00 for them. The same
+    cell is then 42.14 - 2 + 8 = 48.1 h if the 42.14 h already contained a
+    2 h eval, or 42.14 + 8 = 50.1 h if it was train time alone; both exceed a
+    48 h wall, which is why the wall is no longer 48 h. v6 additionally puts
+    five depth-4 / width-32 attention architectures on the axis, a size v3
+    never ran (its three attention architectures were all 3x16), so the
+    margin above 50.1 h is carrying real unmeasured load.
+
+    ``timeout_retry_time`` makes the recovery automatic rather than a manual
+    resubmit per cell: a wall-killed task is relaunched at the longer wall and
+    resumes from its WS5 checkpoint. ``timeout_retry_partition`` stays unset
+    for the reason v5 states for ``oom_retry_partition`` -- the submit
+    partition is already the largest reachable node, so a re-route buys
+    nothing and the wall is the only lever.
+    """
+    path, cfg = _v6_config()
+    raw = _raw_yaml(path)["cluster"]
+
+    def _hours(literal):
+        d, _, rest = str(literal).rpartition("-")
+        h, m, s = (int(x) for x in rest.split(":"))
+        return int(d or 0) * 24 + h + m / 60.0 + s / 3600.0
+
+    train_h = _hours(raw["time"])
+    assert cfg.inline_eval is True and cfg.eval_coldstart is True, path
+    # Both readings of the v3 anchor, from the file's own numbers.
+    v3_measured, v3_eval_budget, v6_eval_budget = 42.14, 2.0, 8.0
+    assert _hours(raw["eval_time"]) == v6_eval_budget
+    inclusive = v3_measured - v3_eval_budget + v6_eval_budget
+    exclusive = v3_measured + v6_eval_budget
+    assert abs(inclusive - 48.1) < 0.05
+    assert abs(exclusive - 50.1) < 0.05
+    assert train_h > exclusive, (
+        f"{path}: a {train_h:g} h train wall does not cover the worse "
+        f"reading of the v3 anchor ({exclusive:.2f} h)")
+    assert train_h == 72.0, path
+    # The automatic recovery is longer than the wall it recovers from.
+    assert cfg.cluster.timeout_retry_time is not None, (
+        f"{path}: without timeout_retry_time a wall-killed cell is a manual "
+        "resubmit, repeated across the large-subset attention cells")
+    assert _hours(cfg.cluster.timeout_retry_time) > train_h, path
+    assert cfg.cluster.timeout_retry_partition is None, path
+    # The arithmetic is in the file, not only here.
+    text = open(path).read()
+    for quoted in ("42.14", "48.1 h", "50.1 h", "72:00:00", "sinfo"):
+        assert quoted in text, (path, quoted)

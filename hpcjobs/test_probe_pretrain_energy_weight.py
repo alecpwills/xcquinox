@@ -716,6 +716,112 @@ def test_the_gate_quantity_is_pinned_against_the_runs_own_measurement():
         weight=1.0) == pytest.approx(0.0, abs=1e-15)
 
 
+# --------------------------------------------------------------------------- #
+# The set the weight is measured on
+# --------------------------------------------------------------------------- #
+
+def _v6_config_path():
+    """The campaign configuration the measured weight is written into."""
+    path = _HERE / "configs" / "dfs_step7.dfs6311_grid3_v6.yaml"
+    return path if path.is_file() else None
+
+
+def test_the_campaign_atom_list_is_the_one_the_campaign_states():
+    """The probe's explicit atom list IS campaign v6's, read from the file.
+
+    ``pretrain.atoms`` is nearly redundant under ``dfs_set`` + ``pool_atoms``
+    and contributes exactly one system neither inventory supplies -- free Na,
+    on which Na2's atomization energy rests. A constant here that drifts from
+    the YAML would measure the weight on a set the campaign does not train
+    on, silently, so the two are compared rather than both transcribed.
+    """
+    pytest.importorskip("yaml")
+    path = _v6_config_path()
+    if path is None:
+        pytest.skip("no hpcjobs/configs in this checkout")
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    cfg = load_grid_config(str(path))
+    assert tuple(tuple(a) for a in cfg.pretrain.atoms) == pw.CAMPAIGN_ATOMS
+    assert cfg.pretrain.dfs_set is True and cfg.pretrain.pool_atoms is True
+    assert ("Na", 1) in pw.CAMPAIGN_ATOMS
+    assert not any(sym == "He" for sym, _spin in pw.CAMPAIGN_ATOMS)
+
+
+def test_the_sweep_measures_the_campaigns_own_pretraining_set():
+    """Same builder, same arguments, same systems: 38 on the PBE parent and
+    36 on SCAN.
+
+    The weight balances a squared system energy against an integration-
+    weighted point-wise residual, so WHICH systems are in the set changes the
+    number it lands on. The sweep is run at a reduced identity deliberately
+    (see the module header), but the SET is not part of that reduction: an
+    absent free Na would leave the one row Na2's atomization energy rests on
+    unmeasured on exactly the gate the certificate reads.
+    """
+    from xcquinox.alec.pretrain_data_gen import resolve_pretrain_systems
+    for reference_xc, expected in (("pbe", 38), ("scan", 36)):
+        systems = resolve_pretrain_systems(
+            atoms=pw.CAMPAIGN_ATOMS, dfs_set=True, pool_atoms=True,
+            reference_xc=reference_xc)
+        assert len(systems) == expected, reference_xc
+        assert "Na" in {s.name for s in systems}, reference_xc
+        assert "He" not in {s.name for s in systems}, reference_xc
+
+
+def test_the_generator_is_asked_for_the_campaign_set(tmp_path, monkeypatch):
+    """The arguments the probe hands the generator ARE the campaign's three
+    set switches, so the file it measures on holds the campaign's rows."""
+    from xcquinox.alec import pretrain_data_gen
+
+    seen = []
+    monkeypatch.setattr(pretrain_data_gen, "ensure_pretrain_data",
+                        lambda directory, **kw: (seen.append(kw),
+                                                 "/none.npz")[1])
+    pw.ensure_data(str(tmp_path), polarized=True, reference_xc="pbe",
+                   basis="def2-svp", grid_level=3, lock_strength=3.0e-5)
+    assert seen[-1]["dfs_set"] is True
+    assert seen[-1]["pool_atoms"] is True
+    assert tuple(tuple(a) for a in seen[-1]["atoms"]) == pw.CAMPAIGN_ATOMS
+    # The smoke leg still substitutes its own two systems and neither
+    # inventory, so it stays a seconds-long plumbing check.
+    pw.ensure_data(str(tmp_path), polarized=True, reference_xc="pbe",
+                   basis="sto-3g", grid_level=1, lock_strength=3.0e-5,
+                   smoke_atoms=pw.SMOKE_ATOMS)
+    assert seen[-1]["dfs_set"] is False and seen[-1]["pool_atoms"] is False
+    assert tuple(tuple(a) for a in seen[-1]["atoms"]) == pw.SMOKE_ATOMS
+
+
+def test_the_atom_list_is_part_of_the_resume_identity(tmp_path):
+    """A table measured on another set is REFUSED rather than merged.
+
+    ``atoms`` is a resume-identity key, so a table written before the set was
+    widened does not silently contribute rows measured without free Na.
+    """
+    identity = pw.build_identity(_args(), 3.0e-5, None)
+    assert identity["atoms"] == [list(a) for a in pw.CAMPAIGN_ATOMS]
+    assert "atoms" in pw._RESUME_IDENTITY_KEYS
+    stale = dict(identity, atoms=None)          # the pre-widening identity
+    path = _stored(tmp_path, stale, [_row("deep_3x16", 0.0, 1.0)])
+    with pytest.raises(SystemExit) as excinfo:
+        pw.load_resumable_rows(str(path), identity)
+    assert "atoms" in str(excinfo.value)
+
+
+def test_the_header_states_the_reduced_identity_as_a_decision():
+    """The sweep runs at def2-svp / 1000 steps / no validation hold-out while
+    the campaign runs at 6-311++G(3df,2pd) / 2500 steps / a 20 percent
+    hold-out. That gap is deliberate and cheap, but it has to be WRITTEN
+    somewhere the reader of the recommendation will see it, or a certificate
+    FAIL on an unmeasured architecture is read as a code fault instead of a
+    transfer question."""
+    text = _SCRIPT.read_text()
+    head = text.split('"""')[1]
+    assert "def2-svp" in head
+    assert "reduced" in head.lower()
+    assert "6-311++G(3df,2pd)" in head
+    assert "certificate" in head
+
+
 def test_the_generator_is_never_asked_to_waive_the_degenerate_refusal(
         tmp_path, monkeypatch):
     """Neither identity needs the waiver, so neither asks for it.
@@ -1230,22 +1336,26 @@ def test_the_wall_matches_its_derivation():
     The per-step law measured on the path the job runs (least squares
     -1.36 ms + 0.4356 us/row over four row counts; 0.5218 us/row in a second
     session, which is the slope the header carries) over the production
-    sweep's 2.41e6 rows puts THIRTY cells -- the six default architectures at
-    five weights -- at 10.5 h and the estimate at 11.5 h with the data
-    generation; twice that is 23.0 h, inside the 24 h request. The cell count
+    sweep's 2.46e6 rows puts THIRTY cells -- the six default architectures at
+    five weights -- at 10.7 h and the estimate at 11.7 h with the data
+    generation; twice that is 23.4 h, inside the 24 h request. The cell count
     is read from ``DEFAULT_ARCHS`` and ``DEFAULT_WEIGHTS`` rather than
     transcribed, so widening either axis again turns this red instead of
     leaving a stale wall in the header.
 
     The row count itself is the part that has to be checked and not only
     quoted: the exchange block spans two channels per OPEN shell and one per
-    closed one, so it is 2 x 168344 + 981512 pruned points and not twice the
+    closed one, so it is 2 x 186000 + 981512 pruned points and not twice the
     whole set's. The short-* queues cap at 4 h, so the request and the
     partition also have to agree on a long queue.
 
+    The census is the 38-system set -- the campaign's, free Na included --
+    which is why the open-shell mass is 186000 and not the 168344 the
+    37-system reading gave.
+
     The superseded pre-rework path (a fixed 648 ms recompile per optimizer
     step, retired when the training loop moved in-module) is quoted for the
-    same thirty cells at 16.9 h, which fits the wall but at 1.4x rather than
+    same thirty cells at 17.1 h, which fits the wall but at 1.4x rather than
     2x -- so the header states the split as the remedy if that regression ever
     returns, and the number is pinned here so the statement cannot go stale.
     """
@@ -1256,24 +1366,24 @@ def test_the_wall_matches_its_derivation():
             # the per-step law, and the slope actually carried
             "0.4356 us/row", "0.5218 us/row",
             # the grids: Becke-Lebedev, then what the mean field integrates
-            "1287200", "1149856", "168344", "981512",
+            "1305304", "1167512", "186000", "981512",
             # the exchange BLOCK count and the measured floor survivals
-            "1318200", "0.9775", "0.9743", "0.9663",
+            "1353512", "0.9775", "0.9743", "0.9663",
             # the rows and the wall they buy
-            "1.123e6", "1.285e6", "2.41e6", "1257 s", "10.5 h", "11.5 h",
-            "23.0 h",
+            "1.141e6", "1.319e6", "2.46e6", "1284 s", "10.7 h", "11.7 h",
+            "23.4 h",
             # and the pre-rework path, which no longer fits at 2x
-            "648 ms", "16.9 h"):
+            "648 ms", "17.1 h"):
         assert quoted in t, quoted
     # The arithmetic, not the strings alone. An exchange block per SPIN
     # CHANNEL of every system -- the reading this replaces -- would give
-    # 2 x 1149856, and the quoted total would not reproduce.
-    assert 168344 + 981512 == 1149856
-    assert 2 * 168344 + 981512 == 1318200
-    rows = 1.123e6 + 1.285e6
-    assert abs(rows - 2.41e6) <= 0.01e6
+    # 2 x 1167512, and the quoted total would not reproduce.
+    assert 186000 + 981512 == 1167512
+    assert 2 * 186000 + 981512 == 1353512
+    rows = 1.141e6 + 1.319e6
+    assert abs(rows - 2.46e6) <= 0.01e6
     cell_seconds = 1000 * rows * 0.5218e-6
-    assert abs(cell_seconds - 1257.0) < 15.0
+    assert abs(cell_seconds - 1284.0) < 15.0
     # The cell count IS the swept grid, not a number written down beside it.
     n_cells = len(pw.DEFAULT_ARCHS) * len(pw.DEFAULT_WEIGHTS)
     assert n_cells == 30
@@ -1281,16 +1391,35 @@ def test_the_wall_matches_its_derivation():
     assert "thirty cells" in t
     assert f"({len(pw.DEFAULT_ARCHS)} architectures x " \
            f"{len(pw.DEFAULT_WEIGHTS)} weights)" in t
-    assert abs(n_cells * cell_seconds / 3600.0 - 10.5) < 0.1
+    assert abs(n_cells * cell_seconds / 3600.0 - 10.7) < 0.1
     estimate_h = n_cells * cell_seconds / 3600.0 + 1.0   # + the data hour
-    assert abs(estimate_h - 11.5) < 0.1
+    assert abs(estimate_h - 11.7) < 0.1
     assert 2.0 * estimate_h <= 24.0                      # the wall, at 2x
-    assert abs(2.0 * estimate_h - 23.0) < 0.2
+    assert abs(2.0 * estimate_h - 23.4) < 0.2
     # The pre-rework path: inside the wall, but no longer at twice the
     # estimate, which is why the header now names the split instead.
     pre_rework_h = n_cells * (cell_seconds + 0.6484 * 1000) / 3600.0 + 1.0
-    assert abs(pre_rework_h - 16.9) < 0.1
+    assert abs(pre_rework_h - 17.1) < 0.1
     assert pre_rework_h < 24.0 < 2.0 * pre_rework_h
+
+
+def test_the_census_the_wall_rests_on_is_the_campaigns_own_set():
+    """The row census is a property of the SET, so the set it was measured on
+    is stated rather than assumed: 38 systems on the PBE parent, 25 of them
+    closed shell and 13 open. A change to the set moves every figure in the
+    derivation, which is why the composition is asserted here beside it."""
+    from xcquinox.alec.pretrain_data_gen import resolve_pretrain_systems
+    systems = resolve_pretrain_systems(
+        atoms=pw.CAMPAIGN_ATOMS, dfs_set=True, pool_atoms=True,
+        reference_xc="pbe")
+    n_open = sum(1 for s in systems if int(s.spin) != 0)
+    assert len(systems) == 38
+    assert (n_open, len(systems) - n_open) == (13, 25)
+    t = _sbatch_text()
+    assert "38-system set" in t
+    assert "Thirteen of the 38 systems are open" in t
+    assert "the other 25 are closed" in t
+    assert "38 systems on the PBE\n# parent and 36 on SCAN" in t
 
 
 def test_x64_is_on_and_the_platform_is_cpu():

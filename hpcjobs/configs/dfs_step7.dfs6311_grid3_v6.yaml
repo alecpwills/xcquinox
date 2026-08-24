@@ -8,8 +8,8 @@
 # from pretrained networks that were 2.3-4.2 kcal/mol (descriptor-free) to
 # 13.2-56.1 kcal/mol (descriptor-carrying) from their parent functional on
 # atomization energies, which is larger than the architecture differences the
-# campaign exists to resolve (spec Section 2). Three things change here, and
-# nothing else does:
+# campaign exists to resolve (spec Section 2). Three things change in the
+# METHOD:
 #
 #   1. SWEEP. Every architecture of `xcquinox.alec.ARCHITECTURES` is on the
 #      arch axis -- 31 names, enumerated below -- against v5's three. The
@@ -31,12 +31,31 @@
 # isolates the pretraining correction. The inherited value is quoted in a
 # comment wherever it is load-bearing.
 #
+# MEASURED DIFF against v5. Both files were loaded and every field of the
+# resolved GridConfig tree flattened and compared, defaults included: of 135
+# fields, THIRTEEN differ. Seven are the method above (sweep.arch,
+# pretrain.dfs_set / pool_atoms / parent_density / exchange_footing /
+# validation_fraction / patience); the other six are bookkeeping and
+# resources, each documented at its own key -- pretrain.data_dir and
+# inputs.output_root (fresh roots), cluster.datagen_time and
+# cluster.pretrain_throttle (a stage v5 did not have, and a throttle v5 did
+# not need at three architectures), cluster.time and
+# cluster.timeout_retry_time (the train wall, raised for the four-channel
+# inline eval). The remaining 122 fields are identical, including every
+# hyperparameter, both solver blocks, the whole run identity, the three
+# reference-cache roots, the subset ledger, the seeding protocol and every
+# eval flag. The `fidelity:` block is not a difference either: v5 states no
+# such block and the dataclass defaults are exactly the values written out
+# below, so stating them is a statement of record.
+#
 # +-------------------------------------------------------------------------+
-# | BEFORE SUBMISSION, ONE EDIT IS REQUIRED: pretrain.energy_term_weight     |
-# | ships at the 0.0 PLACEHOLDER, which is the objective WITHOUT the         |
-# | per-system energy term Section 7 binds. Set it from the measured table   |
-# | (see the block beside the key) or the pretraining runs the pre-protocol  |
-# | objective and the certificate is expected to fail.                       |
+# | THIS FILE IS REFUSED AT SUBMIT AS IT SHIPS. pretrain.energy_term_weight  |
+# | carries the 0.0 PLACEHOLDER, which is the objective WITHOUT the          |
+# | per-system energy term Section 7 binds, and validate_grid_semantics      |
+# | refuses that value alongside dfs_set: true and fidelity.enforce: true.   |
+# | Set it from the measured table (see the block beside the key). The file  |
+# | LOADS either way; the refusal is semantic, and every submission surface  |
+# | re-runs it.                                                              |
 # +-------------------------------------------------------------------------+
 #
 # PREREQUISITES, in order:
@@ -163,7 +182,10 @@ hyperparams:
   pad_group_to_common_shape: true
 
 inputs:
-  # PRODUCTION IDENTITY, byte-inherited from v5 (lines 96-103). These five
+  # PRODUCTION IDENTITY, VALUE-inherited from v5 (lines 96-103): the five
+  # fields resolve to the same values, and one of them is spelled
+  # differently -- 3.0e-5 here against v5's 0.00003, both of which parse to
+  # 3e-05 and equal orientation_lock.DEFAULT_STRENGTH. These five
   # fields are exactly what `fidelity.run_identity` records on every
   # certificate, so a change here invalidates every certificate the run wrote.
   # DFS-paper parity: same basis for training AND the CCSD references, grid 3.
@@ -277,12 +299,12 @@ pretrain:
   exchange_footing: spin_channel
   # The synthetic (r_s, s, alpha) mesh's share of the total integration weight,
   # kept as a REGULARIZER only (Section 6, deviation 1). 0.3 is the anchored
-  # default: `pretrain_data_gen.MESH_WEIGHT_FRACTION = 0.3` (line 986), the
+  # default: `pretrain_data_gen.MESH_WEIGHT_FRACTION = 0.3` (line 1006), the
   # share whose efficacy was measured when the mesh shipped. Stated, not
   # inherited.
   mesh_fraction: 0.3
   # =========================================================================
-  # THE OBJECTIVE -- PLACEHOLDER, EDIT BEFORE SUBMITTING.
+  # THE OBJECTIVE -- PLACEHOLDER. THIS FILE DOES NOT SUBMIT AS IT STANDS.
   #
   # `energy_term_weight` weights the per-system energy term
   # mean_s (E_xc^NN_s - E_xc^parent_s)^2, in inverse Hartree^2, beside the
@@ -290,8 +312,17 @@ pretrain:
   # per-system energy term in the loss beside the point-wise
   # enhancement-factor term"); its VALUE is dimensionful and is measured, not
   # derived. 0.0 below is the placeholder -- the pre-protocol objective, which
-  # is what defect D2 records as unable to deliver the parent -- and it is a
-  # legal load, so nothing downstream will catch it for you.
+  # is what defect D2 records as unable to deliver the parent.
+  #
+  # At EXACTLY 0.0 the term is not small, it is not evaluated at all
+  # (`pretrain.py` short-circuits on `energy_weight == 0.0`), so the run would
+  # fit the protocol set with the point-wise residual alone. That is why
+  # `validate_grid_semantics` REFUSES the combination `dfs_set: true` +
+  # `fidelity.enforce: true` + `energy_term_weight: 0.0` outright: the file
+  # still LOADS (the value is legal on its own), but every submission surface
+  # -- prepare, submit, resubmit, resubmit-preflight and the deferred-eval
+  # path -- re-runs the semantic check, so an unedited submission is stopped
+  # on the login node instead of after the datagen job and 31 pretrainings.
   #
   # Set it from the table `hpcjobs/probe_pretrain_energy_weight.py` writes.
   # That script's recommendation rule, verbatim from `recommend()`:
@@ -304,7 +335,15 @@ pretrain:
   #     has risen by more than `pointwise_factor` from its own weight-0 value.
   #
   # with margin_fraction = 0.5 and pointwise_factor = 3.0. The script prints
-  # the chosen weight on its `recommendation:` line; copy that number here.
+  # the chosen weight on its `recommendation:` line; land that number here:
+  #
+  #     sed -i 's/^  energy_term_weight: 0\.0$/  energy_term_weight: <W>/' \
+  #         hpcjobs/configs/dfs_step7.dfs6311_grid3_v6.yaml
+  #
+  # The sweep measures at a REDUCED identity (def2-svp, 1000 steps, no
+  # validation hold-out) on six of the 31 architectures -- see the note in
+  # that script's header. The weight it returns is a starting point; the
+  # certificate at the production identity remains the arbiter.
   # =========================================================================
   energy_term_weight: 0.0
   # VALIDATION and the stop criterion, at the spec Section 7 / Task 7 defaults
@@ -322,16 +361,42 @@ pretrain:
 
 cluster:
   partition: ""
-  # 48 h, NOT 24: v3 measured single-process train durations at this exact
-  # basis/grid/solver up to 42.14 h (deep_attn_3x16, subset 26; attention is
-  # 2.3-2.9x its non-attention twin), and v3 itself ran under a 48 h wall via
-  # the submit-time --time override -- a bare submission of a 24 h YAML would
-  # wall-kill the attention cells at large subsets. The corrected potential
-  # adds a feature-response derivative per SCF cycle, so the attention cells
-  # will not be faster than v3's. Peak measured RSS is 142.8 GB: submit to a
-  # ~256 GB partition (long-96core-shared), never a 128 GB one. Inherited
-  # from v5 (line 163); v6 adds no cheaper cell, only more of them.
-  time: "48:00:00"
+  # 72 h, NOT v5's 48: `inline_eval: true` runs the eval INSIDE the train
+  # task, so this one wall has to hold both, and v6's eval is four channels
+  # where v3's was three.
+  #
+  # THE ARITHMETIC, from v3's own measurement at this exact basis, grid and
+  # solver: deep_attn_3x16 at subset 26 took 42.14 h (attention is 2.3-2.9x
+  # its non-attention twin), under a THREE-channel inline eval --
+  # hpcjobs/configs/dfs_step7.dfs6311_grid3_v3.yaml states inline_eval: true,
+  # eval_time: "02:00:00" and no eval_coldstart. v6 runs FOUR channels, one
+  # of them the 25-cycle coldstart diagnostic, budgeted at 08:00:00 below.
+  # The same cell is then
+  #     42.14 - 2 + 8 = 48.1 h   if the 42.14 h already contained a 2 h eval
+  #     42.14     + 8 = 50.1 h   if it was train time alone
+  # and both exceed 48 h, so a 48 h wall wall-kills the large-subset
+  # attention cells rather than the 24 h one v5 was protecting against. The
+  # larger reading is the one carried: 72 h is 1.44x it. The margin is not
+  # slack -- v6 puts FIVE depth-4 / width-32 attention architectures on the
+  # axis (deep_attn, deep_combined_attn, deep_cusp_attn, deep_dm_attn,
+  # deep_notransform_attn), a size no campaign has run: v3's three attention
+  # architectures were all 3x16, and v5's only one was deep_mgga_attn_3x16.
+  # The corrected potential also adds a feature-response derivative per SCF
+  # cycle, so no cell is faster than v3's.
+  #
+  # QUEUE ADMISSIBILITY: VERIFY WITH sinfo BEFORE THE FIRST SUBMISSION.
+  # SEAWULF_RUNBOOK.md records the max walls as short-* 4 h, medium-* 12 h,
+  # long-28core 2 days and long-96core-shared "longer still" -- it does not
+  # state a number for the queue this campaign submits to. Check it with
+  #     sinfo -o "%20P %10l" -p long-96core-shared
+  # An over-cap --time is rejected at submit (cheap, and immediate). If the
+  # cap is below 72 h, submit at the cap with --time and expect the
+  # large-subset attention cells to requeue from their checkpoints
+  # (checkpoint_every: 10 above).
+  #
+  # Peak measured RSS is 142.8 GB: submit to a ~256 GB partition
+  # (long-96core-shared), never a 128 GB one.
+  time: "72:00:00"
   cpus_per_task: 24
   array_throttle: 4
   eval_array_throttle: 4
@@ -350,6 +415,17 @@ cluster:
   # --xla_llvm_disable_expensive_passes trim in the train template is the
   # no-bigger-node lever there.
   # oom_retry_partition: long-96core-shared
+  # TIMEOUT auto-retry, ENGAGED. A cell that still hits the wall above is
+  # relaunched at this longer one and continues from its WS5 resume
+  # checkpoint; without the key the recovery is a manual `cluster resubmit`
+  # plus a separate re-eval, repeated across every large-subset attention
+  # cell. `timeout_retry_partition` stays UNSET for the reason v5 gives for
+  # leaving oom_retry_partition unset: the submit partition is already the
+  # largest reachable node, so a re-route buys nothing and the wall is the
+  # only lever. VERIFY 96 h against the queue cap with the same sinfo call
+  # as the wall above -- an over-cap retry is rejected days later, during
+  # recovery, rather than at submit.
+  timeout_retry_time: "96:00:00"
   # jax-0.7.0 PARITY env (matches the local dev/test stack the meta-GGA code was
   # tested on) -- a fresh, single-purpose conda-forge+pip env built from
   # environment-cluster-parity.yml. NOT the old polluted xcquinox env (jax 0.4.35).
@@ -362,11 +438,23 @@ cluster:
   # Compile-smoke gate: the preflight compiles the heaviest attention cell once
   # (n_steps=1) on its exclusive node before the 341-task array; a host-OOM
   # there blocks the array via the afterok dep -- one cheap failure instead of
-  # hundreds. The same preflight also sweeps every swept architecture's
+  # hundreds. With TWELVE attention architectures on this axis (v5 had one)
+  # "heaviest" is a choice rather than an identification, so the selector
+  # orders the attention cells by subset size, then depth x width, then
+  # descriptor feature columns, then name
+  # (`_preflight._select_smoke_cell`). Here that is deep_combined_attn at
+  # subset 26 -- 4x32 with four descriptor columns -- and not the
+  # descriptor-free deep_attn of the same shape a first-maximal pick returns.
+  # The same preflight also sweeps every swept architecture's
   # certificate with no exemption, which is the second thing that fails cheap.
   preflight_compile_smoke: true
   # 4 channels now, one of them 25-cycle (the coldstart diagnostic
   # runs all 25 cycles for every species): ~4x the 3-channel budget.
+  # NOT REQUESTED under `inline_eval: true` -- no eval array is submitted, so
+  # no job carries this wall; the eval runs inside the train task under
+  # `time` above. It is the eval BUDGET the train wall's arithmetic uses, and
+  # it is carried here so v5-vs-v6 reads the same key. Read it as an input to
+  # that derivation, never as headroom the train task has on its own.
   eval_time: "08:00:00"
   # 12 h covers pretraining AND the fidelity certificate, which now runs on
   # this node after the networks are written. Measured anchors: the
