@@ -33,7 +33,20 @@ For one architecture index it:
     within ``cfg.fidelity``. The certificate is computed here, on this node,
     where the checkpoint is hot and the run identity is available, so the
     train array's ``afterok`` dependency blocks on an uncertified
-    architecture without a further job kind. The verdict is then read back
+    architecture without a further job kind. A second ``python -m`` line in
+    ``templates/pretrain.sbatch.tmpl`` would pay the JAX and PySCF import a
+    second time and would need failure semantics of its own to make that
+    dependency block, and a separate SLURM job kind would add a dependency
+    edge, a submission record and a log family for one function call; the
+    template therefore carries exactly one invocation, which
+    ``test_pretrain_template_invokes_only_the_certifying_worker`` pins. What
+    the choice does cost is wall clock, which ``cluster.pretrain_time`` must
+    cover: about forty systems (the pools' free atoms, the DFS pretraining
+    molecules and H2O / N2 / CH4), each a reference SCF at the run's identity
+    plus the network and parent XC evaluations -- 39 systems in 32 s at
+    sto-3g / grid level 1, against a measured per-species precompute wall of
+    0.6 s (Li) to 5.2 s (CH4) at 6-311++G(3df,2pd) / grid level 3 and several
+    times that for the set's largest molecules. The verdict is then read back
     off the written certificate through ``fidelity.gate_certificate`` -- the
     same predicate the train task and the preflight apply -- so this job's
     exit code and their decisions come from one statement and one

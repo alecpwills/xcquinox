@@ -421,6 +421,29 @@ def test_pretrain_template_is_valid_string_template():
     assert isinstance(tmpl.template, str)
 
 
+def test_pretrain_template_invokes_only_the_certifying_worker():
+    """The certificate runs INSIDE ``_pretrain``, not as a second command.
+
+    ``_pretrain.main`` certifies the checkpoint it has just written, on the
+    node that holds it, at the run's identity, and folds the verdict into
+    THIS job's exit code -- which is what the train array's ``afterok``
+    dependency already reads. A second ``python -m`` line in this template
+    would pay the JAX / PySCF import a second time, would need failure
+    semantics of its own to make ``set -e`` block that dependency, and would
+    still land on the same node against the same wall clock; a separate job
+    kind would add a dependency edge, a submission record and a log family
+    for one function call. The template therefore carries exactly one
+    invocation, and this pins it.
+    """
+    text = _template_text()
+    invocations = [ln.strip() for ln in text.splitlines()
+                   if ln.strip().startswith("python -m")]
+    assert invocations == [
+        "python -m xcquinox.alec.cluster._pretrain "
+        "${RUN_DIR} $${SLURM_ARRAY_TASK_ID}"
+    ]
+
+
 def test_pretrain_arch_polarized_when_flag_set(tmp_path, monkeypatch):
     """The pretrain stage rebuilds its arch spin-polarization-aware when the run
     config sets use_polarized_correlation, so the pretrained checkpoint matches
