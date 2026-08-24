@@ -14,8 +14,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import plot_pretraining_curves as ppc  # noqa: E402
 
 
-def _make_run(tmp_path, archs=("deep_3x16", "deep_cusp_3x16"), n=200):
-    """Write a minimal <run>/pretrain/<arch>/ tree with decaying loss arrays."""
+def _make_run(tmp_path, archs=("deep_3x16", "deep_cusp_3x16"), n=200,
+              requested=None):
+    """Write a minimal <run>/pretrain/<arch>/ tree with decaying loss arrays.
+
+    ``requested`` is the schedule the metadata claims; ``n`` is the number of
+    steps the curves record. They differ for a run that stopped early on its
+    held-out-system validation.
+    """
+    requested = n if requested is None else int(requested)
     pdir = tmp_path / "pretrain"
     for k, arch in enumerate(archs):
         adir = pdir / arch
@@ -26,7 +33,8 @@ def _make_run(tmp_path, archs=("deep_3x16", "deep_cusp_3x16"), n=200):
         np.save(adir / "losses_x.npy", lx)
         np.save(adir / "losses_c.npy", lc)
         (adir / "pretrain_metadata.json").write_text(json.dumps({
-            "arch_name": arch, "pretrain_steps": n,
+            "arch_name": arch, "pretrain_steps": requested,
+            "pretrain_steps_requested": requested, "pretrain_steps_run": n,
             "final_loss_x": float(lx[-1]), "final_loss_c": float(lc[-1]),
         }))
     return tmp_path
@@ -55,6 +63,34 @@ def test_load_pretrain_curves_skips_arch_without_both_arrays(tmp_path):
     np.save(partial / "losses_x.npy", np.ones(10))
     curves = ppc.load_pretrain_curves(run)
     assert "deep_partial" not in curves
+
+
+def test_run_length_is_the_curve_not_the_requested_schedule(tmp_path):
+    """A run stopped early by its held-out-system validation writes fewer
+    loss values than ``pretrain_steps`` asked for. The documented invariant is
+    that the figure's step count comes from the CURVE: taking it from the
+    metadata would put a step count on the figure that the run never reached.
+    """
+    run = _make_run(tmp_path, n=37, requested=200)
+    curves = ppc.load_pretrain_curves(run)
+    taken, asked = ppc.run_length(curves)
+    assert (taken, asked) == (37, 200)
+    for d in curves.values():
+        assert d["x"].size == taken and d["c"].size == taken
+        assert d["meta"]["pretrain_steps"] == 200
+
+
+def test_suptitle_states_the_steps_taken_and_names_the_request(tmp_path):
+    early = ppc.load_pretrain_curves(_make_run(tmp_path / "early", n=37,
+                                               requested=200))
+    full = ppc.load_pretrain_curves(_make_run(tmp_path / "full", n=200))
+    title = ppc._suptitle(early, list(early), run_label="run_early")
+    assert "37 steps" in title
+    assert "200 requested" in title and "stopped early" in title
+    assert "200 steps" not in title
+    # A run that used its whole schedule says so plainly, with no aside.
+    plain = ppc._suptitle(full, list(full), run_label="run_full")
+    assert "200 steps" in plain and "requested" not in plain
 
 
 def test_plot_pretraining_curves_writes_png(tmp_path):

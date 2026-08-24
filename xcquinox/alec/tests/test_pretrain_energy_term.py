@@ -321,9 +321,11 @@ def test_run_pretrain_opens_the_scan_file_for_a_meta_gga_parent(
     directory) and records the SCAN parent. Before the parent was resolved
     ahead of the file name, the run opened the PBE name and failed for every
     non-PBE parent, the configuration every meta-GGA campaign uses."""
+    # The SCAN file and its sidecar manifest (``<npz>.manifest.json``) are the
+    # only things in the directory: no PBE file exists for the run to fall
+    # back to, so the SCAN file is the one it opened.
     assert sorted(os.listdir(tiny_scan_dir)) == [
-        "pretrain_data_scan.manifest.json", "pretrain_data_scan.npz"] or \
-        os.path.isfile(os.path.join(tiny_scan_dir, "pretrain_data_scan.npz"))
+        "pretrain_data_scan.npz", "pretrain_data_scan.npz.manifest.json"]
     arch = ArchitectureConfig.from_spec("t_mgga_scan_file", 2, 8,
                                         descriptors=["metagga"], meta_gga=True)
     spec = PretrainSpec(arch=arch, data_dir=tiny_scan_dir,
@@ -935,9 +937,9 @@ def test_run_pretrain_validation_holds_out_a_molecule_and_keeps_the_best(
     on_disk = json.load(open(os.path.join(ck, "pretrain_metadata.json")))
     assert on_disk["validation"]["systems"] == v["systems"]
     assert (ck / "xnet.eqx").read_bytes() == \
-        (ck / "xnet" / "xc.eqx.best").read_bytes()
+        (ck / "xnet" / "xnet_val_best.eqx").read_bytes()
     assert (ck / "cnet.eqx").read_bytes() == \
-        (ck / "cnet" / "xc.eqx.best").read_bytes()
+        (ck / "cnet" / "cnet_val_best.eqx").read_bytes()
     assert len(np.load(ck / "losses_x.npy")) == v["x"]["steps_run"]
 
 
@@ -967,17 +969,19 @@ def test_run_pretrain_validates_without_the_energy_term(molecule_dir,
         assert rec["best_value"] == min(h[3] for h in rec["history"])
 
 
-def _write_mesh_system_npz(directory, share, *, n_mesh=4):
+def _write_mesh_system_npz(directory, share, *, n_mesh=4, weights=None):
     """Synthetic meta-GGA rows carrying a two-molecule system table.
 
     Three rows per system, the per-system targets built from the stored
     columns by the generator's own expression ``sum_i w_i e_LDA_i (1 + F_i)``,
     so a network that reproduced the stored enhancement factors would carry
-    no energy error.
+    no energy error. ``weights`` overrides the quadrature column; a column of
+    zeros is the degenerate file whose integration weights sum to zero.
     """
     seg = np.array([0, 0, 0, 1, 1, 1], dtype=np.int32)
     n_atomic = int(seg.shape[0])
-    weights = np.linspace(0.5, 1.5, n_atomic)
+    weights = (np.linspace(0.5, 1.5, n_atomic) if weights is None
+               else np.asarray(weights, dtype=np.float64))
     e_lda_x = -np.linspace(0.5, 1.5, n_atomic)
     e_lda_c = -np.linspace(0.05, 0.15, n_atomic)
     fx, fc = np.full(n_atomic, 0.1), np.full(n_atomic, -0.2)
@@ -1039,3 +1043,425 @@ def test_run_pretrain_validates_a_mesh_carrying_meta_gga_run(tmp_path):
         assert rec["steps_run"] == 3 and 1 <= rec["best_step"] <= 3
     assert md["pretrain_mesh"] is True
     assert md["mesh_loss_share_x"] == pytest.approx(share, rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# The stop point, the refusals, and what the record says about the artifact
+# ---------------------------------------------------------------------------
+
+def _worsening_run(*, every, patience, n_steps=40, lr=0.1, offset=0.0):
+    """A fit whose held-out score worsens at every validation.
+
+    The training rows want the offset at 1 and the held-out rows want it at 0,
+    so plain gradient descent walks the offset monotonically from 0 towards 1
+    and the held-out squared residual, ``offset^2``, rises at every score. The
+    best validation is therefore the FIRST one and every later one is stale,
+    which is the configuration the stop rule is stated for.
+    """
+    import optax
+    from xcquinox.alec.pretrain import _train_pretrain_network
+    desc = jnp.stack([jnp.zeros(2), jnp.ones(2)], axis=1)
+    loss = _PretrainLoss(weights=jnp.ones(2))
+    return _train_pretrain_network(
+        _EchoModel(jnp.asarray(offset)), optax.sgd(lr), loss, desc,
+        jnp.asarray([1.0, 1.0]), loss, desc, jnp.asarray([0.0, 0.0]),
+        n_steps=n_steps, validate_every=every, patience=patience,
+        monitor="pointwise")
+
+
+@pytest.mark.parametrize("every,patience", [(1, 1), (1, 2), (2, 3), (3, 2)])
+def test_the_stop_lands_exactly_at_best_step_plus_patience_intervals(
+        every, patience):
+    """``patience`` validations WITHOUT an improvement stop the run, so the
+    last optimizer step taken is ``best_step + patience * validate_every``.
+    The arithmetic is the whole content of the criterion: one validation of
+    drift is ``validate_every`` optimizer steps per network per architecture,
+    50 of them at the production interval, and ``steps_run`` would then
+    disagree with the rule the record is read by."""
+    _m, losses, rec = _worsening_run(every=every, patience=patience)
+    assert rec["stopped_early"] is True
+    # The first validation is the best one, so the rule is checkable against
+    # a step this test knows independently of the record.
+    assert rec["best_step"] == every
+    assert rec["steps_run"] == rec["best_step"] + patience * every
+    assert len(losses) == rec["steps_run"]
+    assert len(rec["history"]) == 1 + patience
+    scores = [h[3] for h in rec["history"]]
+    assert scores == sorted(scores) and scores[0] == rec["best_value"]
+
+
+def _write_system_npz(directory, *, natoms, segment=None, n_systems=None,
+                      weights=None, fx=None, fc=None):
+    """A GGA pretrain file with a stated system table.
+
+    ``natoms`` is written verbatim, so a table of a length the energy tables
+    cannot serve is expressible; ``n_systems`` fixes the length of the energy
+    tables independently of the row index, so a system owning no row is too.
+    """
+    seg = (np.array([0, 0, 0, 1, 1, 1], dtype=np.int32) if segment is None
+           else np.asarray(segment, dtype=np.int32))
+    n = int(seg.shape[0])
+    n_sys = int(n_systems) if n_systems is not None else int(seg.max()) + 1
+    w = np.linspace(0.5, 1.5, n) if weights is None else np.asarray(weights,
+                                                                    float)
+    e_lda_x = -np.linspace(0.5, 1.5, n)
+    e_lda_c = -np.linspace(0.05, 0.15, n)
+    fx = np.full(n, 0.1) if fx is None else np.asarray(fx, float)
+    fc = np.full(n, -0.2) if fc is None else np.asarray(fc, float)
+    fx_s, fc_s = np.full(n, 0.3), np.full(n, -0.4)
+
+    def targets(lda, factor):
+        return np.array([float(np.sum(w[seg == s] * lda[seg == s]
+                                      * (1.0 + factor[seg == s])))
+                         for s in range(n_sys)])
+
+    np.savez(os.path.join(directory, "pretrain_data.npz"),
+             rho_all=np.linspace(0.1, 2.0, n),
+             sigma_all=np.linspace(0.0, 1.0, n),
+             Fx_all=fx, Fc_all=fc, Fx_scan_all=fx_s, Fc_scan_all=fc_s,
+             weights_all=w, e_lda_x_all=e_lda_x, e_lda_c_all=e_lda_c,
+             system_all=seg,
+             system_natoms=np.asarray(natoms, dtype=np.int32),
+             e_x_parent_sys=targets(e_lda_x, fx),
+             e_c_parent_sys=targets(e_lda_c, fc),
+             e_x_parent_scan_sys=targets(e_lda_x, fx_s),
+             e_c_parent_scan_sys=targets(e_lda_c, fc_s))
+    return n
+
+
+def test_run_pretrain_refuses_a_system_table_the_energy_tables_cannot_serve(
+        tmp_path):
+    """The split renumbers the energy term's segment array through a table of
+    its own length, and JAX CLAMPS an out-of-range gather instead of raising,
+    so a table longer than the energy tables would silently fold one system's
+    rows onto another system's energy rather than fail."""
+    remap = jnp.asarray([0, 1, 2], dtype=jnp.int32)
+    assert list(np.asarray(remap[jnp.asarray([0, 5, 99])])) == [0, 2, 2]
+    d = tmp_path / "wrong_table"
+    d.mkdir()
+    _write_system_npz(str(d), natoms=(2, 3, 2))  # 3 systems listed, 2 energies
+    with pytest.raises(ValueError, match="lists 3 systems"):
+        run_pretrain(_spec(tmp_path, str(d), validation_fraction=0.5))
+
+
+def test_run_pretrain_refuses_a_split_whose_side_owns_no_row(tmp_path):
+    """A held-out system that contributes no row leaves the monitor a
+    constant: the integration-weighted loss of an empty row set is 0.0 (the
+    empty sum over the +1e-12 floor) and the unweighted one is nan, so no
+    validation ever improves and the run keeps its first network. No
+    generated file can reach that state, which is why it fails loudly."""
+    d = tmp_path / "empty_side"
+    d.mkdir()
+    # Two systems in both tables; every row belongs to system 0, so holding
+    # out system 1 -- which seed 3 does over two eligible systems -- leaves
+    # the held-out side without a row.
+    _write_system_npz(str(d), natoms=(2, 3), n_systems=2,
+                      segment=[0, 0, 0, 0, 0, 0])
+    with pytest.raises(ValueError, match="owns no row"):
+        run_pretrain(_spec(tmp_path, str(d), validation_fraction=0.5,
+                           validation_seed=3))
+
+
+def test_run_pretrain_refuses_a_diverged_fit_and_writes_no_checkpoint(
+        tmp_path):
+    """Every validation non-finite means the best-model bookkeeping never
+    improved on its ``inf`` seed, so the network the loop hands back is the
+    untrained initialization. Writing that as ``xnet.eqx`` would put a random
+    network behind the training stage with nothing but the Section 3.3
+    certificate left to catch it, so the run fails by name instead."""
+    from xcquinox.alec.pretrain import PretrainDiverged
+    d = tmp_path / "diverged_x"
+    d.mkdir()
+    n = _write_system_npz(str(d), natoms=(2, 3))
+    # A non-finite exchange target on every row: the loss is nan on both
+    # sides of any split, whichever system is held out.
+    with np.load(os.path.join(str(d), "pretrain_data.npz")) as raw:
+        cols = {k: np.array(raw[k]) for k in raw.files}
+    cols["Fx_all"] = np.full(n, np.nan)
+    np.savez(os.path.join(str(d), "pretrain_data.npz"), **cols)
+    ck = tmp_path / "ck"
+    with pytest.raises(PretrainDiverged,
+                       match="no finite validation value was recorded"):
+        run_pretrain(_spec(tmp_path, str(d), validation_fraction=0.5,
+                           validation_seed=3, validate_every=1, patience=2))
+    assert not (ck / "xnet.eqx").exists()
+    assert not (ck / "cnet.eqx").exists()
+    failure = json.loads((ck / "pretrain_failed.json").read_text())
+    assert failure["network"] == "xnet"
+    assert failure["n_validations"] == 2
+    assert failure["arch_name"] == "t_energy"
+    # The record of a diverged run is itself strict JSON: its history is all
+    # non-finite, which is exactly the case a bare json.dump would spell NaN.
+    assert "NaN" not in (ck / "pretrain_failed.json").read_text()
+    assert failure["history"][0][1] is None
+
+
+def test_a_diverged_correlation_fit_takes_the_exchange_checkpoint_with_it(
+        tmp_path):
+    """``xnet.eqx`` is written before the cnet phase so a job that dies there
+    keeps it. A DIVERGED cnet is not that case -- the run has no product --
+    so the half-pair is removed with the refusal."""
+    from xcquinox.alec.pretrain import PretrainDiverged
+    d = tmp_path / "diverged_c"
+    d.mkdir()
+    n = _write_system_npz(str(d), natoms=(2, 3))
+    with np.load(os.path.join(str(d), "pretrain_data.npz")) as raw:
+        cols = {k: np.array(raw[k]) for k in raw.files}
+    cols["Fc_all"] = np.full(n, np.nan)
+    np.savez(os.path.join(str(d), "pretrain_data.npz"), **cols)
+    ck = tmp_path / "ck"
+    with pytest.raises(PretrainDiverged, match="cnet"):
+        run_pretrain(_spec(tmp_path, str(d), validation_fraction=0.5,
+                           validation_seed=3, validate_every=1, patience=2))
+    assert not (ck / "xnet.eqx").exists()
+    assert not (ck / "cnet.eqx").exists()
+    assert json.loads((ck / "pretrain_failed.json").read_text())["network"] \
+        == "cnet"
+
+
+# ---------------------------------------------------------------------------
+# What the metadata says: strict JSON, the saved network, the run length
+# ---------------------------------------------------------------------------
+
+def _refuse_json_constants(token):
+    raise AssertionError(f"non-RFC-8259 token {token!r} in the metadata")
+
+
+def test_metadata_is_written_as_strict_json_with_null_for_non_finite(
+        tmp_path):
+    """RFC 8259 has no NaN or Infinity token. Python writes them anyway
+    unless told not to, and a file carrying them is refused by every strict
+    parser; the documented encoding here is ``null``."""
+    from xcquinox.alec.pretrain import _json_safe, _write_metadata
+    record = {"pos_inf": float("inf"), "neg_inf": float("-inf"),
+              "nan": float("nan"), "finite": 1.5, "flag": True,
+              "count": np.int64(3), "name": "x", "absent": None,
+              "nested": {"h": [1.0, float("nan"), (2, float("inf"))]}}
+    path = tmp_path / "md.json"
+    _write_metadata(str(path), record)
+    text = path.read_text()
+    assert "NaN" not in text and "Infinity" not in text
+    got = json.loads(text, parse_constant=_refuse_json_constants)
+    assert got["pos_inf"] is None and got["neg_inf"] is None
+    assert got["nan"] is None
+    assert got["nested"]["h"] == [1.0, None, [2, None]]
+    # Finite values are untouched, including the types json has no float for.
+    assert got["finite"] == 1.5 and got["flag"] is True
+    assert got["count"] == 3 and got["name"] == "x" and got["absent"] is None
+    assert _json_safe(0.0) == 0.0 and _json_safe(-1.25) == -1.25
+
+
+def test_a_non_finite_metadata_value_reaches_the_file_as_null(tmp_path):
+    """A quadrature column of zeros leaves the integration weights summing to
+    zero, so the mesh's share of them is undefined and the record says so."""
+    d = tmp_path / "zero_weights"
+    d.mkdir()
+    n_atomic, n_mesh = _write_mesh_system_npz(str(d), 0.3,
+                                              weights=np.zeros(6))
+    assert (n_atomic, n_mesh) == (6, 4)
+    arch = ArchitectureConfig.from_spec("t_zero_w", 2, 8,
+                                        descriptors=["metagga"],
+                                        meta_gga=True)
+    md = run_pretrain(PretrainSpec(
+        arch=arch, data_dir=str(d), checkpoint_dir=str(d / "ck"), n_steps=2,
+        seed=0, loss_weighting="integration"))
+    assert not np.isfinite(md["mesh_loss_share_x"])
+    text = (d / "ck" / "pretrain_metadata.json").read_text()
+    assert "NaN" not in text and "Infinity" not in text
+    on_disk = json.loads(text, parse_constant=_refuse_json_constants)
+    assert on_disk["mesh_loss_share_x"] is None
+    assert on_disk["mesh_loss_share_c"] is None
+    assert on_disk["mesh_weight_fraction"] == pytest.approx(0.3)
+
+
+def test_final_loss_describes_the_saved_network_not_the_last_step(tmp_path):
+    """``final_loss_x`` is the objective of the network on disk. The last
+    entry of the training trajectory is the loss BEFORE the final update, so
+    it describes a different network even when no early stop occurred; it is
+    recorded beside it as ``last_step_loss_x``."""
+    from xcquinox.alec.networks import create_network_pair
+    d = tmp_path / "saved_loss"
+    d.mkdir()
+    n = _write_system_npz(str(d), natoms=(2, 3))
+    arch = ArchitectureConfig.from_spec("t_saved", 2, 8)
+    ck = tmp_path / "ck_saved"
+    md = run_pretrain(PretrainSpec(
+        arch=arch, data_dir=str(d), checkpoint_dir=str(ck), n_steps=4, seed=0,
+        loss_weighting="unweighted"))
+    losses_x = np.load(ck / "losses_x.npy")
+    losses_c = np.load(ck / "losses_c.npy")
+    assert md["last_step_loss_x"] == float(losses_x[-1])
+    assert md["last_step_loss_c"] == float(losses_c[-1])
+    # Reconstructed independently: the plain mean of squared residuals of the
+    # DESERIALIZED network on the same rows.
+    with np.load(os.path.join(str(d), "pretrain_data.npz")) as raw:
+        data = {k: jnp.asarray(raw[k]) for k in raw.files}
+    x_skel, c_skel = create_network_pair(arch, seed=0)
+    xnet = eqx.tree_deserialise_leaves(str(ck / "xnet.eqx"), x_skel)
+    cnet = eqx.tree_deserialise_leaves(str(ck / "cnet.eqx"), c_skel)
+    desc = _assemble_pretrain_descriptors(arch, data)
+    desc_c = _assemble_pretrain_descriptors(arch, data, for_cnet=True)
+    got_x = float(jnp.mean(
+        (jax.vmap(xnet)(desc).squeeze() - 1.0 - data["Fx_all"]) ** 2))
+    got_c = float(jnp.mean(
+        (jax.vmap(cnet)(desc_c).squeeze() - 1.0 - data["Fc_all"]) ** 2))
+    assert md["final_loss_x"] == pytest.approx(got_x, rel=1e-12)
+    assert md["final_loss_c"] == pytest.approx(got_c, rel=1e-12)
+    # The two keys are different numbers: the fit moved on the last step.
+    assert md["final_loss_x"] != md["last_step_loss_x"]
+    assert md["final_loss_c"] != md["last_step_loss_c"]
+    assert n == 6
+
+
+def test_the_record_states_the_steps_requested_and_the_steps_run(
+        molecule_dir, tmp_path):
+    """An early stop makes the requested schedule and the run length differ.
+    ``pretrain_steps`` keeps the requested value, which is what the run
+    validator compares against the configuration, and the length the loss
+    curves actually hold is recorded beside it."""
+    spec = PretrainSpec(arch=ArchitectureConfig.from_spec("t_steps", 2, 8),
+                        data_dir=molecule_dir,
+                        checkpoint_dir=str(tmp_path / "ck_steps"), n_steps=12,
+                        seed=0, loss_weighting="integration",
+                        lr_start=3e-1, lr_end=3e-1,
+                        energy_term_weight=1.0, validation_fraction=0.5,
+                        validation_seed=3, validate_every=1, patience=2)
+    md = run_pretrain(spec)
+    assert md["pretrain_steps"] == 12
+    assert md["pretrain_steps_requested"] == 12
+    ck = tmp_path / "ck_steps"
+    n_x = len(np.load(ck / "losses_x.npy"))
+    n_c = len(np.load(ck / "losses_c.npy"))
+    assert md["pretrain_steps_run"] == max(n_x, n_c)
+    assert md["validation"]["x"]["stopped_early"] is True
+    assert md["pretrain_steps_run"] < md["pretrain_steps_requested"]
+    # The saved network is the best-validation one, several steps behind the
+    # last one stepped to, so the two loss keys cannot be the same number.
+    assert md["validation"]["x"]["best_step"] < md["validation"]["x"]["steps_run"]
+    assert md["final_loss_x"] != md["last_step_loss_x"]
+    # The transient best-so-far snapshot carries a name no ``xc.eqx.<step>``
+    # sort sees: two legacy trajectory scripts list this directory and key on
+    # ``int(name.split('.')[-1])`` over names containing 'xc.eqx'.
+    assert sorted(p.name for p in (ck / "xnet").iterdir()) \
+        == ["xnet_val_best.eqx"]
+    assert sorted(p.name for p in (ck / "cnet").iterdir()) \
+        == ["cnet_val_best.eqx"]
+    for sub in ("xnet", "cnet"):
+        assert [p.name for p in (ck / sub).iterdir() if "xc.eqx" in p.name] \
+            == []
+
+
+def test_the_mesh_banner_prints_the_measured_share(tmp_path, capsys):
+    """Under the unweighted reduction every row counts once, so the mesh's
+    share of the loss is a ROW COUNT and not the share the data was built at.
+    The banner prints the quantity the metadata records, off the same weight
+    vector, so the log and the record cannot disagree."""
+    d = tmp_path / "mesh_banner"
+    d.mkdir()
+    n_atomic, n_mesh = _write_mesh_system_npz(str(d), 0.3)
+    arch = ArchitectureConfig.from_spec("t_banner", 2, 8,
+                                        descriptors=["metagga"],
+                                        meta_gga=True)
+    md = run_pretrain(PretrainSpec(
+        arch=arch, data_dir=str(d), checkpoint_dir=str(d / "ck"), n_steps=2,
+        seed=0, loss_weighting="unweighted"))
+    row_share = n_mesh / float(n_atomic + n_mesh)
+    assert md["mesh_weight_fraction"] == pytest.approx(0.3)
+    assert md["mesh_loss_share_x"] == pytest.approx(row_share, rel=1e-12)
+    printed = capsys.readouterr().out
+    banner = [ln for ln in printed.splitlines()
+              if "mesh share of each channel" in ln]
+    assert len(banner) == 1, printed
+    assert f"x {md['mesh_loss_share_x']:.4f}" in banner[0]
+    assert f"c {md['mesh_loss_share_c']:.4f}" in banner[0]
+    # The share the data was built at is not the share this run felt.
+    assert f"x {0.3:.4f}" not in banner[0]
+
+
+# ---------------------------------------------------------------------------
+# The energy fidelity of the SAVED network, at any weight
+# ---------------------------------------------------------------------------
+
+def _reconstruct_saved_energy(arch, data_dir, checkpoint_dir, *, seed=0):
+    """``(term_x, term_c, delta_x, delta_c)`` rebuilt from the file and the
+    checkpoints, through ``_PretrainLoss.parts`` on the deserialized nets."""
+    from xcquinox.alec.networks import create_network_pair
+    with np.load(os.path.join(data_dir, "pretrain_data.npz")) as raw:
+        data = {k: jnp.asarray(raw[k]) for k in raw.files}
+    suffix = "_x" if "rho_x" in data else "_all"
+    x_skel, c_skel = create_network_pair(arch, seed=seed)
+    xnet = eqx.tree_deserialise_leaves(
+        os.path.join(checkpoint_dir, "xnet.eqx"), x_skel)
+    cnet = eqx.tree_deserialise_leaves(
+        os.path.join(checkpoint_dir, "cnet.eqx"), c_skel)
+    desc_x = _assemble_pretrain_descriptors(arch, data, suffix=suffix)
+    desc_c = _assemble_pretrain_descriptors(arch, data, for_cnet=True)
+    out = []
+    for net, desc, wk, lk, sk, tk, ref in (
+            (xnet, desc_x, "weights" + suffix, "e_lda_x" + suffix,
+             "system" + suffix, "e_x_parent_sys", data["Fx" + suffix]),
+            (cnet, desc_c, "weights_all", "e_lda_c_all", "system_all",
+             "e_c_parent_sys", data["Fc_all"])):
+        rw, seg, tgt, ns = _energy_term_inputs(
+            data, weight_key=wk, lda_key=lk, segment_key=sk, target_key=tk,
+            n_mesh=0)
+        loss = _PretrainLoss(energy_row_weight=rw, energy_segment=seg,
+                             energy_target=tgt, n_systems=ns,
+                             energy_weight=0.0)
+        out.append((float(loss.parts(net, desc, ref)[1]),
+                    np.asarray(loss.system_energy_errors(net, desc))))
+    (term_x, delta_x), (term_c, delta_c) = out
+    return term_x, term_c, delta_x, delta_c
+
+
+@pytest.mark.parametrize("weight", (0.0, 1.0))
+def test_the_energy_term_recorded_is_the_saved_network_at_any_weight(
+        molecule_dir, tmp_path, weight):
+    """At weight zero the objective SHORT-CIRCUITS the energy term -- that is
+    what keeps its trajectory byte-identical to the pre-protocol one -- so a
+    metadata value taken from the fitted loss is identically 0.0 there and
+    reads as a perfect fit against a network whose per-system error is not
+    zero. The record therefore measures the term on the SAVED network
+    whatever the weight was, and states the certificate's own quantity, the
+    per-system maximum, in mHa."""
+    ck = tmp_path / f"ck_w{weight}"
+    arch = ArchitectureConfig.from_spec("t_energy_any", 2, 8)
+    md = run_pretrain(PretrainSpec(
+        arch=arch, data_dir=molecule_dir, checkpoint_dir=str(ck), n_steps=2,
+        seed=0, loss_weighting="integration", energy_term_weight=weight))
+    assert md["energy_term_weight"] == weight
+    assert md["energy_term_x_final"] > 0.0
+    assert md["energy_term_c_final"] > 0.0
+    term_x, term_c, delta_x, delta_c = _reconstruct_saved_energy(
+        arch, molecule_dir, str(ck))
+    assert md["energy_term_x_final"] == pytest.approx(term_x, rel=1e-12)
+    assert md["energy_term_c_final"] == pytest.approx(term_c, rel=1e-12)
+    assert md["energy_term_max_abs_dE_mHa"] == pytest.approx(
+        1000.0 * float(np.max(np.abs(delta_x + delta_c))), rel=1e-12)
+    assert md["energy_term_rms_dE_mHa"] == pytest.approx(
+        1000.0 * float(np.sqrt(term_x + term_c)), rel=1e-12)
+    # The maximum is a real per-system number, not a mean dressed up as one.
+    assert md["energy_term_max_abs_dE_mHa"] > 0.0
+    on_disk = json.loads((ck / "pretrain_metadata.json").read_text(),
+                         parse_constant=_refuse_json_constants)
+    assert on_disk["energy_term_max_abs_dE_mHa"] == \
+        md["energy_term_max_abs_dE_mHa"]
+
+
+def test_a_file_without_an_energy_table_records_null_not_zero(tmp_path):
+    """A file predating the per-system energy tables cannot say what the
+    saved network's energy error is; the record says so rather than
+    reporting a zero it did not measure."""
+    d = tmp_path / "no_energy_table"
+    d.mkdir()
+    np.savez(os.path.join(str(d), "pretrain_data.npz"),
+             rho_all=np.linspace(0.1, 2.0, 4),
+             sigma_all=np.linspace(0.0, 1.0, 4),
+             Fx_all=np.zeros(4), Fc_all=np.zeros(4),
+             Fx_scan_all=np.zeros(4), Fc_scan_all=np.zeros(4),
+             weights_all=np.ones(4))
+    md = run_pretrain(_spec(tmp_path, str(d)))
+    assert md["energy_term_x_final"] is None
+    assert md["energy_term_c_final"] is None
+    assert md["energy_term_max_abs_dE_mHa"] is None
+    assert md["energy_term_rms_dE_mHa"] is None

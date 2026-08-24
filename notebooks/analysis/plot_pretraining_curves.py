@@ -14,9 +14,14 @@ their smooth convergence confirms the nets pretrained fine (so the failure is in
 the SCF-training stage, not the pretrain).
 
 Semantics (see xcquinox/alec/pretrain.py): X-net and C-net are pretrained
-separately; each array holds one MSE-loss value per pretraining step, so the
-x-axis is the step index ``0 .. pretrain_steps-1`` and
-``len(losses_x) == pretrain_metadata["pretrain_steps"]``.
+separately; each array holds one MSE-loss value per pretraining step TAKEN, so
+the x-axis is the step index ``0 .. len(losses_x) - 1``. The run length is read
+off the curve, never off ``pretrain_metadata["pretrain_steps"]``: that key is
+the REQUESTED schedule, and held-out-system validation stops a run at
+``best_step + patience * validate_every``, at which point the curve is shorter
+than the request (the metadata states both as ``pretrain_steps_requested`` and
+``pretrain_steps_run``). The two nets can also stop at different steps, so the
+figure's step count is the longest curve drawn.
 
 Usage:
     python notebooks/analysis/plot_pretraining_curves.py <run_dir> [-o out.png]
@@ -108,6 +113,33 @@ def load_pretrain_curves(run_dir):
     return out
 
 
+def run_length(curves):
+    """``(steps_taken, steps_requested_or_None)`` for a set of curves.
+
+    ``steps_taken`` is the longest loss array drawn -- the run length as the
+    data records it. ``steps_requested`` is the largest ``pretrain_steps`` any
+    metadata carries, which is the REQUESTED schedule; the two differ when a
+    run stopped early on its held-out-system validation, and the curve is then
+    the shorter and the truthful one.
+    """
+    taken = max(int(max(c["x"].size, c["c"].size)) for c in curves.values())
+    asked = [(c.get("meta") or {}).get("pretrain_steps") for c in curves.values()]
+    asked = [int(v) for v in asked if isinstance(v, (int, float))]
+    return taken, (max(asked) if asked else None)
+
+
+def _suptitle(curves, archs, run_label=""):
+    """The figure's title: the steps TAKEN, with the request named when the
+    two disagree, so an early-stopped run cannot be read as a full one."""
+    taken, asked = run_length(curves)
+    sup = f"Pretraining loss curves -- {len(archs)} archs, {taken} steps"
+    if asked is not None and asked != taken:
+        sup += f" (of {asked} requested; stopped early)"
+    if run_label:
+        sup += f"\n{run_label}"
+    return sup
+
+
 def plot_pretraining_curves(curves, out_path, run_label=""):
     """Render the two-panel (X-net | C-net) log-y pretraining-loss figure.
 
@@ -134,14 +166,7 @@ def plot_pretraining_curves(curves, out_path, run_label=""):
         ax.set_title(title)
         ax.grid(True, which="both", alpha=0.25)
         ax.legend(fontsize=7, framealpha=0.9)
-    any_meta = next((c["meta"] for c in curves.values() if c.get("meta")), {})
-    nsteps = any_meta.get("pretrain_steps")
-    if nsteps is None:
-        nsteps = max(c["x"].size for c in curves.values())
-    sup = f"Pretraining loss curves -- {len(archs)} archs, {nsteps} steps"
-    if run_label:
-        sup += f"\n{run_label}"
-    fig.suptitle(sup, fontsize=11)
+    fig.suptitle(_suptitle(curves, archs, run_label), fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

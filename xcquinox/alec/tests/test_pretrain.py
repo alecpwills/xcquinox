@@ -816,9 +816,13 @@ def test_run_pretrain_separates_checkpoints_and_saves_xnet_early(tmp_path, monke
     )
 
     # Stub the compute-heavy seams.
+    # The stub carries the assembler's full keyword signature, block selector
+    # included: run_pretrain names the block on every call, so a stub that
+    # accepted only ``for_cnet`` would force the caller to keep a branch whose
+    # two arms agree at the default.
     monkeypatch.setattr(
         ptmod, "_assemble_pretrain_descriptors",
-        lambda arch, data, for_cnet=False: jnp.zeros((4, 1)),
+        lambda arch, data, for_cnet=False, suffix="_all": jnp.zeros((4, 1)),
     )
     k1, k2 = jax.random.split(jax.random.PRNGKey(0))
     fake_x = eqx.nn.Linear(1, 1, key=k1)

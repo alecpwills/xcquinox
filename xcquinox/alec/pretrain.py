@@ -30,6 +30,61 @@ from xcquinox.utils import lda_x, pw92c_unpolarized_scalar
 _RHO_FLOOR_INTEGRATION = 1e-18
 
 
+class PretrainDiverged(RuntimeError):
+    """Raised when a validated pretraining recorded no finite validation score.
+
+    Every score being non-finite means the fit left the region where the
+    objective is defined -- a learning rate above the stability bound, or a
+    target column carrying a non-finite entry. The best-model bookkeeping
+    starts at ``inf`` and a non-finite score never improves on it, so the
+    network such a loop would hand back is the UNTRAINED initialization,
+    carrying ``best_step`` 0 in a record that otherwise looks ordinary.
+    Serializing it would put a random network behind the training stage's
+    ``xnet.eqx``, where only the Section 3.3 certificate could still catch it,
+    so :func:`run_pretrain` raises instead and leaves no final checkpoint of
+    its own; the scores it did see are written to ``pretrain_failed.json``.
+    """
+
+
+def _json_safe(value):
+    """A JSON-serializable copy of ``value`` with non-finite floats as ``None``.
+
+    RFC 8259 has no ``NaN`` or ``Infinity`` token. Python's ``json`` emits them
+    anyway unless ``allow_nan=False``, and a file carrying them is refused by
+    any strict parser (and by most non-Python ones). Every metadata field that
+    can be non-finite -- a validation score, a loss on an empty trajectory, a
+    mesh share read off a zero weight vector -- is therefore written as
+    ``null``, which is the documented encoding of "not a number here" for this
+    record: a reader wanting numpy's convention maps ``None`` back to ``nan``.
+    """
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (float, np.floating)):
+        v = float(value)
+        return v if np.isfinite(v) else None
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    return value
+
+
+def _write_metadata(path, record):
+    """Write one metadata record as strict RFC 8259 JSON.
+
+    ``allow_nan=False`` is the enforcement: :func:`_json_safe` has already
+    replaced every non-finite float with ``null``, so the flag can only fire
+    on a value that helper does not know about, which is a defect rather than
+    a datum.
+    """
+    with open(path, "w") as f:
+        json.dump(_json_safe(record), f, indent=2, allow_nan=False)
+
+
 def _compute_integration_weights(rho, grid_weights=None):
     """Return ``(w_x, w_c)`` integration weights for pretraining.
 
@@ -132,6 +187,30 @@ class _PretrainLoss(eqx.Module):
     energy_weight: float = eqx.field(static=True, default=0.0)
     n_systems: int = eqx.field(static=True, default=0)
 
+    def _system_energies(self, pred):
+        """The network's per-system XC energy from its row-wise output ``pred``.
+
+        The sink segment ``n_systems`` collects the rows belonging to no
+        system and is dropped.
+        """
+        return jax.ops.segment_sum(
+            self.energy_row_weight * pred, self.energy_segment,
+            num_segments=self.n_systems + 1)[:self.n_systems]
+
+    def system_energy_errors(self, model, descriptors):
+        """Per-system ``E_xc^NN - E_xc^parent`` in Hartree, or ``None``.
+
+        The signed per-system errors behind the energy term, for a record that
+        must state a MAXIMUM rather than a mean: the Section 3.3 certificate
+        bounds ``max_s |dE_xc,s|``, and a mean of squares cannot be inverted
+        into one. Kept separate from :meth:`parts` so the optimized path's
+        expression is untouched.
+        """
+        if self.energy_target is None:
+            return None
+        pred = jax.vmap(model)(descriptors).squeeze()
+        return self._system_energies(pred) - self.energy_target
+
     def parts(self, model, descriptors, ref_F):
         """``(pointwise, energy)`` -- the two terms, the second unweighted."""
         pred = jax.vmap(model)(descriptors).squeeze()
@@ -144,10 +223,7 @@ class _PretrainLoss(eqx.Module):
             pointwise = jnp.sum(w * residual_sq) / (jnp.sum(w) + 1e-12)
         if self.energy_target is None:
             return pointwise, jnp.zeros_like(pointwise)
-        e_nn = jax.ops.segment_sum(
-            self.energy_row_weight * pred, self.energy_segment,
-            num_segments=self.n_systems + 1)[:self.n_systems]
-        delta = e_nn - self.energy_target
+        delta = self._system_energies(pred) - self.energy_target
         return pointwise, jnp.sum(delta * delta) / self.n_systems
 
     def __call__(self, model, descriptors, ref_F):
@@ -183,6 +259,40 @@ def _energy_term_inputs(pretrain_data, *, weight_key, lda_key, segment_key,
         segment = jnp.concatenate(
             [segment, jnp.full(n_mesh, n_systems, dtype=jnp.int32)])
     return row_weight, segment, target, n_systems
+
+
+def _energy_column_keys(x_suffix, e_x_key, e_c_key):
+    """The pretrain-data columns one run's per-system energy term reads.
+
+    One definition serves both the refusal that fires when the term is asked
+    for and the columns are absent, and the post-training measurement, which
+    is made whatever the term's weight was: a run at weight zero still states
+    the energy fidelity of the network it saved.
+    """
+    return ("system_all", "weights_all", "e_lda_c_all",
+            "system" + x_suffix, "weights" + x_suffix, "e_lda_x" + x_suffix,
+            e_x_key, e_c_key)
+
+
+def _saved_network_energy_error(kwargs, model, descriptors, ref_F):
+    """``(term, per-system dE)`` for a SAVED network, or ``(None, None)``.
+
+    ``kwargs`` is the energy term's inputs; the weight it carries is
+    irrelevant here because :meth:`_PretrainLoss.parts` returns the term
+    unweighted. Measured on the network that was written to disk rather than
+    read off the training loss, so the record describes the artifact even
+    where the objective never evaluated the term (at weight zero the loss
+    short-circuits, which is what keeps that trajectory byte-identical to the
+    pre-protocol one, and a metadata term of 0.0 there would read as a
+    perfect fit).
+    """
+    if not kwargs:
+        return None, None
+    loss = _PretrainLoss(**kwargs)
+    desc = jnp.asarray(descriptors)
+    term = float(loss.parts(model, desc, jnp.asarray(ref_F))[1])
+    delta = loss.system_energy_errors(model, desc)
+    return term, np.asarray(delta, dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -350,9 +460,25 @@ def _validation_split(loss, descriptors, ref_F, segment, n_systems, held_out,
     validation side holds physical rows only. Under the unweighted reduction
     there is no weight to rescale -- every row counts once by definition, so
     the mesh's share there is a row count and moves with the split.
+
+    A side that owns no row is refused by name. A held-out system that
+    contributes no row leaves the monitor a constant 0.0 under the weighted
+    reduction (the empty sum over the ``+1e-12`` floor) and a ``nan`` under
+    the unweighted one, so the stop criterion would never see an improvement
+    and the run would end after ``patience`` validations holding its first
+    network. No generated file can reach that state -- every system
+    contributes rows -- which is exactly why the failure has to be loud rather
+    than left to be noticed in the numbers.
     """
     tm, vm, trm, vrm, tid, vid = _system_split_arrays(segment, n_systems,
                                                       held_out)
+    for side, mask in (("training", tm), ("held-out", vm)):
+        if not int(np.count_nonzero(mask)):
+            raise ValueError(
+                f"_validation_split: the {side} side of the split owns no row "
+                f"(systems {tuple(int(i) for i in held_out)} held out of "
+                f"{int(n_systems)}). A side with no row cannot be scored, so "
+                "the split is refused rather than monitored on a constant.")
     train = _restrict_loss(loss, descriptors, ref_F, tm, trm, tid)
     val = _restrict_loss(loss, descriptors, ref_F, vm, vrm, vid)
     if n_mesh and mesh_share is not None and train[0].weights is not None:
@@ -396,8 +522,13 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
     the step it was seen at; when ``checkpoint_path`` is given the best model
     is written there at every improvement, so a job that dies mid-run leaves
     its best weights on disk. A non-finite score never counts as an
-    improvement; a run whose every score is non-finite returns the initial
-    model with ``best_step`` 0.
+    improvement; a run whose every score is non-finite therefore leaves
+    ``best_step`` 0 and a non-finite ``best_value``, and the model it returns
+    is the incoming (untrained) one. That state is a diverged fit, not a
+    result: :func:`run_pretrain` refuses it with :class:`PretrainDiverged`
+    rather than writing the initialization as the run's checkpoint (see
+    :func:`_refuse_a_diverged_fit`), and a direct caller of this function must
+    make the same check on the record.
     """
     if monitor not in _PRETRAIN_MONITORS:
         raise ValueError(
@@ -465,6 +596,49 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
               "n_rows_val": int(jnp.asarray(desc_val).shape[0]),
               "history": history}
     return best_model, losses, record
+
+
+def _refuse_a_diverged_fit(record, *, network, arch_name, checkpoint_dir,
+                           also_remove=()):
+    """Refuse a fit that scored validations and never a finite one.
+
+    ``record`` is one network's entry from :func:`_train_pretrain_network`.
+    When it holds validations but no finite value, the run's product would be
+    the untrained initialization, so ``pretrain_failed.json`` is written in
+    its place, the final checkpoints this run already wrote (``also_remove``)
+    are deleted, and :class:`PretrainDiverged` is raised naming the run, the
+    number of validations and what was not recorded. A record with no
+    validation at all is not a divergence -- it is a run that never reached
+    one -- and passes through.
+    """
+    history = list(record.get("history") or ())
+    if not history or np.isfinite(float(record.get("best_value", np.inf))):
+        return
+    for path in also_remove:
+        try:
+            os.remove(path)
+        except OSError:  # noqa: PERF203 -- absent is the wanted end state
+            pass
+    failure = {
+        "arch_name": arch_name,
+        "network": network,
+        "checkpoint_dir": checkpoint_dir,
+        "reason": "no finite validation value was recorded",
+        "monitor": record.get("monitor"),
+        "n_validations": len(history),
+        "steps_run": record.get("steps_run"),
+        "history": history,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+    }
+    _write_metadata(os.path.join(checkpoint_dir, "pretrain_failed.json"),
+                    failure)
+    raise PretrainDiverged(
+        f"run_pretrain: the {network} fit of {arch_name!r} (checkpoint_dir "
+        f"{checkpoint_dir!r}) scored {len(history)} validation(s) and no "
+        "finite validation value was recorded, so the best-validation network "
+        "is the untrained initialization. No final checkpoint was written; "
+        "the scores are in 'pretrain_failed.json'. Lower pretrain.lr_start or "
+        "check the target columns for a non-finite entry.")
 
 
 # Legacy lob_lim constants.
@@ -746,8 +920,52 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             selection, descriptor assembly, and metadata. Default ``None`` =>
             byte-identical to the prior behavior (build from ``spec.arch``).
 
+    Metadata conventions:
+        ``pretrain_steps`` is the REQUESTED schedule (``spec.n_steps``), which
+        is what the run validator compares against the configuration; it is
+        restated as ``pretrain_steps_requested`` beside
+        ``pretrain_steps_run``, the number of optimizer steps actually taken,
+        which an early stop makes smaller. The per-network counts are
+        ``validation.<net>.steps_run`` and the lengths of ``losses_x.npy`` /
+        ``losses_c.npy``.
+
+        ``final_loss_x`` / ``final_loss_c`` are the training objective of the
+        network that was SAVED -- under an early stop the best-validation one,
+        which is not the last one stepped to -- so the number and the
+        checkpoint describe the same network. The last entry of the training
+        trajectory, which those two keys held before, is
+        ``last_step_loss_x`` / ``last_step_loss_c``.
+
+        ``energy_term_x_final`` / ``energy_term_c_final`` are measured on the
+        saved networks whatever ``energy_term_weight`` was, together with
+        ``energy_term_max_abs_dE_mHa`` (``max_s |dE_x,s + dE_c,s|``, the
+        certificate's own quantity) and ``energy_term_rms_dE_mHa``
+        (``sqrt(<dE_x^2>_s + <dE_c^2>_s)``, the RMS the objective's two terms
+        bound). At weight zero the objective short-circuits the term -- that
+        is what keeps the trajectory byte-identical to the pre-protocol one --
+        so a metadata value taken from the loss would be identically 0.0
+        there and would read as a perfect fit. The three keys are ``null``
+        for a file that carries no per-system energy table.
+
+        ``exchange_footing`` and ``integration_weights_complete`` are derived
+        from the row block the run actually read, not from the manifest's
+        declaration. For a file written WITHOUT a manifest and carrying a
+        per-channel exchange block, both therefore changed value relative to
+        the pre-protocol record (``"total"`` -> ``"spin_channel"`` and
+        ``True`` -> ``False``); both new values are the correct ones for such
+        a file, which is why the old ones were replaced.
+
+        The file is strict RFC 8259: non-finite values are written as
+        ``null`` (:func:`_json_safe`) and the writer refuses to emit ``NaN``
+        or ``Infinity`` tokens.
+
     Returns:
         dict with pretrain_metadata.json fields.
+
+    Raises:
+        PretrainDiverged: a validated fit scored validations and none of them
+            was finite, so the network it would hand back is the untrained
+            initialization. No final checkpoint is left behind.
     """
     spec.validate()
 
@@ -840,11 +1058,10 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # or the block's own quadrature weights would otherwise fail with a
         # bare KeyError deep in the loss assembly.
         _scan_rung = bool(getattr(spec.arch, "meta_gga", False))
-        _needed = ("system_all", "weights_all", "e_lda_c_all",
-                   "system" + x_suffix, "weights" + x_suffix,
-                   "e_lda_x" + x_suffix,
-                   "e_x_parent_scan_sys" if _scan_rung else "e_x_parent_sys",
-                   "e_c_parent_scan_sys" if _scan_rung else "e_c_parent_sys")
+        _needed = _energy_column_keys(
+            x_suffix,
+            "e_x_parent_scan_sys" if _scan_rung else "e_x_parent_sys",
+            "e_c_parent_scan_sys" if _scan_rung else "e_c_parent_sys")
         _missing = [k for k in _needed if k not in pretrain_data]
         if _missing:
             raise ValueError(
@@ -858,14 +1075,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # The xnet input is zeta-blind; the cnet input carries the zeta column
     # when the architecture uses polarized correlation. They are
     # identical for the unpolarized (default) architecture.
-    # At the historical footing the call is the historical one, so a wrapper
-    # installed on the pre-protocol seam ``(arch, data, for_cnet)`` keeps
-    # serving the total-density block unchanged.
-    if x_suffix == "_all":
-        descriptors = _assemble_pretrain_descriptors(spec.arch, pretrain_data)
-    else:
-        descriptors = _assemble_pretrain_descriptors(spec.arch, pretrain_data,
-                                                     suffix=x_suffix)
+    # ``suffix`` defaults to ``"_all"``, so the historical footing takes the
+    # same call with the same block: one call site, no branch whose two arms
+    # agree at the default.
+    descriptors = _assemble_pretrain_descriptors(spec.arch, pretrain_data,
+                                                 suffix=x_suffix)
     descriptors_c = _assemble_pretrain_descriptors(
         spec.arch, pretrain_data, for_cnet=True)
 
@@ -919,8 +1133,9 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
                                                     MESH_WEIGHT_FRACTION))
             print(f"[pretrain] (s, alpha) mesh appended: "
                   f"{pretrain_data['rho_mesh'].shape[0]} nodes "
-                  f"({100.0 * mesh_share:.0f}% effective "
-                  "loss-weight share per channel, by construction)",
+                  f"(the data was built at mesh_weight_fraction "
+                  f"{mesh_share:.4g}; the share this run's loss actually "
+                  "gives them is measured off the weight vector below)",
                   flush=True)
         elif not has_mesh:
             print("[pretrain] WARNING: pretrain data carries no (s, alpha) mesh; "
@@ -952,22 +1167,36 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # ref_F)` with the familiar 3-arg API. Weights are carried as a static
     # array field on the module (eqx handles the pytree correctly).
     n_mesh_rows = int(pretrain_data["rho_mesh"].shape[0]) if mesh_used else 0
+    # The energy term's inputs are assembled whenever the file carries them,
+    # at ANY weight: the objective uses them only above zero (below, the loss
+    # short-circuits and stays byte-identical to the pre-protocol one), but
+    # the metadata measures the saved networks' energy fidelity either way.
+    # ``measure_kwargs_*`` therefore carry weight 0.0 -- `parts` returns the
+    # term unweighted -- and the fitted losses take the run's weight.
     energy_kwargs_x = {}
     energy_kwargs_c = {}
-    if energy_weight > 0.0:
+    measure_kwargs_x = {}
+    measure_kwargs_c = {}
+    if all(k in pretrain_data
+           for k in _energy_column_keys(x_suffix, e_x_key, e_c_key)):
         _rw, _seg, _tgt, _ns = _energy_term_inputs(
             pretrain_data, weight_key="weights" + x_suffix,
             lda_key="e_lda_x" + x_suffix, segment_key="system" + x_suffix,
             target_key=e_x_key, n_mesh=n_mesh_rows)
-        energy_kwargs_x = dict(energy_row_weight=_rw, energy_segment=_seg,
-                               energy_target=_tgt, n_systems=_ns,
-                               energy_weight=energy_weight)
+        measure_kwargs_x = dict(energy_row_weight=_rw, energy_segment=_seg,
+                                energy_target=_tgt, n_systems=_ns,
+                                energy_weight=0.0)
         _rw, _seg, _tgt, _ns = _energy_term_inputs(
             pretrain_data, weight_key="weights_all", lda_key="e_lda_c_all",
             segment_key="system_all", target_key=e_c_key, n_mesh=n_mesh_rows)
-        energy_kwargs_c = dict(energy_row_weight=_rw, energy_segment=_seg,
-                               energy_target=_tgt, n_systems=_ns,
-                               energy_weight=energy_weight)
+        measure_kwargs_c = dict(energy_row_weight=_rw, energy_segment=_seg,
+                                energy_target=_tgt, n_systems=_ns,
+                                energy_weight=0.0)
+        if energy_weight > 0.0:
+            energy_kwargs_x = {**measure_kwargs_x,
+                               "energy_weight": energy_weight}
+            energy_kwargs_c = {**measure_kwargs_c,
+                               "energy_weight": energy_weight}
     n_systems = int(pretrain_data[e_x_key].shape[0]) \
         if e_x_key in pretrain_data else 0
 
@@ -1034,6 +1263,21 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         loss_fn_x = _PretrainLoss(**energy_kwargs_x)
         loss_fn_c = _PretrainLoss(**energy_kwargs_c)
 
+    # The mesh's pull on each channel, read back off the weight vector the
+    # loss was built with -- the same quantity the metadata records, so the
+    # log and the record cannot disagree. Under the unweighted reduction there
+    # is no weight to shape and the share is a row count, which is why the
+    # measured number is printed instead of the share the data was built at.
+    mesh_loss_share_x = _mesh_loss_share(loss_fn_x.weights, n_mesh_rows,
+                                         int(descriptors.shape[0]))
+    mesh_loss_share_c = _mesh_loss_share(loss_fn_c.weights, n_mesh_rows,
+                                         int(descriptors_c.shape[0]))
+    if mesh_used:
+        print("[pretrain] mesh share of each channel's loss weight, measured: "
+              f"x {mesh_loss_share_x:.4f}, c {mesh_loss_share_c:.4f} "
+              f"(data mesh_weight_fraction {mesh_share:.4g}, "
+              f"loss_weighting {spec.loss_weighting!r})", flush=True)
+
     checkpoint_dir = spec.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -1065,6 +1309,15 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # xnet and cnet trainers share one checkpoint_dir they clobber each other's
     # snapshots. Give each its own subdir; the FINAL xnet.eqx/cnet.eqx still
     # land at the top level (what downstream consumes).
+    #
+    # The validated path's best-so-far snapshot is named
+    # ``<net>_val_best.eqx``, mirroring the training stage's
+    # ``model_val_best.eqx``. It deliberately does NOT match ``xc.eqx.<step>``:
+    # two legacy trajectory scripts list such a directory and sort it with
+    # ``int(name.split('.')[-1])``, which a ``xc.eqx.best`` would either crash
+    # (scripts/sv_train_traj.py) or push to the end of a lexicographic
+    # fallback, where it would be selected as the latest checkpoint
+    # (scripts/pt_validation.py).
     xnet_ckpt_dir = os.path.join(checkpoint_dir, "xnet")
     cnet_ckpt_dir = os.path.join(checkpoint_dir, "cnet")
     os.makedirs(xnet_ckpt_dir, exist_ok=True)
@@ -1150,6 +1403,22 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
     )
+    # NOTE on the unvalidated branch's cost. ``xcTrainer`` couples its jit to
+    # its cache clearing (``xcquinox/train.py:100-106``): the step is compiled
+    # only when ``step % clear_every == 0``, and the same condition clears the
+    # JAX caches at :134-136 and :163-165, so the ONE value for which every
+    # step is jitted, 1, is also the value that recompiles every step. Measured
+    # here on a 3x16 net, marginal wall per optimizer step: 234.96 ms at 4000
+    # rows and 233.17 ms at 16350 rows at the default clear_every of 1 --
+    # independent of the row count, i.e. compilation rather than work -- against
+    # 0.94 ms and 4.53 ms for the loop below, which holds one filter_jit for
+    # the whole run and clears nothing. Raising clear_every does NOT fix it:
+    # the non-clearing steps then take the ``else`` branch and run UNJITTED,
+    # which is only ~11x better and moves the trajectory (first departure at
+    # step 2, 0x1.ea418905eea20p-7 against ...21p-7). Closing the gap therefore
+    # needs the two conditions in the trainer separated; that file is the seam,
+    # not this one, and the loop below is already pinned bit for bit against
+    # the trainer on identical rows.
     if held_out:
         seg_x = _padded_segment(pretrain_data["system" + x_suffix],
                                 n_mesh_rows, n_split)
@@ -1161,8 +1430,14 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             n_steps=spec.n_steps, validate_every=validate_every,
             patience=patience, monitor=monitor,
             progress_callback=_x_callback,
-            checkpoint_path=os.path.join(xnet_ckpt_dir, "xc.eqx.best"))
+            checkpoint_path=os.path.join(xnet_ckpt_dir, "xnet_val_best.eqx"))
         validation_record["x"] = record_x
+        # Before anything is serialized: a fit that never scored a finite
+        # validation would write its untrained initialization here.
+        _refuse_a_diverged_fit(record_x, network="xnet",
+                               arch_name=spec.arch.name,
+                               checkpoint_dir=checkpoint_dir)
+        fit_x = (lx_tr, dx_tr, fx_tr)
     else:
         trainer_x = xcquinox.train.xcTrainer(
             model=xnet,
@@ -1175,6 +1450,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             progress_callback=_x_callback,
         )
         xnet_trained, losses_x = trainer_x(1, [descriptors], [Fx_target])
+        fit_x = (loss_fn_x, descriptors, Fx_target)
     # Persist the final xnet immediately, BEFORE cnet training starts, so a
     # job that dies or times out during the (separate) cnet phase does not lose
     # the already-completed xnet result.
@@ -1199,8 +1475,16 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             n_steps=spec.n_steps, validate_every=validate_every,
             patience=patience, monitor=monitor,
             progress_callback=_c_callback,
-            checkpoint_path=os.path.join(cnet_ckpt_dir, "xc.eqx.best"))
+            checkpoint_path=os.path.join(cnet_ckpt_dir, "cnet_val_best.eqx"))
         validation_record["c"] = record_c
+        # The xnet was serialized above so a job that dies in the cnet phase
+        # keeps it; a DIVERGED cnet is not that case -- the run has no product
+        # -- so the half-pair it would leave behind is removed with it.
+        _refuse_a_diverged_fit(record_c, network="cnet",
+                               arch_name=spec.arch.name,
+                               checkpoint_dir=checkpoint_dir,
+                               also_remove=(xnet_path,))
+        fit_c = (lc_tr, dc_tr, fc_tr)
     else:
         trainer_c = xcquinox.train.xcTrainer(
             model=cnet,
@@ -1213,6 +1497,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             progress_callback=_c_callback,
         )
         cnet_trained, losses_c = trainer_c(1, [descriptors_c], [Fc_target])
+        fit_c = (loss_fn_c, descriptors_c, Fc_target)
     duration = time.time() - t0
 
     # --- Save artifacts ---
@@ -1226,18 +1511,49 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     use_cusp = any(s.name == "cusp" for s in spec.arch.descriptors)
     use_dm = any(s.name == "dm_statistics" for s in spec.arch.descriptors)
 
+    # The objective of the network that was SAVED, on the rows it was fitted
+    # on. Under an early stop that is the best-validation network, several
+    # steps behind the last one, so the trajectory's last entry describes a
+    # different network; it is kept beside this one as `last_step_loss_*`.
+    final_loss_x = float(fit_x[0](xnet_trained, fit_x[1], fit_x[2]))
+    final_loss_c = float(fit_c[0](cnet_trained, fit_c[1], fit_c[2]))
+
+    # The saved networks' per-system XC-energy error, measured whatever the
+    # run's energy weight was (see the docstring's metadata conventions).
+    energy_term_x, delta_x = _saved_network_energy_error(
+        measure_kwargs_x, xnet_trained, descriptors, Fx_target)
+    energy_term_c, delta_c = _saved_network_energy_error(
+        measure_kwargs_c, cnet_trained, descriptors_c, Fc_target)
+    energy_max_abs_mha = energy_rms_mha = None
+    if delta_x is not None and delta_c is not None:
+        # The certificate bounds a MAXIMUM over systems of the XC error, which
+        # is the sum of the two channels' errors on the same system; the RMS
+        # is the one the objective's two terms bound, sqrt of the sum of the
+        # two means of squares. Both in mHa, the units tol_atom is stated in.
+        energy_max_abs_mha = 1000.0 * float(np.max(np.abs(delta_x + delta_c)))
+        energy_rms_mha = 1000.0 * float(
+            np.sqrt(max(0.0, energy_term_x + energy_term_c)))
+
     metadata = {
         "arch_name": spec.arch.name,
         "depth": spec.arch.depth,
         "nodes": spec.arch.nodes,
+        # The REQUESTED schedule, which is what the run validator compares
+        # against the configuration; the steps actually taken follow it,
+        # because an early stop makes the two disagree.
         "pretrain_steps": spec.n_steps,
+        "pretrain_steps_requested": int(spec.n_steps),
+        "pretrain_steps_run": int(max(len(losses_x_np), len(losses_c_np))),
         "lr_start": spec.lr_start,
         "lr_end": spec.lr_end,
         "lr_decay_start": spec.lr_decay_start,
         "grad_clip": spec.grad_clip,
         "loss_weighting": spec.loss_weighting,
-        "final_loss_x": float(losses_x_np[-1]) if len(losses_x_np) > 0 else float("nan"),
-        "final_loss_c": float(losses_c_np[-1]) if len(losses_c_np) > 0 else float("nan"),
+        # The SAVED network's loss, and the last step's beside it.
+        "final_loss_x": final_loss_x,
+        "final_loss_c": final_loss_c,
+        "last_step_loss_x": float(losses_x_np[-1]) if len(losses_x_np) > 0 else float("nan"),
+        "last_step_loss_c": float(losses_c_np[-1]) if len(losses_c_np) > 0 else float("nan"),
         "min_loss_x": float(np.min(losses_x_np)) if len(losses_x_np) > 0 else float("nan"),
         "min_loss_c": float(np.min(losses_c_np)) if len(losses_c_np) > 0 else float("nan"),
         "use_cusp": use_cusp,
@@ -1271,10 +1587,14 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "n_systems": n_systems,
         "n_rows_x": int(descriptors.shape[0]),
         "n_rows_c": int(descriptors_c.shape[0]),
-        "energy_term_x_final": float(
-            loss_fn_x.parts(xnet_trained, descriptors, Fx_target)[1]),
-        "energy_term_c_final": float(
-            loss_fn_c.parts(cnet_trained, descriptors_c, Fc_target)[1]),
+        # Measured on the SAVED networks at any weight: at weight zero the
+        # objective short-circuits the term, so a value read off the fitted
+        # loss would be identically 0.0 and would read as a perfect fit.
+        # `null` where the file carries no per-system energy table.
+        "energy_term_x_final": energy_term_x,
+        "energy_term_c_final": energy_term_c,
+        "energy_term_max_abs_dE_mHa": energy_max_abs_mha,
+        "energy_term_rms_dE_mHa": energy_rms_mha,
         # The held-out split and the stop criterion: fraction, seed, interval,
         # patience, the monitored quantity, the held-out systems BY NAME, and
         # per network the step of the best value, the value, whether the run
@@ -1296,13 +1616,10 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # trace at all.
         metadata["mesh_weight_fraction"] = (
             None if mesh_share is None else float(mesh_share))
-        metadata["mesh_loss_share_x"] = _mesh_loss_share(
-            loss_fn_x.weights, n_mesh_rows, int(descriptors.shape[0]))
-        metadata["mesh_loss_share_c"] = _mesh_loss_share(
-            loss_fn_c.weights, n_mesh_rows, int(descriptors_c.shape[0]))
+        metadata["mesh_loss_share_x"] = mesh_loss_share_x
+        metadata["mesh_loss_share_c"] = mesh_loss_share_c
     md_path = os.path.join(checkpoint_dir, "pretrain_metadata.json")
-    with open(md_path, "w") as f:
-        json.dump(metadata, f, indent=2)
+    _write_metadata(md_path, metadata)
 
     return metadata
 
