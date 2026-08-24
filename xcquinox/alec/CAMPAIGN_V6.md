@@ -91,7 +91,9 @@ The spin-polarization column, present on every v6 correlation network, is the bo
 Dick and Fernandez-Serra form (`networks.py:351-354`):
 
     zeta_c = jnp.clip(zeta, -1.0, 1.0)
-    x1 = 0.5 * ((1.0 + zeta_c) ** (4 / 3) + (1.0 - zeta_c) ** (4 / 3))
+    x1 = jnp.atleast_1d(
+        0.5 * ((1.0 + zeta_c) ** (4 / 3) + (1.0 - zeta_c) ** (4 / 3))
+    ).flatten()
 
 which equals 1 at `zeta = 0`, recovering the unpolarized input.
 
@@ -114,7 +116,7 @@ clamped alpha rather than the Letter's `x3` (Section 1.9).
 
 **Where it enters.** Both. In pretraining the columns are `rho_all` / `sigma_all` for the
 total-density block and `rho_x` / `sigma_x` for the per-channel exchange block
-(`pretrain.py:891` and the schema at `pretrain_data_gen.py:1404-1424`); in training they
+(`pretrain.py:890` and the schema at `pretrain_data_gen.py:1404-1424`); in training they
 are the density and gradient invariant of the live SCF density.
 
 **What `notransform` ablates.** The four `deep_notransform*` architectures are the
@@ -353,7 +355,7 @@ pretraining file carrying the old 3-column layout (`pretrain.py:914-928`).
 ### 1.8 The combined form
 
 `deep_combined*` carries `descriptors = ('dm_statistics', 'cusp')`, four extra columns
-(executed check C4). It is the pairing the campaign has swept since v3 and is retained so
+(executed check C4). It is the pairing the improvement history records as swept since v3 (the shipped v3 configuration itself predates the record) and is retained so
 the DM indicators are measured beside the geometry feature rather than alone. Column order
 follows declaration order, `dm` before `cusp`, which is pinned by test
 (`tests/test_descriptors.py:70-73`).
@@ -866,8 +868,9 @@ depth and width -- same empty descriptor tuple, same `descriptor_log_transform =
 twins recorded the motivation: the 4x32 networks carry about 3.3k parameters against the DFS
 shape's about 0.6k, and were judged to overfit the 26-point pool (`config.py:485-489`). The
 group is ordered last because it qualifies the production result rather than establishing
-it, and because it is the most expensive per cell: five depth-4 attention architectures were
-the reason the wall was raised, and only two of them remain here.
+it, and because it is the most expensive per cell: the five depth-4 attention architectures
+were the reason the wall was raised, and of them only `deep_attn` remains here (of the ten
+4x32 forms, `deep` and `deep_attn` remain).
 
 ### 3.5 Excluded architectures
 
@@ -935,14 +938,15 @@ TWO FIELDS ARE THE EXCEPTION, AND THE FIVE FILES DISAGREE AMONG THEMSELVES. Four
 `v6g1_size`, `v6g2_families`, `v6g3_dm` and `v6g4_ablations` -- set
 `cluster.oom_retry_partition: long-96core` and `cluster.timeout_retry_partition: long-96core`,
 which the whole-registry file leaves unset and `v6g2_families_mgga` also leaves unset
-(executed check C12: 5 differing leaves for those four, 3 for the meta-GGA group). The
-whole-registry file's own reasoning at those two keys is that a re-route buys nothing when the
-submit partition is already the largest reachable node, and that an over-cap retry is rejected
-during recovery rather than at submit. FLAGGED FOR THE OPERATOR, not resolved here: either the
-four GGA groups are meant to re-route and the meta-GGA group is missing the keys, or the four
-carry a setting the stated reasoning argues against. Whichever way it is settled, the five
-files should agree, and the retry partition must be valid on the login instance the job is
-submitted from.
+(executed check C12, updated after the group files landed: 6 differing leaves for those four
+-- the two retry partitions, the 48 h wall against the reference's 72 h, the axis and the two
+roots -- and 3 for the meta-GGA group). The asymmetry is the pinned design, not a
+disagreement: the four GGA groups mirror the v4gga arm's live retry routing (a 40-core submit
+whose out-of-memory or wall-killed cells re-route onto the larger 96-core class at the longer
+wall), while the meta-GGA group mirrors the v5 arms' absence of the keys because it already
+submits on that class, and the test suite asserts each group matches its own historical arm
+and that the two arms differ. The retry partition must remain valid on the login instance the
+job is submitted from.
 
 
 ## 4. Cross-checks executed
