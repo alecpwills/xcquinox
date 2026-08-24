@@ -2876,3 +2876,54 @@ def test_build_model_refuses_a_waiver_that_states_no_reason(tmp_path,
     spec = _make_training_spec(pretrain_checkpoint=d)
     with pytest.raises(ValueError, match="override_reason"):
         train_mod._build_model(spec)
+
+
+def test_build_model_refuses_a_waived_failure_outside_the_harness_layout(
+        tmp_path, monkeypatch):
+    """The waiver is honoured only where the harness wrote the certificate.
+
+    ``fidelity.gate_certificate`` is keyed on ``(run_dir, arch)``: it releases
+    a FAIL because the certificate under ``<run_dir>/pretrain/<arch>`` is that
+    run's own record of a ``fidelity.enforce: false`` waiver. The same JSON
+    sitting at any other path -- a checkpoint copied by hand, or written by a
+    probe -- belongs to no run this checkpoint can be traced back to, so it is
+    held to PASS and refused. Reading the ``enforced`` flag and
+    ``tolerances.override_reason`` off the certificate alone, without the
+    layout round trip, would release exactly this checkpoint.
+    """
+    import equinox as eqx
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+    from xcquinox.alec.networks import create_network_pair
+
+    monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
+    arch = _make_arch()
+    d = tmp_path / "pretrain_ckpt"
+    d.mkdir()
+    xnet, cnet = create_network_pair(arch, seed=0)
+    eqx.tree_serialise_leaves(str(d / "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(str(d / "cnet.eqx"), cnet)
+    # Verbatim the waiver a run with fidelity.enforce=false records; only the
+    # location differs from the harness layout.
+    with open(d / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "FAIL", "arch": arch.name, "enforced": False,
+                   "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                  "override_reason":
+                                  "workflow-verification matrix"},
+                   "summary": {"max_atom_mHa": 13.7,
+                               "max_dAE_kcalmol": 25.7}}, f)
+
+    # The precondition: the round trip that recognises a harness checkpoint
+    # does not close on this directory.
+    ckpt = os.path.abspath(str(d))
+    assert pretrain_checkpoint_dir(os.path.dirname(os.path.dirname(ckpt)),
+                                   os.path.basename(ckpt)) != ckpt
+
+    spec = _make_training_spec(pretrain_checkpoint=str(d))
+    with pytest.raises(
+            ValueError,
+            match="refusing to train from pretrain_checkpoint") as excinfo:
+        train_mod._build_model(spec)
+    # Refused on the verdict itself, with no waiver read off the certificate.
+    assert "verdict 'FAIL'" in str(excinfo.value)
+    assert "enforcement is OFF" not in str(excinfo.value)

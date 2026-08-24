@@ -1084,6 +1084,69 @@ def test_pretrain_status_counts_passing_certificates(tmp_path):
         "1/2 architecture certificate(s) PASS")
 
 
+def test_pretrain_status_counts_only_pass_certificates(tmp_path):
+    """The certificate count is the RECORD predicate, not the on-node gate.
+
+    Five architectures cover the five states a certificate can be found in:
+    PASS, a FAIL waived by ``enforced: false`` with a reason, an enforced
+    FAIL, no certificate at all, and one that is not readable JSON. Only the
+    first is certified. A run configured ``fidelity.enforce: false`` reaches
+    training on its waived FAIL, but that architecture still cannot enter
+    ``validate_run``, ``merge_v4_arms`` or the figure suite, so counting it
+    as PASS here would hide the very state this line exists to show -- the
+    count must therefore come from ``certificate_status_in`` and not from
+    ``gate_certificate``.
+
+    The checkpoint-pair count is asserted independently: it is a separate
+    on-disk fact, and the pretrain array can leave a pair with no certificate
+    (or a certificate with no pair).
+    """
+    from xcquinox.alec.cluster.grid_config import (
+        load_grid_config, pretrain_checkpoint_dir,
+    )
+    run_dir = tmp_path / "run_TESTID"
+    run_dir.mkdir()
+    d = _base_config_dict()
+    d["sweep"]["arch"] = ["deep", "deep_attn", "deep_cusp", "medium",
+                          "shallow"]
+    gp = tmp_path / "_g.json"
+    gp.write_text(json.dumps(d))
+    cfg = load_grid_config(str(gp))
+    cli._write_resolved_config(cfg, str(run_dir))
+
+    def _place(arch, *, pair=True, certificate=None, raw=None):
+        ck = pretrain_checkpoint_dir(str(run_dir), arch)
+        os.makedirs(ck, exist_ok=True)
+        if pair:
+            open(os.path.join(ck, "xnet.eqx"), "wb").close()
+            open(os.path.join(ck, "cnet.eqx"), "wb").close()
+        path = os.path.join(ck, "fidelity_certificate.json")
+        if certificate is not None:
+            with open(path, "w") as f:
+                json.dump(certificate, f)
+        elif raw is not None:
+            with open(path, "w") as f:
+                f.write(raw)
+
+    _place("deep", certificate={"verdict": "PASS", "arch": "deep"})
+    # Waived FAIL: the workflow-verification matrix's own record. It is
+    # released by the on-node gate and is NOT a certified architecture.
+    _place("deep_attn", certificate={
+        "verdict": "FAIL", "arch": "deep_attn", "enforced": False,
+        "tolerances": {"override_reason": "workflow-verification matrix"},
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7}})
+    _place("deep_cusp", certificate={
+        "verdict": "FAIL", "arch": "deep_cusp",
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7}})
+    _place("medium")
+    # Truncated file, and its pretrain job left no checkpoint pair either.
+    _place("shallow", pair=False, raw='{"verdict": "PA')
+
+    assert cli._pretrain_status(str(run_dir)) == (
+        "4/5 architecture checkpoint pair(s) present, "
+        "1/5 architecture certificate(s) PASS")
+
+
 def test_classify_failure_treats_killed_by_signal_as_timeout(tmp_path):
     """A wall-clock grace SIGTERM (recorded by _train_task as
     'killed_by_signal') must classify as 'timeout', i.e. retryable and routed

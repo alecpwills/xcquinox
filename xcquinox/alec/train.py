@@ -337,9 +337,11 @@ def _require_fidelity_certificate(pretrain_checkpoint: str) -> None:
     ``override_reason`` records its FAIL and proceeds (the workflow-
     verification matrix pretrains for 50 steps on two atoms, so its verdict
     FAILs by construction), while the RECORD layers -- ``validate_run``,
-    ``merge_v4_arms``, the figure suite -- still require PASS. Any other
-    layout carries no run configuration to read a waiver from and is held to
-    PASS.
+    ``merge_v4_arms``, the figure suite -- still require PASS. The waiver is
+    honoured only where the harness wrote the certificate, at the
+    ``<run_dir>/pretrain/<arch>`` layout, because that is the only layout
+    whose certificate carries the run's own waiver record; any other layout
+    is held to PASS.
     """
     if os.environ.get(_ALLOW_UNCERTIFIED_ENV) == "1":
         return
