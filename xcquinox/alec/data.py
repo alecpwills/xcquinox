@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from xcquinox.alec.config import MoleculeSpec
 from xcquinox.alec.descriptors import Descriptor
 from xcquinox.alec.orientation_lock import orientation_lock_bias
+from xcquinox.alec.pyscf_determinism import pin_reference_scf
 
 
 # Keys allowed in MoleculeSpec.external_data_path .npz files. Kept as a
@@ -727,8 +728,16 @@ def precompute_fixed_density_data(
     (:func:`_converge_reference_scf`), and an SCF unconverged after both
     raises :class:`ReferenceSCFNotConverged` instead of producing a record.
     The record's ``mol_metadata`` carries ``reference_xc``,
-    ``reference_scf_converged``, ``reference_scf_cycles`` and
-    ``reference_scf_solver``.
+    ``reference_scf_converged``, ``reference_scf_cycles``,
+    ``reference_scf_solver``, and the two reproducibility stamps
+    ``reference_xc_blksize`` (grid points per block of the reference SCF's
+    XC quadrature, pinned by :mod:`xcquinox.alec.pyscf_determinism` so the
+    summation order does not follow the process's memory history) and
+    ``reference_blas_threads`` (pyscf's OpenMP worker count, which the
+    record's last digits depend on above one thread); ``reference_eri_path``
+    records whether the two-electron integrals were held in memory
+    ("incore") or built directly ("direct"), a choice pinned to the system
+    size by the same module.
 
     Baseline keys are always populated. Reference/descriptor keys are computed
     on-demand based on required_keys and descriptor.required_mol_keys.
@@ -831,6 +840,20 @@ def precompute_fixed_density_data(
         _base_hcore = np.asarray(mf.get_hcore())
         _locked_hcore = _base_hcore + orientation_lock_bias_mat
         mf.get_hcore = lambda *a, **k: _locked_hcore
+    # Fixed quadrature blocking: pyscf sizes the XC grid loop from the memory
+    # the process has left, so the summation order -- and the converged
+    # energy and density at the 1e-13 level -- would otherwise follow the
+    # process's memory history (measured: E_pbe of the locked O atom at
+    # def2-svp / grid 3 is -74.91469870612937 in a clean process and
+    # ...939 in one above pyscf's 4000 MB ceiling, at 2.0x the wall time).
+    # Pinned before the first get_veff; the second-order stage below shares
+    # this integrator. The incore/direct choice of the two-electron
+    # integrals follows process memory the same way and is pinned to the
+    # system size. The thread count is the caller's; all three go into
+    # mol_metadata (reference_xc_blksize, reference_blas_threads,
+    # reference_eri_path) and into no cache identity (see
+    # pyscf_determinism).
+    reference_pins = pin_reference_scf(mf)
     # The record is a set of properties of the reference functional's
     # SELF-CONSISTENT density. pyscf returns from kernel() with mf.converged
     # False when max_cycle runs out, and nothing downstream can tell such a
@@ -1283,6 +1306,16 @@ def precompute_fixed_density_data(
             "reference_scf_converged": reference_scf_converged,
             "reference_scf_cycles": reference_scf_cycles,
             "reference_scf_solver": reference_scf_solver,
+            # Grid points per block of the reference SCF's XC quadrature
+            # (fixed; the summation order no longer follows process memory)
+            # and pyscf's OpenMP worker count at the time. Metadata, not
+            # identity: a consumer that compares records bitwise checks
+            # them; every tolerance in use holds either order.
+            "reference_xc_blksize": reference_pins.xc_blksize,
+            "reference_blas_threads": reference_pins.threads,
+            # And how its two-electron integrals were built ("incore" or
+            # "direct"): pyscf's own choice follows process memory too.
+            "reference_eri_path": reference_pins.eri_path,
         },
         _pyscfad_mol=pyscfad_mol,
     )

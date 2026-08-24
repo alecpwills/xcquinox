@@ -510,6 +510,55 @@ def test_run_log_finalize_archives(tmp_path):
     assert not (tmp_path / "_run_log_partial.json").is_file()
 
 
+def test_run_log_finalize_is_safe_beside_sibling_shards(tmp_path):
+    """N shards logging into ONE directory finalize together (barrier
+    synchronized) with no exception, every shard's log preserved and
+    complete, and no partial file left; a repeated finalize on one
+    instance returns the log it already wrote. The earlier finalize
+    (is_file then unlink, a timestamp-only final name) raised
+    FileNotFoundError in 73 of 200 four-shard trials and overwrote sibling
+    logs finalized in the same second."""
+    import json
+    import threading
+    from xcquinox.alec.external_refs import RunLog
+    n_shards, n_rounds = 8, 20
+    for _ in range(n_rounds):
+        logs = [RunLog(cache_dir=tmp_path) for _ in range(n_shards)]
+        for i, log in enumerate(logs):
+            log.start([f"sp{i}"])
+            log.record_result(name=f"sp{i}", charge=0, spin=0, status="OK",
+                              wall_clock_s=float(i), error_msg=None)
+        assert (tmp_path / "_run_log_partial.json").is_file()
+        barrier = threading.Barrier(n_shards)
+        errors, paths = [], {}
+
+        def go(index, log):
+            barrier.wait()
+            try:
+                paths[index] = log.finalize()
+            except Exception as exc:  # noqa: BLE001 -- the assertion below
+                errors.append(repr(exc))
+
+        threads = [threading.Thread(target=go, args=(i, log))
+                   for i, log in enumerate(logs)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
+        assert not (tmp_path / "_run_log_partial.json").exists()
+        assert len(set(paths.values())) == n_shards
+        for i, log in enumerate(logs):
+            path = paths[i]
+            assert path.is_file() and "_run_log_" in path.name
+            payload = json.loads(path.read_text())
+            assert payload["ended_at_utc"] is not None
+            assert [r["name"] for r in payload["results"]] == [f"sp{i}"]
+            assert log.finalize() == path
+        for path in paths.values():
+            path.unlink()
+
+
 def test_precompute_all_skips_cached_species(tmp_path):
     """precompute_all skips species whose npz already has all required keys."""
     from xcquinox.alec.external_refs import (

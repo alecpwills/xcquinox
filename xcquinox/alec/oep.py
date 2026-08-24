@@ -48,6 +48,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 from xcquinox.alec.config import MoleculeSpec
+from xcquinox.alec.pyscf_determinism import pin_reference_scf
 
 
 class OEPResult(NamedTuple):
@@ -267,6 +268,11 @@ def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
     if mol_spec.grid_level is not None:
         mf.grids.level = int(mol_spec.grid_level)
         mf.grids.build()
+    # Fixed quadrature blocking and integral path (pyscf_determinism): pyscf
+    # sizes both from the memory the process has left, which moves the
+    # baseline density and every potential derived from it at the 1e-13
+    # level with process history.
+    pin_reference_scf(mf)
     mf.kernel()
     return mol, mf
 
@@ -401,6 +407,10 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
     from scipy.linalg import LinAlgError as _ScLinAlgError
 
     mf_fixed = scf.RHF(mol)
+    # No quadrature here (get_veff is replaced below by J plus the fixed
+    # matrix); the incore/direct choice of J is pinned to the system size so
+    # the inner SCF does not follow process memory (pyscf_determinism).
+    pin_reference_scf(mf_fixed)
     mf_fixed.verbose = 0
     mf_fixed.max_cycle = 200
     mf_fixed.conv_tol = 1e-10
@@ -470,6 +480,8 @@ def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
     from scipy.linalg import LinAlgError as _ScLinAlgError
 
     mf_fixed = scf.UHF(mol)
+    # As in the RHF inner SCF: no quadrature, integral path pinned.
+    pin_reference_scf(mf_fixed)
     mf_fixed.verbose = 0
     mf_fixed.max_cycle = 200
     mf_fixed.conv_tol = 1e-10

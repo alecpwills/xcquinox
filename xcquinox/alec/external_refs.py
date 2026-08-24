@@ -24,9 +24,11 @@ RuntimeError.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 from dataclasses import dataclass
 
 from xcquinox.alec.orientation_lock import orientation_lock_bias
+from xcquinox.alec.pyscf_determinism import pin_reference_scf
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,14 @@ def _build_hf_meanfield(mol, is_uks: bool, *, density_fit: bool = False,
     if density_fit:
         from xcquinox.alec.df_jk import default_auxbasis
         mf = mf.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
+    # No grid quadrature to pin on a Hartree-Fock object; the incore/direct
+    # choice of its two-electron integrals is pinned to the system size
+    # (pyscf_determinism). A density-fitted object is left as pyscf builds
+    # it: its exchange loop is sized from process memory too, which moved
+    # the HF density of the O atom (def2-svp, DF) by 4.2e-15 and the CCSD
+    # density on it by 4.8e-15 between a clean process and one above the
+    # memory ceiling, far below the CCSD convergence floor.
+    pin_reference_scf(mf)
     return mf
 
 
@@ -457,7 +467,16 @@ def run_scf_with_cache(
     cache name + numerics byte-for-byte.
 
     Returns dict with keys: dm, mo_coeff, mo_occ, mo_energy, S, e_tot (the SCF
-    total energy in Hartree), spin_unrestricted, n_ao, n_grid.
+    total energy in Hartree), spin_unrestricted, n_ao, n_grid, grid_coords,
+    grid_weights, and the two reproducibility stamps reference_xc_blksize
+    (grid points per block of the XC quadrature, pinned by
+    :mod:`xcquinox.alec.pyscf_determinism`) and reference_blas_threads
+    (pyscf's OpenMP worker count the SCF ran at) and reference_eri_path
+    ("incore", "direct" or "df": how the two-electron integrals were built,
+    pinned to the system size by the same module); all three are None when
+    read from a cache written before the stamps existed. The stamps are
+    metadata: they are not part of the cache identity, so an older cache is
+    still a hit.
 
     Cache layout:
       <cache_dir>/_intermediates/<name>_g{grid_level}_scf.npz
@@ -494,6 +513,18 @@ def run_scf_with_cache(
                 "n_grid": int(z["n_grid"]),
                 "grid_coords": np.asarray(z["grid_coords"]),
                 "grid_weights": np.asarray(z["grid_weights"]),
+                # Stamps absent from caches written before the quadrature
+                # blocking was pinned; such a cache stays valid (the pin is
+                # not part of the identity) and reports None.
+                "reference_xc_blksize": (int(z["reference_xc_blksize"])
+                                         if "reference_xc_blksize" in z.files
+                                         else None),
+                "reference_blas_threads": (int(z["reference_blas_threads"])
+                                           if "reference_blas_threads" in z.files
+                                           else None),
+                "reference_eri_path": (str(z["reference_eri_path"])
+                                       if "reference_eri_path" in z.files
+                                       else None),
             }
 
     coords = atoms.get_positions()
@@ -525,6 +556,13 @@ def run_scf_with_cache(
         _locked_hcore = (np.asarray(mf.get_hcore())
                          + orientation_lock_bias(mol, orientation_lock_strength))
         mf.get_hcore = lambda *a, **k: _locked_hcore
+    # Fixed quadrature blocking, before the first get_veff: without it the
+    # block size of the XC grid loop follows the memory the process has
+    # left, and the stored dm / e_tot follow it at the 1e-13 level (see
+    # pyscf_determinism). The escalation builder below pins its fresh
+    # objects the same way; the stamps are recorded in the payload, not in
+    # the cache identity.
+    reference_pins = pin_reference_scf(mf)
     mf.kernel()
     # The stored grid must be the FIRST attempt's: pyscf density-prunes the
     # grid once, at the first SCF cycle, on the density it holds THEN -- the
@@ -550,6 +588,7 @@ def run_scf_with_cache(
                 m = m.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
             m.xc = xc
             m.grids.level = grid_level
+            pin_reference_scf(m)
             return m
         mf = _converge_scf_tiered(_scf_builder, dm0=np.asarray(mf.make_rdm1()),
                                   is_uks=is_uks, locked_hcore=_locked_hcore)
@@ -579,6 +618,12 @@ def run_scf_with_cache(
         "n_grid": int(payload_grids.weights.size),
         "grid_coords": np.asarray(payload_grids.coords),
         "grid_weights": np.asarray(payload_grids.weights),
+        # Reproducibility stamps (metadata only, never cache identity):
+        # grid points per block of the XC quadrature and pyscf's OpenMP
+        # worker count the SCF ran at.
+        "reference_xc_blksize": int(reference_pins.xc_blksize),
+        "reference_blas_threads": int(reference_pins.threads),
+        "reference_eri_path": str(reference_pins.eri_path),
     }
 
     # Atomic write: temp file + os.replace so an interrupted SCF cannot
@@ -1453,14 +1498,30 @@ def preflight_uks_oep(
             )
 
 
+#: Per-process counter that makes every finalized log name unique within
+#: the process (the name also carries the pid, so shards in separate
+#: processes never collide either).
+_RUN_LOG_FINALIZE_COUNTER = itertools.count(1)
+
+
 class RunLog:
     """Atomic JSON log for the Cell 0.5 pipeline.
 
     Writes _run_log_partial.json after every species (kill-safe via
     tempfile.mkstemp + os.replace, matching the atomic-write precedent
-    in run_scf_with_cache). On finalize, renames to
-    _run_log_<UTC-timestamp>.json so each run's log is preserved for
-    later debugging.
+    in run_scf_with_cache). On finalize, writes
+    _run_log_<UTC-timestamp>_p<pid>_<n>.json so each run's log is
+    preserved for later debugging.
+
+    Several shards may log into ONE directory concurrently (the reference
+    stage of the workflow matrix finalizes four shards against the same
+    reference directory): every write is an atomic replace, the partial
+    file is removed with ``missing_ok`` (a sibling may have removed it
+    first: 73 of 200 barrier-synchronized four-shard trials raised
+    FileNotFoundError from the earlier is_file-then-unlink pair), the
+    final name is unique per finalizing instance so no shard's log is
+    overwritten by a sibling finalizing in the same second, and a repeated
+    ``finalize`` on one instance returns the log it already wrote.
     """
 
     def __init__(self, *, cache_dir):
@@ -1468,6 +1529,7 @@ class RunLog:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.partial_path = self.cache_dir / "_run_log_partial.json"
+        self._final_path = None
         self._payload: dict = {
             "started_at_utc": None,
             "ended_at_utc": None,
@@ -1495,14 +1557,24 @@ class RunLog:
         self._flush()
 
     def finalize(self):
+        """Write the final log and remove the partial one; returns the
+        final path. Idempotent: a second call returns the path already
+        written and touches nothing. Safe beside sibling shards finalizing
+        the same directory (see the class docstring)."""
         import datetime
+        import os
+        if self._final_path is not None:
+            return self._final_path
         now = datetime.datetime.now(datetime.timezone.utc)
         ts = now.strftime("%Y%m%dT%H%M%SZ")
         self._payload["ended_at_utc"] = now.isoformat()
-        final_path = self.cache_dir / f"_run_log_{ts}.json"
+        final_path = self.cache_dir / (
+            f"_run_log_{ts}_p{os.getpid()}_"
+            f"{next(_RUN_LOG_FINALIZE_COUNTER)}.json")
         self._flush(path=final_path)
-        if self.partial_path.is_file():
-            self.partial_path.unlink()
+        # A sibling that finalized first has already removed it.
+        self.partial_path.unlink(missing_ok=True)
+        self._final_path = final_path
         return final_path
 
     def _flush(self, *, path=None):

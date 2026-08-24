@@ -654,7 +654,7 @@ three-block potential or the feature-response contraction is changed. Closing #2
 positive part in the energy of `compute_alpha`) also changes what the check measures on the
 one-electron channels and should be paired with it.
 
-## 29. Reference SCF quadrature order depends on process memory (2026-08-23)
+## 29. Reference SCF quadrature order depends on process memory (2026-08-23) -- CLOSED 2026-08-24 (<hash>)
 
 **WHAT:** PySCF sizes the XC grid loop of the reference SCF from
 `mol.max_memory - lib.current_memory()`, so the block size, and with it the summation order of
@@ -667,17 +667,76 @@ at the 1e-13 relative level and sits inside every tolerance the identity and cer
 use (`_LOCKED_REPRO_TOL`, `PARENT_GRID_TOL_HA`), so no result is wrong; it is a floor that any
 bitwise comparison of records or any cache keyed on a digest of a record must respect.
 
-**WHY deferred:** pinning the order means fixing the block size (a large `mol.max_memory` makes
-the whole grid one block) in `data.precompute_fixed_density_data`'s reference SCF and in
-`external_refs`, which changes the memory profile of every production stage and must be measured
-on the cluster before it is the default.
+**Reproduced (2026-08-24):** the locked O atom (def2-svp, grid level 3) through
+`data.precompute_fixed_density_data` in a clean process (630 MB resident) integrates its
+11904-point grid in one block and gives E_pbe = -74.91469870612937; the same call in a process
+holding 3.6 GiB (4.5 GB resident, above PySCF's 4000 MB default ceiling) integrates in 54
+blocks of 224 points and gives -74.91469870612939 with a different `dm_pbe`, `vxc_pbe`,
+`j_matrix` and grid columns (grid weights and AO tables identical), at 2.0x the wall time;
+H2O (def2-svp, grid 3): 1 block against 137, 2.5x. The same in `external_refs.run_scf_with_cache`
+(e_tot -74.91469870612937 against ...939) and in the HF-for-CCSD seeded from it. A second
+memory-dependent decision was found on the way: `SCF._is_mem_enough()` (`nao**4/1e6 +
+current_memory < 0.95 max_memory`) chooses between the in-memory integral tensor and direct,
+screened J/K builds, and the two paths differ at the same level -- with the block size fixed but
+this choice free, a clean and a starved process still differed in the last digit of E_pbe
+(...937 against ...936).
 
-**KNOWN:** the O3 recorder pins `MoleBase.max_memory` (not `lib.param.MAX_MEMORY`, which is read
-at class definition) and the thread count, and with those pins HEAD and the `ae204537e` tree agree
-on all eight keys of all 31 architectures exactly; without them the last eight records
-alphabetically differed. The Tasks 5-6 report's 1e-13 H2O "input drift" is this effect.
+**Fix (`xcquinox/alec/pyscf_determinism.py`):** `pin_xc_block_size(mf)` replaces
+`mf._numint.block_loop` on the instance so every quadrature loop of that integrator runs at
+`REFERENCE_XC_BLKSIZE` = 224 x 56 = 12544 grid points whatever `max_memory` and the process's
+memory are (the `newton` and `density_fit` wrappers share the integrator); `pin_eri_path(mf)`
+replaces `mf._is_mem_enough` by the fixed rule `nao**4/1e6 < REFERENCE_ERI_INCORE_MB` (2000 MB,
+PySCF's own default in-memory budget for an integral tensor, `pyscf.df.incore.MAX_MEMORY`):
+incore up to nao = 211, direct above. `pin_reference_scf(mf)` applies both and is called on every
+reference mean-field the library builds: the reference SCF of `data.precompute_fixed_density_data`
+(PBE and SCAN, locked or not; the second-order stage shares the object), both the first attempt
+and every escalation tier of `external_refs.run_scf_with_cache` (which `benchmark_refs` and the
+SCAN seed cache reuse), `external_refs._build_hf_meanfield` (integral path only; a Hartree-Fock
+object has no grid quadrature), and the OEP baseline KS SCF and inner SCFs of `oep.py` (the inner
+objects replace `get_veff` by J plus a fixed potential and take only the integral-path pin). The
+2000 MB budget is also the memory bound: 40 eval workers per node hold at most 40 x 1.98 GB =
+79 GB of integral tensors, against 124 GB at a budget that kept the five pool species of nao
+212-236 (2.0-3.1 GB each) in memory. Block-size bound: one GGA / meta-GGA block costs
+5 x 12544 x nao x 8 bytes -- 35 MB at nao = 69 (H2O, 6-311++G(3df,2pd)), 50 MB at nao = 99
+(CH4), 158 MB at nao = 315 (C5H8 / RKT22, the largest species of the BH76 and W4-11 pools at that
+basis, 13 atoms) -- under 200 MB per worker everywhere; every small system stays one block (O at
+def2-svp / grid 3: 11904 pruned points; the closed-shell fixture's H2O at grid 1: 9304), so its
+summation order is the one a clean process already had, and the production level-3 grids take 3
+(N2, 26616 points) to 11 (C5H8, 131584) blocks where PySCF took 1 to 2. Wall time of the reference SCF (fifteen repeats on an idle box, medians, four threads): the
+locked O atom at def2-svp / grid 3 is unchanged (0.059 s to 0.058 s, one block in both
+cases); H2O at def2-svp / grid 3 goes from 0.131 s to 0.145 s (three blocks against one; +10
+percent of the median, the fastest repeats equal at 0.122 s; +6 percent of the 0.21 s
+precompute; a five-repeat run under load had given +19 percent); at the production identity
+the pinned SCF is faster, 0.357 s to 0.339 s on H2O (32128 points, 3 blocks against 1) and
+0.564 s to 0.460 s on CH4 (49408 points, 4 blocks against 1), the smaller blocks fitting the
+caches better than PySCF's whole-grid block.
 
-**TRIGGER:** before any workflow that compares records bitwise across processes (a cache keyed
-on record digests, a cross-node reproducibility test), pin the block size in the two reference
-paths, measure peak memory at the production identity on the cluster, and record the floor that
-remains.
+**Measured with both pins, one PySCF thread:** a clean process, one holding 3.6 GiB (above the
+ceiling) and one holding 2 GiB under a 2000 MB ceiling produce bit-identical `dm_pbe`, `E_pbe`,
+`E_non_xc`, `vxc_pbe`, `j_matrix` and every stored grid column for the locked O atom and for H2O
+(PBE and SCAN references), bit-identical `dm` / `mo_energy` / `e_tot` from `run_scf_with_cache`,
+and a bit-identical HF-for-CCSD determinant. Thread count: at four OpenMP threads two consecutive
+records in one process differ (PySCF's threaded reductions are not associative), with the pins
+in place; at one PySCF thread (`lib.num_threads(1)`, or `OMP_NUM_THREADS=1`) with a four-thread
+BLAS the records reproduce bit for bit, so the thread count that matters is PySCF's OpenMP count.
+The pins therefore hold the summation ORDER fixed; bitwise agreement across processes additionally
+requires the caller to run PySCF at one thread (the cluster job scripts export `OMP_NUM_THREADS`,
+so a production record is reproducible only up to its thread count). Every record carries
+`reference_xc_blksize`, `reference_blas_threads` (PySCF's OpenMP count) and `reference_eri_path`
+in `mol_metadata` (precompute) or the SCF cache payload (`external_refs`) so a mismatch is
+visible. What is left unpinned, by measurement: the exchange loop of a density-fitted
+Hartree-Fock object (the DF HF-for-CCSD) is sized from process memory too; it moved the HF
+density of the O atom by 4.2e-15 and the CCSD density on it by 4.8e-15 (rho on the grid 1.7e-13)
+between the two memory histories, below the CCSD convergence floor and every consumer's
+tolerance.
+
+**Cache identities:** none of the stamps enters an identity -- not the `external_refs` cache
+filenames (a CCSD reference is hours per species at the production identity, and a 1e-13 change in
+the HF seed does not move a CCSD density above its own floor), not the pretraining-data manifest,
+not the precompute memo. Existing caches load unchanged and report the stamps as None
+(`test_run_scf_with_cache_records_the_pins_and_keeps_an_older_cache`); the closed-shell fixture
+of O3 reproduces on all keys (its probe is one block and incore under both its own pins and
+these). Tests: `tests/test_pyscf_determinism.py` (32: the seam on `NumInt.block_loop` and
+`_is_mem_enough`, the wrappers, the bound against the pools, the metadata, the OEP objects, and a
+four-process end-to-end test that requires bit-identical records across memory histories with the
+pins and different ones without).
