@@ -235,4 +235,8 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Leaves through the shared hard exit so the task status is the
+    # verdict (see xcquinox/alec/cluster/_exit.py); imported here since
+    # the helper is needed only when the module is RUN.
+    from xcquinox.alec.cluster._exit import run_and_exit
+    run_and_exit(main)

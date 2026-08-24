@@ -2185,6 +2185,123 @@ def test_run_arch_reports_an_unreadable_certificate_as_missing(tmp_path):
     assert result["certificate"]["present"] is False
 
 
+# --------------------------------------------------------------------------- #
+# A stage that finished its work and then aborted at interpreter teardown
+# --------------------------------------------------------------------------- #
+
+class AbortAfterWritingRunner(FakeRunner):
+    """``_pretrain`` as cluster job 2134455 ran it on node dn024.
+
+    The stage did all of its work -- both pretraining phases, the fidelity
+    certificate computed and written, ``xnet.eqx`` and ``cnet.eqx`` on disk,
+    ``pretrain SUCCEEDED`` in the log -- and the interpreter then died in
+    glibc's ``corrupted size vs. prev_size while consolidating`` during
+    teardown, so the process was reported as killed by SIGABRT (rc -6). The
+    certificate is written HERE, at the pretrain stage, because that is the
+    stage that computes it; the sequence never reaches the certificate stage.
+    """
+
+    def __call__(self, argv, **kwargs):
+        stage = self._stage_of(argv)
+        completed = super().__call__(argv, **kwargs)
+        if stage == "pretrain":
+            cert = (self.run_dir / "pretrain" / "deep"
+                    / "fidelity_certificate.json")
+            cert.parent.mkdir(parents=True, exist_ok=True)
+            cert.write_text(json.dumps(_certificate_payload(self.verdict)))
+            kwargs["stdout"].write(
+                "[harness pretrain arch=deep] pretrain SUCCEEDED\n")
+        return completed
+
+
+def _aborting_result(tmp_path, verdict="FAIL"):
+    run_dir = tmp_path / "deep" / "runs" / "run_20260821T000000Z"
+    return _run_arch(tmp_path, fake=AbortAfterWritingRunner(
+        run_dir, rc_by_stage={"pretrain": -6}, verdict=verdict))[0]
+
+
+def test_run_arch_reads_the_certificate_a_stage_wrote_before_aborting(
+        tmp_path):
+    """The verdict is a property of the FILE, not of the writer's exit status.
+
+    The record was assembled only at the certificate stage, so a sequence that
+    stopped at the pretrain stage carried the record taken BEFORE any stage
+    ran -- ``present: False`` for a certificate that was on disk, and a report
+    column reading ``missing``. That is what cluster job 2134455 printed for a
+    certificate it had itself computed.
+    """
+    result = _aborting_result(tmp_path)
+    assert [s["name"] for s in result["stages"]] == [
+        "submit", "datagen", "pretrain"]
+    certificate = result["certificate"]
+    assert certificate["present"] is True
+    assert certificate["verdict"] == "FAIL"
+    assert result["certificate_verdict"] == "FAIL"
+    assert certificate["enforced"] is False
+    assert certificate["gate_released"] is True
+    assert wm.arch_row(result)["certificate"] == "FAIL (waived)"
+
+
+def test_run_arch_keeps_the_abort_a_failure(tmp_path):
+    """The rc is not masked. The stage completed its work, but the process it
+    ran in died on a signal, and SLURM records exactly that for the array
+    task: an ``afterok`` dependency would not fire, which is what makes this
+    production-blocking rather than cosmetic. The matrix must not report a
+    clean architecture for a job graph that would stall.
+    """
+    result = _aborting_result(tmp_path)
+    assert result["stages"][-1] == {
+        **result["stages"][-1], "name": "pretrain", "rc": -6}
+    assert wm.matrix_exit_code([result]) == 1
+
+
+def test_findings_name_the_completed_then_aborted_stage(tmp_path):
+    """What an operator reads instead of "certificate missing"."""
+    result = _aborting_result(tmp_path)
+    text = wm.write_matrix_report([result], tmp_path / "matrix.md").read_text()
+    # The table column is the first thing read, and it no longer says the file
+    # is absent: it carries the verdict the aborted stage actually recorded.
+    row = [line for line in text.splitlines()
+           if line.startswith("| deep |")]
+    assert len(row) == 1, text
+    assert "FAIL (waived)" in row[0]
+    assert "missing" not in row[0]
+    findings = _findings_of(text)
+    assert findings is not None
+    assert "stage pretrain exited -6" in findings
+    assert "process ABORT" in findings
+    assert "xcquinox/alec/cluster/_exit.py" in findings
+    # The certificate is named as present, with its verdict, and the situation
+    # is spelled out rather than left for the reader to infer.
+    assert "the certificate IS on disk" in findings
+    assert "wrote its outputs and then aborted at exit" in findings
+    assert "'FAIL'" in findings
+    # ...and never the finding written for a certificate that was not written.
+    assert "wrote no certificate" not in findings
+
+
+def test_teardown_note_is_withheld_from_an_ordinary_failure(tmp_path):
+    """A stage that exited 1 did not abort, and must not be described as one.
+
+    The note names a specific mechanism -- a completed stage killed during
+    interpreter shutdown -- so attaching it to every non-zero exit would tell
+    an operator to go looking for outputs that a genuinely broken stage never
+    wrote.
+    """
+    run_dir = tmp_path / "deep" / "runs" / "run_20260821T000000Z"
+    result, _fake = _run_arch(
+        tmp_path, fake=FakeRunner(run_dir, rc_by_stage={"datagen": 1}))
+    findings = _findings_of(wm.write_matrix_report(
+        [result], tmp_path / "matrix.md").read_text())
+    assert "stage datagen exited 1" in findings
+    assert "process ABORT" not in findings
+    assert wm._teardown_abort_note(1) == ""
+    assert wm._teardown_abort_note(0) == ""
+    assert wm._teardown_abort_note(wm.TIMEOUT_RC) == ""
+    for rc in wm.TEARDOWN_ABORT_RCS:
+        assert "process ABORT" in wm._teardown_abort_note(rc), rc
+
+
 def test_write_matrix_report_names_a_missing_certificate(tmp_path):
     text = wm.write_matrix_report([_clean_result(certificate={
         "present": False, "verdict": None, "enforced": None,

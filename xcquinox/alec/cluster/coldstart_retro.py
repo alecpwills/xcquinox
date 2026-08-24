@@ -129,4 +129,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The stage's verdict is the status this process hands SLURM, and
+    # JAX's atexit teardown can abort the interpreter AFTER main() has
+    # returned it (cluster job 2134455: the pretrain worker logged
+    # "pretrain SUCCEEDED" and then died in glibc's "corrupted size vs.
+    # prev_size", rc -6, so the stage read as FAILED and the dependent
+    # array never ran). run_and_exit flushes and leaves through os._exit,
+    # so the status is the verdict. See xcquinox/alec/cluster/_exit.py.
+    # Imported HERE rather than in the module body: several of these
+    # modules pin what their import pulls in (``fidelity`` is held to a
+    # whitelist of cheap readers so the on-node gates can read a
+    # certificate without the training stack), and the helper is needed
+    # only when the module is RUN.
+    from xcquinox.alec.cluster._exit import run_and_exit
+    run_and_exit(main)

@@ -3,7 +3,6 @@ import argparse
 import json
 import os
 import pickle
-import sys
 import time
 import traceback
 
@@ -63,4 +62,26 @@ def main(args=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The worker's verdict is the status this process hands its parent
+    # (``parallel.run_workers`` reads the return code beside the JSON result
+    # line), and JAX's atexit teardown can abort the interpreter AFTER main()
+    # has returned it (cluster job 2134455: a harness stage logged its own
+    # SUCCEEDED line and then died in glibc's "corrupted size vs. prev_size",
+    # rc -6, so the completed stage read as FAILED). run_and_exit flushes and
+    # leaves through os._exit, so the status is the verdict.
+    #
+    # The shared helper is loaded BY PATH rather than imported: these modules
+    # are reached only via direct-file launch and set their thread caps inside
+    # main() before the first JAX import, so a package-qualified import here
+    # would pull xcquinox.alec.cluster -- and JAX with it -- before those caps
+    # are in place. The helper itself is stdlib-only.
+    import importlib.util as _importlib_util
+    import pathlib as _pathlib
+
+    _exit_path = (_pathlib.Path(__file__).resolve().parent.parent
+                  / "cluster" / "_exit.py")
+    _exit_spec = _importlib_util.spec_from_file_location(
+        "_xcquinox_alec_hard_exit", _exit_path)
+    _exit_mod = _importlib_util.module_from_spec(_exit_spec)
+    _exit_spec.loader.exec_module(_exit_mod)
+    _exit_mod.run_and_exit(main)

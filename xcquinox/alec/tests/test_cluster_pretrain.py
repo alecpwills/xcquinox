@@ -803,5 +803,94 @@ def test_pretrain_log_line_states_every_protocol_knob(tmp_path, monkeypatch,
         assert stated in line[0], stated
 
 
+# ---------------------------------------------------------------------------
+# The exit status the array task hands SLURM
+# ---------------------------------------------------------------------------
+
+def _abort_injection(tmp_path):
+    """A ``sitecustomize`` that registers ``os.abort`` as an atexit handler.
+
+    This puts a real launch of the worker into the state the cluster produced
+    without editing the worker: ``site`` imports ``sitecustomize`` at startup,
+    so the handler is registered before the module runs -- exactly as JAX
+    registers its backend cleanup when it is imported.
+    """
+    inject = tmp_path / "inject"
+    inject.mkdir()
+    (inject / "sitecustomize.py").write_text(
+        "import atexit, os\natexit.register(os.abort)\n")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(inject)
+    env.setdefault("JAX_PLATFORMS", "cpu")
+    env.pop("XCQ_NO_HARD_EXIT", None)
+    return env
+
+
+def _launch_pretrain(env, *argv):
+    """Launch the worker the way the rendered ``pretrain.sbatch`` does."""
+    import subprocess
+    return subprocess.run(
+        [sys.executable, "-m", "xcquinox.alec.cluster._pretrain", *argv],
+        capture_output=True, text=True, timeout=600, env=env)
+
+
+@pytest.mark.parametrize("argv,expected_rc", [
+    ((), 2),                              # argparse usage exit
+    (("/nonexistent/run", "0"), 1),       # the worker's own refusal
+])
+def test_pretrain_exit_status_survives_an_abort_at_teardown(
+        tmp_path, argv, expected_rc):
+    """The defect measured on cluster job 2134455, node dn024.
+
+    The pretrain worker completed both phases, wrote
+    ``fidelity_certificate.json``, ``xnet.eqx`` and ``cnet.eqx``, logged
+    ``pretrain SUCCEEDED``, and the interpreter then died in glibc's
+    ``corrupted size vs. prev_size while consolidating`` during teardown -- so
+    the array task was recorded as killed by SIGABRT and the train array's
+    ``afterok`` dependency would never have fired. The worker's own verdict
+    must reach the caller whatever teardown does; a return code the worker
+    produced is asserted here rather than a successful pretrain, because the
+    property under test is the EXIT, not the training.
+    """
+    proc = _launch_pretrain(_abort_injection(tmp_path), *argv)
+    assert proc.returncode == expected_rc, (
+        f"rc={proc.returncode}\n{proc.stdout}\n{proc.stderr}")
+
+
+def test_red_pretrain_under_stock_teardown_is_reported_as_a_signal_death(
+        tmp_path):
+    """The same launch with ``XCQ_NO_HARD_EXIT=1``: the pre-change behaviour.
+
+    -6 is SIGABRT as ``subprocess`` reports it, 134 as a shell does. Without
+    this control the assertion above would not show that anything changed.
+    """
+    import resource
+    env = _abort_injection(tmp_path)
+    env["XCQ_NO_HARD_EXIT"] = "1"
+    # The abort is deliberate; do not leave a core behind. The limit is
+    # lowered on this process and inherited by the child, rather than being
+    # set child-side, which would force subprocess down the fork() path that
+    # the interpreter warns can deadlock a child of a JAX process.
+    soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
+    try:
+        proc = _launch_pretrain(env, "/nonexistent/run", "0")
+    finally:
+        resource.setrlimit(resource.RLIMIT_CORE, (soft, hard))
+    assert proc.returncode == -6, (
+        f"rc={proc.returncode}\n{proc.stdout}\n{proc.stderr}")
+
+
+def test_pretrain_log_reaches_the_caller_through_the_hard_exit(tmp_path):
+    """``os._exit`` runs no finalizers, so the worker's log must be flushed.
+
+    The SLURM log is the only record of why a stage refused; an exit that
+    preserved the status but dropped the log would trade one defect for
+    another.
+    """
+    proc = _launch_pretrain(_abort_injection(tmp_path), "/nonexistent/run", "0")
+    assert "resolved_config.yaml not found" in proc.stdout, proc.stdout
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

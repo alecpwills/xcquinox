@@ -499,6 +499,22 @@ DEFAULT_STAGE_TIMEOUT_S = 3600
 #: past its limit.
 TIMEOUT_RC = 124
 
+#: Return codes a process ABORT produces, as ``subprocess`` reports them
+#: (negative: killed by the signal) and as a shell reports them (128 + signal):
+#: SIGABRT, which glibc raises on heap corruption, and SIGSEGV. They are the
+#: signature of the C-extension TEARDOWN class -- an interpreter that dies
+#: during shutdown, after the stage's work is finished and its outputs are on
+#: disk. Measured on the workflow-matrix smoke (cluster job 2134455, node
+#: dn024): the pretrain stage wrote its certificate and both checkpoints,
+#: logged ``pretrain SUCCEEDED``, and then died in glibc's ``corrupted size
+#: vs. prev_size while consolidating``. The rc is NOT masked -- SLURM records
+#: the same status for the array task, and an ``afterok`` dependency would not
+#: fire -- but the findings block names the class so an operator reads
+#: "completed, then aborted" rather than "did not run". ``_train_task`` uses
+#: the same vocabulary for its own worker (``_BENIGN_TEARDOWN_CODES``), and
+#: ``cluster/_exit.py`` is what removes the class at the source.
+TEARDOWN_ABORT_RCS = frozenset({-6, 134, -11, 139})
+
 #: pytest's exit code for a run that collected nothing
 #: (``pytest.ExitCode.NO_TESTS_COLLECTED``). The oracle module belongs to spec
 #: 3.1; while it is absent, or if a selector stops matching it, the oracle
@@ -1177,6 +1193,17 @@ def run_arch(arch, work_root, *, runner=subprocess.run,
                 tolerated = tolerated or validate["expected"]
             if stages[-1]["rc"] != 0 and not tolerated:
                 break
+        # The certificate is read from DISK once more, whatever the sequence
+        # did with its return codes. ``_pretrain`` computes and WRITES the
+        # certificate itself, so a pretrain stage that finished its work and
+        # then aborted at interpreter teardown (rc -6) leaves a complete
+        # certificate behind a non-zero stage and a sequence that stopped
+        # before the certificate stage ever ran. Gated on the stage return
+        # code, the record then said ``present: False`` for a file that was on
+        # disk, and the report's certificate column read ``missing`` -- what an
+        # operator saw for cluster job 2134455. The verdict is a property of
+        # the FILE, not of the exit status of the process that wrote it.
+        certificate = _certificate_record(run_dir, arch)
 
     oracle_tests = {"rc": None, "summary_line": "", "log": None,
                     "selector": oracle_selector(arch), "seconds": 0.0}
@@ -1497,6 +1524,30 @@ def _unexpected_stage_failure(result):
     return None
 
 
+def _teardown_abort_note(rc) -> str:
+    """The teardown-class sentence for an abort return code, or ``''``.
+
+    A stage that exits on SIGABRT or SIGSEGV says nothing about whether its
+    work is done: the interpreter can die during SHUTDOWN, after the outputs
+    are written and the stage has logged its own success line. Scoring it is
+    not in question -- it stays a failure, because SLURM records the same
+    status for the array task and an ``afterok`` dependency would not fire --
+    but an operator reading only "stage X exited -6" looks for work that never
+    happened, so the class and the place to check are named here.
+    """
+    if rc not in TEARDOWN_ABORT_RCS:
+        return ""
+    return (f" Return code {rc} is a process ABORT (SIGABRT/SIGSEGV), the "
+            "C-extension teardown signature: the interpreter can die during "
+            "SHUTDOWN, after the stage finished and wrote its outputs, so "
+            "read the stage log for its own completion line before treating "
+            "this as work that did not happen. It is scored as a failure "
+            "either way -- SLURM records the same status and a dependent "
+            "array would not start -- and every harness entry point leaves "
+            "through xcquinox/alec/cluster/_exit.py so that a completed "
+            "stage cannot end this way.")
+
+
 def write_matrix_report(results, path) -> Path:
     """Write the matrix table as markdown, and the full records as JSON.
 
@@ -1561,8 +1612,11 @@ def write_matrix_report(results, path) -> Path:
         if failed is not None:
             findings.append(
                 f"- {record['arch']}: stage {failed['name']} exited "
-                f"{failed['rc']}; the stages after it did not run. Log: "
-                f"{failed.get('log')}")
+                f"{failed['rc']}; the stages after it did not run."
+                # Before the log path, which stays last: a sentence appended
+                # after it reads as part of the path.
+                + _teardown_abort_note(failed.get("rc"))
+                + f" Log: {failed.get('log')}")
         # `certificate_record is None` is "the result carries no certificate
         # record at all", which _is_clean skips entirely; an empty dict is a
         # record that states nothing, which it does not.
@@ -1603,6 +1657,34 @@ def write_matrix_report(results, path) -> Path:
                     "the certificate stage writes states one, so there is no "
                     "evidence here that the on-node gates would release this "
                     f"run: {certificate.get('gate_message', '')}")
+        elif certificate.get("present"):
+            # The certificate stage never ran and the certificate is on disk
+            # anyway. ``_pretrain`` computes and writes it, so the file is the
+            # output of a stage that ran BEFORE the sequence stopped; when
+            # that stage stopped by aborting at exit, "missing" is the one
+            # thing the certificate is not. Naming the verdict here is what
+            # separates "completed, then aborted" from "did not run" for a
+            # reader who has only the report.
+            waiver = " (waived)" if certificate.get("enforced") is False else ""
+            if failed is not None:
+                stopped = (f"the sequence stopped at stage {failed['name']} "
+                           f"(exited {failed['rc']})")
+                aborted = failed.get("rc") in TEARDOWN_ABORT_RCS
+            else:
+                stopped = "the sequence stopped before it"
+                aborted = False
+            how = ("The stage wrote its outputs and then aborted at exit "
+                   f"(rc {failed['rc']}): a stage that COMPLETED and is "
+                   "recorded as a failure, not a missing certificate."
+                   if aborted else
+                   "The verdict was therefore written by an earlier stage "
+                   "(the pretrain stage computes it), and what stopped the "
+                   "sequence is the finding above.")
+            findings.append(
+                f"- {record['arch']}: the certificate stage did not run -- "
+                f"{stopped} -- and the certificate IS on disk at "
+                f"{certificate.get('path')}, verdict "
+                f"{certificate.get('verdict')!r}{waiver}. {how}")
         # Defensive: _is_clean requires the stage records to BE the stage
         # order, by name and in order. Every reachable way of ending short
         # already has a finding above -- a sequence that raised, a stage that
@@ -1882,4 +1964,17 @@ def main(argv=None, *, runner=subprocess.run) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through the CLI
-    sys.exit(main())
+    # The stage's verdict is the status this process hands SLURM, and
+    # JAX's atexit teardown can abort the interpreter AFTER main() has
+    # returned it (cluster job 2134455: the pretrain worker logged
+    # "pretrain SUCCEEDED" and then died in glibc's "corrupted size vs.
+    # prev_size", rc -6, so the stage read as FAILED and the dependent
+    # array never ran). run_and_exit flushes and leaves through os._exit,
+    # so the status is the verdict. See xcquinox/alec/cluster/_exit.py.
+    # Imported HERE rather than in the module body: several of these
+    # modules pin what their import pulls in (``fidelity`` is held to a
+    # whitelist of cheap readers so the on-node gates can read a
+    # certificate without the training stack), and the helper is needed
+    # only when the module is RUN.
+    from xcquinox.alec.cluster._exit import run_and_exit
+    run_and_exit(main)

@@ -91,7 +91,21 @@ _CHEAP_XCQ_MODULES = frozenset({
     # parser's default reads it in its module body, and it must not drag
     # ``orientation_lock``'s numpy in behind it.
     "xcquinox.alec.orientation_lock_default",
+    # The shared hard exit, reached only from this module's
+    # ``if __name__ == "__main__"`` block, which an import never runs. It is
+    # stdlib-only by construction, and whitelisting it rather than exempting
+    # the block keeps the walk transitive: a heavy import added to the helper
+    # would still be caught here.
+    "xcquinox.alec.cluster._exit",
 })
+
+#: Whitelisted modules the SOURCE walk sees but an import never binds, because
+#: the only statement importing them is the ``if __name__ == "__main__"``
+#: block. The two tests below therefore treat them oppositely on purpose: the
+#: walk accepts the name and recurses into it, and the closure test requires
+#: the name to be ABSENT from ``sys.modules`` after the body has run -- which
+#: is the measurement that the entry block really is off the import path.
+_ENTRY_BLOCK_ONLY_MODULES = frozenset({"xcquinox.alec.cluster._exit"})
 
 # Upper bound on the modules present in sys.modules after the file is executed
 # with the package __init__ modules stubbed (the closure test below). The
@@ -269,11 +283,13 @@ print(json.dumps({"base": base, "after": len(sys.modules),
     assert result["after"] < _CLOSURE_MODULE_BOUND, (
         result["after"], result["base"])
     # Exactly the three whitelisted readers, and the stubs the probe installed
-    # itself: no deferred xcquinox module is reached through any route.
+    # itself: no deferred xcquinox module is reached through any route. The
+    # entry-block-only names are subtracted rather than tolerated, so their
+    # ABSENCE here is asserted: an import of this module must not reach them.
     assert {m for m in loaded if m.split(".")[0] == "xcquinox"} == (
-        set(_CHEAP_XCQ_MODULES) | {"xcquinox", "xcquinox.alec",
-                                   "xcquinox.alec.cluster",
-                                   "xcquinox.alec.cluster.fidelity"})
+        (set(_CHEAP_XCQ_MODULES) - _ENTRY_BLOCK_ONLY_MODULES)
+        | {"xcquinox", "xcquinox.alec", "xcquinox.alec.cluster",
+           "xcquinox.alec.cluster.fidelity"})
     # The module really executed under the stubs, so the counts above are the
     # cost of a complete import and not of a failed one.
     assert result["filename"] == fid.CERTIFICATE_FILENAME
