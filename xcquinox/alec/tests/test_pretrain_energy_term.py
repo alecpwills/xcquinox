@@ -1667,6 +1667,68 @@ def test_a_saturating_network_keeps_its_loss_finite_under_a_huge_rate(
     assert (ck / "xnet.eqx").is_file() and (ck / "cnet.eqx").is_file()
 
 
+def test_a_late_overflow_is_refused_by_the_trajectory_check(tmp_path,
+                                                            monkeypatch):
+    """The two refusals are independent, and this is the case that separates
+    them. ``_refuse_a_diverged_fit`` tests ``best_value``, a running minimum
+    over EVERY validation, so a validated fit that scored finitely early and
+    overflowed later passes that check and is refused by the TRAJECTORY check
+    instead. The run then has no product: no final checkpoint is written for
+    either network, and the finite best-validation network survives only as
+    the ``xnet/xnet_val_best.eqx`` the loop had already written at its
+    improvement.
+
+    The state is not reachable from the shipped networks -- the enhancement
+    factor is bounded (the test above), and an overflow through the data is
+    non-finite from step 1, which makes every validation non-finite too -- so
+    the composition is driven here by poisoning the last entry of a real,
+    finite trajectory; that entry is the only part of the run that is not
+    genuine.
+    """
+    import xcquinox.alec.pretrain as pretrain_module
+    from xcquinox.alec.pretrain import PretrainDiverged
+    d = tmp_path / "late_nan"
+    d.mkdir()
+    _write_system_npz(str(d), natoms=(2, 3))
+    real_loop = pretrain_module._train_pretrain_network
+    records = []
+
+    def _overflow_on_the_last_step(*args, **kwargs):
+        model, losses, record = real_loop(*args, **kwargs)
+        records.append(record)
+        if len(records) == 1:  # the xnet fit; the cnet phase is never reached
+            losses = list(losses[:-1]) + [float("nan")]
+        return model, losses, record
+
+    monkeypatch.setattr(pretrain_module, "_train_pretrain_network",
+                        _overflow_on_the_last_step)
+    ck = tmp_path / "ck"
+    with pytest.raises(PretrainDiverged, match="non-finite training loss"):
+        run_pretrain(_spec(tmp_path, str(d), validation_fraction=0.5,
+                           validation_seed=3, validate_every=1, patience=2))
+    # The fit the trajectory check refused had scored finite validations
+    # throughout, so the diverged-fit check ahead of it passed it through.
+    assert len(records) == 1
+    assert np.isfinite(float(records[0]["best_value"]))
+    assert records[0]["best_step"] >= 1
+    assert all(np.isfinite(entry[-1]) for entry in records[0]["history"])
+    failure = json.loads((ck / "pretrain_failed.json").read_text())
+    # WHICH check fired: the reason and the payload are the trajectory
+    # check's; the diverged-fit check would have written
+    # "no finite validation value was recorded" with n_validations/history.
+    assert failure["reason"] == "a recorded training loss is non-finite"
+    assert failure["network"] == "xnet"
+    assert "n_validations" not in failure
+    assert failure["first_non_finite_step"] == failure["steps_run"] == 2
+    assert failure["n_non_finite"] == 1
+    assert failure["losses"][0] is not None and failure["losses"][1] is None
+    # Neither final checkpoint is written, and the good best-validation
+    # network is on disk only under the run's own xnet directory.
+    assert not (ck / "xnet.eqx").exists()
+    assert not (ck / "cnet.eqx").exists()
+    assert (ck / "xnet" / "xnet_val_best.eqx").is_file()
+
+
 # ---------------------------------------------------------------------------
 # The snapshot cadence against the trainer it was transcribed from
 # ---------------------------------------------------------------------------

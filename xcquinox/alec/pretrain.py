@@ -555,11 +555,15 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
     every step is jitted, 1, is also the value that recompiles every step.
     Measured on a 3x16 net, marginal wall per optimizer step: 234.96 ms at
     4000 rows and 233.17 ms at 16350 rows through the trainer -- independent
-    of the row count, i.e. compilation rather than work -- against 0.94 ms and
-    4.53 ms here, which holds one ``filter_jit`` for the whole run and clears
-    nothing. Raising ``clear_every`` does not close that gap: the
-    non-clearing steps then run UNJITTED and the trajectory moves (first
-    departure at step 2, ``0x1.ea418905eea20p-7`` against ``...21p-7``).
+    of the row count, i.e. compilation rather than work -- against 1.8 ms at
+    4000 rows and 4.8 to 5.2 ms at 16350 (19.5 ms at 48660) here, which holds
+    one ``filter_jit`` for the whole run and clears nothing. The figures on
+    this side are a measured RANGE rather than a constant: they are
+    host-dependent, and they GROW with the row count, which is the signature
+    the trainer's own figure lacks. Raising ``clear_every`` does not close
+    that gap: the non-clearing steps then run UNJITTED and the trajectory
+    moves (first departure at step 2, ``0x1.ea418905eea20p-7`` against
+    ``...21p-7``).
 
     On identical rows the two are the same arithmetic -- one full-batch step
     per iteration on the same loss and the same optimizer chain, the optimizer
@@ -736,10 +740,20 @@ def _refuse_a_non_finite_trajectory(losses, *, network, arch_name,
     criterion here: one non-finite entry anywhere in it and the run has no
     product.
 
-    The check guards the final serialisation, so it covers both paths; on a
-    validated run :func:`_refuse_a_diverged_fit` has already fired for the
-    same fit, because a non-finite training loss makes the weights non-finite
-    and every held-out score with them.
+    The check guards the final serialisation, so it covers both paths, and it
+    is independent of :func:`_refuse_a_diverged_fit` rather than downstream of
+    it: that one tests ``best_value``, a running MINIMUM over every
+    validation, so a fit that scored finitely early and overflowed later
+    passes it and is refused here instead. Where the two do meet, this one
+    wins -- no final checkpoint is written, and the finite best-validation
+    network survives only as the ``<net>_val_best.eqx`` the loop had already
+    written. What keeps that composition out of the shipped architectures is
+    not an ordering between the checks but the bounded enhancement factor
+    (the Lieb-Oxford map, ``xcquinox/net.py:18-40``): no weights can drive the
+    loss non-finite, measured at a learning rate of 1e14, so an overflow
+    reaches these runs through the DATA, and such a trajectory is non-finite
+    from step 1 -- at which point every validation is non-finite too and the
+    diverged-fit check fires first.
 
     The periodic ``xc.eqx.<step>`` snapshots already on disk are LEFT in
     place. They were written before the overflow, from finite losses (the
@@ -1243,7 +1257,8 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # uses, so the targets cannot be the other parent's: reading the flag here
     # while resolve_parent_density read the flag OR the descriptor put an
     # architecture carrying the descriptor alone on the SCAN density against
-    # PBE targets, 23.8 mHa per system off its parent.
+    # PBE targets, 24.0 mHa per system off its parent (the re-measured
+    # per-system max |dE_x|, 23.995 mHa).
     if ArchitectureConfig.is_meta_gga(spec.arch):
         Fx_target = pretrain_data["Fx_scan" + x_suffix]
         Fc_target = pretrain_data["Fc_scan_all"]

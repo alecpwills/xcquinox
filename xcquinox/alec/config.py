@@ -229,7 +229,7 @@ class ArchitectureConfig:
         # descriptor has no alpha to gate on, and the descriptor without the
         # flag used to be resolved onto the SCAN parent density by
         # `resolve_parent_density` while `run_pretrain` fitted it to the PBE
-        # targets from the flag alone -- 23.8 mHa per system off its parent,
+        # targets from the flag alone -- 24.0 mHa per system off its parent,
         # reported by nothing.
         _descriptor_names = tuple(spec.name for spec in self.descriptors)
         if bool(self.meta_gga) != ArchitectureConfig.is_meta_gga(self):
@@ -264,7 +264,7 @@ class ArchitectureConfig:
         enhancement-factor targets, the per-system parent-energy keys and the
         (s, alpha) mesh from the flag ALONE, so an architecture carrying the
         descriptor without the flag was fitted to PBE targets on the SCAN
-        self-consistent density -- measured 23.8 mHa per system off its
+        self-consistent density -- measured 24.0 mHa per system off its
         parent, with nothing in the run reporting a disagreement.
 
         A static method rather than a property because the callers include
