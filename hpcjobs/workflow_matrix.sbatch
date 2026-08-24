@@ -37,6 +37,20 @@
 # and mails nothing -- it runs the stage modules in-process on this one node --
 # so this script is the only thing SLURM sees.
 #
+# WHAT THIS SCRIPT NEEDS ON THE CLUSTER: the WHOLE xcquinox package and the
+# whole hpcjobs directory, not these two files. The matrix drives the stage
+# modules of the same tree (cluster/_datagen, _pretrain, fidelity, _preflight,
+# _train_task, _eval_one_spec, validate_run, the rendered template) and the
+# spin-scaling oracle module; a checkout carrying an older copy of any of them
+# accepts the same command line and then drives contracts that have moved. The
+# push is therefore one line from the local repository root:
+#
+#   rsync -av xcquinox hpcjobs \
+#         "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/
+#
+# and the checkout's own contract is read back below (MATRIX_CONTRACT), so a
+# partial sync exits 3 at second zero instead of driving moved stages.
+#
 # EXIT CODES (SLURM mails FAIL on any non-zero code; read the verdict line in
 # the log before treating one as a crash):
 #   0  every architecture completed every stage with its expected outcome,
@@ -45,47 +59,81 @@
 #   1  the matrix RAN TO COMPLETION and at least one architecture did not.
 #      The report is written and the finding is the report's Findings block.
 #      Not a crash.
-#   3  the job could not run the matrix at all (environment, repository or
-#      cached inputs). Nothing was measured.
+#   3  the job could not run the matrix at all (environment, repository,
+#      cached inputs, a knob the matrix would have refused, a wall request
+#      below the derived bound, or a command line the matrix refused with its
+#      own usage code 2). Nothing was measured.
 #
-# WALL DERIVATION (the 24 h request). Per architecture the matrix runs 11
-# timed subprocesses -- the ten stages of workflow_matrix.STAGE_ORDER plus the
-# oracle selection -- and kills any one of them at --timeout-s. The request is
-# that cap taken as an UPPER BOUND, not an estimate:
+# WALL DERIVATION. The request is derived from the bound, not the bound from
+# the request. Per architecture the matrix runs 11 timed subprocesses -- the
+# ten stages of workflow_matrix.STAGE_ORDER plus the oracle selection -- and
+# kills any one of them at --timeout-s, so the cap taken as an UPPER BOUND is:
 #
 #     per architecture  11 stages x 1800 s               = 19800 s = 5.5 h
 #     per shard         ceil(16 archs / 4 shards) = 4    -> 4 x 5.5 h = 22.0 h
-#     staging (74 MB reference copy) + interpreter starts        ~  0.2 h
-#     request                                                      24 h
+#     bound                                                        22.0 h
+#     margin (74 MB reference copy, interpreter starts, slack)  +   2.0 h
+#     request           bound + margin                              24 h
 #
-# 1800 s is the per-stage wall the matrix's own template renders for these same
-# stages (cluster.time / preflight_time / eval_time / pretrain_time =
-# "00:30:00"). It is a hang detector, not a schedule: the expectation for the
-# WHOLE per-architecture sequence at this identity is 10-15 min, so a single
-# stage past 30 min is stuck rather than slow.
+# The same arithmetic is recomputed AT RUN TIME below from the stage list the
+# installed module reports and from the knobs this job was given, and compared
+# with the wall actually requested (SLURM_JOB_END_TIME when SLURM set it,
+# otherwise the #SBATCH --time directive above): a knob that outruns the
+# request is refused with both numbers rather than killed at the wall, where
+# the whole pass would be lost -- main writes the report only after the last
+# architecture returns.
+#
+# PARTITION CAP. hpcjobs/SEAWULF_RUNBOOK.md records short-* 4 h, medium-* 12 h,
+# long-28core 2 days and long-96core-shared longer still; it states NO cap for
+# long-40core. Verify it before the first submission --
+#   sinfo -o "%20P %10l" -p long-40core
+# -- and if it caps below 24 h, submit to long-28core (--cpus-per-task=28) or
+# long-96core-shared (--cpus-per-task=96) from the matching login instance. An
+# over-cap request is rejected by sbatch at submission, not after a queue wait.
+#
+# THE PER-STAGE CAP (1800 s) is half the module's own hang detector,
+# DEFAULT_STAGE_TIMEOUT_S = 3600, and equals the per-stage wall the matrix's
+# own template renders for these same stages (cluster.time / preflight_time /
+# eval_time / pretrain_time = "00:30:00"). It is a hang detector, not a
+# schedule: the expectation for the WHOLE per-architecture sequence at this
+# identity is 10-15 min. Measured against the cached references' own run logs
+# (notebooks/checkpoints_step7/external_refs/_run_log_*.json), the eight
+# species the two cells need build in 160.8 s in total at the LARGER step-7
+# basis (H 4.0, H2 8.1, O 11.1, Li 12.3, HLi 7.3, H2O 22.4, N2 43.8, N2O
+# 51.8), an order of magnitude inside the cap. The tail is what the two caps
+# disagree about: the same logs record a FAILED N2O attempt at 2558 s (and
+# F2O at 11623 s, not in this pool), which would be killed at 1800 s and
+# survive at 3600 s. That is the intended behaviour -- a non-converging OEP
+# cascade is the hang this cap detects -- and the signal is rc 124 on
+# `preflight` for the first architecture of a work root. If a preflight
+# genuinely needs longer, raise MATRIX_TIMEOUT_S and the --time request
+# together; the bound below scales with both.
 #
 # 16 architectures per submission, not 31: the registry holds 31, and 31 in one
 # job bounds at ceil(31/4) x 5.5 h = 44 h -- inside the 2-day cap of
 # long-28core, but with no margin and beyond every shorter queue. MATRIX_BATCHES
 # therefore defaults to 2, so the registry is covered by two submissions (16
 # and 15 architectures), each bounded by this request. MATRIX_BATCHES=1 puts
-# all 31 in one job: raise the request (sbatch --time=46:00:00) and submit to a
-# queue that allows it. A single-architecture run (MATRIX_ARCHS=<name>) bounds
-# at 11 x 1800 s = 5.5 h, so submit it with --time=06:00:00 rather than paying
-# the 24 h request in queue time.
+# all 31 in one job and is REFUSED at this request: raise it
+# (sbatch --time=46:00:00) on a queue that allows it. A single-architecture run
+# (MATRIX_ARCHS=<name>) bounds at 11 x 1800 s = 5.5 h and takes the whole
+# allocation (shards drop to 1), so submit it with --time=06:00:00 rather than
+# paying the 24 h request in queue time.
 #
 # ENVIRONMENT KNOBS (all optional; every one is echoed into the log):
 #   MATRIX_ARCHS      'all' (default) or a comma-separated list. A list is
-#                     taken verbatim and TURNS BATCHING OFF. An empty value is
-#                     refused rather than read as 'all'.
+#                     checked NAME BY NAME against the installed registry and
+#                     TURNS BATCHING OFF. An empty value is refused rather
+#                     than read as 'all'.
 #   MATRIX_BATCHES    number of submissions the registry is split across
 #                     (default 2). Applies only when MATRIX_ARCHS is 'all'.
 #   MATRIX_BATCH      which batch this job runs, 0-based (default 0).
-#   MATRIX_SHARDS     architectures run concurrently, 1..4 (default 4). The
-#                     matrix divides the node's cores by this number to set
-#                     each stage's BLAS thread cap.
+#   MATRIX_SHARDS     architectures run concurrently, 1..4 (default 4, or 1
+#                     when the selection is a single architecture). The matrix
+#                     divides the ALLOCATION (SLURM_CPUS_PER_TASK) by this
+#                     number to set each stage's BLAS thread cap.
 #   MATRIX_TIMEOUT_S  per-stage wall-clock cap in seconds (default 1800; the
-#                     wall above is derived from it).
+#                     wall bound is derived from it).
 #   MATRIX_NO_ORACLES 1 skips the oracle stage (the bound is then 10 stages).
 #   MATRIX_WORK_ROOT  work root (default /gpfs/scratch/awills/workflow_matrix/
 #                     <UTC stamp>_<job id>). MUST be outside the repository
@@ -94,9 +142,12 @@
 #                     staged into <work root>/_inputs, and two jobs staging
 #                     into one directory would remove each other's copy.
 #   MATRIX_EXTERNAL_REFS  an already staged copy of the CCSD reference cache,
-#                     used instead of copying the repository's. The stages
-#                     WRITE run logs into whatever directory this names, so it
-#                     must not be a directory another run reads.
+#                     used instead of copying the repository's. Left unset --
+#                     the default -- every job stages its OWN copy under its
+#                     own work root, which is what keeps two jobs off one
+#                     directory. Set it only for a copy this job alone reads:
+#                     every preflight writes a run log into whatever directory
+#                     it names, and it is refused inside the repository.
 #   XCQ_REPO, XCQ_ENV_PREFIX, XCQ_CONDA_PROFILE  repository and environment.
 #
 # Shell discipline: no `set -e` (conda activation returns non-zero on success
@@ -121,6 +172,7 @@ BATCHES="${MATRIX_BATCHES:-2}"
 BATCH="${MATRIX_BATCH:-0}"
 NO_ORACLES="${MATRIX_NO_ORACLES:-0}"
 EXTERNAL_REFS="${MATRIX_EXTERNAL_REFS:-}"
+SCRIPT_PATH="${BASH_SOURCE[0]}"
 
 # The two cached inputs of the tiny identity, at the relative paths
 # workflow_matrix.CACHED_REFS_RELPATH / CACHED_LEDGER_RELPATH name. Both are
@@ -128,6 +180,27 @@ EXTERNAL_REFS="${MATRIX_EXTERNAL_REFS:-}"
 # rsync of the repository does not carry them.
 LEDGER="${REPO}/notebooks/checkpoints_step7/alpha_on/subset_index_log.json"
 REPO_REFS="${REPO}/notebooks/checkpoints_step7/external_refs"
+
+# The contract this job drives, read back from the checkout that will run it.
+# The stage list is what the wall bound counts, MAX_SHARDS is what the knob
+# validation admits, and timeout_bound=1 is the parser refusing a non-positive
+# --timeout-s with its usage code rather than reporting every stage as killed.
+# A checkout that answers anything else is not the tree this script was
+# written against.
+CONTRACT_PROBE='
+import contextlib, io, sys
+from xcquinox.alec.cluster import workflow_matrix as wm
+code = None
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        wm.main(["--work-root", "/nonexistent-contract-probe",
+                 "--timeout-s", "0"])
+except SystemExit as exc:
+    code = exc.code
+sys.stdout.write("MATRIX_CONTRACT stages=%s shards=%d timeout_bound=%d\n"
+                 % (",".join(wm.STAGE_ORDER), wm.MAX_SHARDS, int(code == 2)))
+'
+MATRIX_CONTRACT_EXPECTED="MATRIX_CONTRACT stages=submit,datagen,pretrain,certificate,preflight,train[0],train[1],eval[0],eval[1],validate_run shards=4 timeout_bound=1"
 
 fatal() {
     echo "[matrix] FATAL: $*"
@@ -142,15 +215,75 @@ is_uint() {
     esac
 }
 
+# Whole hours with one decimal, from integer arithmetic only.
+fmt_hours() {
+    printf '%d.%d' "$(( $1 / 3600 ))" "$(( ($1 % 3600) * 10 / 3600 ))"
+}
+
+# A SLURM walltime (H:MM:SS or D-HH:MM:SS) in seconds. 10# forces base ten:
+# an hour field of 08 is not octal here.
+walltime_seconds() {
+    local spec="$1" days=0 rest h m s
+    rest="$spec"
+    case "$spec" in
+        *-*) days="${spec%%-*}"; rest="${spec#*-}" ;;
+    esac
+    case "$rest" in
+        *:*:*) h="${rest%%:*}"; m="${rest#*:}"; m="${m%%:*}"; s="${rest##*:}" ;;
+        *) return 1 ;;
+    esac
+    is_uint "$days" && is_uint "$h" && is_uint "$m" && is_uint "$s" || return 1
+    printf '%d' "$(( 10#$days * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$s ))"
+}
+
+# workflow_matrix._stage_is_complete, in shell: the staging manifest is
+# complete when it records at least one file and every file it records is
+# still there. The manifest's mere presence is NOT the criterion -- an
+# interrupted rsync of a warmed copy leaves exactly that -- and
+# workflow_matrix.staged_refs_dir refuses it, deep inside a stage, where this
+# script refuses it in one line.
+# test_the_reference_precheck_is_the_matrix_predicate pins the two against
+# each other, shape by shape.
+stage_manifest_is_complete() {
+    local root="$1" first=1 rel found=0
+    [ -f "${root}/_stage_complete" ] || return 1
+    while IFS= read -r rel || [ -n "$rel" ]; do
+        if [ "$first" = 1 ]; then first=0; continue; fi
+        [ -n "$rel" ] || continue
+        [ -f "${root}/${rel}" ] || return 1
+        found=1
+    done < "${root}/_stage_complete"
+    [ "$found" = 1 ]
+}
+
 # The criterion workflow_matrix.staged_refs_dir applies to a SUPPLIED
-# reference directory: its completion manifest (STAGE_MARKER), or the
-# per-species .npz files the staging copies. An empty or wrong directory
-# passes every path check and surfaces at the first reference read, deep
-# inside a stage.
+# reference directory: a COMPLETE staging manifest, or the per-species .npz
+# entries the staging copies. An empty or wrong directory passes every path
+# check and surfaces at the first reference read, deep inside a stage.
 refs_carry_references() {
-    [ -f "$1/_stage_complete" ] && return 0
+    stage_manifest_is_complete "$1" && return 0
     for npz in "$1"/*.npz; do
         [ -e "$npz" ] && return 0
+    done
+    return 1
+}
+
+# The installed registry, one name per line. `|| [ -n "$name" ]` keeps a final
+# line that carries no newline: dropping it would leave one architecture out
+# of the batch and out of the matrix without saying so.
+load_registry() {
+    ALL_ARCHS=()
+    while IFS= read -r name || [ -n "$name" ]; do
+        [ -n "$name" ] && ALL_ARCHS+=("$name")
+    done < <(python -m xcquinox.alec.cluster.workflow_matrix --list)
+    N_ARCHS="${#ALL_ARCHS[@]}"
+    [ "$N_ARCHS" -gt 0 ] || fatal "--list returned no architecture"
+}
+
+registry_has() {
+    local candidate="$1" name
+    for name in "${ALL_ARCHS[@]}"; do
+        [ "$name" = "$candidate" ] && return 0
     done
     return 1
 }
@@ -173,7 +306,7 @@ echo "[matrix] ==================================================="
 # --- knob validation (a bad knob must not surface as a python traceback, ----
 # --- which would exit 1 and read as a matrix finding) -----------------------
 # 1..4 is workflow_matrix.MAX_SHARDS: each shard runs one SCF-heavy stage at a
-# time, and the matrix divides the node's cores between them.
+# time, and the matrix divides the allocation between them.
 is_uint "$SHARDS" && [ "$SHARDS" -ge 1 ] && [ "$SHARDS" -le 4 ] \
     || fatal "MATRIX_SHARDS must be an integer in 1..4 (got '${SHARDS}')"
 is_uint "$TIMEOUT_S" && [ "$TIMEOUT_S" -ge 1 ] \
@@ -217,12 +350,26 @@ case "$WORK_ABS" in
     fatal "work root ${WORK_ABS} is inside the repository ${REPO_ABS}" ;;
 esac
 
-python -c "import xcquinox.alec.cluster.workflow_matrix" \
-    || fatal "repo import failed (env/activation)"
+# --- the checkout's own contract (import probe and partial-sync guard) ------
+MATRIX_CONTRACT="$(python -c "$CONTRACT_PROBE")" \
+    || fatal "repo import failed (env/activation); the traceback is above"
+echo "[matrix] contract=${MATRIX_CONTRACT:-<none reported>}"
+if [ "$MATRIX_CONTRACT" != "$MATRIX_CONTRACT_EXPECTED" ]; then
+    echo "[matrix] expected: ${MATRIX_CONTRACT_EXPECTED}"
+    echo "[matrix] checkout: ${MATRIX_CONTRACT:-<none reported>}"
+    echo "[matrix] The matrix drives the stage modules of this same tree, so"
+    echo "[matrix] the WHOLE package and hpcjobs are pushed together, from"
+    echo "[matrix] the local repository root:"
+    echo "[matrix]   rsync -av xcquinox hpcjobs \\"
+    echo "[matrix]         \"\$swpath\":${REPO}/"
+    fatal "this checkout's workflow_matrix contract is not the one this job drives (partial sync)"
+fi
 
 # --- thread caps and JAX platform (SLURM vars not assumed present) ----------
 # These are this process's caps. Each stage subprocess gets its own from
-# workflow_matrix._base_env, at (node cores / shards) threads.
+# workflow_matrix._base_env, at (SLURM_CPUS_PER_TASK / shards) threads -- the
+# allocation, not the machine, so the budget holds on a shared queue and on an
+# SMT node.
 THREADS="${SLURM_CPUS_PER_TASK:-40}"
 export OMP_NUM_THREADS="$THREADS"
 export MKL_NUM_THREADS="$THREADS"
@@ -245,8 +392,18 @@ fi
 if [ -n "$EXTERNAL_REFS" ]; then
     [ -d "$EXTERNAL_REFS" ] \
         || fatal "MATRIX_EXTERNAL_REFS=${EXTERNAL_REFS} is not a directory"
-    refs_carry_references "$EXTERNAL_REFS" \
-        || fatal "MATRIX_EXTERNAL_REFS=${EXTERNAL_REFS} holds neither a staging manifest nor any species .npz, so it carries no references"
+    EXTERNAL_REFS_ABS="$(cd "$EXTERNAL_REFS" && pwd -P)" \
+        || fatal "cannot enter MATRIX_EXTERNAL_REFS=${EXTERNAL_REFS}"
+    case "$EXTERNAL_REFS_ABS" in
+      "$REPO_ABS"|"$REPO_ABS"/*)
+        fatal "MATRIX_EXTERNAL_REFS ${EXTERNAL_REFS_ABS} is inside the repository ${REPO_ABS}: every preflight writes a _run_log_<UTC>.json into the reference directory it reads, and nothing the matrix writes belongs in the tree" ;;
+    esac
+    refs_carry_references "$EXTERNAL_REFS_ABS" \
+        || fatal "MATRIX_EXTERNAL_REFS=${EXTERNAL_REFS} holds neither a complete staging manifest nor any species .npz, so it carries no references"
+    echo "[matrix] WARN: MATRIX_EXTERNAL_REFS is read AND written by this job --"
+    echo "[matrix] every preflight drops a run log into it. It must be this"
+    echo "[matrix] job's copy alone; give a second job its own (cp -a) rather"
+    echo "[matrix] than this path. Unset, each job stages its own copy."
 else
     if [ ! -d "$REPO_REFS" ] || ! refs_carry_references "$REPO_REFS"; then
         echo "[matrix] stage it from the workstation with:"
@@ -258,38 +415,108 @@ else
 fi
 
 # --- architecture selection ------------------------------------------------
-# A named list is taken verbatim: the batch split exists only to keep the
-# whole-registry pass inside one queue's wall, and a caller who named the
-# architectures has already chosen the work.
-if [ "$ARCHS" = "all" ] && [ "$BATCHES" -gt 1 ]; then
-    # `|| [ -n "$name" ]` keeps a final line that carries no newline: dropping
-    # it would leave one architecture out of the batch and out of the matrix
-    # without saying so.
-    ALL_ARCHS=()
-    while IFS= read -r name || [ -n "$name" ]; do
-        [ -n "$name" ] && ALL_ARCHS+=("$name")
-    done < <(python -m xcquinox.alec.cluster.workflow_matrix --list)
-    N_ARCHS="${#ALL_ARCHS[@]}"
-    [ "$N_ARCHS" -gt 0 ] || fatal "--list returned no architecture"
-    PER=$(( (N_ARCHS + BATCHES - 1) / BATCHES ))
-    START=$(( BATCH * PER ))
-    if [ "$START" -ge "$N_ARCHS" ]; then
-        fatal "batch ${BATCH} of ${BATCHES} starts at ${START}, past the ${N_ARCHS} registered architectures"
+# A named list is checked NAME BY NAME against the installed registry: an
+# unregistered name is the one knob the operator types by hand, and the matrix
+# refuses it with its usage code after the queue wait has been paid.
+if [ "$ARCHS" = "all" ]; then
+    load_registry
+    if [ "$BATCHES" -gt 1 ]; then
+        PER=$(( (N_ARCHS + BATCHES - 1) / BATCHES ))
+        START=$(( BATCH * PER ))
+        if [ "$START" -ge "$N_ARCHS" ]; then
+            fatal "batch ${BATCH} of ${BATCHES} starts at ${START}, past the ${N_ARCHS} registered architectures"
+        fi
+        END=$(( START + PER ))
+        if [ "$END" -gt "$N_ARCHS" ]; then
+            END="$N_ARCHS"
+        fi
+        SELECTED=""
+        for (( i = START; i < END; i++ )); do
+            SELECTED="${SELECTED}${SELECTED:+,}${ALL_ARCHS[$i]}"
+        done
+        ARCHS="$SELECTED"
+        N_SELECTED=$(( END - START ))
+        echo "[matrix] batch ${BATCH} of ${BATCHES}: architectures ${START}..$((END - 1)) of ${N_ARCHS}"
+    else
+        N_SELECTED="$N_ARCHS"
+        echo "[matrix] one batch: the whole registry (${N_ARCHS} architectures)"
     fi
-    END=$(( START + PER ))
-    if [ "$END" -gt "$N_ARCHS" ]; then
-        END="$N_ARCHS"
-    fi
-    SELECTED=""
-    for (( i = START; i < END; i++ )); do
-        SELECTED="${SELECTED}${SELECTED:+,}${ALL_ARCHS[$i]}"
+else
+    load_registry
+    NAMED=()
+    IFS=',' read -r -a RAW_NAMES <<< "$ARCHS"
+    for name in ${RAW_NAMES[@]+"${RAW_NAMES[@]}"}; do
+        [ -n "$name" ] || continue
+        if ! registry_has "$name"; then
+            echo "[matrix] the installed registry (${N_ARCHS} names) is:"
+            echo "[matrix]   ${ALL_ARCHS[*]}"
+            fatal "MATRIX_ARCHS names '${name}', which is not a registered architecture"
+        fi
+        for seen in ${NAMED[@]+"${NAMED[@]}"}; do
+            if [ "$seen" = "$name" ]; then
+                fatal "MATRIX_ARCHS names '${name}' more than once; two rows for one architecture share <work root>/${name} and would report on a single run"
+            fi
+        done
+        NAMED+=("$name")
     done
-    ARCHS="$SELECTED"
-    echo "[matrix] batch ${BATCH} of ${BATCHES}: architectures ${START}..$((END - 1)) of ${N_ARCHS}"
-elif [ "$ARCHS" != "all" ]; then
+    N_SELECTED="${#NAMED[@]}"
+    [ "$N_SELECTED" -gt 0 ] \
+        || fatal "MATRIX_ARCHS names no architecture; unset it for the whole registry"
     echo "[matrix] MATRIX_ARCHS names the architectures; batching not applied."
 fi
 echo "[matrix] running: ${ARCHS}"
+
+# One architecture is the smoke, and it has the node to itself: the matrix
+# divides the allocation by the shard count, so the default 4 would leave the
+# single architecture a quarter of it on the very run that gates the matrix.
+# An explicit MATRIX_SHARDS still wins.
+if [ -z "${MATRIX_SHARDS:-}" ] && [ "$N_SELECTED" -eq 1 ]; then
+    SHARDS=1
+    echo "[matrix] one architecture selected: shards=1 (the whole allocation)"
+fi
+
+# --- the wall bound against the wall requested ------------------------------
+# main writes the report only after the LAST architecture returns, so a job
+# killed at its wall produces per-stage logs and no table. The bound is the
+# per-stage cap taken as an upper bound over the stages the installed module
+# reports, and it is refused here rather than at the wall.
+STAGE_LIST="${MATRIX_CONTRACT#*stages=}"
+STAGE_LIST="${STAGE_LIST%% *}"
+IFS=',' read -r -a STAGE_NAMES <<< "$STAGE_LIST"
+N_STAGES="${#STAGE_NAMES[@]}"
+if [ "$NO_ORACLES" = "1" ]; then
+    TIMED_PER_ARCH="$N_STAGES"
+else
+    TIMED_PER_ARCH=$(( N_STAGES + 1 ))
+fi
+PER_SHARD=$(( (N_SELECTED + SHARDS - 1) / SHARDS ))
+BOUND_S=$(( PER_SHARD * TIMED_PER_ARCH * TIMEOUT_S ))
+echo "[matrix] wall bound=${BOUND_S} s ($(fmt_hours "$BOUND_S") h) = ceil(${N_SELECTED} archs / ${SHARDS} shards) x ${TIMED_PER_ARCH} timed stages x ${TIMEOUT_S} s"
+
+REQUEST_S=""
+REQUEST_SRC=""
+if [ -n "${SLURM_JOB_END_TIME:-}" ] && is_uint "${SLURM_JOB_END_TIME:-}"; then
+    REQUEST_S=$(( SLURM_JOB_END_TIME - $(date +%s) ))
+    REQUEST_SRC="SLURM_JOB_END_TIME (the wall left on this allocation)"
+else
+    TIME_LINE="$(grep -m1 '^#SBATCH --time=' "$SCRIPT_PATH" 2>/dev/null || true)"
+    TIME_SPEC="${TIME_LINE#*=}"
+    if [ -n "$TIME_SPEC" ]; then
+        REQUEST_S="$(walltime_seconds "$TIME_SPEC")" || REQUEST_S=""
+        REQUEST_SRC="#SBATCH --time=${TIME_SPEC} in ${SCRIPT_PATH}"
+    fi
+fi
+if [ -n "$REQUEST_S" ] && [ "$REQUEST_S" -gt 0 ]; then
+    echo "[matrix] wall request=${REQUEST_S} s ($(fmt_hours "$REQUEST_S") h) from ${REQUEST_SRC}"
+    if [ "$BOUND_S" -gt "$REQUEST_S" ]; then
+        echo "[matrix] raise the request with --time on the submission, or lower"
+        echo "[matrix] MATRIX_BATCHES / MATRIX_SHARDS / MATRIX_TIMEOUT_S. A job"
+        echo "[matrix] killed at its wall writes no report at all."
+        fatal "the derived wall bound ${BOUND_S} s ($(fmt_hours "$BOUND_S") h) exceeds the wall request ${REQUEST_S} s ($(fmt_hours "$REQUEST_S") h)"
+    fi
+else
+    echo "[matrix] WARN: no wall request could be read (${REQUEST_SRC:-no source found}); the bound above is unchecked."
+fi
 
 EXTRA_ARGS=()
 if [ -n "$EXTERNAL_REFS" ]; then
@@ -312,9 +539,19 @@ python -u -m xcquinox.alec.cluster.workflow_matrix \
     2>&1 | tee "$LOG"
 RC="${PIPESTATUS[0]}"
 
+# The matrix's own usage code is 2: a flag it refused, which is a job that
+# never ran rather than a matrix that found a defect. It is carried into this
+# script's class 3 -- everything the preflight above checks is refused before
+# the matrix starts, so a 2 reaching here is a command line this script built
+# and the log's usage line says which flag.
+MATRIX_RC="$RC"
+if [ "$RC" = "2" ]; then
+    RC=3
+fi
+
 T_END="$(date +%s)"
 echo "[matrix] ==================================================="
-echo "[matrix] rc=${RC}  elapsed $((T_END - T_START)) s"
+echo "[matrix] rc=${RC}  (matrix rc=${MATRIX_RC})  elapsed $((T_END - T_START)) s"
 if [ -f "$REPORT" ]; then
   echo "[matrix] report:  ${REPORT}"
   echo "[matrix] sidecar: ${REPORT%.md}.json"
@@ -322,11 +559,14 @@ if [ -f "$REPORT" ]; then
 else
   echo "[matrix] NO REPORT WRITTEN -- the matrix did not reach its end."
 fi
-case "$RC" in
+case "$MATRIX_RC" in
   0) echo "[matrix] every architecture ran every stage with its expected outcome." ;;
   1) echo "[matrix] COMPLETED; at least one architecture did not."
      echo "[matrix] That is the finding; the report's Findings block names the"
      echo "[matrix] stage, its exit code and its log. Not a crash." ;;
+  2) echo "[matrix] the matrix refused its command line (usage error, its own"
+     echo "[matrix] exit 2, reported here as 3). Nothing was measured and no"
+     echo "[matrix] architecture was scored; the usage line above names the flag." ;;
   *) echo "[matrix] FAILED -- see the log above." ;;
 esac
 echo "[matrix] END  $(date '+%Y-%m-%d %H:%M:%S %Z')"

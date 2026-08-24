@@ -13,10 +13,12 @@ interpreter -- environment defaulting, the batch split, the refusals of a bad
 knob or a missing cached input, and the propagation of the matrix's exit code
 to SLURM -- since none of that can be established by reading the text.
 
-The stub interpreter answers the three invocations the script makes (the import
-probe, ``--list``, and the matrix run), records the argument vector it was
-given and exits with a code the test chooses. Nothing here runs the matrix, and
-nothing here needs SLURM.
+The stub interpreter answers the three invocations the script makes (the
+contract probe, ``--list``, and the matrix run), records the argument vector it
+was given and exits with a code the test chooses. It answers the contract probe
+with whatever contract the test wants the checkout to have, which is how a
+partially synced checkout is exercised without one. Nothing here runs the
+matrix, and nothing here needs SLURM.
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -60,6 +63,35 @@ def _default_of(name: str) -> str:
     return match.group(1)
 
 
+def _expected_contract() -> str:
+    """The contract line the script requires of the checkout, from its text.
+
+    Empty when the script states none, so the stub can stand in for a checkout
+    that answers whatever the script asks for.
+    """
+    match = re.search(r'^MATRIX_CONTRACT_EXPECTED="([^"]*)"', _sbatch_text(),
+                      re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _contract_probe() -> str:
+    """The python the script runs to read a checkout's contract back."""
+    match = re.search(r"^CONTRACT_PROBE='\n(.*?)^'\n", _sbatch_text(),
+                      re.DOTALL | re.MULTILINE)
+    assert match is not None, "no CONTRACT_PROBE in the script"
+    return match.group(1)
+
+
+def _long_request(hours) -> dict:
+    """The environment SLURM gives a job whose wall is ``hours``.
+
+    ``SLURM_JOB_END_TIME`` is what the script reads on a compute node, and it
+    is the only thing that carries a ``--time`` given at submission: the
+    header directive still says 24 h.
+    """
+    return {"SLURM_JOB_END_TIME": str(int(time.time()) + int(hours * 3600))}
+
+
 # --------------------------------------------------------------------------- #
 # The matrix's own interfaces, read once from the installed module
 # --------------------------------------------------------------------------- #
@@ -79,6 +111,7 @@ print(json.dumps({
     "archs": sorted(wm.ARCHITECTURES),
     "max_shards": wm.MAX_SHARDS,
     "default_timeout_s": wm.DEFAULT_STAGE_TIMEOUT_S,
+    "stage_marker": wm.STAGE_MARKER,
 }))
 """
 
@@ -140,7 +173,10 @@ def test_activation_by_effect_and_an_import_probe():
     t = _sbatch_text()
     assert 'conda activate "$ENV_PREFIX" || true' in t
     assert '"$ENV_PREFIX"/*) : ;;' in t
-    assert 'python -c "import xcquinox.alec.cluster.workflow_matrix"' in t
+    # The contract probe is also the import probe: it imports the module, so a
+    # dead environment fails it before any contract is compared.
+    assert 'python -c "$CONTRACT_PROBE"' in t
+    assert "from xcquinox.alec.cluster import workflow_matrix" in _contract_probe()
     assert "repo import failed" in t
 
 
@@ -253,7 +289,14 @@ def test_the_walltime_exceeds_the_short_and_medium_queue_caps():
 _STUB = """#!/usr/bin/env bash
 # Stands in for the environment's python. Answers the three invocations the
 # job script makes and records the last argument vector it was given.
-if [ "${1:-}" = "-c" ]; then exit 0; fi
+#
+# `-c` is the contract probe: STUB_CONTRACT is the contract this stand-in
+# checkout reports, and STUB_CONTRACT_RC is what a checkout whose import
+# fails outright returns.
+if [ "${1:-}" = "-c" ]; then
+    printf '%s\\n' "${STUB_CONTRACT-}"
+    exit "${STUB_CONTRACT_RC:-0}"
+fi
 for arg in "$@"; do
     if [ "$arg" = "--list" ]; then
         if [ "${STUB_NO_EOL:-0}" = "1" ]; then
@@ -294,6 +337,17 @@ def _make_tree(tmp_path, *, ledger=True, refs="npz"):
     return env_prefix, repo, work
 
 
+#: The registry the stub reports when a test does not name one. Eight names
+#: rather than the real 31: the whole-registry tests pass their own list, and a
+#: test that only needs the script to reach its command line should not have to
+#: carry a request long enough for 31 architectures.
+_STUB_REGISTRY = [f"a{i}" for i in range(8)]
+
+#: The real registry's size. The batch split and the wall bound are checked at
+#: this number, since that is what the cluster job selects from.
+_FULL_REGISTRY = [f"a{i}" for i in range(31)]
+
+
 def _run_script(tmp_path, *, extra_env=None, rc=0, archs=None, ledger=True,
                 refs="npz", env_prefix_override=None):
     """Execute the job script against the stub interpreter."""
@@ -308,7 +362,10 @@ def _run_script(tmp_path, *, extra_env=None, rc=0, archs=None, ledger=True,
         "MATRIX_WORK_ROOT": str(work),
         "STUB_ARGV": str(argv_file),
         "STUB_RC": str(rc),
-        "STUB_ARCHS": " ".join(archs or []),
+        "STUB_ARCHS": " ".join(_STUB_REGISTRY if archs is None else archs),
+        # The stand-in checkout is the one the script asks for unless a test
+        # says otherwise; a checkout that is NOT is finding 1's case.
+        "STUB_CONTRACT": _expected_contract(),
     }
     env.update(extra_env or {})
     proc = subprocess.run(["bash", str(_SBATCH)], env=env, capture_output=True,
@@ -323,13 +380,21 @@ def _flag_value(argv, flag):
 
 
 def _staged_refs(path, *, marker=False):
-    """A directory carrying what a staged reference copy carries: the staging
-    manifest, or the per-species ``.npz`` files -- the two criteria
-    ``workflow_matrix.staged_refs_dir`` accepts."""
+    """A directory carrying what a staged reference copy carries.
+
+    The two criteria ``workflow_matrix.staged_refs_dir`` accepts, each on its
+    own: a COMPLETE staging manifest -- one recording at least one file, every
+    recorded file present -- or the per-species ``.npz`` files. The manifest
+    case records a non-``.npz`` file so that it exercises the manifest and not
+    the glob; a manifest whose files are absent is the shape an interrupted
+    copy leaves, and is refused (see
+    ``test_the_reference_precheck_is_the_matrix_predicate``).
+    """
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     if marker:
-        (path / "_stage_complete").write_text("source: test\nH2O.npz\n")
+        (path / "H2O.dat").write_text("x")
+        (path / "_stage_complete").write_text("source: test\nH2O.dat\n")
     else:
         (path / "H2O.npz").write_bytes(b"")
     return path
@@ -370,16 +435,16 @@ def test_every_flag_the_script_passes_is_a_flag_the_matrix_accepts(
 def test_named_architectures_are_taken_verbatim_and_skip_the_batch_split(
         tmp_path):
     proc, argv, _ = _run_script(
-        tmp_path, extra_env={"MATRIX_ARCHS": "deep_3x16"},
-        archs=[f"a{i}" for i in range(31)])
+        tmp_path, extra_env={"MATRIX_ARCHS": "a3,a4"},
+        archs=_FULL_REGISTRY)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert _flag_value(argv, "--archs") == "deep_3x16"
+    assert _flag_value(argv, "--archs") == "a3,a4"
     assert "batching not applied" in proc.stdout
 
 
 @pytest.mark.parametrize("batch,expected", [
-    (0, [f"a{i}" for i in range(16)]),
-    (1, [f"a{i}" for i in range(16, 31)]),
+    (0, _FULL_REGISTRY[:16]),
+    (1, _FULL_REGISTRY[16:]),
 ])
 def test_the_batch_split_covers_the_registry_exactly_once(tmp_path, batch,
                                                           expected):
@@ -387,7 +452,7 @@ def test_the_batch_split_covers_the_registry_exactly_once(tmp_path, batch,
     left out. The split is what keeps a whole-registry pass inside one wall."""
     proc, argv, _ = _run_script(
         tmp_path, extra_env={"MATRIX_BATCHES": "2", "MATRIX_BATCH": str(batch)},
-        archs=[f"a{i}" for i in range(31)])
+        archs=_FULL_REGISTRY)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _flag_value(argv, "--archs").split(",") == expected
 
@@ -399,20 +464,27 @@ def test_the_last_listed_architecture_survives_a_missing_final_newline(
     proc, argv, _ = _run_script(
         tmp_path, extra_env={"MATRIX_BATCHES": "2", "MATRIX_BATCH": "1",
                              "STUB_NO_EOL": "1"},
-        archs=[f"a{i}" for i in range(31)])
+        archs=_FULL_REGISTRY)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _flag_value(argv, "--archs").split(",")[-1] == "a30"
     assert len(_flag_value(argv, "--archs").split(",")) == 15
 
 
 def test_a_single_batch_leaves_the_selection_as_the_whole_registry(tmp_path):
-    names = [f"a{i}" for i in range(31)]
+    """One batch covers everything, so the selection is handed over as 'all'
+    rather than expanded into a list the registry would have to match.
+
+    31 architectures in one job bound at 44 h, so this is also the case the
+    header documents: it needs a request that covers the bound, and the only
+    thing carrying a submission-time ``--time`` into the job is
+    ``SLURM_JOB_END_TIME``.
+    """
     proc, argv, _ = _run_script(
-        tmp_path, extra_env={"MATRIX_BATCHES": "1"}, archs=names)
+        tmp_path, extra_env={"MATRIX_BATCHES": "1", **_long_request(46)},
+        archs=_FULL_REGISTRY)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    # One batch covers everything, so the selection is handed over as 'all'
-    # rather than expanded into a list the registry would have to match.
     assert _flag_value(argv, "--archs") == "all"
+    assert "SLURM_JOB_END_TIME" in proc.stdout
 
 
 def test_the_knobs_reach_the_command_line(tmp_path):
@@ -559,7 +631,7 @@ def test_a_bad_knob_is_refused_before_the_allocation_is_spent(tmp_path, knobs):
     -- the code a non-clean matrix returns. Refusing it here keeps exit 1
     meaning what the report says it means."""
     proc, argv, _ = _run_script(tmp_path, extra_env=knobs,
-                                archs=[f"a{i}" for i in range(31)])
+                                archs=_FULL_REGISTRY)
     assert proc.returncode == 3, proc.stdout
     assert "FATAL" in proc.stdout
     assert argv is None
@@ -574,6 +646,373 @@ def test_an_inactive_environment_is_refused(tmp_path):
     assert proc.returncode == 3, proc.stdout
     assert "env python not active" in proc.stdout
     assert argv is None
+
+
+# --------------------------------------------------------------------------- #
+# The checkout's contract: a partial sync is refused before anything runs
+# --------------------------------------------------------------------------- #
+
+def test_the_contract_the_script_requires_is_what_the_module_reports(matrix):
+    """The expectation in the script is the installed module's own answer.
+
+    Executed: the script's probe is run against the real checkout and its line
+    compared with the script's expectation, so neither can drift from the
+    other. The three fields are the three interfaces the job depends on -- the
+    stage list the wall bound counts, the shard ceiling the knob validation
+    admits, and the parser refusing a non-positive ``--timeout-s`` with its
+    usage code rather than reporting every stage as killed.
+    """
+    expected = _expected_contract()
+    assert expected, "the script states no MATRIX_CONTRACT_EXPECTED"
+    env = dict(os.environ)
+    env.update({"JAX_PLATFORMS": "cpu", "OMP_NUM_THREADS": "2",
+                "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2"})
+    proc = subprocess.run([sys.executable, "-c", _contract_probe()],
+                          cwd=str(_REPO), env=env, capture_output=True,
+                          text=True, timeout=900)
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert proc.stdout.strip() == expected
+    # ... and the expectation is the module's interfaces, not a string that
+    # happens to match today.
+    assert f"stages={','.join(matrix['stage_order'])}" in expected
+    assert f"shards={matrix['max_shards']}" in expected
+    assert "timeout_bound=1" in expected
+
+
+def test_a_checkout_whose_contract_moved_is_refused_with_the_package_push(
+        tmp_path):
+    """Finding: a sync carrying the two hpcjobs files and not the package.
+
+    The matrix drives the stage modules of the same tree, so an older
+    ``workflow_matrix.py`` accepts the same flags and then drives contracts
+    that have moved -- the damaging case, since the log looks like a running
+    matrix. The refusal names both contracts and the push that fixes it.
+    """
+    moved = re.sub(r"stages=[^ ]*", "stages=submit,datagen",
+                   _expected_contract())
+    proc, argv, _ = _run_script(tmp_path,
+                                extra_env={"STUB_CONTRACT": moved})
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None, "the matrix must not be launched against moved stages"
+    assert moved in proc.stdout
+    assert _expected_contract() in proc.stdout
+    assert "rsync -av xcquinox hpcjobs" in proc.stdout
+    assert "partial sync" in proc.stdout
+
+
+def test_a_checkout_that_reports_no_contract_is_refused(tmp_path):
+    """An installed module too old to answer the probe at all: the probe
+    prints nothing and the comparison has nothing to compare."""
+    proc, argv, _ = _run_script(tmp_path, extra_env={"STUB_CONTRACT": ""})
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None
+    assert "rsync -av xcquinox hpcjobs" in proc.stdout
+
+
+def test_a_checkout_that_cannot_be_imported_is_refused_as_an_environment(
+        tmp_path):
+    """The contract probe is also the import probe: a checkout that raises on
+    import is an environment fault, and says so rather than reporting a
+    contract mismatch."""
+    proc, argv, _ = _run_script(tmp_path,
+                                extra_env={"STUB_CONTRACT_RC": "1"})
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None
+    assert "repo import failed" in proc.stdout
+
+
+def test_the_header_states_the_whole_package_push(matrix):
+    """The push line in the header is the one the handover carries: the
+    package and hpcjobs, in the repository-relative form."""
+    t = _sbatch_text()
+    assert "rsync -av xcquinox hpcjobs" in t
+    assert '"$swpath":' in t
+
+
+# --------------------------------------------------------------------------- #
+# Architecture names: a typo is a job that could not start
+# --------------------------------------------------------------------------- #
+
+def test_an_unregistered_architecture_name_is_refused_naming_the_registry(
+        tmp_path):
+    """Finding: a typed name reached the matrix, which refused it as a usage
+    error after the queue wait had been paid. It is checked here against the
+    installed registry, which the script already knows how to obtain."""
+    proc, argv, _ = _run_script(
+        tmp_path, extra_env={"MATRIX_ARCHS": "a3,deep_3x17"})
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None
+    assert "deep_3x17" in proc.stdout
+    for name in _STUB_REGISTRY:
+        assert name in proc.stdout, "the refusal names the registry"
+
+
+def test_a_repeated_architecture_name_is_refused(tmp_path):
+    """Two rows for one architecture share one working directory: the matrix
+    refuses it as a usage error, so the job refuses it before the wait."""
+    proc, argv, _ = _run_script(tmp_path, extra_env={"MATRIX_ARCHS": "a3,a3"})
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None
+    assert "more than once" in proc.stdout
+
+
+def test_an_architecture_list_of_separators_only_is_refused(tmp_path):
+    proc, argv, _ = _run_script(tmp_path, extra_env={"MATRIX_ARCHS": ",,"})
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None
+    assert "names no architecture" in proc.stdout
+
+
+def test_a_registered_name_list_reaches_the_matrix(tmp_path):
+    proc, argv, _ = _run_script(tmp_path,
+                                extra_env={"MATRIX_ARCHS": "a1,a6"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _flag_value(argv, "--archs") == "a1,a6"
+
+
+def test_a_usage_error_from_the_matrix_is_not_reported_as_a_finding(tmp_path):
+    """The matrix's exit 2 is a refused command line -- a job that never ran.
+
+    Reported as the matrix's own 1 it would read as "at least one architecture
+    did not", which is the sentence reserved for a completed matrix; it is
+    carried into this script's class 3 instead, with the matrix's own code
+    kept in the log.
+    """
+    proc, _argv, _ = _run_script(tmp_path, rc=2)
+    assert proc.returncode == 3, proc.stdout
+    assert "COMPLETED; at least one architecture did not" not in proc.stdout
+    assert "refused its command line" in proc.stdout
+    assert "matrix rc=2" in proc.stdout
+
+
+# --------------------------------------------------------------------------- #
+# The derived wall bound against the wall actually requested
+# --------------------------------------------------------------------------- #
+
+def test_the_defaults_run_and_state_the_bound_beside_the_request(tmp_path):
+    """The default submission -- batch 0 of 2 over a 31-name registry -- and
+    the two numbers it is judged on, printed before the matrix starts."""
+    proc, argv, _ = _run_script(tmp_path, archs=_FULL_REGISTRY)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(_flag_value(argv, "--archs").split(",")) == 16
+    # ceil(16 / 4) x 11 timed stages x 1800 s against the header's 24 h.
+    assert "wall bound=79200 s (22.0 h)" in proc.stdout
+    assert "wall request=86400 s (24.0 h)" in proc.stdout
+    assert "#SBATCH --time=24:00:00" in proc.stdout
+
+
+@pytest.mark.parametrize("knobs,bound", [
+    ({"MATRIX_BATCHES": "1"}, "158400 s (44.0 h)"),
+    ({"MATRIX_SHARDS": "1"}, "316800 s (88.0 h)"),
+])
+def test_a_knob_that_outruns_the_request_is_refused_with_both_numbers(
+        tmp_path, knobs, bound):
+    """Finding: neither knob was compared with the wall.
+
+    ``MATRIX_BATCHES=1`` puts all 31 architectures in one job and
+    ``MATRIX_SHARDS=1`` runs a batch of 16 serially; both outrun the 24 h
+    request, and a job killed at its wall writes NO report -- the table is
+    written only after the last architecture returns, so the whole allocation
+    is lost.
+    """
+    proc, argv, _ = _run_script(tmp_path, extra_env=knobs,
+                                archs=_FULL_REGISTRY)
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None
+    assert f"wall bound={bound}" in proc.stdout
+    assert "wall request=86400 s (24.0 h)" in proc.stdout
+    assert "exceeds the wall request" in proc.stdout
+
+
+def test_the_request_is_read_from_slurms_own_end_time_when_it_is_set(tmp_path):
+    """A ``--time`` given at submission never reaches the header directive, so
+    on a compute node the allocation's own end time is what bounds the job."""
+    proc, argv, _ = _run_script(tmp_path, extra_env=_long_request(6),
+                                archs=_FULL_REGISTRY)
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None
+    assert "SLURM_JOB_END_TIME" in proc.stdout
+    assert "wall bound=79200 s (22.0 h)" in proc.stdout
+    assert "exceeds the wall request" in proc.stdout
+
+
+def test_dropping_the_oracles_drops_a_stage_from_the_bound(tmp_path):
+    """The oracle selection is one of the timed subprocesses; without it the
+    bound is the ten stages of STAGE_ORDER."""
+    proc, argv, _ = _run_script(
+        tmp_path, extra_env={"MATRIX_NO_ORACLES": "1"}, archs=_FULL_REGISTRY)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "--no-oracles" in argv
+    assert "wall bound=72000 s (20.0 h)" in proc.stdout
+    assert "x 10 timed stages x 1800 s" in proc.stdout
+
+
+# --------------------------------------------------------------------------- #
+# Minors: the reference predicate, the smoke's shards, the supplied copy
+# --------------------------------------------------------------------------- #
+
+_REFS_PROBE = r"""
+import json, sys
+from xcquinox.alec.cluster.workflow_matrix import (
+    CachedInputsMissing, staged_refs_dir)
+out = {}
+for name, path in json.loads(sys.argv[1]).items():
+    try:
+        staged_refs_dir(path)
+        out[name] = True
+    except CachedInputsMissing:
+        out[name] = False
+print(json.dumps(out))
+"""
+
+#: Directory shapes a reference copy can be in. ``manifest_missing_file`` is
+#: what an interrupted rsync of a warmed copy leaves, and is the shape the
+#: script's shortcut used to accept.
+_REFS_SHAPES = ("absent", "empty", "npz_only", "complete_manifest",
+                "manifest_missing_file", "manifest_lists_nothing",
+                "empty_manifest", "manifest_missing_file_with_npz",
+                "nested_manifest", "directory_named_npz")
+
+
+def _build_refs_shape(root, shape, marker):
+    root = Path(root)
+    if shape == "absent":
+        return root
+    root.mkdir(parents=True, exist_ok=True)
+    if shape == "empty":
+        pass
+    elif shape == "npz_only":
+        (root / "H2O.npz").write_bytes(b"")
+    elif shape == "complete_manifest":
+        (root / "N2.dat").write_text("x")
+        (root / marker).write_text("source: test\nN2.dat\n")
+    elif shape == "manifest_missing_file":
+        (root / marker).write_text("source: test\nH2O.npz\n")
+    elif shape == "manifest_lists_nothing":
+        (root / marker).write_text("source: test\n")
+    elif shape == "empty_manifest":
+        (root / marker).write_text("")
+    elif shape == "manifest_missing_file_with_npz":
+        (root / marker).write_text("source: test\nN2.dat\n")
+        (root / "H2O.npz").write_bytes(b"")
+    elif shape == "nested_manifest":
+        (root / "_intermediates").mkdir()
+        (root / "_intermediates" / "H2O_scf.dat").write_text("x")
+        (root / marker).write_text("source: test\n_intermediates/H2O_scf.dat\n")
+    elif shape == "directory_named_npz":
+        (root / "H2O.npz").mkdir()
+    else:  # pragma: no cover - the parametrisation is closed
+        raise AssertionError(shape)
+    return root
+
+
+def test_the_reference_precheck_is_the_matrix_predicate(tmp_path, matrix):
+    """The script's precheck and ``staged_refs_dir`` accept the same shapes.
+
+    The precheck exists to turn a reference directory the matrix would refuse
+    -- deep inside a stage, once per architecture -- into one line in this
+    log. It is worth that only while the two agree, so the two are run against
+    the same ten shapes and compared.
+    """
+    marker = matrix["stage_marker"]
+    assert f"/{marker}" in _sbatch_text(), "the script names another marker"
+    paths = {shape: str(_build_refs_shape(tmp_path / "shapes" / shape, shape,
+                                          marker))
+             for shape in _REFS_SHAPES}
+    env = dict(os.environ)
+    env.update({"JAX_PLATFORMS": "cpu", "OMP_NUM_THREADS": "2",
+                "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2"})
+    proc = subprocess.run(
+        [sys.executable, "-c", _REFS_PROBE, json.dumps(paths)],
+        cwd=str(_REPO), env=env, capture_output=True, text=True, timeout=900)
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    module = json.loads(proc.stdout.strip().splitlines()[-1])
+    script = {}
+    for shape in _REFS_SHAPES:
+        run, _argv, _work = _run_script(
+            tmp_path / f"run_{shape}",
+            extra_env={"MATRIX_EXTERNAL_REFS": paths[shape]})
+        assert run.returncode in (0, 3), run.stdout + run.stderr
+        script[shape] = run.returncode == 0
+    assert script == module
+    # The comparison is worthless if everything is refused (or accepted).
+    assert set(module.values()) == {True, False}
+
+
+def test_a_supplied_reference_directory_inside_the_repository_is_refused(
+        tmp_path):
+    """Every preflight writes a ``_run_log_<UTC>.json`` into the directory it
+    reads, so a reference copy in the tree writes the run's own output into
+    the tree the run measures. The matrix refuses it as a usage error; the job
+    refuses it before the wait."""
+    inside = tmp_path / "repo" / "notebooks" / "checkpoints_step7" / "warmed"
+    _staged_refs(inside)
+    proc, argv, _ = _run_script(
+        tmp_path, extra_env={"MATRIX_EXTERNAL_REFS": str(inside)})
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None
+    assert "inside the repository" in proc.stdout
+
+
+def test_a_supplied_reference_directory_is_marked_as_this_jobs_alone(
+        tmp_path):
+    """Two jobs pointed at one copy write run logs into it concurrently.
+    Unset, each job stages its own; set, the log says the directory is this
+    job's."""
+    refs = _staged_refs(tmp_path / "warmed_refs")
+    proc, argv, _ = _run_script(
+        tmp_path, extra_env={"MATRIX_EXTERNAL_REFS": str(refs)})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _flag_value(argv, "--external-refs-dir") == str(refs)
+    assert "read AND written by this job" in proc.stdout
+    assert "job's copy alone" in proc.stdout
+
+
+def test_a_single_architecture_takes_the_whole_allocation(tmp_path):
+    """The smoke is one architecture on an exclusive node, and it gates the
+    matrix: at the default four shards the matrix would give it a quarter of
+    the allocation."""
+    proc, argv, _ = _run_script(tmp_path, extra_env={"MATRIX_ARCHS": "a3"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _flag_value(argv, "--shards") == "1"
+    assert "the whole allocation" in proc.stdout
+
+
+def test_two_named_architectures_keep_the_default_shard_count(tmp_path):
+    proc, argv, _ = _run_script(tmp_path, extra_env={"MATRIX_ARCHS": "a3,a4"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _flag_value(argv, "--shards") == _default_of("MATRIX_SHARDS")
+
+
+def test_an_explicit_shard_count_survives_the_single_architecture_rule(
+        tmp_path):
+    proc, argv, _ = _run_script(
+        tmp_path, extra_env={"MATRIX_ARCHS": "a3", "MATRIX_SHARDS": "2"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _flag_value(argv, "--shards") == "2"
+
+
+def test_the_stage_cap_is_justified_against_the_modules_own_constant(matrix):
+    """The script halves the module's hang threshold, so the header carries
+    the module's own constant and the measurement the choice rests on: the
+    build walls of the eight species the two cells need, and the one measured
+    tail that the two caps disagree about."""
+    t = _sbatch_text()
+    assert f"DEFAULT_STAGE_TIMEOUT_S = {matrix['default_timeout_s']}" in t
+    assert int(_default_of("MATRIX_TIMEOUT_S")) * 2 == \
+        matrix["default_timeout_s"]
+    assert "160.8 s" in t          # the eight species, measured
+    assert "2558 s" in t           # the tail 1800 s kills and 3600 s does not
+    assert "_run_log_" in t        # where both numbers were read
+
+
+def test_the_partition_cap_is_stated_or_marked_for_verification():
+    """The runbook records no cap for long-40core, so the header says so and
+    names the command that settles it."""
+    t = _sbatch_text()
+    assert "long-40core" in t
+    assert "sinfo" in t
+    assert "SEAWULF_RUNBOOK.md" in t
 
 
 # --------------------------------------------------------------------------- #

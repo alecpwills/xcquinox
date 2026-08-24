@@ -373,10 +373,15 @@ def write_matrix_yaml(arch, out_dir, *, repo_root,
 #: selectable with ``-k``.
 ORACLE_MODULE = "test_spin_scaling_oracles"
 
-#: Collection target for the oracle run. A directory rather than the module
-#: path so the module name in the selector is what pins the module; pytest
-#: matches ``-k`` against the module name as well as the test name.
-ORACLE_TEST_TARGET = "xcquinox/alec/tests"
+#: Collection target for the oracle run: the oracle MODULE, repository-relative.
+#: ``-k`` narrows what is RUN, not what is COLLECTED, so a directory target
+#: collects every module beside the oracles and one of them failing to import
+#: is a collection error that ends the session before any oracle runs -- the
+#: same failure for every architecture, reported with an exit code that reads
+#: as a failing oracle. The test tree belongs to the whole package and the
+#: matrix does not own what else is in it, so the target is the one file the
+#: selector is written against.
+ORACLE_TEST_TARGET = f"xcquinox/alec/tests/{ORACLE_MODULE}.py"
 
 
 def oracle_selector(arch, archs=None) -> str:
@@ -569,6 +574,26 @@ def stage_plan(run_dir, *, species_slice=HELDOUT_SPECIES_SLICE,
         Stage("validate_run",
               (py, "-m", "xcquinox.alec.cluster.validate_run", run_dir)))
     return tuple(stages)
+
+
+def _allocated_cpus() -> int:
+    """CPUs this process may use: the SLURM allocation when there is one.
+
+    ``os.cpu_count()`` reports the MACHINE. Under ``--exclusive`` with SMT off
+    the two agree; on an SMT node it is twice the cores, and on a shared queue
+    it is the whole box rather than the slice the job holds, so a stage budget
+    divided out of it oversubscribes every stage the matrix starts. SLURM
+    states the allocation in ``SLURM_CPUS_PER_TASK``; outside SLURM, and where
+    a site leaves the variable empty, the machine's count is the only budget
+    there is.
+    """
+    try:
+        allocated = int(os.environ.get("SLURM_CPUS_PER_TASK", "") or 0)
+    except ValueError:
+        allocated = 0
+    if allocated > 0:
+        return allocated
+    return os.cpu_count() or 4
 
 
 def _base_env(threads):
@@ -987,9 +1012,13 @@ def _summary_line(log_path):
 
 
 def _oracle_module_path(repo_root):
-    """Where the spec-3.1 oracle module lives when it is installed."""
-    return (Path(repo_root) / "xcquinox" / "alec" / "tests"
-            / f"{ORACLE_MODULE}.py")
+    """Where the spec-3.1 oracle module lives when it is installed.
+
+    The same path the oracle stage collects (:data:`ORACLE_TEST_TARGET`), so
+    the "not installed" note and the collection target cannot describe two
+    different files.
+    """
+    return Path(repo_root) / ORACLE_TEST_TARGET
 
 
 def _oracle_failure_note(rc, module_path, selector):
@@ -1022,8 +1051,11 @@ def _oracle_failure_note(rc, module_path, selector):
 def _run_oracles(arch, log_path, *, runner, env, timeout_s, cwd):
     """Run this architecture's slice of the spin-scaling oracles O1-O4."""
     selector = oracle_selector(arch)
+    # no:cacheprovider: pytest would otherwise write .pytest_cache into the
+    # checkout, the one tree the job never writes into.
     argv = (sys.executable, "-m", "pytest", ORACLE_TEST_TARGET,
-            "-k", selector, "-q", "-p", "no:randomly")
+            "-k", selector, "-q", "-p", "no:randomly",
+            "-p", "no:cacheprovider")
     record = _run_stage("oracles", argv, log_path, runner=runner, env=env,
                         timeout_s=timeout_s, cwd=cwd)
     summary = _summary_line(log_path)
@@ -1234,7 +1266,7 @@ def run_matrix(archs, work_root, *, shards=1, runner=subprocess.run,
             else stage_cached_inputs(work_root,
                                      repo_root=root)["external_refs_dir"])
     if threads is None:
-        threads = max(1, (os.cpu_count() or 4) // shards)
+        threads = max(1, _allocated_cpus() // shards)
     groups = [archs[k::shards] for k in range(shards)]
     data_dirs = [work_root / "_inputs" / f"pretrain_data_shard{k}"
                  for k in range(shards)]
@@ -1373,7 +1405,12 @@ def _is_clean(result) -> bool:
         # a record that does not is not one the certificate stage wrote.
         if record.get("gate_released") is not True:
             return False
-    if len(result.get("stages", ())) != len(STAGE_ORDER):
+    # By NAME and in order, not by count: a record carrying the right number
+    # of stages under the wrong names -- a renamed stage, a stage recorded
+    # twice while another never ran -- would otherwise be scored clean on a
+    # sequence that is not the one spec 3.4 fixes.
+    if [stage.get("name") for stage in result.get("stages", ())] \
+            != list(STAGE_ORDER):
         return False
     validate = result.get("validate_run") or {}
     for stage in result["stages"]:
@@ -1513,7 +1550,11 @@ def write_matrix_report(results, path) -> Path:
                 f"- {record['arch']}: stage {failed['name']} exited "
                 f"{failed['rc']}; the stages after it did not run. Log: "
                 f"{failed.get('log')}")
-        certificate = record.get("certificate") or {}
+        # `certificate_record is None` is "the result carries no certificate
+        # record at all", which _is_clean skips entirely; an empty dict is a
+        # record that states nothing, which it does not.
+        certificate_record = record.get("certificate")
+        certificate = certificate_record or {}
         certificate_stage = _stage_record(record, "certificate")
         if certificate_stage is not None:
             if not certificate.get("present", True):
@@ -1535,21 +1576,38 @@ def write_matrix_report(results, path) -> Path:
                     "waiver, so the on-node gates (the preflight sweep and "
                     "the train task) refuse this run: "
                     f"{certificate.get('gate_message', '')}")
-        # Defensive: _is_clean requires one record per STAGE_ORDER entry.
-        # Every reachable way of ending short already has a finding above -- a
-        # sequence that raised, a stage that exited non-zero -- so a record
-        # that is short with every return code zero would be scored non-clean
-        # with nothing below the table to say why.
+            elif (certificate_record is not None
+                    and certificate.get("gate_released") is not True):
+                # _is_clean requires the record to STATE that the gate
+                # released, so a record that states nothing is already scored
+                # non-clean; without this line it would be scored non-clean
+                # with nothing below the table to say why, which is the one
+                # thing the findings block exists to prevent.
+                findings.append(
+                    f"- {record['arch']}: the certificate record carries no "
+                    "gate decision (gate_released "
+                    f"{certificate.get('gate_released')!r}) -- every record "
+                    "the certificate stage writes states one, so there is no "
+                    "evidence here that the on-node gates would release this "
+                    f"run: {certificate.get('gate_message', '')}")
+        # Defensive: _is_clean requires the stage records to BE the stage
+        # order, by name and in order. Every reachable way of ending short
+        # already has a finding above -- a sequence that raised, a stage that
+        # exited non-zero -- so a record whose sequence is wrong with every
+        # return code zero would be scored non-clean with nothing below the
+        # table to say why.
         stage_records = list(record.get("stages", ()))
+        ran = [stage.get("name") for stage in stage_records]
         if (not record.get("error") and failed is None
-                and len(stage_records) != len(STAGE_ORDER)):
-            ran = [stage.get("name") for stage in stage_records]
+                and ran != list(STAGE_ORDER)):
             missing = [name for name in STAGE_ORDER if name not in ran]
+            unexpected = [name for name in ran if name not in STAGE_ORDER]
             findings.append(
-                f"- {record['arch']}: {len(stage_records)} stage record(s), "
-                f"{len(STAGE_ORDER)} expected, none of them a failure -- "
-                f"missing {missing or 'nothing named in the stage order'}; "
-                f"recorded: {ran}")
+                f"- {record['arch']}: the stage records are not the stage "
+                f"order -- {len(stage_records)} record(s), "
+                f"{len(STAGE_ORDER)} expected, none of them a failure; "
+                f"missing {missing or 'nothing'}, unexpected "
+                f"{unexpected or 'nothing'}; recorded: {ran}")
         check = record.get("slice_check") or {}
         if check.get("ok") is False:
             findings.append(f"- {record['arch']}: held-out channel not marked "
@@ -1651,12 +1709,14 @@ _REPO_PATH_WRITES = {
 def _repo_path_refusal(path, repo_root, *, flag):
     """Refusal message for a CLI path inside the repository, or ``None``.
 
-    Keep every byte the matrix writes out of the tracked tree. The rule is one
-    rule for the three flags of :data:`_REPO_PATH_WRITES`: a run directory, a
-    report or a reference copy inside the repository writes the run's own
-    output into the tree the run is measuring, and the reference directory is a
-    write target as much as the other two -- the preflight drops a
-    ``_run_log_<UTC>.json`` beside the references it reads.
+    Keep every byte the matrix writes out of the repository working tree --
+    tracked or not, since the untracked cached inputs the identity consumes
+    live in it too. The rule is one rule for the three flags of
+    :data:`_REPO_PATH_WRITES`: a run directory, a report or a reference copy
+    inside the repository writes the run's own output into the tree the run is
+    measuring, and the reference directory is a write target as much as the
+    other two -- the preflight drops a ``_run_log_<UTC>.json`` beside the
+    references it reads.
     """
     resolved = Path(path).resolve()
     repo = Path(repo_root).resolve()
@@ -1745,6 +1805,16 @@ def main(argv=None, *, runner=subprocess.run) -> int:
             f"--timeout-s must be a positive number of seconds, got "
             f"{args.timeout_s}; a non-positive cap has every stage killed at "
             f"launch and reported as {TIMEOUT_RC}")
+
+    if not 1 <= args.shards <= MAX_SHARDS:
+        # run_matrix refuses the same range, but from a library call: reached
+        # through the CLI it raises and the process exits 1, the code reserved
+        # for a defect the matrix FOUND. A mistyped flag is a command line
+        # that was wrong, which is exit 2 like every other refused flag.
+        parser.error(
+            f"--shards must satisfy 1 <= shards <= {MAX_SHARDS}, got "
+            f"{args.shards}; each shard runs one SCF-heavy stage at a time "
+            f"and the stage thread budget is the allocation divided by it")
 
     root = repo_root_path()
     try:

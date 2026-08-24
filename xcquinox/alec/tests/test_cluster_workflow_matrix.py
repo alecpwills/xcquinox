@@ -1202,6 +1202,55 @@ def test_run_arch_names_the_absent_oracle_module(tmp_path):
     assert "no tests ran in 0.31s" in log, "pytest's own output is kept"
 
 
+def test_the_oracle_stage_targets_the_module_and_leaves_no_cache(tmp_path):
+    """The oracle stage names the oracle MODULE, not the directory holding it.
+
+    ``-k`` narrows what is RUN; it does not narrow what is COLLECTED, so with
+    the directory as the target one unrelated module that fails to import
+    stops the run before a single oracle executes -- identically for every
+    architecture, and with an exit code that reads as a failed oracle.
+    ``-p no:cacheprovider`` keeps pytest's cache directory out of the
+    checkout, which is the one tree the job otherwise never writes into.
+    """
+    _result, fake = _run_arch(tmp_path)
+    argvs = [argv for argv, _env in fake.calls
+             if FakeRunner._stage_of(argv) == "oracles"]
+    assert len(argvs) == 1
+    argv = argvs[0]
+    assert wm.ORACLE_TEST_TARGET.endswith(f"{wm.ORACLE_MODULE}.py")
+    assert wm.ORACLE_TEST_TARGET in argv
+    assert "no:cacheprovider" in argv
+
+
+def test_the_oracle_stage_survives_a_broken_module_elsewhere_in_the_tree(
+        tmp_path):
+    """A REAL pytest run, in a tree carrying one module that raises on import.
+
+    The oracle stage runs the installed test tree, which the matrix does not
+    own: any module in it that fails to import is a collection error, and
+    pytest stops the whole session on one. Collected as a directory, the
+    broken module below takes the oracles of all 31 architectures with it;
+    collected as the module, the oracles run.
+    """
+    tree = tmp_path / "checkout"
+    tests_dir = tree / "xcquinox" / "alec" / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / f"{wm.ORACLE_MODULE}.py").write_text(
+        "import pytest\n\n"
+        f"@pytest.mark.parametrize('arch', {sorted(ARCHITECTURES)!r})\n"
+        "def test_o1(arch):\n"
+        "    assert arch\n")
+    (tests_dir / "test_unrelated_module.py").write_text(
+        "raise RuntimeError('this module does not import')\n")
+    record = wm._run_oracles("deep", tmp_path / "oracles.log",
+                             runner=subprocess.run, env=dict(os.environ),
+                             timeout_s=600, cwd=tree)
+    log = Path(record["log"]).read_text()
+    assert record["rc"] == 0, log
+    assert "1 passed" in record["summary_line"], log
+    assert not (tree / ".pytest_cache").exists()
+
+
 def test_the_stage_table_covers_every_cell_the_template_expands_to(tmp_path):
     """``STAGE_ORDER`` carries one train and one eval stage per grid cell.
 
@@ -1362,6 +1411,44 @@ def test_run_matrix_gives_each_shard_its_own_pretrain_data_dir(tmp_path,
     assert dirs["shallow"] != dirs["deep"]
     assert dirs["shallow"].endswith("pretrain_data_shard0")
     assert dirs["deep"].endswith("pretrain_data_shard1")
+
+
+def test_run_matrix_sizes_the_stage_threads_from_the_allocation(
+        tmp_path, shared_refs, monkeypatch):
+    """The per-stage BLAS budget is the ALLOCATION divided by the shards.
+
+    ``os.cpu_count()`` reports the MACHINE: on an SMT node it is twice the
+    cores, and on a shared queue it is the whole box rather than the slice
+    this job holds, so shards sized from it oversubscribe every stage and the
+    stages then contend for the same cores. SLURM states what the job may use
+    in ``SLURM_CPUS_PER_TASK``.
+    """
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "40")
+    fake = MatrixFakeRunner()
+    wm.run_matrix(["deep", "shallow", "medium", "shallow_attn"], tmp_path,
+                  shards=4, runner=fake, repo_root=wm.repo_root_path(),
+                  external_refs_dir=shared_refs)
+    assert fake.calls
+    for argv, env in fake.calls:
+        for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                    "OPENBLAS_NUM_THREADS"):
+            assert env[key] == "10", (key, env[key], argv)
+
+
+@pytest.mark.parametrize("value", ["", "0", "not-a-number"])
+def test_run_matrix_falls_back_to_the_machine_without_an_allocation(
+        tmp_path, shared_refs, monkeypatch, value):
+    """Outside SLURM -- a workstation run, or a site that leaves the variable
+    empty -- the machine's own count is the only budget there is."""
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", value)
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    fake = MatrixFakeRunner()
+    wm.run_matrix(["deep", "shallow"], tmp_path, shards=2, runner=fake,
+                  repo_root=wm.repo_root_path(),
+                  external_refs_dir=shared_refs)
+    assert fake.calls
+    for _argv, env in fake.calls:
+        assert env["OMP_NUM_THREADS"] == "4"
 
 
 def test_run_matrix_refuses_an_out_of_range_shard_count(tmp_path, shared_refs):
@@ -1727,6 +1814,59 @@ def test_write_matrix_report_names_a_stage_list_that_ended_short(tmp_path):
         assert name in findings, name
 
 
+def _shuffled_stage_order():
+    """The stage order with two entries transposed: the same names, the same
+    number of them, a sequence that is not the one spec 3.4 fixes."""
+    names = list(wm.STAGE_ORDER)
+    names[3], names[4] = names[4], names[3]
+    return names
+
+
+def test_is_clean_requires_the_stage_records_to_be_the_stage_order(tmp_path):
+    """The acceptance item is that the whole SEQUENCE ran, in its order.
+
+    Counting the records instead admits a record carrying the right number of
+    stages under the wrong ones -- one stage recorded twice while another
+    never ran, or a renamed stage -- and scores it clean on a sequence the
+    matrix never drove. The transposed record below has ten records, all zero,
+    and is refused by name.
+    """
+    record = _clean_result(stages=[
+        {"name": name, "rc": 0, "seconds": 1.0,
+         "log": f"/w/deep/logs/{name}.log"}
+        for name in _shuffled_stage_order()])
+    assert len(record["stages"]) == len(wm.STAGE_ORDER)
+    assert wm.matrix_exit_code([record]) == 1
+    findings = _findings_of(wm.write_matrix_report(
+        [record], tmp_path / "matrix.md").read_text())
+    assert findings is not None, "an out-of-order sequence scored in silence"
+    assert record["arch"] in findings
+    assert "stage order" in findings
+
+
+def test_write_matrix_report_names_a_certificate_stating_no_gate_decision(
+        tmp_path):
+    """``_is_clean`` requires the certificate record to STATE that the on-node
+    gates released the run: a record that states nothing is no evidence that
+    they would. Scored on that field above the table, it has to be named below
+    it, or the count and the findings disagree about a record.
+    """
+    record = _clean_result(certificate={
+        "present": True, "verdict": "FAIL", "enforced": False,
+        "override_reason": "workflow matrix", "gate_released": None,
+        "path": "/w/deep/pretrain/deep/fidelity_certificate.json",
+        "gate_message": ""})
+    assert wm.matrix_exit_code([record]) == 1
+    findings = _findings_of(wm.write_matrix_report(
+        [record], tmp_path / "matrix.md").read_text())
+    assert findings is not None, "a record with no gate decision scored in silence"
+    assert record["arch"] in findings
+    assert "gate decision" in findings
+    # The enforced-FAIL wording is a different finding and must not be reused:
+    # this record's config DOES carry the waiver.
+    assert "is ENFORCED" not in findings
+
+
 def test_write_matrix_report_names_every_architecture_it_scores_non_clean(
         tmp_path):
     """The findings block is the whole of what a reader has below the table,
@@ -1767,6 +1907,14 @@ def test_write_matrix_report_names_every_architecture_it_scores_non_clean(
         "stage list short": _clean_result(stages=[
             {"name": name, "rc": 0, "log": f"/w/deep/logs/{name}.log"}
             for name in wm.STAGE_ORDER[:2]]),
+        "certificate states no gate decision": _clean_result(certificate={
+            "present": True, "verdict": "FAIL", "enforced": False,
+            "override_reason": "workflow matrix", "gate_released": None,
+            "path": "/w/deep/pretrain/deep/fidelity_certificate.json",
+            "gate_message": ""}),
+        "stage sequence out of order": _clean_result(stages=[
+            {"name": name, "rc": 0, "log": f"/w/deep/logs/{name}.log"}
+            for name in _shuffled_stage_order()]),
     }
     for label, record in cases.items():
         assert wm.matrix_exit_code([record]) == 1, label
@@ -2275,11 +2423,31 @@ def test_main_refuses_a_non_positive_stage_timeout(tmp_path, capsys, value):
 
 def _usage_error(capsys, phrase, argv):
     """``main`` refuses a bad flag the way argparse does: exit status 2 with
-    the reason on stderr, so exit 1 keeps its meaning of a defect found."""
+    the reason on stderr, so exit 1 keeps its meaning of a defect found.
+
+    The refusal has to come BEFORE anything is launched. A flag refused after
+    the first stage has already started has cost the allocation it was meant
+    to save, and the exit status alone cannot tell the two apart, so the
+    runner is kept and asserted untouched.
+    """
+    fake = MatrixFakeRunner()
     with pytest.raises(SystemExit) as excinfo:
-        wm.main(argv, runner=MatrixFakeRunner())
+        wm.main(argv, runner=fake)
     assert excinfo.value.code == 2
     assert phrase in capsys.readouterr().err
+    assert fake.calls == [], "no stage may be launched under a refused flag"
+
+
+@pytest.mark.parametrize("value", ["0", "-1", str(wm.MAX_SHARDS + 1)])
+def test_main_refuses_a_shard_count_outside_the_ceiling(tmp_path, capsys,
+                                                        value):
+    """``run_matrix`` refuses the same range, but reached through the CLI it
+    raises: the traceback exits 1, the code reserved for a defect the matrix
+    FOUND, and a job script reading that number reports a mistyped flag as a
+    failing architecture. It is a refused flag, so it is exit 2."""
+    _usage_error(capsys, "--shards",
+                 ["--archs", "deep", "--work-root", str(tmp_path),
+                  "--shards", value])
 
 
 def test_main_refuses_an_unknown_architecture(tmp_path, capsys):
