@@ -109,10 +109,10 @@ _ENTRY_BLOCK_ONLY_MODULES = frozenset({"xcquinox.alec.cluster._exit"})
 
 # Upper bound on the modules present in sys.modules after the file is executed
 # with the package __init__ modules stubbed (the closure test below). The
-# committed tree measures 122, of which 78 are the interpreter's own startup
+# committed tree measures 123, of which 78 are the interpreter's own startup
 # set. A module-body ``import pyscf`` measures 799 (numpy, scipy, pyscf) and an
 # ``import jax`` in grid_config's body measures 612 (numpy, jax, jaxlib), so any
-# bound between 122 and 612 discriminates; 300 leaves the readers room to grow a
+# bound between 123 and 612 discriminates; 300 leaves the readers room to grow a
 # stdlib import without a test edit.
 _CLOSURE_MODULE_BOUND = 300
 
@@ -246,10 +246,11 @@ def test_fidelity_module_body_loads_no_heavy_stack_when_executed():
     ``__path__``, so ``domain``, ``grid_config`` and ``materialize`` still
     resolve to the real files and their bodies execute here too.
 
-    The committed tree measures 122 modules loaded, of which 78 are the
-    interpreter's own startup set, and pulls exactly the three cheap readers
-    out of ``xcquinox`` -- so the deferred model, config and pool modules are
-    pinned absent by binding and not only by name.
+    The committed tree measures 123 modules loaded, of which 78 are the
+    interpreter's own startup set, and pulls exactly the four cheap readers
+    out of ``xcquinox`` (``domain``, ``grid_config``, ``materialize`` and
+    ``orientation_lock_default``) -- so the deferred model, config and pool
+    modules are pinned absent by binding and not only by name.
     """
     path = os.path.abspath(fid.__file__)
     cluster_dir = os.path.dirname(path)
@@ -282,7 +283,7 @@ print(json.dumps({"base": base, "after": len(sys.modules),
     assert not heavy, (heavy, result["after"])
     assert result["after"] < _CLOSURE_MODULE_BOUND, (
         result["after"], result["base"])
-    # Exactly the three whitelisted readers, and the stubs the probe installed
+    # Exactly the four whitelisted readers, and the stubs the probe installed
     # itself: no deferred xcquinox module is reached through any route. The
     # entry-block-only names are subtracted rather than tolerated, so their
     # ABSENCE here is asserted: an import of this module must not reach them.

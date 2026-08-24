@@ -1066,22 +1066,14 @@ def cmd_submit_eval(args) -> int:
 # Subcommand: status
 # ===========================================================================
 
-def _pretrain_status(run_dir: str) -> str | None:
-    """Lightweight pretrain-stage status line, or None if it cannot be checked.
+def _pretrain_counts(run_dir: str):
+    """``(n_archs, checkpoint_pairs, pass_certificates)``, or None.
 
-    Pretrain is a small up-front stage, it gets no per-index
-    ``reduce_outcomes``. The check is purely on-disk: for each distinct
-    architecture in the resolved config, the pretrain worker writes
-    ``xnet.eqx`` + ``cnet.eqx`` into the RUN-SCOPED
-    ``<run_dir>/pretrain/<arch>/`` (see ``pretrain_checkpoint_dir``). We
-    report how many of those checkpoint pairs are present. The path MUST be
-    derived through the same helper the pretrain worker uses, or this check
-    looks in the wrong directory and reports a false ``0/N``.
-
-    Alongside the checkpoint-pair count the line reports how many
-    architectures carry a PASS fidelity certificate: the pretrain array can
-    finish and still leave the campaign blocked, because the train array is
-    gated on the certificate, not on the checkpoint files.
+    The measurement behind :func:`_pretrain_status`, kept separate because the
+    remedy line has to decide WHICH stage of a stalled graph is the incomplete
+    one and a formatted string is no basis for that. None when the run dir
+    carries no readable resolved config, which is the same condition under
+    which the status line is omitted.
     """
     cfg_path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
     if not os.path.exists(cfg_path):
@@ -1101,8 +1093,32 @@ def _pretrain_status(run_dir: str) -> str | None:
         status, _reason = certificate_status_in(d)
         if status == VERDICT_PASS:
             certified += 1
-    return (f"{done}/{len(archs)} architecture checkpoint pair(s) present, "
-            f"{certified}/{len(archs)} architecture certificate(s) PASS")
+    return len(archs), done, certified
+
+
+def _pretrain_status(run_dir: str) -> str | None:
+    """Lightweight pretrain-stage status line, or None if it cannot be checked.
+
+    Pretrain is a small up-front stage, it gets no per-index
+    ``reduce_outcomes``. The check is purely on-disk: for each distinct
+    architecture in the resolved config, the pretrain worker writes
+    ``xnet.eqx`` + ``cnet.eqx`` into the RUN-SCOPED
+    ``<run_dir>/pretrain/<arch>/`` (see ``pretrain_checkpoint_dir``). We
+    report how many of those checkpoint pairs are present. The path MUST be
+    derived through the same helper the pretrain worker uses, or this check
+    looks in the wrong directory and reports a false ``0/N``.
+
+    Alongside the checkpoint-pair count the line reports how many
+    architectures carry a PASS fidelity certificate: the pretrain array can
+    finish and still leave the campaign blocked, because the train array is
+    gated on the certificate, not on the checkpoint files.
+    """
+    counts = _pretrain_counts(run_dir)
+    if counts is None:
+        return None
+    n_archs, done, certified = counts
+    return (f"{done}/{n_archs} architecture checkpoint pair(s) present, "
+            f"{certified}/{n_archs} architecture certificate(s) PASS")
 
 
 def _resume_remedy(n_resumable: int) -> str:
@@ -1202,8 +1218,33 @@ def cmd_status(args) -> int:
         _log("  remedy: `repair-manifest <run_dir>`: manifest is "
              "corrupt/inconsistent.")
     elif preflight_dead:
-        _log("  remedy: `resubmit-preflight <run_dir>`: the preflight job "
-             "appears to have failed (no train task ran).")
+        # Nothing downstream ran, which is the signature of BOTH a dead
+        # preflight and a dead pretrain stage: the train array hangs on
+        # `afterok` for the pretrain array and the preflight alike, and
+        # `cmd_resubmit` recovers neither (it reduces the train and eval kinds
+        # only). One command recovers both, so what the operator needs from
+        # this line is which stage is incomplete.
+        counts = _pretrain_counts(run_dir)
+        n_archs, pt_done, pt_certified = counts or (0, 0, 0)
+        if counts is not None and pt_done < n_archs:
+            _log("  remedy: `resubmit-preflight <run_dir>`: the PRETRAIN stage "
+                 f"is incomplete ({pt_done}/{n_archs} architecture checkpoint "
+                 "pair(s) on disk) and no train task ran. It re-submits the "
+                 "whole pretrain->preflight->train->eval graph, and an "
+                 "architecture whose networks and certificate are already on "
+                 "disk is kept by the pretrain task, so only what is "
+                 "incomplete is re-run.")
+        elif counts is not None and pt_certified < n_archs:
+            _log("  remedy: `resubmit-preflight <run_dir>`: the PRETRAIN array "
+                 f"wrote every checkpoint but only {pt_certified}/{n_archs} "
+                 "architecture(s) carry a PASS certificate, so the train array "
+                 "was gated out. It re-submits the whole "
+                 "pretrain->preflight->train->eval graph; a certified "
+                 "architecture is kept by the pretrain task, so only what is "
+                 "incomplete is re-run.")
+        else:
+            _log("  remedy: `resubmit-preflight <run_dir>`: the preflight job "
+                 "appears to have failed (no train task ran).")
     elif train_failed > 0:
         _log("  remedy: `resubmit <run_dir>`: re-run the failed train "
              "task(s) IN THIS run directory. A wall-kill with no checkpoint "

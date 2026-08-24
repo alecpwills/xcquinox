@@ -37,8 +37,10 @@ import dataclasses
 import importlib
 import json
 import os
+import shutil
 import signal
 import sys
+import tempfile
 import time
 
 from xcquinox.alec.procmem import read_rss_gb
@@ -189,6 +191,9 @@ def main(argv=None) -> int:
         sys.stdout.write(json.dumps({"kind": "pad_group", "enabled": True}) + "\n")
         sys.stdout.flush()
 
+    # The throwaway --smoke checkpoint directory, disposed of in the finally
+    # below. None for a normal run, which has nothing to dispose of.
+    smoke_dir = None
     if args.smoke:
         # Compile-smoke mode: force a single epoch (compiles every per-molecule
         # kernel of the spec, so the heaviest cell's epoch-0 XLA/LLVM compile is
@@ -205,33 +210,44 @@ def main(argv=None) -> int:
                 f"replaceable fields {sorted(_missing)}; it has "
                 f"{sorted(_field_names)}"
             )
-        import atexit
-        import shutil
-        import tempfile
-        d = tempfile.mkdtemp(prefix="xcq_smoke_")
-        atexit.register(shutil.rmtree, d, ignore_errors=True)
-        spec = dataclasses.replace(spec, n_steps=1, checkpoint_dir=d)
+        smoke_dir = tempfile.mkdtemp(prefix="xcq_smoke_")
+        spec = dataclasses.replace(spec, n_steps=1, checkpoint_dir=smoke_dir)
         sys.stdout.write(json.dumps({
-            "kind": "smoke", "n_steps": 1, "checkpoint_dir": d,
+            "kind": "smoke", "n_steps": 1, "checkpoint_dir": smoke_dir,
         }) + "\n")
         sys.stdout.flush()
 
-    # Lazy import keeps startup fast if anything fails before we need alec.
-    import xcquinox.alec as alec  # noqa: E402
+    try:
+        # Lazy import keeps startup fast if anything fails before we need alec.
+        import xcquinox.alec as alec  # noqa: E402
 
-    cb = None if args.no_progress else _progress_callback
-    # WS5: install the SIGTERM flush handler so a SLURM wall-clock pre-kill
-    # checkpoints the in-flight epoch (best-effort; periodic checkpoints written
-    # by the per_molecule loop every checkpoint_every epochs are the primary
-    # net). A no-op for runs with checkpoint_every=0 (no flusher registered).
-    _install_sigterm_flush_handler()
-    t0 = time.time()
-    alec.run_training(spec, progress_callback=cb)
-    sys.stdout.write(
-        json.dumps({"kind": "done", "elapsed_s": time.time() - t0}) + "\n"
-    )
-    sys.stdout.flush()
-    return 0
+        cb = None if args.no_progress else _progress_callback
+        # WS5: install the SIGTERM flush handler so a SLURM wall-clock pre-kill
+        # checkpoints the in-flight epoch (best-effort; periodic checkpoints
+        # written by the per_molecule loop every checkpoint_every epochs are the
+        # primary net). A no-op for runs with checkpoint_every=0 (no flusher
+        # registered).
+        _install_sigterm_flush_handler()
+        t0 = time.time()
+        alec.run_training(spec, progress_callback=cb)
+        sys.stdout.write(
+            json.dumps({"kind": "done", "elapsed_s": time.time() - t0}) + "\n"
+        )
+        sys.stdout.flush()
+        return 0
+    finally:
+        # Disposal of the throwaway --smoke directory belongs to main's own
+        # control flow, not to an atexit handler: this worker leaves through
+        # the shared hard exit (xcquinox/alec/cluster/_exit.py), which runs no
+        # atexit handler, so a registered cleanup never fires and one directory
+        # holding a one-epoch checkpoint leaks per compile-smoke run
+        # (hpcjobs/dfs6311_smoke_vma.sbatch). The finally covers every path out
+        # of the work, the exception that escapes to run_and_exit included --
+        # a failed probe owes the directory as much as a successful one. Errors
+        # are ignored: a disposal that cannot complete must not cost the worker
+        # its exit status.
+        if smoke_dir is not None:
+            shutil.rmtree(smoke_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

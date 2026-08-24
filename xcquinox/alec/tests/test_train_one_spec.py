@@ -4,6 +4,7 @@ The worker must be able to route JAX to CPU before any JAX import so the
 parent notebook can gracefully fall back when GPU training OOMs on small
 hardware (the step6 72-spec sweep hits ~7 GB peak on 8 GB GPUs).
 """
+import dataclasses
 import json
 import os
 import subprocess
@@ -277,3 +278,102 @@ def test_progress_callback_includes_rss(capsys):
     if sys.platform.startswith("linux"):
         assert _math.isfinite(payload["rss_gb"]) and payload["rss_gb"] > 0.0
         assert payload["hwm_gb"] >= payload["rss_gb"]
+
+
+# ---------------------------------------------------------------------------
+# --smoke leaves no throwaway checkpoint directory behind
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class _SmokeProbeSpec:
+    """A replaceable stand-in for ``TrainingSpec``, carrying only the two
+    fields ``--smoke`` overrides.
+
+    The property under test is the DISPOSAL of the throwaway checkpoint
+    directory, not the training: a real spec would put a one-epoch compile of
+    every per-molecule kernel between the directory being made and the exit,
+    which measures nothing the disposal depends on. The two fields are the
+    ones ``main`` requires of the loaded spec (``n_steps`` and
+    ``checkpoint_dir``, both checked there against
+    ``dataclasses.fields``), so this reaches the smoke branch by the same
+    route a real spec does.
+    """
+
+    n_steps: int = 5
+    checkpoint_dir: str = ""
+
+
+def _write_probe_spec(tmp_path):
+    """Serialize a :class:`_SmokeProbeSpec` the way the parent writes a spec."""
+    import pickle
+
+    path = tmp_path / "probe.spec"
+    with open(path, "wb") as f:
+        pickle.dump(_SmokeProbeSpec(), f)
+    return path
+
+
+def _parse_smoke_line(stdout):
+    """The ``{"kind": "smoke"}`` line, which names the throwaway directory."""
+    for line in stdout.splitlines():
+        if line.startswith('{"kind": "smoke"'):
+            return json.loads(line)
+    return None
+
+
+def test_smoke_temp_dir_is_removed_when_main_returns(tmp_path, monkeypatch):
+    """``--smoke`` redirects the checkpoints into a temp dir that must not leak.
+
+    The directory holds a one-epoch checkpoint of whatever cell was probed and
+    is created once per compile-smoke run (``hpcjobs/dfs6311_smoke_vma.sbatch``
+    is the live call site). Disposal has to be part of ``main``'s own control
+    flow rather than a teardown handler, because the worker leaves through
+    ``os._exit`` (see ``xcquinox/alec/cluster/_exit.py``), which runs none.
+    """
+    import xcquinox.alec as alec
+    from xcquinox.alec import _train_one_spec as worker_mod
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    seen = {}
+
+    def fake_run_training(spec, progress_callback=None):
+        # The directory must still be there while the training runs -- that is
+        # what it is for -- so the disposal is measured after main returns.
+        seen["checkpoint_dir"] = spec.checkpoint_dir
+        seen["present_during_training"] = os.path.isdir(spec.checkpoint_dir)
+        seen["n_steps"] = spec.n_steps
+
+    monkeypatch.setattr(alec, "run_training", fake_run_training)
+    rc = worker_mod.main([str(_write_probe_spec(tmp_path)),
+                          "--smoke", "--no-progress"])
+
+    assert rc == 0
+    assert seen["present_during_training"] is True
+    assert seen["n_steps"] == 1
+    assert not os.path.exists(seen["checkpoint_dir"]), (
+        f"--smoke left {seen['checkpoint_dir']} on disk")
+    assert not sorted(tmp_path.glob("xcq_smoke_*"))
+
+
+def test_smoke_temp_dir_is_removed_through_the_hard_exit(tmp_path):
+    """The same disposal in the process the sbatch script actually launches.
+
+    ``python -m xcquinox.alec._train_one_spec`` leaves through the shared hard
+    exit, so a disposal registered with ``atexit`` never runs: measured on this
+    launch, the directory survives the worker. The probe spec fails inside
+    ``run_training``, which is the harder path -- the disposal owes the
+    directory on a failure too, and the exception still reaches the caller
+    with the interpreter's own status 1.
+    """
+    rc, stdout = _run_worker(
+        [str(_write_probe_spec(tmp_path)), "--smoke", "--no-progress",
+         "--device=cpu"],
+        timeout=180,
+        env_overrides={"JAX_PLATFORMS": "cpu", "TMPDIR": str(tmp_path)},
+    )
+    smoke = _parse_smoke_line(stdout)
+    assert smoke is not None, f"no smoke line; stdout={stdout!r}"
+    assert rc == 1, f"expected the escaping exception's status 1, got {rc}"
+    assert not os.path.exists(smoke["checkpoint_dir"]), (
+        f"--smoke left {smoke['checkpoint_dir']} on disk")
+    assert not sorted(tmp_path.glob("xcq_smoke_*"))

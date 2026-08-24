@@ -49,13 +49,41 @@ NAMED_ENTRY_POINTS = {
     # rendered job stages that live one level up from the two directories
     "alec/benchmark_refs.py",
     "alec/_train_one_spec.py",
+    # standalone job stages: launched by a checked-in sbatch script, so SLURM
+    # reads the status each one hands back
+    "alec/refinalize_verbatim.py",
+    "hpcjobs/dfs6311_nan_isolate.py",
+    "hpcjobs/dfs6311_nan_verify.py",
+    "hpcjobs/dfs6311_pretrained_holdout.py",
+    "analysis/precompute_scan_pool.py",
+    "analysis/precompute_nonempirical_pool.py",
 }
 
-#: Entry points outside the two enumerated directories: rendered job stages
-#: whose exit status is likewise the scheduler's verdict.
+#: Entry points outside the two enumerated directories: job stages whose exit
+#: status is likewise the scheduler's verdict, either rendered by ``submit``
+#: or launched by a checked-in ``hpcjobs/*.sbatch``. The criterion for
+#: inclusion is the exposure the helper closes: the stage runs under SLURM,
+#: it loads JAX (so the atexit backend cleanup that aborted job 2134455 is
+#: registered), and it writes outputs before returning, so an abort at
+#: teardown reports FAILED for work that completed.
+#:
+#: Two SLURM-launched readers are deliberately absent.
+#: ``hpcjobs/dfs6311_c2_ref_probe.py`` and
+#: ``hpcjobs/dfs6311_lock_stamp_probe.py`` import neither ``xcquinox`` nor
+#: JAX -- they read cached ``.npz`` files with numpy and write nothing -- so
+#: no teardown handler is registered and an abort costs a re-read. Reaching
+#: the helper through ``xcquinox.alec.cluster._exit`` would import JAX and
+#: PySCF into those processes (measured: 1686 modules against a numpy-only
+#: base), i.e. it would create the exposure it is meant to close.
 EXTRA_ENTRY_FILES = (
     CLUSTER_DIR.parent / "benchmark_refs.py",
     CLUSTER_DIR.parent / "_train_one_spec.py",
+    CLUSTER_DIR.parent / "refinalize_verbatim.py",
+    REPO_ROOT / "hpcjobs" / "dfs6311_nan_isolate.py",
+    REPO_ROOT / "hpcjobs" / "dfs6311_nan_verify.py",
+    REPO_ROOT / "hpcjobs" / "dfs6311_pretrained_holdout.py",
+    REPO_ROOT / "notebooks" / "analysis" / "precompute_scan_pool.py",
+    REPO_ROOT / "notebooks" / "analysis" / "precompute_nonempirical_pool.py",
 )
 
 #: SIGABRT as ``subprocess`` reports it. This is what the smoke recorded and

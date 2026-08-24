@@ -892,5 +892,167 @@ def test_pretrain_log_reaches_the_caller_through_the_hard_exit(tmp_path):
     assert "resolved_config.yaml not found" in proc.stdout, proc.stdout
 
 
+# ---------------------------------------------------------------------------
+# skip-if-complete: a pretrain task killed after success is not redone
+# ---------------------------------------------------------------------------
+# A pretrain array task has no resubmit path -- ``cmd_resubmit`` reduces the
+# train and eval kinds only -- so the recovery for a dead pretrain stage is
+# ``resubmit-preflight``, which re-submits the whole
+# pretrain -> preflight -> train -> eval graph. Without the check below that
+# recovery repeats every architecture's pretraining from scratch, including the
+# ones whose networks and certificate are already on disk, which is the
+# expensive half of the graph. The release rule for keeping one is the ON-NODE
+# gate the stage already applies to its own verdict
+# (``fidelity.gate_certificate_from_read``), so a kept architecture is one a
+# later stage would accept: PASS, or FAIL under a recorded waiver that states
+# its reason. Anything else -- a missing network, no certificate, an unreadable
+# one, an enforced FAIL -- is redone.
+
+
+def _completed_pretrain(run_dir, arch, payload, *, networks=("xnet.eqx",
+                                                             "cnet.eqx")):
+    """Write the artifacts a completed pretrain task leaves behind."""
+    d = os.path.join(run_dir, "pretrain", arch)
+    os.makedirs(d, exist_ok=True)
+    for name in networks:
+        with open(os.path.join(d, name), "wb") as f:
+            f.write(b"checkpoint-bytes-" + name.encode())
+    if payload is not None:
+        with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+            if isinstance(payload, str):
+                f.write(payload)
+            else:
+                json.dump(payload, f)
+    return d
+
+
+def _waived_fail_payload():
+    """A FAIL the on-node gate releases: enforcement off, reason recorded."""
+    return _pass_payload(
+        verdict="FAIL", enforced=False,
+        tolerances={"tol_AE": 1.0, "tol_atom": 1.0,
+                    "override_reason": "workflow matrix: wiring check"},
+    )
+
+
+def _forbid(monkeypatch, *names):
+    """Bind each seam to a call that fails the test if it is reached."""
+    for name in names:
+        def _refuse(*a, _name=name, **kw):
+            raise AssertionError(f"{_name} was called; the completed "
+                                 "pretraining should have been kept")
+        monkeypatch.setattr(pt, name, _refuse)
+
+
+def _recorder(monkeypatch):
+    """Stub ``_run_pretrain`` so it writes both networks and counts calls."""
+    calls = []
+
+    def fake_run_pretrain(spec, progress_callback=None):
+        calls.append(spec.checkpoint_dir)
+        os.makedirs(spec.checkpoint_dir, exist_ok=True)
+        for name in ("xnet.eqx", "cnet.eqx"):
+            with open(os.path.join(spec.checkpoint_dir, name), "wb") as f:
+                f.write(b"redone")
+        return {}
+
+    monkeypatch.setattr(pt, "_run_pretrain", fake_run_pretrain)
+    return calls
+
+
+@pytest.mark.parametrize("payload,label", [
+    (_pass_payload(), "PASS"),
+    (_waived_fail_payload(), "waived FAIL"),
+])
+def test_a_certified_pretrain_is_kept_and_not_redone(run_dir, monkeypatch,
+                                                     capsys, payload, label):
+    """Both networks plus a certificate the on-node gate releases -> exit 0.
+
+    Neither the pretraining nor the certificate is recomputed: both seams are
+    bound to a call that fails the test if it is reached.
+    """
+    _completed_pretrain(run_dir, "deep", payload)
+    _forbid(monkeypatch, "_run_pretrain", "_fidelity_certificate")
+
+    assert pt.main([run_dir, "0"]) == 0, label
+    out = capsys.readouterr().out
+    assert "KEPT" in out, out
+    assert "arch=deep" in out, out
+
+
+def test_the_kept_pretrain_leaves_every_artifact_byte_identical(run_dir,
+                                                                monkeypatch):
+    """Idempotent: a re-run of a completed task rewrites nothing."""
+    payload = _pass_payload()
+    d = _completed_pretrain(run_dir, "deep", payload)
+    names = ("xnet.eqx", "cnet.eqx", "fidelity_certificate.json")
+    before = {n: open(os.path.join(d, n), "rb").read() for n in names}
+    _forbid(monkeypatch, "_run_pretrain", "_fidelity_certificate")
+
+    assert pt.main([run_dir, "0"]) == 0
+    after = {n: open(os.path.join(d, n), "rb").read() for n in names}
+    assert after == before
+
+
+@pytest.mark.parametrize("payload,networks,reason", [
+    (None, ("xnet.eqx", "cnet.eqx"), "no certificate was written"),
+    ("{not json", ("xnet.eqx", "cnet.eqx"), "the certificate is unreadable"),
+    (_pass_payload(verdict=None), ("xnet.eqx", "cnet.eqx"),
+     "the certificate records no verdict"),
+    (_pass_payload(verdict="FAIL"), ("xnet.eqx", "cnet.eqx"),
+     "the FAIL is enforced"),
+    (_pass_payload(), ("xnet.eqx",), "cnet.eqx is missing"),
+    (_pass_payload(), ("cnet.eqx",), "xnet.eqx is missing"),
+    (_pass_payload(), (), "neither network is present"),
+])
+def test_an_incomplete_pretrain_is_redone(run_dir, monkeypatch, payload,
+                                          networks, reason):
+    """Anything the on-node gate would refuse is pretrained again.
+
+    The certificate seam stays at the autouse PASS stub, so the redo lands the
+    same exit 0 a first run does -- what is measured is that ``_run_pretrain``
+    ran, i.e. nothing was kept on the strength of a partial or unverifiable
+    record.
+    """
+    _completed_pretrain(run_dir, "deep", payload, networks=networks)
+    calls = _recorder(monkeypatch)
+
+    assert pt.main([run_dir, "0"]) == 0, reason
+    assert len(calls) == 1, reason
+
+
+def test_a_waiver_with_no_reason_does_not_keep_a_failing_pretrain(run_dir,
+                                                                  monkeypatch):
+    """``enforced: false`` alone is not a waiver -- the reason is required.
+
+    The same rule ``fidelity.gate_certificate_from_read`` imposes everywhere,
+    applied here so a hand-edited certificate on a compute node cannot keep an
+    architecture no gate would release.
+    """
+    payload = _pass_payload(
+        verdict="FAIL", enforced=False,
+        tolerances={"tol_AE": 1.0, "tol_atom": 1.0, "override_reason": "  "})
+    _completed_pretrain(run_dir, "deep", payload)
+    calls = _recorder(monkeypatch)
+
+    assert pt.main([run_dir, "0"]) == 0
+    assert len(calls) == 1
+
+
+def test_the_keep_check_runs_before_any_pretraining_work(run_dir, monkeypatch,
+                                                         capsys):
+    """The point of the check is the cost it avoids, so it precedes the work.
+
+    ``_run_pretrain`` is the expensive seam and it is bound to a refusal here;
+    a check placed after it would reach that refusal.
+    """
+    _completed_pretrain(run_dir, "deep", _pass_payload())
+    _forbid(monkeypatch, "_run_pretrain", "_fidelity_certificate")
+
+    assert pt.main([run_dir, "0"]) == 0
+    out = capsys.readouterr().out
+    assert "running run_pretrain" not in out, out
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

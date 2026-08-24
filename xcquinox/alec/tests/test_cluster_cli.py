@@ -2192,3 +2192,73 @@ def test_status_remedy_for_an_inline_run_is_a_resubmit_that_works(
     assert "resume checkpoint" in out, out
     assert main(["resubmit", rd, "--submit"]) == 0
     assert len(_sbatch_calls(fake)) == 1
+
+
+# ===========================================================================
+# status: the remedy for a dead PRETRAIN stage
+# ===========================================================================
+# A pretrain array task has no resubmit path -- `cmd_resubmit` reduces the
+# train and eval kinds only -- so a pretrain stage that died takes the same
+# on-disk signature as a dead preflight (nothing downstream ran, because the
+# afterok dependency never fired) and the same recovery, `resubmit-preflight`.
+# The remedy has to say which stage is incomplete, or an operator reads
+# "preflight" for a run whose preflight never started.
+
+def _certify(run_dir, arch, verdict="PASS"):
+    """Write the artifacts a completed, certified pretrain leaves behind."""
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+
+    ck = pretrain_checkpoint_dir(run_dir, arch)
+    os.makedirs(ck, exist_ok=True)
+    open(os.path.join(ck, "xnet.eqx"), "wb").close()
+    open(os.path.join(ck, "cnet.eqx"), "wb").close()
+    with open(os.path.join(ck, "fidelity_certificate.json"), "w") as f:
+        json.dump({"verdict": verdict, "arch": arch}, f)
+    return ck
+
+
+def _status_with_nothing_downstream(tmp_path, monkeypatch):
+    """A run dir whose train array never ran, and its `status` output."""
+    run_dir = _make_run_dir(tmp_path)
+    jt.append_job_record(run_dir, "train", "1000", list(range(_N)))
+    jt.append_job_record(run_dir, "eval", "2000", list(range(_N)))
+    monkeypatch.setattr(
+        jt, "_run_slurm",
+        _fake_slurm(sacct_rows={"1000": "\n".join(
+            f"1000_{i}|CANCELLED by 0|0:0" for i in range(_N)), "2000": ""}))
+    return run_dir
+
+
+def test_status_names_the_pretrain_stage_when_it_is_the_incomplete_one(
+        tmp_path, monkeypatch, capsys):
+    """No train task ran and the pretrain checkpoints are absent.
+
+    The remedy must name `resubmit-preflight` -- the only command that can
+    recover a pretrain stage -- and it must say that the recovery re-runs only
+    what is incomplete, which is what makes it cheap now that a completed
+    architecture's pretraining is kept (`cluster/_pretrain.py`).
+    """
+    run_dir = _status_with_nothing_downstream(tmp_path, monkeypatch)
+    assert main(["status", run_dir]) == 0
+    out = capsys.readouterr().out
+    assert "0/1 architecture checkpoint pair(s) present" in out, out
+    assert "resubmit-preflight <run_dir>" in out, out
+    assert "pretrain" in out.split("remedy:")[-1], out
+    assert "incomplete" in out.split("remedy:")[-1], out
+
+
+def test_status_still_names_the_preflight_when_the_pretrain_is_certified(
+        tmp_path, monkeypatch, capsys):
+    """Same on-disk signature with the pretrain stage finished and certified.
+
+    The recovery command is unchanged; only the stage named moves, so the
+    remedy is not simply relabelled for every dead graph.
+    """
+    run_dir = _status_with_nothing_downstream(tmp_path, monkeypatch)
+    _certify(run_dir, "medium")
+    assert main(["status", run_dir]) == 0
+    out = capsys.readouterr().out
+    assert "1/1 architecture certificate(s) PASS" in out, out
+    remedy = out.split("remedy:")[-1]
+    assert "resubmit-preflight <run_dir>" in remedy, out
+    assert "preflight" in remedy, out

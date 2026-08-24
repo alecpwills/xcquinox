@@ -117,6 +117,39 @@ def _log(arch, message):
     sys.stdout.flush()
 
 
+def completed_pretraining(checkpoint_dir: str) -> tuple[bool, str]:
+    """``(keep, reason)`` for pretraining already present in ``checkpoint_dir``.
+
+    ``keep`` is True only when both networks are on disk AND the certificate
+    beside them is one an on-node gate releases -- PASS, or FAIL under a
+    recorded waiver naming its reason. The release rule is
+    :func:`fidelity.gate_certificate_from_read` applied to a single read, i.e.
+    exactly the rule this stage applies to its own verdict at the end of a
+    fresh run and the rule the preflight sweep and the train task apply to the
+    same file. An architecture is therefore kept only when the stages after it
+    would accept what is on disk; a missing network, an absent or unreadable
+    certificate, and an enforced FAIL are each a reason to pretrain again.
+
+    A checkpoint with no certificate beside it is NOT kept even though the
+    networks are usable: there is then no record of what was measured, and the
+    gates downstream refuse it, so keeping it would leave the run blocked at
+    the next stage with the expensive half already skipped. Requiring the
+    certificate also settles the partial-write window -- ``run_pretrain``
+    writes ``xnet.eqx`` and ``cnet.eqx`` before ``pretrain_metadata.json``,
+    and the certificate is computed only after it returns, so a certificate on
+    disk implies the metadata ``validate_run`` reads is there too.
+    """
+    missing = [name for name in ("xnet.eqx", "cnet.eqx")
+               if not os.path.isfile(os.path.join(checkpoint_dir, name))]
+    if missing:
+        return False, (f"no complete checkpoint in {checkpoint_dir} "
+                       f"(missing: {missing})")
+    status, status_reason, on_disk = fidelity.read_certificate_status_in(
+        checkpoint_dir)
+    return fidelity.gate_certificate_from_read(
+        status, status_reason, on_disk)
+
+
 def _fmt_secs(seconds):
     """Compact h:mm:ss / m:ss formatting for elapsed/ETA."""
     if seconds is None or seconds != seconds:  # None or NaN
@@ -311,6 +344,29 @@ def main(argv=None) -> int:
     # arch write to distinct dirs (run_dir is unique per submission) and every
     # artifact for the run stays in one folder.
     checkpoint_dir = pretrain_checkpoint_dir(run_dir, arch_name)
+
+    # --- keep a pretraining that already completed -------------------------
+    # A pretrain array task has no resubmit path of its own: ``cmd_resubmit``
+    # reduces the train and eval kinds only, so a task killed AFTER writing its
+    # networks and certificate -- a wall-kill, a node failure, or the teardown
+    # abort measured on cluster job 2134455 -- leaves the graph stalled behind
+    # a stage that had in fact finished, and the only recovery is
+    # ``resubmit-preflight``, which re-submits the whole
+    # pretrain -> preflight -> train -> eval graph. Repeating the pretraining
+    # of an architecture whose result is already on disk is the expensive half
+    # of that recovery, and it replaces the checkpoint the run's certificate
+    # was measured on with a different one. Checked BEFORE any work, so the
+    # recovery costs a directory listing per completed architecture.
+    keep, keep_reason = completed_pretraining(checkpoint_dir)
+    if keep:
+        _log(arch_name,
+             f"pretrain KEPT: {checkpoint_dir} already holds xnet.eqx + "
+             f"cnet.eqx and a certificate this node's gate releases "
+             f"({keep_reason}); the completed pretraining stands and is not "
+             "repeated")
+        return 0
+    _log(arch_name, f"pretraining from scratch: {keep_reason}")
+
     from xcquinox.alec.config import PretrainSpec
     spec = PretrainSpec(
         arch=arch_config,

@@ -268,4 +268,11 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # A scheduled job stage: its exit status is the scheduler's verdict on
+    # the three-leg finiteness check, so it leaves through the shared hard
+    # exit (flush, then os._exit) rather than through interpreter teardown,
+    # which aborted on the cluster after a completed pretrain stage (job
+    # 2134455). Imported here rather than in the module body, since the
+    # helper is needed only when the module is RUN.
+    from xcquinox.alec.cluster._exit import run_and_exit
+    run_and_exit(main)
