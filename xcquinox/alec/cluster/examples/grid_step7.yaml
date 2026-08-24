@@ -75,6 +75,12 @@ inputs:
   basis: def2-svp
   grid_level: 1
   output_root: /gpfs/projects/CHANGE_ME/xcquinox/step7/runs
+  # Orientation lock, authoritative for the WHOLE run: the training/eval SCF,
+  # the CCSD references and the pretraining data are all built at it, so a
+  # degenerate open shell (OH/CH/NO, and every open p-shell free atom) is the
+  # same member of its manifold everywhere. Stated rather than inherited; 0.0
+  # turns it off, at the cost of a build that does not reproduce.
+  orientation_lock_strength: 3.0e-5
 
 # --- pretrain stage: one run_pretrain job per distinct architecture --------
 # The pretrain stage builds a PretrainSpec per arch and writes the resulting

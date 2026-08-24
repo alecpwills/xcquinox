@@ -192,14 +192,26 @@ def test_render_benchmark_refs_passes_orientation_lock(tmp_path):
     r = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
 
-    # off by default -> no flag
+    # A config that does not state the key inherits the HARNESS default, which
+    # is the training lock, so the held-out CCSD references are locked too --
+    # the reason the default is that value and not zero.
     d2 = _base_config_dict()
     d2["inputs"]["benchmark_refs_dir"] = "/shared/bench_refs"
     p2 = tmp_path / "grid2.json"
     p2.write_text(json.dumps(d2))
     text2 = render_sbatch("benchmark_refs", load_grid_config(str(p2)),
                           str(tmp_path / "run2"))
-    assert "--orientation-lock-strength" not in text2
+    assert "--orientation-lock-strength 3e-05" in text2
+
+    # An explicit 0.0 -> no flag: an unlocked campaign stays unlocked.
+    d3 = _base_config_dict()
+    d3["inputs"]["benchmark_refs_dir"] = "/shared/bench_refs"
+    d3["inputs"]["orientation_lock_strength"] = 0.0
+    p3 = tmp_path / "grid3.json"
+    p3.write_text(json.dumps(d3))
+    text3 = render_sbatch("benchmark_refs", load_grid_config(str(p3)),
+                          str(tmp_path / "run3"))
+    assert "--orientation-lock-strength" not in text3
 
 
 def test_render_train_cpu_has_xla_flags_no_gres(tmp_path):

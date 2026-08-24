@@ -109,6 +109,8 @@ inputs:
   # train time (the SCF precompute was found dead and removed). Required by the
   # submit-time guard whenever validate_every > 0.
   val_refs_dir: /gpfs/scratch/awills/external_refs_val_dfs_svp_g2
+  # campaign ran unlocked; stated so the harness default (3e-5) cannot change it
+  orientation_lock_strength: 0.0
 
 pretrain:
   data_dir: /gpfs/scratch/awills/pretrain_data_dfs_svp_g2_allelem

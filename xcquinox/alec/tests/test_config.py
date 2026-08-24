@@ -850,3 +850,33 @@ def test_pretrain_spec_validate_refuses_a_non_finite_protocol_weight(tmp_path):
             PretrainSpec(**base, energy_term_weight=value).validate()
     with pytest.raises(ValueError, match="validation_fraction"):
         PretrainSpec(**base, validation_fraction=math.nan).validate()
+
+
+def test_pretrain_spec_validate_bounds_the_validation_seed(tmp_path):
+    """``jax.random.PRNGKey`` wraps modulo 2**32 rather than raising, so a
+    seed outside the range silently ALIASES another split (PRNGKey(-1) is
+    PRNGKey(2**32 - 1)) while the record states the number that was written,
+    and numpy's own generators refuse the same values outright. The held-out
+    permutation's seed is therefore bounded exactly as the initialization seed
+    is."""
+    from xcquinox.alec.config import MAX_SEED, PretrainSpec, get_architecture
+    base = dict(arch=get_architecture("deep_3x16"), data_dir=str(tmp_path),
+                checkpoint_dir=str(tmp_path / "ck"))
+    with pytest.raises(ValueError, match="validation_seed"):
+        PretrainSpec(**base, validation_seed=-1).validate()
+    with pytest.raises(ValueError, match="validation_seed"):
+        PretrainSpec(**base, validation_seed=2 ** 40).validate()
+    PretrainSpec(**base, validation_seed=0).validate()
+    PretrainSpec(**base, validation_seed=MAX_SEED).validate()
+
+
+def test_pretrain_spec_parent_density_set_is_named_once(tmp_path):
+    """``__post_init__`` tests the value against the module constant rather
+    than a literal of its own, so the accepted set is one object."""
+    from xcquinox.alec import config as config_mod
+    assert config_mod.PARENT_DENSITIES == ("pbe", "scan", "auto")
+    for value in config_mod.PARENT_DENSITIES:
+        config_mod.PretrainSpec(
+            arch=config_mod.get_architecture("deep_3x16"),
+            data_dir=str(tmp_path), checkpoint_dir=str(tmp_path / "ck"),
+            parent_density=value)

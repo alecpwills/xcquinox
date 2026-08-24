@@ -690,9 +690,16 @@ def test_deployment_config_paths_is_empty_without_the_directory(monkeypatch,
 
 def test_pretraining_lock_is_the_training_lock():
     """The generator's lock strength is ``orientation_lock.DEFAULT_STRENGTH``
-    and the value every production configuration that sets one trains at, so
+    and the value every production configuration that locks trains at, so
     the degenerate radicals' pretraining rows sit on the component the
-    training SCF and the fidelity certificate see."""
+    training SCF and the fidelity certificate see.
+
+    Every shipped configuration STATES the key. The harness default is the
+    lock, so an omitted key is no longer a statement that the campaign ran
+    unlocked -- it silently adopts the lock and rebuilds that campaign's
+    pretraining rows at a Hamiltonian it was not run at. The older unlocked
+    campaigns therefore carry an explicit 0.0, and their recorded methodology
+    is unaffected by the default."""
     import yaml
     from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
     assert pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH == DEFAULT_STRENGTH == 3e-5
@@ -701,16 +708,25 @@ def test_pretraining_lock_is_the_training_lock():
         pytest.skip("no hpcjobs/configs in this checkout; the constant above "
                     "is still pinned, there is simply no deployed "
                     "configuration to cross-check it against")
-    seen = []
+    locked, unlocked = [], []
     for path in paths:
         with open(path) as f:
             cfg = yaml.safe_load(f) or {}
         value = (cfg.get("inputs") or {}).get("orientation_lock_strength")
-        if value is None:
-            continue
-        seen.append(os.path.basename(path))
-        assert float(value) == pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH, path
-    assert len(seen) >= 6, seen
+        assert value is not None, (
+            f"{os.path.basename(path)} does not state "
+            "inputs.orientation_lock_strength; the harness default is the "
+            "training lock, so an omitted key changes what this campaign's "
+            "pretraining data is built at")
+        if float(value) == 0.0:
+            unlocked.append(os.path.basename(path))
+        else:
+            assert float(value) == pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH, path
+            locked.append(os.path.basename(path))
+    assert len(locked) >= 6, locked
+    # Nine of the tracked configurations ran unlocked (the six *.local.yaml
+    # working copies that also do are not in the tree).
+    assert len(unlocked) >= 9, unlocked
 
 
 def test_system_columns_hand_the_lock_to_the_precompute(monkeypatch):

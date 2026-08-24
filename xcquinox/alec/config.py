@@ -689,6 +689,23 @@ def _describe_spec(spec) -> dict:
 # PretrainSpec
 # ---------------------------------------------------------------------------
 
+#: Parent densities the pretraining targets may sit on. "auto" resolves to the
+#: architecture's rung baseline (SCAN for the meta-GGA rung, PBE otherwise).
+#: The harness parser states the same set as ``grid_config._PARENT_DENSITIES``
+#: -- it cannot import this module, which pulls JAX and equinox, on the login
+#: node -- and the two are pinned equal by the harness test suite, so a value
+#: the parser admits and this spec refuses cannot ship.
+PARENT_DENSITIES = ("pbe", "scan", "auto")
+
+#: Largest accepted PRNG seed. ``jax.random.PRNGKey`` wraps modulo 2**32
+#: instead of raising, so a seed outside the range silently ALIASES another
+#: run's initialization (PRNGKey(-1) == PRNGKey(2**32 - 1), PRNGKey(2**32) ==
+#: PRNGKey(0)) while the metadata records the number that was written;
+#: ``create_network_pair`` keys cnet at seed + 1, so the top of the range is
+#: excluded too. Mirrored by ``grid_config._MAX_SEED``.
+MAX_SEED = 2 ** 32 - 2
+
+
 @dataclass(frozen=True)
 class PretrainSpec:
     """Pretraining config. Plain frozen dataclass, NOT an eqx.Module, so float
@@ -740,9 +757,10 @@ class PretrainSpec:
                 f"loss_weighting must be 'unweighted' or 'integration', "
                 f"got {self.loss_weighting!r}"
             )
-        if self.parent_density not in ("pbe", "scan", "auto"):
+        if self.parent_density not in PARENT_DENSITIES:
             raise ValueError(
-                f"parent_density must be 'pbe', 'scan' or 'auto', got "
+                f"parent_density must be one of "
+                f"{', '.join(repr(v) for v in PARENT_DENSITIES)}, got "
                 f"{self.parent_density!r}"
             )
 
@@ -782,6 +800,13 @@ class PretrainSpec:
                 f"validate_every must be > 0, got {self.validate_every}")
         if self.patience < 0:
             raise ValueError(f"patience must be >= 0, got {self.patience}")
+        # The held-out permutation's seed. Bounded for the reason MAX_SEED
+        # states: a value outside the range is not refused downstream, it
+        # ALIASES another split while the record names the number written.
+        if not (0 <= self.validation_seed <= MAX_SEED):
+            raise ValueError(
+                f"validation_seed must be in [0, {MAX_SEED}], got "
+                f"{self.validation_seed}")
         if not os.path.isdir(self.data_dir):
             raise ValueError(f"data_dir does not exist: {self.data_dir}")
         if os.path.exists(self.checkpoint_dir) and not os.path.isdir(self.checkpoint_dir):

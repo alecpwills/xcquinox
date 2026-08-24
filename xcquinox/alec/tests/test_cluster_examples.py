@@ -291,3 +291,21 @@ def test_example_gives_datagen_a_wall_of_its_own():
     pytest.importorskip("yaml")
     cfg = load_grid_config(_example_path())
     assert cfg.cluster.datagen_time == "04:00:00"
+
+
+def test_example_states_the_orientation_lock_explicitly():
+    """The template names the run's lock rather than inheriting it.
+
+    The value is authoritative for the whole run -- the training and eval SCF,
+    the CCSD references and the pretraining data are all built at it -- and an
+    unlocked degenerate open shell is not reproducible between processes, so a
+    copy of the template is a complete statement of the Hamiltonian it solves
+    rather than a set of invisible defaults."""
+    pytest.importorskip("yaml")
+    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
+    raw = _raw_yaml(_example_path())["inputs"]
+    assert "orientation_lock_strength" in raw, (
+        "grid_step7.yaml must state inputs.orientation_lock_strength")
+    assert float(raw["orientation_lock_strength"]) == DEFAULT_STRENGTH
+    cfg = load_grid_config(_example_path())
+    assert cfg.inputs.orientation_lock_strength == DEFAULT_STRENGTH

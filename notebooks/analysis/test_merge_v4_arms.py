@@ -276,10 +276,16 @@ def _full_config_yaml(seed_xc=None):
                         "lr_decay_start": 0.5, "grad_clip": 1.0,
                         "gradnorm_alpha": 1.5, "vxc_weight": 1.0,
                         "density_weight": 1.0},
+        # The orientation lock is STATED rather than inherited: the harness
+        # default is the calibrated 3e-5, while the synthetic certificates
+        # below record an unlocked identity, and the identity check compares
+        # the two. Stating it keeps the fixtures self-consistent, so a test
+        # that means to mismatch on the basis mismatches on the basis alone.
         "inputs": {"external_refs_dir": "/refs",
                    "subset_ledger_path": "/ledger.json",
                    "basis": "6-311++G(3df,2pd)", "grid_level": 3,
-                   "output_root": "/out", "density_fit": True},
+                   "output_root": "/out", "density_fit": True,
+                   "orientation_lock_strength": 0.0},
         "pretrain": {"data_dir": "/pre"},
         "cluster": {"partition": "p", "time": "01:00:00", "mem": "8G",
                     "cpus_per_task": 1, "array_throttle": 1,

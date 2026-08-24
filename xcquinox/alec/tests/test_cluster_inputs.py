@@ -643,9 +643,10 @@ def test_prepare_inputs_asks_the_currency_check_at_the_runs_own_lock(
 
 def test_prepare_inputs_states_an_unlocked_run_rather_than_defaulting(
         tmp_path, stub_pool, stub_refs, monkeypatch):
-    """``inputs.orientation_lock_strength`` defaults to 0.0 (no lock) while the
-    generator's own default is 3e-5, so the value has to be stated: leaving it
-    out would serve a locked file to an unlocked run."""
+    """A run that states ``inputs.orientation_lock_strength: 0.0`` is unlocked,
+    and the preflight must say so on every ``ensure_pretrain_data`` call:
+    leaving the keyword out would ask the currency check at the GENERATOR's
+    own default (3e-5) and serve a locked file to an unlocked run."""
     cfg = _protocol_cfg(tmp_path)
     _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
     calls = _pretrain_calls(monkeypatch)

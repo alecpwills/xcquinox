@@ -67,10 +67,10 @@ def test_manifest_round_trips_density_fit_flag(tmp_path):
                     # when the writer was handed atoms only), the parent
                     # functional, the exchange footing, the orientation lock
                     # the parent density was computed at, and the precision.
-                    # A degenerate atom's rows below grid level 3 are one
-                    # arbitrary member of its manifold; the writer records
-                    # whether that was permitted.
-                    "allow_coarse_degenerate": False,
+                    # A degenerate atom's rows below grid level 3, or with
+                    # the lock off, are one arbitrary member of its manifold;
+                    # the writer records whether that was permitted.
+                    "allow_irreproducible_degenerate": False,
                     "systems": None, "reference_xc": "pbe",
                     "exchange_footing": "total",
                     "orientation_lock_strength":
@@ -133,8 +133,8 @@ def test_ensure_regenerates_only_when_stale(tmp_path, monkeypatch):
 
     # The default set carries O, and this test runs at grid level 1
     # deliberately (it is about the currency check, and the generator is
-    # faked), so the coarse-grid refusal is waived throughout.
-    coarse = dict(allow_coarse_degenerate=True)
+    # faked), so the irreproducible-degenerate refusal is waived throughout.
+    coarse = dict(allow_irreproducible_degenerate=True)
     # first call: file absent -> generates
     pdg.ensure_pretrain_data(str(tmp_path), basis="def2-svp", grid_level=1,
                              polarized=False, **coarse)
@@ -215,9 +215,10 @@ def test_manifest_records_and_compares_atoms(tmp_path, monkeypatch):
     # wrapper is a named entry point for callers, not the generator's seam).
     monkeypatch.setattr(pdg, "_system_columns", fake_cols)
     # The default set carries O and the default grid level is 1, so every
-    # ensure below waives the coarse-grid refusal deliberately: this test is
-    # about the ATOM SET in the manifest and the column builder is faked.
-    coarse = dict(allow_coarse_degenerate=True)
+    # ensure below waives the irreproducible-degenerate refusal deliberately:
+    # this test is about the ATOM SET in the manifest and the column builder
+    # is faked.
+    coarse = dict(allow_irreproducible_degenerate=True)
     default_path = pdg.ensure_pretrain_data(str(tmp_path), **coarse)
     assert calls == [s for s, _ in pdg.DEFAULT_PRETRAIN_ATOMS]
     meta = json.loads(open(default_path + ".manifest.json").read())

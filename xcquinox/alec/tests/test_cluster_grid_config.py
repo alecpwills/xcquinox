@@ -243,8 +243,27 @@ def test_solver_orientation_lock_resolved_round_trip(tmp_path):
 # Run-level inputs.orientation_lock_strength (authoritative for the whole run)
 # ---------------------------------------------------------------------------
 
-def test_inputs_orientation_lock_default_off(tmp_path):
+def test_inputs_orientation_lock_default_is_the_training_lock(tmp_path):
+    """A config that does not state the key resolves to the ONE lock constant,
+    not to zero.
+
+    The run-level value is authoritative for the whole run -- the training and
+    eval SCF, the CCSD references and the pretraining data are all built at it
+    -- and an unlocked degenerate open shell (O, and every open p-shell atom of
+    the pools) is not reproducible between processes at all. The harness
+    default is therefore the value the production configurations carry rather
+    than the library primitive's opt-in zero."""
+    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
     cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert cfg.inputs.orientation_lock_strength == DEFAULT_STRENGTH
+
+
+def test_inputs_orientation_lock_zero_is_kept_when_stated(tmp_path):
+    """An explicit 0.0 is preserved: it is how a campaign that ran unlocked
+    keeps its recorded methodology once the default is the lock."""
+    d = _base_config_dict()
+    d["inputs"]["orientation_lock_strength"] = 0.0
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", d))
     assert cfg.inputs.orientation_lock_strength == 0.0
 
 
@@ -1918,6 +1937,11 @@ def test_validate_grid_semantics_bounds_the_protocol_fields():
             ("parent_density", "blyp", "parent_density"),
             ("exchange_footing", "per_orbital", "exchange_footing"),
             ("mesh_fraction", 1.0, "mesh_fraction"),
+            # The only consumer, pretrain_data_gen._check_generator_arguments,
+            # requires a STRICT lower bound: a mesh carrying no share of the
+            # integration weight is not a mesh, and the generator refuses it
+            # in the queued job rather than at submit.
+            ("mesh_fraction", 0.0, "mesh_fraction"),
             ("energy_term_weight", -1.0, "energy_term_weight"),
             ("validation_fraction", 1.0, "validation_fraction"),
             ("validate_every", 0, "validate_every"),
@@ -2169,3 +2193,183 @@ def test_build_pretrain_still_accepts_the_shipped_pre_protocol_values():
     })
     assert quoted.n_steps == 2500 and quoted.seed == 42
     assert quoted.lr_start == 0.01 and quoted.grad_clip == 1.0
+
+
+# ---------------------------------------------------------------------------
+# The orientation lock: ONE constant for the harness default
+# ---------------------------------------------------------------------------
+
+def test_the_harness_lock_default_is_the_one_lock_constant():
+    """``InputPaths.orientation_lock_strength``, the generator's own default
+    and ``orientation_lock.DEFAULT_STRENGTH`` are the SAME number.
+
+    Three copies of a physical constant is three chances to disagree, and the
+    disagreement that existed -- a harness default of 0.0 against a generator
+    default of 3e-5 -- silently rebuilt a run's pretraining rows at a lock the
+    run was not trained at."""
+    from xcquinox.alec.cluster.grid_config import (
+        default_orientation_lock_strength)
+    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
+    from xcquinox.alec.pretrain_data_gen import (
+        PRETRAIN_ORIENTATION_LOCK_STRENGTH)
+    built = InputPaths(external_refs_dir="/r", subset_ledger_path="/l",
+                       basis="def2-svp", grid_level=3, output_root="/o")
+    assert built.orientation_lock_strength == DEFAULT_STRENGTH
+    assert default_orientation_lock_strength() == DEFAULT_STRENGTH
+    assert DEFAULT_STRENGTH == PRETRAIN_ORIENTATION_LOCK_STRENGTH
+
+
+def test_the_harness_lock_default_keeps_the_reader_closure_numpy_free():
+    """The default is resolved by a CALL, not by a module-body import.
+
+    ``cluster status``, ``validate_run`` and the certificate readers walk
+    ``fidelity``'s import closure, which runs through this module and must
+    stay free of numeric stacks (pinned by
+    ``test_cluster_fidelity.test_fidelity_module_body_carries_no_heavy_import``);
+    ``orientation_lock.py`` carries numpy for the quadrupole operator, so
+    binding the constant in the module body would pull it into every reader."""
+    import ast
+    import inspect
+
+    from xcquinox.alec.cluster import grid_config as gc
+    tree = ast.parse(inspect.getsource(gc))
+    body_imports = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            body_imports.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            body_imports.add(node.module)
+    assert not any(name.split(".")[0] in ("numpy", "jax", "pyscf")
+                   or name.endswith("orientation_lock")
+                   for name in body_imports), sorted(body_imports)
+
+
+def test_the_library_solver_lock_stays_opt_in(tmp_path):
+    """``SolverNamed`` / ``SolverConfig`` are library primitives a caller may
+    drive without a run around them, so their lock stays OFF by default and a
+    solver block that does not state it is byte-identical to the unlocked SCF
+    it always was. Only the run-level value carries the production default."""
+    from xcquinox.alec.solver import SolverConfig
+    assert SolverNamed(mode="oneshot", max_cycles=0
+                       ).orientation_lock_strength == 0.0
+    assert SolverConfig().orientation_lock_strength == 0.0
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert cfg.solvers["robust"].orientation_lock_strength == 0.0
+
+
+def test_the_default_lock_reaches_the_training_solver_config(tmp_path):
+    """A config without the key renders a training SCF AT the lock: the
+    run-level value is authoritative over the solver's own 0.0, so the
+    functional and the references sit on the same component."""
+    from xcquinox.alec.cluster.spec_builder import _solver_config_from_named
+    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    # The solver states no lock of its own, which is the case the harness
+    # default has to cover: spec_builder passes the run-level value on every
+    # cell (spec_builder.py, _solver_config_from_named call site).
+    named = SolverNamed(mode="oneshot", max_cycles=0)
+    assert named.orientation_lock_strength == 0.0
+    sc = _solver_config_from_named(
+        named, orientation_lock_strength=cfg.inputs.orientation_lock_strength)
+    assert sc.orientation_lock_strength == DEFAULT_STRENGTH
+
+
+def test_the_default_lock_reaches_the_pretrain_data_identity(tmp_path):
+    """The value the datagen stage and the preflight state on every
+    ``ensure_pretrain_data`` call is this one, so a config without the key asks
+    the currency check at the lock the generator builds at rather than
+    rebuilding the production file unlocked."""
+    from xcquinox.alec.pretrain_data_gen import (
+        PRETRAIN_ORIENTATION_LOCK_STRENGTH)
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert (cfg.inputs.orientation_lock_strength
+            == PRETRAIN_ORIENTATION_LOCK_STRENGTH)
+
+
+# ---------------------------------------------------------------------------
+# The protocol knobs are bounded where every loader passes, not only in the
+# semantic check the worker paths skip
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key,value", [
+    ("mesh_fraction", 0.0),        # the consumer requires a STRICT lower bound
+    ("mesh_fraction", 1.0),
+    ("mesh_fraction", -0.1),
+    ("energy_term_weight", -1.0),
+    ("validation_fraction", 1.5),
+    ("validation_fraction", 1.0),
+    ("validation_fraction", -0.1),
+    ("validate_every", 0),
+    ("validate_every", -5),
+    ("patience", -1),
+    ("validation_seed", -1),
+    ("validation_seed", 2 ** 40),
+])
+def test_build_pretrain_bounds_every_protocol_number(key, value):
+    """``validate_grid_semantics`` is the LOGIN-node check; the datagen,
+    pretrain and preflight workers call ``load_grid_config`` alone. A bound
+    that lives only in the semantic check therefore does not exist for the
+    process that runs the schedule, so each one is stated at parse as well."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", key: value})
+    assert f"pretrain.{key}" in str(exc.value)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("mesh_fraction", 0.3), ("mesh_fraction", 0.999),
+    ("energy_term_weight", 0.0), ("energy_term_weight", 1000.0),
+    ("validation_fraction", 0.0), ("validation_fraction", 0.2),
+    ("validate_every", 1), ("patience", 0), ("patience", 10),
+    ("validation_seed", 0), ("validation_seed", 2 ** 32 - 2),
+])
+def test_build_pretrain_accepts_every_in_range_protocol_number(key, value):
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    assert getattr(_build_pretrain({"data_dir": "/d", key: value}),
+                   key) == value
+
+
+def test_validation_seed_is_bounded_like_the_network_seed():
+    """``jax.random.PRNGKey`` wraps modulo 2**32 rather than raising, so a
+    validation seed outside the range silently ALIASES another split while the
+    metadata records the number that was written. It is bounded exactly as the
+    initialization seed is."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain, _MAX_SEED
+    assert _build_pretrain({"data_dir": "/d",
+                            "validation_seed": _MAX_SEED}).validation_seed \
+        == _MAX_SEED
+    with pytest.raises(ValueError, match="validation_seed"):
+        _build_pretrain({"data_dir": "/d", "validation_seed": _MAX_SEED + 1})
+
+
+def test_whole_number_knobs_parse_without_a_float_round_trip():
+    """``float(2**53 + 1)`` is ``2**53``: routing an integer through float
+    loads a schedule other than the one written, silently. The value is read
+    as an exact integer, and a boolean is still refused."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    big = 2 ** 53 + 1
+    assert _build_pretrain({"data_dir": "/d", "n_steps": big}).n_steps == big
+    assert _build_pretrain({"data_dir": "/d",
+                            "n_steps": str(big)}).n_steps == big
+    with pytest.raises(ValueError, match="n_steps"):
+        _build_pretrain({"data_dir": "/d", "n_steps": True})
+    # a fractional value is still refused rather than truncated
+    with pytest.raises(ValueError, match="whole number"):
+        _build_pretrain({"data_dir": "/d", "n_steps": 2.5})
+
+
+def test_the_parent_density_set_is_stated_once():
+    """The harness parser and ``PretrainSpec`` must accept the SAME parent
+    densities: a value one admits and the other refuses is a config that loads
+    on the login node and dies in the queued worker."""
+    from xcquinox.alec.cluster.grid_config import _PARENT_DENSITIES
+    from xcquinox.alec.config import PARENT_DENSITIES
+    assert _PARENT_DENSITIES == PARENT_DENSITIES
+
+
+def test_the_seed_range_is_stated_once():
+    """Same argument for the PRNG range: the parser's ceiling and the spec's
+    are one number."""
+    from xcquinox.alec.cluster.grid_config import _MAX_SEED
+    from xcquinox.alec.config import MAX_SEED
+    assert _MAX_SEED == MAX_SEED

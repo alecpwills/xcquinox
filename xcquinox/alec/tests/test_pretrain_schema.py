@@ -709,9 +709,10 @@ def test_ensure_resolves_the_set_once(monkeypatch, tmp_path):
     monkeypatch.setattr(pdg, "generate_pretrain_data_npz", _fake_generate)
     # The pool set carries eight spatially degenerate atoms and this test runs
     # at grid level 0 deliberately (the generator is faked; no SCF is paid),
-    # so the coarse-grid refusal is waived here.
+    # so the irreproducible-degenerate refusal is waived here.
     pdg.ensure_pretrain_data(str(tmp_path), basis="sto-3g", grid_level=0,
-                             pool_atoms=True, allow_coarse_degenerate=True)
+                             pool_atoms=True,
+                             allow_irreproducible_degenerate=True)
     assert len(seen) == 1
     assert len(seen[0]) == 14
 
@@ -731,7 +732,7 @@ def test_ensure_uses_the_reference_specific_filename(monkeypatch, tmp_path):
     # about the FILENAME, and the generator is faked.
     pdg.ensure_pretrain_data(str(tmp_path), basis="sto-3g", grid_level=0,
                              reference_xc="scan", polarized=True,
-                             allow_coarse_degenerate=True)
+                             allow_irreproducible_degenerate=True)
     assert os.path.basename(paths[0]) == "pretrain_data_polarized_scan.npz"
 
 
@@ -812,7 +813,7 @@ def test_ensure_is_idempotent_at_the_new_identity(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The coarse-grid refusal for a spatially degenerate atom
+# The irreproducible-degenerate refusal: a coarse grid OR an unlocked SCF
 # ---------------------------------------------------------------------------
 
 def _fake_all_columns(monkeypatch):
@@ -830,48 +831,86 @@ def test_generator_refuses_a_degenerate_atom_below_grid_level_3(tmp_path):
     with pytest.raises(ValueError, match="grid level") as excinfo:
         pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("O", 2),),
                                        basis="sto-3g", grid_level=1)
-    assert "O" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "O" in message
+    assert "grid level 1" in message
+    assert "allow_irreproducible_degenerate" in message
     assert not os.listdir(tmp_path)
 
 
-def test_ensure_refuses_the_coarse_degenerate_identity(tmp_path):
+def test_generator_refuses_an_unlocked_degenerate_atom_at_a_fine_grid(tmp_path):
+    """A fine grid is not sufficient. With the lock OFF the SCF may land on
+    any orientation of the 2p hole, so two draws of the O atom at grid level 3
+    kept different numbers of rows (11682 against 11680) and disagreed by
+    2.6e-7 Ha in the total energy -- a different file at one manifest
+    identity. The refusal covers the lock as well as the grid."""
+    with pytest.raises(ValueError, match="orientation lock") as excinfo:
+        pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("O", 2),),
+                                       basis="sto-3g", grid_level=3,
+                                       orientation_lock_strength=0.0)
+    message = str(excinfo.value)
+    assert "O" in message
+    assert "grid level 3" in message
+    assert "allow_irreproducible_degenerate" in message
+    assert not os.listdir(tmp_path)
+
+
+def test_ensure_refuses_the_irreproducible_degenerate_identity(tmp_path):
     """The identity is refused, not only the generation: a file already on
     disk at that identity would otherwise be served to a caller the generator
-    itself would have refused."""
+    itself would have refused. Both conditions are checked there too."""
     with pytest.raises(ValueError, match="grid level"):
         pdg.ensure_pretrain_data(str(tmp_path), atoms=(("O", 2),),
                                  basis="sto-3g", grid_level=1)
+    with pytest.raises(ValueError, match="orientation lock"):
+        pdg.ensure_pretrain_data(str(tmp_path), atoms=(("O", 2),),
+                                 basis="sto-3g", grid_level=3,
+                                 orientation_lock_strength=0.0)
 
 
-def test_generator_accepts_a_coarse_degenerate_atom_when_asked(monkeypatch,
-                                                               tmp_path):
-    """The escape hatch is explicit and recorded: a file built through it
-    carries the flag, so a reader can see that its degenerate-atom rows are
-    one arbitrary member of the manifold."""
-    _fake_all_columns(monkeypatch)
-    # Deliberately coarse: this test is about the flag, not about the rows.
-    path = pdg.generate_pretrain_data_npz(
-        str(tmp_path), atoms=(("O", 2),), basis="sto-3g", grid_level=1,
-        allow_coarse_degenerate=True)
-    meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
-    assert meta["allow_coarse_degenerate"] is True
-
-
-def test_a_spherical_atom_is_unaffected_by_the_coarse_grid_rule(monkeypatch,
-                                                                tmp_path):
-    """N is a half-filled p shell, spherically symmetric, so its rows do not
-    depend on an orientation the SCF happened to reach."""
-    _fake_all_columns(monkeypatch)
-    path = pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("N", 3),),
-                                          basis="sto-3g", grid_level=1)
-    meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
-    assert meta["allow_coarse_degenerate"] is False
-
-
-def test_a_degenerate_atom_at_grid_level_3_is_not_refused(monkeypatch,
-                                                          tmp_path):
+def test_generator_accepts_a_degenerate_atom_at_the_production_identity(
+        monkeypatch, tmp_path):
+    """Grid level 3 AND the lock on: the rows reproduce to 3e-11 relative, so
+    nothing is refused and nothing is recorded as waived."""
     _fake_all_columns(monkeypatch)
     path = pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("O", 2),),
                                           basis="sto-3g", grid_level=3)
     meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
-    assert meta["allow_coarse_degenerate"] is False
+    assert meta["allow_irreproducible_degenerate"] is False
+
+
+@pytest.mark.parametrize("grid_level,lock", [
+    (1, pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH),   # coarse grid, locked
+    (3, 0.0),                                      # fine grid, unlocked
+    (1, 0.0),                                      # both
+])
+def test_the_flag_waives_either_condition(monkeypatch, tmp_path, grid_level,
+                                          lock):
+    """The escape hatch is explicit and recorded: a file built through it
+    carries the flag, so a reader can see that its degenerate-atom rows are
+    one arbitrary member of the manifold. One flag covers both conditions --
+    the defect is the same one either way, a manifest identity the file does
+    not have."""
+    _fake_all_columns(monkeypatch)
+    path = pdg.generate_pretrain_data_npz(
+        str(tmp_path), atoms=(("O", 2),), basis="sto-3g",
+        grid_level=grid_level, orientation_lock_strength=lock,
+        allow_irreproducible_degenerate=True)
+    meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
+    assert meta["allow_irreproducible_degenerate"] is True
+
+
+@pytest.mark.parametrize("grid_level,lock", [(1, 0.0), (3, 0.0), (1, 3e-5)])
+def test_a_spherical_atom_is_unaffected_by_either_condition(monkeypatch,
+                                                            tmp_path,
+                                                            grid_level, lock):
+    """N is a half-filled p shell, spherically symmetric, so its rows depend
+    neither on an orientation the SCF happened to reach nor on a bias that
+    selects one."""
+    _fake_all_columns(monkeypatch)
+    path = pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("N", 3),),
+                                          basis="sto-3g",
+                                          grid_level=grid_level,
+                                          orientation_lock_strength=lock)
+    meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
+    assert meta["allow_irreproducible_degenerate"] is False

@@ -30,10 +30,12 @@ The remaining pretraining-protocol knobs (``dfs_set``, ``pool_atoms``,
 rather than its name and reach the generator as keywords; each is part of the
 data manifest's identity, so a changed knob regenerates the file instead of
 being served a stale one. So does the run's ``inputs.orientation_lock_strength``,
-which is always stated: the generator's own default lock (3e-5) is not the
-harness default (0.0), and a degenerate atom's rows are a different component
-of its manifold under a different lock, so a run that did not state its lock
-would be served a file built for another Hamiltonian. Only a knob that DIFFERS from the generator's default
+which is always stated: the harness default is the generator's own
+(``orientation_lock.DEFAULT_STRENGTH``, one definition), but a configuration
+pinned at another value (the pre-lock campaigns state 0.0) must not be served
+the locked file, because a degenerate atom's rows are a different component of
+its manifold under a different lock; stating the run's value asks the currency
+check at the run's own Hamiltonian. Only a knob that DIFFERS from the generator's default
 is passed, so a configuration written before the protocol change reaches the
 generator with exactly the keyword set it always did and its existing file
 stays current.
@@ -280,11 +282,11 @@ def main(argv=None) -> int:
                 descriptors=True,
                 # The lock the parent density is computed at is part of the
                 # data's identity: a degenerate atom's rows are a different
-                # component of its manifold under a different lock, and the
-                # generator's own default (3e-5) is not the harness default
-                # (inputs.orientation_lock_strength, 0.0). Stating the run's
-                # value is what asks the currency check at the run's own
-                # Hamiltonian instead of at the generator's.
+                # component of its manifold under a different lock. The harness
+                # default is the generator's own, but a configuration pinned at
+                # another value (0.0 in the pre-lock campaigns) must regenerate;
+                # stating the run's value asks the currency check at the run's
+                # own Hamiltonian instead of at the generator's.
                 orientation_lock_strength=cfg.inputs.orientation_lock_strength,
                 **call,
             )

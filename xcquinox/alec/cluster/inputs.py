@@ -369,9 +369,9 @@ def prepare_inputs(
                 auxbasis=cfg.inputs.auxbasis,
                 polarized=_polarized,
                 # Part of the identity for the reason the datagen stage states
-                # it: the generator's default lock (3e-5) is not the harness
-                # default (0.0), so a run that leaves the lock off would be
-                # served the locked file.
+                # it: the harness default is the generator's own, but a run
+                # pinned at another lock (0.0 in the pre-lock campaigns) must
+                # not be served the locked file.
                 orientation_lock_strength=cfg.inputs.orientation_lock_strength,
                 **_call,
             )

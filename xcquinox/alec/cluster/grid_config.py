@@ -40,6 +40,26 @@ VALID_ON_PRECOMPUTE_FAILURE = frozenset({"abort", "drop_failed_species"})
 VALID_BH76_MODE = frozenset({"reaction_energy", "barrier_height"})
 
 
+def default_orientation_lock_strength() -> float:
+    """The run-level orientation lock a configuration gets when it states none.
+
+    ``orientation_lock.DEFAULT_STRENGTH``, imported rather than restated: the
+    harness default, the pretrain-data generator's default and the
+    certificate's per-atom fallback must be ONE number, and the disagreement
+    that existed -- a harness default of 0.0 against a generator default of
+    3e-5 -- rebuilt a run's pretraining rows at a Hamiltonian the run was not
+    solved at.
+
+    Imported at CALL time, as ``fidelity.atom_orientation_lock_strength`` is
+    and for the same reason: ``cluster status``, ``validate_run`` and the
+    certificate readers walk this module's import closure, which must stay
+    free of numeric stacks, while ``orientation_lock.py`` carries numpy for
+    the quadrupole operator.
+    """
+    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
+    return float(DEFAULT_STRENGTH)
+
+
 # ---------------------------------------------------------------------------
 # Grid cell + swept axes
 # ---------------------------------------------------------------------------
@@ -103,6 +123,12 @@ class SolverNamed:
     # anisotropic-quadrupole h_core bias (orientation_lock.py) that makes a
     # degenerate radical's density reproducible. 0.0 -> off -> byte-identical, so
     # existing sweep YAMLs (which do not set it) are unchanged.
+    #
+    # Deliberately NOT the run-level default below. A named solver is a library
+    # primitive a caller may drive without a run around it, and
+    # ``spec_builder._solver_config_from_named`` overrides this value with
+    # ``inputs.orientation_lock_strength`` whenever a run supplies one, so the
+    # run-level knob -- not this one -- is what a production sweep locks with.
     orientation_lock_strength: float = 0.0
 
 
@@ -199,11 +225,20 @@ class InputPaths:
     auxbasis: str | None = None
     # 2026-07-02: run-level orientation-lock strength (orientation_lock.py).
     # Authoritative for the WHOLE run -- threaded to the training/eval SCF (via
-    # SolverConfig, in spec_builder) AND the CCSD reference generation (training
-    # refs via external_refs.precompute_all + the held-out benchmark_refs job), so
-    # the references and the functional lock the SAME degenerate component of a
-    # radical (OH/CH/NO). 0.0 -> off -> byte-identical; existing YAMLs unaffected.
-    orientation_lock_strength: float = 0.0
+    # SolverConfig, in spec_builder), the CCSD reference generation (training
+    # refs via external_refs.precompute_all + the held-out benchmark_refs job)
+    # AND the pretraining-data identity (cluster/_datagen.py, cluster/inputs.py),
+    # so the references, the pretraining rows and the functional lock the SAME
+    # degenerate component of a radical (OH/CH/NO) and of an open p-shell atom.
+    #
+    # 2026-08-23: the default is the calibrated lock, not 0.0. It is the value
+    # the production configurations carry and the value the data generator
+    # builds at, and an unlocked degenerate open shell is not reproducible
+    # between processes at all -- two draws of the free O atom at grid level 3
+    # kept 11682 against 11680 rows and disagreed by 2.6e-7 Ha in the total
+    # energy. A configuration that ran unlocked states 0.0 explicitly.
+    orientation_lock_strength: float = field(
+        default_factory=default_orientation_lock_strength)
     # Hold-out benchmark reference-density dir (W4-11+BH76 pool). When set,
     # ``submit`` ALSO submits one standalone benchmark_refs job (CCSD + PBE
     # densities, no OEP) that starts once the train array has begun, and the
@@ -891,7 +926,10 @@ def _build_inputs(d: dict) -> InputPaths:
         output_root=_require(d, "output_root", ctx),
         density_fit=bool(d.get("density_fit", False)),
         auxbasis=d.get("auxbasis"),
-        orientation_lock_strength=float(d.get("orientation_lock_strength", 0.0)),
+        orientation_lock_strength=(
+            float(d["orientation_lock_strength"])
+            if d.get("orientation_lock_strength") is not None
+            else default_orientation_lock_strength()),
         benchmark_refs_dir=d.get("benchmark_refs_dir"),
         val_refs_dir=d.get("val_refs_dir"),
         seed_xc=seed_xc,
@@ -900,9 +938,14 @@ def _build_inputs(d: dict) -> InputPaths:
 
 
 # The pretraining-protocol string knobs' allowed sets, named once for the
-# parser and for the semantic check below. ``PretrainSpec.__post_init__``
-# carries the parent-density set independently: ``xcquinox.alec.config`` is not
-# imported here, so the harness parser stays free of JAX and PySCF.
+# parser and for the semantic check below. The library side states the parent
+# densities as ``config.PARENT_DENSITIES`` and the seed ceiling as
+# ``config.MAX_SEED`` rather than importing them from here, because
+# ``xcquinox.alec.config`` pulls JAX and equinox and the harness parser runs on
+# the login node; the two pairs are pinned equal by
+# ``test_the_parent_density_set_is_stated_once`` /
+# ``test_the_seed_range_is_stated_once``, so a value one layer admits and the
+# other refuses cannot ship.
 _PARENT_DENSITIES = ("pbe", "scan", "auto")
 _EXCHANGE_FOOTINGS = ("total", "spin_channel")
 _LOSS_WEIGHTINGS = ("unweighted", "integration")
@@ -933,7 +976,8 @@ def _pretrain_bool(d, key: str, default: bool) -> bool:
 
 
 def _pretrain_number(d, key: str, default, whole: bool = False,
-                     minimum=None, maximum=None, minimum_open: bool = False):
+                     minimum=None, maximum=None, minimum_open: bool = False,
+                     maximum_open: bool = False):
     """Read one pretraining number out of a raw ``pretrain`` mapping.
 
     The reasoning of ``_fidelity_tolerance``: a boolean or a container is a
@@ -950,11 +994,19 @@ def _pretrain_number(d, key: str, default, whole: bool = False,
 
     With ``whole=True`` the value must be an exact integer: ``int(2.5)``
     truncates to 2, which is a validation or early-stopping schedule other
-    than the one written.
+    than the one written. An integer (or an integer-spelling string) is read
+    WITHOUT a float round trip, because ``float(2**53 + 1)`` is ``2**53`` and
+    the round trip would load a step count other than the one written.
 
-    ``minimum`` / ``maximum`` (with ``minimum_open`` for a strict lower bound)
-    carry the range the CONSUMER needs, so a value that would make the run a
-    no-op is refused at load rather than at step 1 of a queued job.
+    ``minimum`` / ``maximum`` (with ``minimum_open`` / ``maximum_open`` for a
+    strict bound) carry the range the CONSUMER needs, so a value that would
+    make the run a no-op is refused at load rather than at step 1 of a queued
+    job. Every such bound is stated HERE as well as in
+    ``validate_grid_semantics``: the semantic check runs on the login node at
+    submit, while the datagen, pretrain and preflight workers reach their
+    configuration through ``load_grid_config`` alone, so a bound that lives
+    only in the semantic check does not exist for the process that runs the
+    schedule.
     """
     v = d.get(key, default)
     kind = "a whole number" if whole else "a number"
@@ -962,32 +1014,42 @@ def _pretrain_number(d, key: str, default, whole: bool = False,
         raise ValueError(
             f"grid config key 'pretrain.{key}' must be {kind}, got "
             f"{type(v).__name__} ({v!r})")
-    try:
-        out = float(v)
-    except ValueError:
-        raise ValueError(
-            f"grid config key 'pretrain.{key}' must be {kind}, got "
-            f"{type(v).__name__} ({v!r})") from None
-    if not math.isfinite(out):
-        raise ValueError(
-            f"grid config key 'pretrain.{key}' must be a FINITE number, got "
-            f"{v!r}; a NaN value satisfies neither side of the bound it is "
-            "checked against and turns every comparison against it into the "
-            "sense of that comparison rather than a measurement")
-    if whole and out != int(out):
-        raise ValueError(
-            f"grid config key 'pretrain.{key}' must be a whole number, "
-            f"got {v!r}; int() would truncate it to {int(out)} and run a "
-            "schedule other than the one written")
+    out = None
+    if whole and isinstance(v, int):
+        out = v
+    elif whole and isinstance(v, str):
+        try:
+            out = int(v.strip())
+        except ValueError:
+            out = None
+    if out is None:
+        try:
+            out = float(v)
+        except ValueError:
+            raise ValueError(
+                f"grid config key 'pretrain.{key}' must be {kind}, got "
+                f"{type(v).__name__} ({v!r})") from None
+        if not math.isfinite(out):
+            raise ValueError(
+                f"grid config key 'pretrain.{key}' must be a FINITE number, "
+                f"got {v!r}; a NaN value satisfies neither side of the bound "
+                "it is checked against and turns every comparison against it "
+                "into the sense of that comparison rather than a measurement")
+        if whole and out != int(out):
+            raise ValueError(
+                f"grid config key 'pretrain.{key}' must be a whole number, "
+                f"got {v!r}; int() would truncate it to {int(out)} and run a "
+                "schedule other than the one written")
     if minimum is not None and (out <= minimum if minimum_open
                                 else out < minimum):
         raise ValueError(
             f"grid config key 'pretrain.{key}' must be "
             f"{'>' if minimum_open else '>='} {minimum}, got {v!r}")
-    if maximum is not None and out > maximum:
+    if maximum is not None and (out >= maximum if maximum_open
+                                else out > maximum):
         raise ValueError(
-            f"grid config key 'pretrain.{key}' must be <= {maximum}, "
-            f"got {v!r}")
+            f"grid config key 'pretrain.{key}' must be "
+            f"{'<' if maximum_open else '<='} {maximum}, got {v!r}")
     return int(out) if whole else out
 
 
@@ -1041,12 +1103,31 @@ def _build_pretrain(d: dict) -> PretrainConfig:
             d, "parent_density", "pbe", _PARENT_DENSITIES),
         exchange_footing=_pretrain_choice(
             d, "exchange_footing", "total", _EXCHANGE_FOOTINGS),
-        mesh_fraction=_pretrain_number(d, "mesh_fraction", 0.3),
-        energy_term_weight=_pretrain_number(d, "energy_term_weight", 0.0),
-        validation_fraction=_pretrain_number(d, "validation_fraction", 0.0),
-        validation_seed=_pretrain_number(d, "validation_seed", 0, whole=True),
-        validate_every=_pretrain_number(d, "validate_every", 50, whole=True),
-        patience=_pretrain_number(d, "patience", 0, whole=True),
+        # The mesh's SHARE of the total integration weight: strictly between
+        # 0 and 1, the range pretrain_data_gen._check_generator_arguments (the
+        # only consumer) requires. A share of 0 is not a mesh and a share of 1
+        # leaves the atomic grids no weight at all.
+        mesh_fraction=_pretrain_number(d, "mesh_fraction", 0.3, minimum=0,
+                                       minimum_open=True, maximum=1,
+                                       maximum_open=True),
+        # A loss weight, in inverse Hartree^2: 0 turns the energy term off, a
+        # negative one rewards the network for getting the energy wrong.
+        energy_term_weight=_pretrain_number(d, "energy_term_weight", 0.0,
+                                            minimum=0),
+        # A FRACTION of the multi-nucleus systems: 0 = no split; 1 would hold
+        # out the whole set and fit nothing.
+        validation_fraction=_pretrain_number(d, "validation_fraction", 0.0,
+                                             minimum=0, maximum=1,
+                                             maximum_open=True),
+        # The held-out permutation's seed, bounded like the initialization
+        # seed and for the same reason (see _MAX_SEED).
+        validation_seed=_pretrain_number(d, "validation_seed", 0, whole=True,
+                                         minimum=0, maximum=_MAX_SEED),
+        # Optimizer steps between validations: 0 or negative is not a period.
+        validate_every=_pretrain_number(d, "validate_every", 50, whole=True,
+                                        minimum=0, minimum_open=True),
+        # Validations without improvement before the stop; 0 = no early stop.
+        patience=_pretrain_number(d, "patience", 0, whole=True, minimum=0),
     )
 
 
@@ -1615,9 +1696,12 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"pretrain.exchange_footing must be 'total' or 'spin_channel', "
             f"got {pt.exchange_footing!r}"
         )
-    if not (0.0 <= pt.mesh_fraction < 1.0):
+    # The bound is the CONSUMER's: pretrain_data_gen._check_generator_arguments
+    # requires 0 < mesh_fraction < 1, so a share of exactly zero loads here and
+    # is refused in the queued generator. Stated open on both sides.
+    if not (0.0 < pt.mesh_fraction < 1.0):
         raise ValueError(
-            f"pretrain.mesh_fraction must be in [0, 1), got "
+            f"pretrain.mesh_fraction must be in (0, 1), got "
             f"{pt.mesh_fraction}"
         )
     if not math.isfinite(pt.energy_term_weight) or pt.energy_term_weight < 0:
@@ -1637,6 +1721,11 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     if pt.patience < 0:
         raise ValueError(
             f"pretrain.patience must be >= 0, got {pt.patience}"
+        )
+    if not (0 <= pt.validation_seed <= _MAX_SEED):
+        raise ValueError(
+            f"pretrain.validation_seed must be in [0, {_MAX_SEED}], got "
+            f"{pt.validation_seed}"
         )
 
     # --- certificate tolerance bounds --------------------------------------

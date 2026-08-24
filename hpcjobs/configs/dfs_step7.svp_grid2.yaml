@@ -52,6 +52,8 @@ inputs:
   grid_level: 2
   density_fit: false
   output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/svp_grid2
+  # campaign ran unlocked; stated so the harness default (3e-5) cannot change it
+  orientation_lock_strength: 0.0
 
 pretrain:
   data_dir: /gpfs/scratch/awills/pretrain_data_bh76w411_svp_g2
