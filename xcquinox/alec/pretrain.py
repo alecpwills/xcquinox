@@ -185,6 +185,288 @@ def _energy_term_inputs(pretrain_data, *, weight_key, lda_key, segment_key,
     return row_weight, segment, target, n_systems
 
 
+# ---------------------------------------------------------------------------
+# Held-out-system validation and the stop criterion
+# ---------------------------------------------------------------------------
+
+def _validation_systems(system_natoms, fraction, seed):
+    """Indices of the systems held out of the fit, as a sorted tuple.
+
+    The split draws from the MOLECULES only. Every single-atom system is an
+    anchor: the Section 3.3 certificate bounds each pool atom's E_xc at
+    tol_atom, and every atomization energy is a molecule minus its atoms, so
+    an atom the fit never saw would fail the acceptance test by construction.
+    What validation is for here is the molecular extrapolation of the
+    density-matrix features -- the failure the campaign measured -- and that
+    is what the molecules measure.
+
+    ``fraction`` is a fraction of the ELIGIBLE (multi-nucleus) systems, rounded
+    to the nearest integer with a tie rounding up, then floored at one and
+    capped at all but one. Both bounds are consistency requirements rather
+    than tuned values: a non-zero fraction that held out nothing would leave
+    the stop criterion with no score, and a fit left with atoms alone is the
+    coverage failure the set change exists to remove. Fewer than two eligible
+    systems cannot satisfy both bounds at once, so the split is then empty.
+    The permutation is seeded so every architecture in a sweep holds out the
+    same systems and their validation numbers are comparable; the held-out
+    names are written to the run's metadata, so the split is checkable
+    independently of the generator's stream.
+    """
+    natoms = np.asarray(system_natoms).reshape(-1)
+    eligible = np.flatnonzero(natoms > 1)
+    if float(fraction) <= 0.0 or eligible.shape[0] < 2:
+        return ()
+    k = int(np.floor(float(fraction) * eligible.shape[0] + 0.5))
+    k = max(1, min(k, int(eligible.shape[0]) - 1))
+    order = np.random.default_rng(int(seed)).permutation(eligible)
+    return tuple(sorted(int(i) for i in order[:k]))
+
+
+def _system_split_arrays(segment, n_systems, held_out):
+    """Row masks and segment renumberings for a held-out-system split.
+
+    ``segment`` is the per-row system index, with ``n_systems`` marking a row
+    that belongs to no system -- the synthetic (r_s, s, alpha) mesh. Mesh rows
+    always train: the mesh is a regularizer of the functional form, not a
+    system whose energy is predicted, so holding it out would measure nothing.
+
+    Returns ``(train_mask, val_mask, train_remap, val_remap, train_ids,
+    val_ids)``. The remaps carry the kept systems onto ``0..n_kept-1`` and
+    everything else, including the sink, onto ``n_kept``, so a restricted
+    segment array is still a valid ``segment_sum`` index with its own sink.
+    """
+    seg = np.asarray(segment).reshape(-1)
+    n_systems = int(n_systems)
+    if seg.shape[0] and int(seg.max()) > n_systems:
+        raise ValueError(
+            f"_system_split_arrays: row index {int(seg.max())} exceeds the "
+            f"sink index {n_systems}; the segment array and the system table "
+            "disagree.")
+    held = np.zeros(n_systems + 1, dtype=bool)
+    for i in held_out:
+        if not 0 <= int(i) < n_systems:
+            raise ValueError(
+                f"_system_split_arrays: held-out index {int(i)} is not a "
+                f"system of a {n_systems}-system table.")
+        held[int(i)] = True
+    val_mask = held[seg]
+    train_mask = ~val_mask
+    train_ids = np.flatnonzero(~held[:n_systems]).astype(np.int64)
+    val_ids = np.flatnonzero(held[:n_systems]).astype(np.int64)
+    train_remap = np.full(n_systems + 1, train_ids.shape[0], dtype=np.int32)
+    train_remap[train_ids] = np.arange(train_ids.shape[0], dtype=np.int32)
+    val_remap = np.full(n_systems + 1, val_ids.shape[0], dtype=np.int32)
+    val_remap[val_ids] = np.arange(val_ids.shape[0], dtype=np.int32)
+    return (train_mask, val_mask, train_remap, val_remap, train_ids, val_ids)
+
+
+def _restrict_loss(loss, descriptors, ref_F, mask, remap, kept_ids):
+    """Restrict a loss and its rows to one side of a held-out-system split.
+
+    The point-wise weights are sliced, the energy term's row weights are
+    sliced, its segment indices are renumbered onto the kept systems, and its
+    target vector is sliced to the same systems, so the restricted term is the
+    same objective over fewer systems rather than a differently normalized one.
+    """
+    idx = jnp.asarray(np.flatnonzero(np.asarray(mask)))
+    desc = jnp.asarray(descriptors)[idx]
+    ref = jnp.asarray(ref_F).reshape(-1)[idx]
+    kwargs = {"weights": (None if loss.weights is None
+                          else jnp.asarray(loss.weights)[idx])}
+    if loss.energy_target is not None:
+        kept = np.asarray(kept_ids, dtype=np.int64).reshape(-1)
+        if kept.shape[0] == 0:
+            raise ValueError(
+                "_restrict_loss: the energy term cannot be restricted to no "
+                "system (its mean over systems would be undefined).")
+        kwargs.update(
+            energy_row_weight=jnp.asarray(loss.energy_row_weight)[idx],
+            energy_segment=jnp.asarray(remap, dtype=jnp.int32)[
+                jnp.asarray(loss.energy_segment)[idx]],
+            energy_target=jnp.asarray(loss.energy_target)[jnp.asarray(kept)],
+            n_systems=int(kept.shape[0]),
+            energy_weight=loss.energy_weight,
+        )
+    return _PretrainLoss(**kwargs), desc, ref
+
+
+def _padded_segment(segment, n_mesh, n_systems):
+    """Per-row system index with ``n_mesh`` sink rows appended: the row
+    layout of a descriptor tensor after the mesh was concatenated onto it."""
+    seg = np.asarray(segment, dtype=np.int32).reshape(-1)
+    if n_mesh:
+        seg = np.concatenate(
+            [seg, np.full(int(n_mesh), int(n_systems), dtype=np.int32)])
+    return seg
+
+
+def _renormalize_mesh_share(weights, n_mesh, mesh_share):
+    """Reset the flat mesh block at the end of ``weights`` so that it carries
+    ``mesh_share`` of the total, by the expression the integration branch of
+    :func:`run_pretrain` builds it with.
+
+    The block is normalized against the atomic rows it trains beside. A
+    restriction that drops atomic rows lowers that total, and an untouched
+    block would then pull harder on a validated fit than on an unvalidated
+    one; recomputing it on the rows kept keeps the regularizer's share the
+    one the data was built at.
+    """
+    w = jnp.asarray(weights)
+    n_mesh = int(n_mesh)
+    atomic = w[:w.shape[0] - n_mesh]
+    scale = float(mesh_share) / (1.0 - float(mesh_share))
+    return jnp.concatenate(
+        [atomic, jnp.full(n_mesh, float(jnp.sum(atomic)) * scale / n_mesh)])
+
+
+def _mesh_loss_share(weights, n_mesh, n_rows):
+    """The fraction of one channel's total loss weight the mesh block carries.
+
+    Read back from the weight vector the loss was built with, so what is
+    recorded is the share the fit felt rather than the share the data asked
+    for. ``weights`` of ``None`` is the unweighted reduction, where every row
+    counts once and the share is the row count's.
+    """
+    n_mesh, n_rows = int(n_mesh), int(n_rows)
+    if not n_mesh:
+        return 0.0
+    if weights is None:
+        return float(n_mesh) / float(n_rows)
+    w = np.asarray(weights, dtype=np.float64).reshape(-1)
+    total = float(w.sum())
+    return float(w[-n_mesh:].sum() / total) if total else float("nan")
+
+
+def _validation_split(loss, descriptors, ref_F, segment, n_systems, held_out,
+                      *, n_mesh=0, mesh_share=None):
+    """The training and validation restrictions of one network's fit.
+
+    Returns ``((loss, descriptors, ref_F), (loss, descriptors, ref_F))`` for
+    the training side and the held-out side. ``segment`` is the padded
+    per-row index (:func:`_padded_segment`); ``n_mesh`` mesh rows sit at the
+    end of the row set and train always. When the loss is integration
+    weighted and the mesh is present, the training side's mesh block is
+    renormalized to ``mesh_share`` (:func:`_renormalize_mesh_share`); the
+    validation side holds physical rows only. Under the unweighted reduction
+    there is no weight to rescale -- every row counts once by definition, so
+    the mesh's share there is a row count and moves with the split.
+    """
+    tm, vm, trm, vrm, tid, vid = _system_split_arrays(segment, n_systems,
+                                                      held_out)
+    train = _restrict_loss(loss, descriptors, ref_F, tm, trm, tid)
+    val = _restrict_loss(loss, descriptors, ref_F, vm, vrm, vid)
+    if n_mesh and mesh_share is not None and train[0].weights is not None:
+        loss_tr = eqx.tree_at(
+            lambda l: l.weights, train[0],
+            _renormalize_mesh_share(train[0].weights, n_mesh, mesh_share))
+        train = (loss_tr, train[1], train[2])
+    return train, val
+
+
+_PRETRAIN_MONITORS = ("pointwise", "loss")
+
+
+def _train_pretrain_network(model, optimizer, loss_train, desc_train,
+                            ref_train, loss_val, desc_val, ref_val, *,
+                            n_steps, validate_every, patience, monitor,
+                            progress_callback=None, checkpoint_path=None):
+    """Full-batch pretraining with held-out-system validation and early stop.
+
+    Returns ``(best_model, losses, record)``. The loop is written here rather
+    than driven through ``xcquinox.train.xcTrainer`` because a stop criterion
+    needs the optimizer STATE and the learning-rate schedule to survive across
+    validations: ``xcTrainer`` initializes its optimizer state in its
+    constructor and returns no state, so chunking a run through it would reset
+    Adam's moments and restart the schedule at every validation. The
+    unvalidated path still goes through ``xcTrainer`` unchanged, which is what
+    keeps a run without validation byte-identical. On identical rows the two
+    are the same arithmetic (one full-batch step per iteration on the same
+    loss and optimizer chain) and reproduce each other's trajectory bit for
+    bit.
+
+    ``monitor`` names the quantity scored on the held-out rows every
+    ``validate_every`` steps and at the last step: ``"loss"`` is the objective
+    itself, the point-wise term plus the energy term at the run's weight, so
+    the checkpoint kept is the one that generalizes on what was optimized;
+    ``"pointwise"`` is the point-wise term alone, which is the same quantity
+    when the energy term is off. A strict improvement resets the patience
+    count; ``patience`` validations without one stop the run (``patience`` of
+    0 disables the stop, and the loop then runs the full schedule). The model
+    returned is the best one SEEN, never the last one, and the record carries
+    the step it was seen at; when ``checkpoint_path`` is given the best model
+    is written there at every improvement, so a job that dies mid-run leaves
+    its best weights on disk. A non-finite score never counts as an
+    improvement; a run whose every score is non-finite returns the initial
+    model with ``best_step`` 0.
+    """
+    if monitor not in _PRETRAIN_MONITORS:
+        raise ValueError(
+            f"monitor must be one of {_PRETRAIN_MONITORS}, got {monitor!r}")
+    n_steps, every, patience = int(n_steps), int(validate_every), int(patience)
+    # The same bounds PretrainSpec.validate enforces, restated for a direct
+    # caller: an empty schedule, a zero interval or a negative patience have
+    # no meaning here.
+    if n_steps <= 0 or every <= 0 or patience < 0:
+        raise ValueError(
+            f"n_steps must be > 0, validate_every > 0 and patience >= 0; got "
+            f"{n_steps}, {every}, {patience}")
+    w_e = float(loss_val.energy_weight) if monitor == "loss" else 0.0
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+
+    @eqx.filter_jit
+    def _step(m, s, loss, desc, ref):
+        value, grads = eqx.filter_value_and_grad(loss)(m, desc, ref)
+        updates, s = optimizer.update(grads, s, m)
+        return eqx.apply_updates(m, updates), s, value
+
+    @eqx.filter_jit
+    def _evaluate(m, loss, desc, ref):
+        return loss.parts(m, desc, ref)
+
+    losses, history = [], []
+    best_value, best_step, best_model = float("inf"), 0, model
+    stale, stopped_early = 0, False
+    for step in range(1, n_steps + 1):
+        model, opt_state, value = _step(model, opt_state, loss_train,
+                                        desc_train, ref_train)
+        losses.append(float(value))
+        if progress_callback is not None:
+            try:
+                progress_callback(step, n_steps, losses[-1])
+            except Exception:  # noqa: BLE001 - a logging callback never stops a fit
+                pass
+        if step % every and step != n_steps:
+            continue
+        pointwise, energy = _evaluate(model, loss_val, desc_val, ref_val)
+        pointwise, energy = float(pointwise), float(energy)
+        monitored = pointwise if w_e == 0.0 else pointwise + w_e * energy
+        history.append((step, pointwise, energy, monitored))
+        if monitored < best_value:
+            best_value, best_step, best_model, stale = (monitored, step,
+                                                        model, 0)
+            if checkpoint_path is not None:
+                eqx.tree_serialise_leaves(checkpoint_path, model)
+        else:
+            stale += 1
+            if patience > 0 and stale >= patience:
+                stopped_early = True
+        print(f"[pretrain] validation at step {step}/{n_steps}: train "
+              f"{losses[-1]:.6e}, held-out pointwise {pointwise:.6e}, energy "
+              f"{energy:.6e}, {monitor} {monitored:.6e}; best {best_value:.6e} "
+              f"at step {best_step}"
+              + (f"; no improvement for {stale} validation(s), stopping"
+                 if stopped_early else ""), flush=True)
+        if stopped_early:
+            break
+    record = {"monitor": monitor, "best_step": best_step,
+              "best_value": best_value, "stopped_early": stopped_early,
+              "steps_run": len(losses),
+              "n_rows_train": int(jnp.asarray(desc_train).shape[0]),
+              "n_rows_val": int(jnp.asarray(desc_val).shape[0]),
+              "history": history}
+    return best_model, losses, record
+
+
 # Legacy lob_lim constants.
 #
 # The library-shaped skeletons constructed below are used ONLY to
@@ -518,14 +800,37 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             f"the {file_reference!r} density. Point data_dir at the "
             f"{want_reference} file or set pretrain.parent_density explicitly."
         )
-    energy_weight = float(getattr(spec, "energy_term_weight", 0.0))
-    if energy_weight > 0.0 and "system_all" not in pretrain_data:
+    # The footing the file DECLARES must be one its blocks can serve. A
+    # manifest claiming the per-channel footing beside a file with no exchange
+    # block would otherwise be pretrained at the historical footing in
+    # silence, undoing the Section 3.2 correction without a trace.
+    manifest_footing = str((_manifest or {}).get("exchange_footing", "total"))
+    if manifest_footing == "spin_channel" and x_suffix != "_x":
         raise ValueError(
-            "run_pretrain: pretrain.energy_term_weight > 0 needs the per-row "
-            "system index 'system_all' and the per-system energy table, which "
-            f"{npz_path!r} predates. Regenerate it with "
-            "pretrain_data_gen.ensure_pretrain_data."
+            f"run_pretrain: {npz_path!r} declares the 'spin_channel' exchange "
+            "footing but carries no per-channel exchange block (no 'rho_x'). "
+            "Regenerate it with pretrain_data_gen.ensure_pretrain_data."
         )
+    energy_weight = float(getattr(spec, "energy_term_weight", 0.0))
+    if energy_weight > 0.0:
+        # Named one by one rather than probed on 'system_all' alone: a file
+        # carrying the row index but not the per-system table, the LDA column
+        # or the block's own quadrature weights would otherwise fail with a
+        # bare KeyError deep in the loss assembly.
+        _scan_rung = bool(getattr(spec.arch, "meta_gga", False))
+        _needed = ("system_all", "weights_all", "e_lda_c_all",
+                   "system" + x_suffix, "weights" + x_suffix,
+                   "e_lda_x" + x_suffix,
+                   "e_x_parent_scan_sys" if _scan_rung else "e_x_parent_sys",
+                   "e_c_parent_scan_sys" if _scan_rung else "e_c_parent_sys")
+        _missing = [k for k in _needed if k not in pretrain_data]
+        if _missing:
+            raise ValueError(
+                "run_pretrain: pretrain.energy_term_weight > 0 needs the "
+                "per-row system index 'system_all' and the per-system energy "
+                f"table; {npz_path!r} is missing {_missing}. Regenerate it "
+                "with pretrain_data_gen.ensure_pretrain_data."
+            )
 
     # --- Assemble descriptor tensors ---
     # The xnet input is zeta-blind; the cnet input carries the zeta column
@@ -573,6 +878,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # deep_mgga_attn_3x16 -- take the mesh; deep_rung35_mgga_3x16 does NOT and
     # keeps the atoms-only seed until the mesh can carry its extras.
     mesh_used = False
+    # The share the DATA was built at, read once for the banner, the
+    # integration weighting and the validation split. A file written before
+    # the share became configurable carries no such key and falls back to the
+    # constant it was built with.
+    mesh_share = None
     if bool(getattr(spec.arch, "meta_gga", False)):
         desc_names = tuple(getattr(d, "name", None) for d in spec.arch.descriptors)
         has_mesh = "Fx_scan_mesh" in pretrain_data
@@ -583,11 +893,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
                 Fx_target, Fc_target)
             mesh_used = True
             from xcquinox.alec.pretrain_data_gen import MESH_WEIGHT_FRACTION
-            _share = float(pretrain_data_np.get("mesh_weight_fraction",
-                                                MESH_WEIGHT_FRACTION))
+            mesh_share = float(pretrain_data_np.get("mesh_weight_fraction",
+                                                    MESH_WEIGHT_FRACTION))
             print(f"[pretrain] (s, alpha) mesh appended: "
                   f"{pretrain_data['rho_mesh'].shape[0]} nodes "
-                  f"({100.0 * _share:.0f}% effective "
+                  f"({100.0 * mesh_share:.0f}% effective "
                   "loss-weight share per channel, by construction)",
                   flush=True)
         elif not has_mesh:
@@ -649,15 +959,24 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # calibration; older pretrain_data files don't carry them, fall back
         # with a warning and record the degradation in metadata.
         grid_weights = pretrain_data.get("weights_all")
-        if grid_weights is None:
+        # The flag covers BOTH weight vectors the run builds. The exchange
+        # block has its own quadrature column under the per-channel footing,
+        # so a file carrying 'weights_all' alone still leaves the exchange
+        # loss without the dr_i measure.
+        grid_weights_x = pretrain_data.get("weights" + x_suffix)
+        if grid_weights is None or grid_weights_x is None:
             integration_weights_complete = False
             import warnings as _warn
+            _absent = [k for k, v in (("weights_all", grid_weights),
+                                      ("weights" + x_suffix, grid_weights_x))
+                       if v is None]
             _msg = (
-                "pretrain_data.npz lacks 'weights_all'; integration-mode "
-                "loss is missing Becke quadrature weights and approximates "
-                "a |rho*eps_LDA|-weighted mean rather than the integrated "
-                "XC-energy residual. Regenerate pretrain_data.npz from a "
-                "post-2026-04-27 notebook generator to get correct weights."
+                f"pretrain_data.npz lacks {' and '.join(repr(k) for k in _absent)}"
+                "; integration-mode loss is missing Becke quadrature weights "
+                "on that block and approximates a |rho*eps_LDA|-weighted mean "
+                "rather than the integrated XC-energy residual. Regenerate "
+                "pretrain_data.npz from a post-2026-04-27 notebook generator "
+                "to get correct weights."
             )
             _warn.warn(_msg, RuntimeWarning, stacklevel=2)
             # RuntimeWarnings are easy to miss in a SLURM .out log; also emit a
@@ -667,8 +986,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         else:
             integration_weights_complete = True
         w_x, _unused = _compute_integration_weights(
-            pretrain_data["rho" + x_suffix],
-            pretrain_data.get("weights" + x_suffix))
+            pretrain_data["rho" + x_suffix], grid_weights_x)
         _unused, w_c = _compute_integration_weights(rho_all, grid_weights)
         if mesh_used:
             # The |rho*eps_LDA| factor is a grid-importance measure for
@@ -680,16 +998,10 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             # the physical densities. Integration weights are therefore
             # computed on the ATOMIC block alone, and each channel's mesh
             # block gets a FLAT weight normalized so the mesh's share of
-            # that channel's total loss weight is exactly
-            # MESH_WEIGHT_FRACTION, by construction.
-            from xcquinox.alec.pretrain_data_gen import MESH_WEIGHT_FRACTION
-            # The share the DATA was built at. A file written before the share
-            # became configurable carries no such key and falls back to the
-            # constant it was built with.
-            mesh_fraction = float(pretrain_data_np.get(
-                "mesh_weight_fraction", MESH_WEIGHT_FRACTION))
+            # that channel's total loss weight is exactly the share the data
+            # was built at (``mesh_share``), by construction.
             n_mesh = int(pretrain_data["rho_mesh"].shape[0])
-            scale = mesh_fraction / (1.0 - mesh_fraction)
+            scale = mesh_share / (1.0 - mesh_share)
             w_x = jnp.concatenate(
                 [w_x, jnp.full(n_mesh, float(jnp.sum(w_x)) * scale / n_mesh)])
             w_c = jnp.concatenate(
@@ -738,6 +1050,75 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     xnet_path = os.path.join(checkpoint_dir, "xnet.eqx")
     cnet_path = os.path.join(checkpoint_dir, "cnet.eqx")
 
+    # --- Held-out-system validation split ---------------------------------
+    # A fraction of the MOLECULES is withheld from the fit and scored between
+    # optimizer steps; training stops when the monitored quantity has not
+    # improved for `patience` validations, and the weights kept are the best
+    # ones seen. What is monitored is the objective itself on the held-out
+    # rows -- the point-wise term plus the energy term at the run's weight --
+    # so the checkpoint kept is the one that generalizes on what was
+    # optimized. A fraction of 0 (the default) reproduces the unvalidated
+    # schedule exactly, through the same xcTrainer call as before. The
+    # fallbacks are the PretrainSpec defaults themselves, read off the class,
+    # for a spec object built before the protocol fields existed.
+    val_fraction = float(getattr(spec, "validation_fraction",
+                                 PretrainSpec.validation_fraction))
+    val_seed = int(getattr(spec, "validation_seed",
+                           PretrainSpec.validation_seed))
+    validate_every = int(getattr(spec, "validate_every",
+                                 PretrainSpec.validate_every))
+    patience = int(getattr(spec, "patience", PretrainSpec.patience))
+    held_out = ()
+    n_split = 0
+    if val_fraction > 0.0:
+        # A file written before the system table exists cannot say which rows
+        # belong to which molecule; the request is refused by name rather than
+        # silently trained without a split.
+        if ("system_natoms" not in pretrain_data
+                or "system" + x_suffix not in pretrain_data
+                or "system_all" not in pretrain_data):
+            raise ValueError(
+                "run_pretrain: pretrain.validation_fraction > 0 needs the "
+                "system table 'system_natoms' and the per-row system index "
+                f"'system{x_suffix}' / 'system_all', which {npz_path!r} "
+                "predates. Regenerate it with "
+                "pretrain_data_gen.ensure_pretrain_data."
+            )
+        natoms = np.asarray(pretrain_data_np["system_natoms"]).reshape(-1)
+        n_split = int(natoms.shape[0])
+        if n_systems and n_split != n_systems:
+            # The split renumbers the energy term's segment array through a
+            # table of its own length. JAX CLAMPS an out-of-range index rather
+            # than raising, so a disagreement here would silently fold one
+            # system's rows onto another's energy.
+            raise ValueError(
+                f"run_pretrain: {npz_path!r} lists {n_split} systems in "
+                f"'system_natoms' but {n_systems} per-system energies; the "
+                "held-out split and the energy term would index different "
+                "tables.")
+        held_out = _validation_systems(natoms, val_fraction, val_seed)
+    monitor = "loss" if energy_weight > 0.0 else "pointwise"
+    system_names = [str(row[0]) for row in
+                    ((_manifest or {}).get("systems") or [])]
+    validation_record = {
+        "fraction": val_fraction, "seed": val_seed,
+        "validate_every": validate_every, "patience": patience,
+        "monitor": monitor, "active": bool(held_out),
+        "systems": [system_names[i] if i < len(system_names) else f"sys{i}"
+                    for i in held_out],
+    }
+    if held_out:
+        print(f"[pretrain] validation: holding out {len(held_out)} of "
+              f"{int(np.count_nonzero(natoms > 1))} molecules (fraction "
+              f"{val_fraction}, seed {val_seed}): "
+              f"{', '.join(validation_record['systems'])}; scored every "
+              f"{validate_every} step(s) on the {monitor}, patience "
+              f"{patience}", flush=True)
+    elif val_fraction > 0.0:
+        print(f"[pretrain] NOTE: validation_fraction {val_fraction} requested "
+              "but the set carries fewer than two molecules; nothing is held "
+              "out and the full schedule runs unvalidated.", flush=True)
+
     # --- Train xnet ---
     t0 = time.time()
     optimizer_x = _build_optimizer(
@@ -747,17 +1128,31 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
     )
-    trainer_x = xcquinox.train.xcTrainer(
-        model=xnet,
-        optim=optimizer_x,
-        loss=loss_fn_x,
-        steps=spec.n_steps,
-        do_jit=True,
-        serialize_every=max(50, spec.n_steps // 10),
-        checkpoint_dir=xnet_ckpt_dir,
-        progress_callback=_x_callback,
-    )
-    xnet_trained, losses_x = trainer_x(1, [descriptors], [Fx_target])
+    if held_out:
+        seg_x = _padded_segment(pretrain_data["system" + x_suffix],
+                                n_mesh_rows, n_split)
+        (lx_tr, dx_tr, fx_tr), (lx_va, dx_va, fx_va) = _validation_split(
+            loss_fn_x, descriptors, Fx_target, seg_x, n_split, held_out,
+            n_mesh=n_mesh_rows, mesh_share=mesh_share)
+        xnet_trained, losses_x, record_x = _train_pretrain_network(
+            xnet, optimizer_x, lx_tr, dx_tr, fx_tr, lx_va, dx_va, fx_va,
+            n_steps=spec.n_steps, validate_every=validate_every,
+            patience=patience, monitor=monitor,
+            progress_callback=_x_callback,
+            checkpoint_path=os.path.join(xnet_ckpt_dir, "xc.eqx.best"))
+        validation_record["x"] = record_x
+    else:
+        trainer_x = xcquinox.train.xcTrainer(
+            model=xnet,
+            optim=optimizer_x,
+            loss=loss_fn_x,
+            steps=spec.n_steps,
+            do_jit=True,
+            serialize_every=max(50, spec.n_steps // 10),
+            checkpoint_dir=xnet_ckpt_dir,
+            progress_callback=_x_callback,
+        )
+        xnet_trained, losses_x = trainer_x(1, [descriptors], [Fx_target])
     # Persist the final xnet immediately, BEFORE cnet training starts, so a
     # job that dies or times out during the (separate) cnet phase does not lose
     # the already-completed xnet result.
@@ -771,17 +1166,31 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
     )
-    trainer_c = xcquinox.train.xcTrainer(
-        model=cnet,
-        optim=optimizer_c,
-        loss=loss_fn_c,
-        steps=spec.n_steps,
-        do_jit=True,
-        serialize_every=max(50, spec.n_steps // 10),
-        checkpoint_dir=cnet_ckpt_dir,
-        progress_callback=_c_callback,
-    )
-    cnet_trained, losses_c = trainer_c(1, [descriptors_c], [Fc_target])
+    if held_out:
+        seg_c = _padded_segment(pretrain_data["system_all"], n_mesh_rows,
+                                n_split)
+        (lc_tr, dc_tr, fc_tr), (lc_va, dc_va, fc_va) = _validation_split(
+            loss_fn_c, descriptors_c, Fc_target, seg_c, n_split, held_out,
+            n_mesh=n_mesh_rows, mesh_share=mesh_share)
+        cnet_trained, losses_c, record_c = _train_pretrain_network(
+            cnet, optimizer_c, lc_tr, dc_tr, fc_tr, lc_va, dc_va, fc_va,
+            n_steps=spec.n_steps, validate_every=validate_every,
+            patience=patience, monitor=monitor,
+            progress_callback=_c_callback,
+            checkpoint_path=os.path.join(cnet_ckpt_dir, "xc.eqx.best"))
+        validation_record["c"] = record_c
+    else:
+        trainer_c = xcquinox.train.xcTrainer(
+            model=cnet,
+            optim=optimizer_c,
+            loss=loss_fn_c,
+            steps=spec.n_steps,
+            do_jit=True,
+            serialize_every=max(50, spec.n_steps // 10),
+            checkpoint_dir=cnet_ckpt_dir,
+            progress_callback=_c_callback,
+        )
+        cnet_trained, losses_c = trainer_c(1, [descriptors_c], [Fc_target])
     duration = time.time() - t0
 
     # --- Save artifacts ---
@@ -829,8 +1238,13 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # read: which systems the fit saw, on which parent density, at which
         # exchange footing, and how hard the per-system energy term pulled.
         "reference_xc": want_reference,
-        "exchange_footing": str(
-            (_manifest or {}).get("exchange_footing", "total")),
+        # Derived from the BLOCK THE RUN READ, not copied from the manifest:
+        # `x_suffix` is the selector itself and `descriptors` is the tensor
+        # the exchange loss was built on, so a run that fell back to the
+        # total-density rows cannot record the per-channel footing. Both row
+        # counts include the mesh rows when the mesh was appended, which is
+        # what `pretrain_mesh` above distinguishes.
+        "exchange_footing": "spin_channel" if x_suffix == "_x" else "total",
         "energy_term_weight": energy_weight,
         "n_systems": n_systems,
         "n_rows_x": int(descriptors.shape[0]),
@@ -839,6 +1253,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             loss_fn_x.parts(xnet_trained, descriptors, Fx_target)[1]),
         "energy_term_c_final": float(
             loss_fn_c.parts(cnet_trained, descriptors_c, Fc_target)[1]),
+        # The held-out split and the stop criterion: fraction, seed, interval,
+        # patience, the monitored quantity, the held-out systems BY NAME, and
+        # per network the step of the best value, the value, whether the run
+        # stopped early, and every validation score.
+        "validation": validation_record,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }
@@ -846,6 +1265,19 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # integration mode.  None means the run did not use integration weighting.
     if integration_weights_complete is not None:
         metadata["integration_weights_complete"] = integration_weights_complete
+    if mesh_used:
+        # The mesh's pull on each channel, READ BACK from the weight vector
+        # the loss was built with rather than restated from the constant: a
+        # run at a `pretrain.mesh_fraction` other than the generator's default
+        # is otherwise indistinguishable in the record from one at the
+        # default, and a loss that ignored the file's share would leave no
+        # trace at all.
+        metadata["mesh_weight_fraction"] = (
+            None if mesh_share is None else float(mesh_share))
+        metadata["mesh_loss_share_x"] = _mesh_loss_share(
+            loss_fn_x.weights, n_mesh_rows, int(descriptors.shape[0]))
+        metadata["mesh_loss_share_c"] = _mesh_loss_share(
+            loss_fn_c.weights, n_mesh_rows, int(descriptors_c.shape[0]))
     md_path = os.path.join(checkpoint_dir, "pretrain_metadata.json")
     with open(md_path, "w") as f:
         json.dump(metadata, f, indent=2)
