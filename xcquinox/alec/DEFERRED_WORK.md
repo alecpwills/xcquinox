@@ -594,6 +594,21 @@ make the SCF fixed point of those species draw-dependent for meta-GGA architectu
 
 **KNOWN:** the solver-backend work measures fixed-point stability on H and Li across
 independent runs and damps or masks the response term on one-electron channels if unstable.
+Shipped state (commits 7d30cdb9e and 200a06d02): the manual UKS loop drops the indicator's
+response columns on a one-electron channel (`_drop_one_orbital_indicator_response`); the gate is
+exact at the fixed point, where the channel is a single orbital and the clip is a 0/0, and along
+the iteration it removes a real term of the mixer output's derivative (indicator up to 2.6 on
+Li's beta channel at the mixer output; Fock norms 0.4 percent apart at cycle 5; converged
+energies 8e-15 Ha apart), so the path changes and the fixed point does not (H/Li fixed points
+reproducible to 1e-15 Ha; the gated Fock reproduces dE/dtheta along a rank-preserving rotation
+to 7.8e-10 on H and 8.7e-8 on Li). The kink is NOT confined to one-electron channels: any
+channel whose raw indicator hugs the lower clip is affected -- N's beta channel (1s, 2s only)
+has a raw-indicator median of 3.2e-3 against O's 0.58, and a random symmetric density step
+flips the clip state on 431 (h = 1e-6) to 710 (h = 1e-5) of its 4098 resolved points, which a
+finite-difference check reads as a 6.0e-5 relative residual (element-wise directions flip
+none). A closure must therefore be a smooth positive part in the ENERGY of `compute_alpha`
+applied to every channel, not a one-electron special case, and the occupancy-keyed gate is then
+retired together with it.
 
 **TRIGGER for closing:** replace the hard clip with a smooth positive part in the ENERGY
 expression of `compute_alpha` (never a modified derivative alone), re-verify against libxc
