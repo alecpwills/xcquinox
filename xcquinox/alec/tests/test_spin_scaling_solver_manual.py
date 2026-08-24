@@ -926,7 +926,7 @@ def test_manual_uks_fock_at_the_li_fixed_point(monkeypatch):
     assert rel_u > 1e-2, (
         f"the unrestricted direction reads rel={rel_u:.3e} (FD={fd_u:.10e} "
         f"analytic={an_u:.10e}); the measured 0.88 is the descriptor's tail "
-        f"response off the positive semidefinite cone (DEFERRED_WORK.md "
+        f"rank-one channel's indicator tail response (DEFERRED_WORK.md "
         f"entry 30). Below this bound the tail behaviour of the indicator "
         f"has changed -- re-anchor this test and entry 30")
 

@@ -633,14 +633,17 @@ _UKS_FD_SPECIES = {
 # solver's own Fock pair at grid level 1 (deep_mgga_3x16, the
 # absolute-contribution footing of test_spin_scaling_solver_manual):
 # 2.9e-11 (H), 2.4e-10 (Li), 9.8e-11 (N), 5.5e-11 (O) at the 1e-5 step.
-# The same Fock pair along an UNRESTRICTED random symmetric direction, which
-# leaves the cone of positive semidefinite matrices, reads 3.7e-8 (H, falling
-# to 3.8e-10 at the 1e-7 step), 5.2e-2 (Li) and 6.0e-6 (N), the latter two
-# flat in the step: the descriptor's tail response (d alpha / dP ~ n^{-5/3},
-# 4e10 on Li's outermost shell) makes a 1e-6 step move the raw indicator by
+# The same Fock pair along an UNRESTRICTED random symmetric direction reads
+# 3.7e-8 (H, falling to 3.8e-10 at the 1e-7 step), 5.2e-2 (Li) and 6.0e-6
+# (N), the latter two flat in the step. The cause is the RANK-ONE channel,
+# not cone departure: Li's alpha channel leaves the positive semidefinite
+# cone (minimum eigenvalue -2.2e-7) and still passes at 1.2e-10, while the
+# rank-one beta channel fails flat; the indicator's tail response is
+# shell-peaked (4.07e11 on the outermost shell, 1.15e1 below it, log-log
+# slope -0.43 against 2 rho), so a 1e-6 step moves the raw indicator by
 # 1e3-1e5 there, beyond any linear regime of the energy, whatever the width
-# of the smooth positive part (DEFERRED_WORK.md entry 30). That is a property
-# of the probe direction, not of the potential.
+# of the smooth positive part (DEFERRED_WORK.md entry 30). That is a
+# property of the probe direction, not of the potential.
 #
 # 1e-2 admits every measured case (the mask removed 0 points on every atom
 # at def2-svp / grid level 2 with the rotation path) and is kept as the guard
@@ -672,13 +675,13 @@ def _uks_fd_path(P0, md, eps=_FD_EPS, seed=20260821):
     aufbau matrix of the block's rank, so the derivative that governs the
     iteration is the derivative along this manifold.
 
-    A linear displacement ``P_s +- eps W`` leaves the cone of positive
-    semidefinite matrices whenever the block is rank-deficient (every atom's
-    channel here), and there the von Weizsacker bound ``tau >= tau_W`` fails:
-    the raw iso-orbital indicator turns negative on one side of the step, and
-    in the density tail -- where ``d alpha / dP ~ n^{-5/3}`` reaches 4e10 on
-    Li's outermost shell -- a 1e-6 step moves it by 1e3-1e5, beyond any
-    linear regime of the energy. Measured with the linear form on
+    A linear displacement ``P_s +- eps W`` of a RANK-ONE channel breaks the
+    von Weizsacker bound ``tau >= tau_W`` on one side of the step (cone
+    departure alone is survivable: Li's alpha channel leaves the positive
+    semidefinite cone by -2.2e-7 and still passes at 1.2e-10), and the
+    indicator's tail response is shell-peaked -- 4.07e11 on Li's outermost
+    shell, 1.15e1 below it, log-log slope -0.43 -- so a 1e-6 step moves the
+    raw indicator by 1e3-1e5 there, beyond any linear regime of the energy. Measured with the linear form on
     deep_mgga_3x16 (def2-svp, grid 1, no mask): 5.2e-2 (Li) and 6.0e-6 (N),
     flat between the 1e-5 and 1e-7 steps; the rotation path keeps every grid
     point and lands between 1.8e-10 and 6.6e-8 over the 124 harness cells at
