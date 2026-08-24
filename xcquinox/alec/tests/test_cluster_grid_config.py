@@ -2842,3 +2842,26 @@ def test_every_shipped_configuration_states_a_waiver_its_identity_needs():
             plain.append(os.path.basename(path))
     assert len(waived) >= 15, waived
     assert len(plain) >= 6, plain
+
+
+def test_a_retired_key_warning_names_the_file(tmp_path):
+    """A retired key warns rather than refuses, and the warning names the
+    configuration FILE that still carries the key: four shipped configurations
+    carry ``pretrain.pretrain_root``, and a message without the path cannot be
+    acted on when several files are loaded in one session."""
+    import warnings as _warnings
+    import shutil
+    import xcquinox.alec as _alec
+    repo_root = os.path.abspath(
+        os.path.join(os.path.dirname(_alec.__file__), "..", ".."))
+    src = os.path.join(repo_root, "hpcjobs", "configs", "step7.yaml")
+    if not os.path.isfile(src):
+        pytest.skip("no hpcjobs/configs in this checkout")
+    dst = tmp_path / "step7_retired.yaml"
+    shutil.copy(src, dst)
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        load_grid_config(str(dst))
+    messages = [str(w.message) for w in caught if "is retired" in str(w.message)]
+    assert messages, "the retired key did not warn"
+    assert any(str(dst) in m for m in messages), messages

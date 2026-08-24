@@ -688,6 +688,18 @@ def test_deployment_config_paths_is_empty_without_the_directory(monkeypatch,
     assert _deployment_config_paths() == []
 
 
+#: The nine tracked deployment configurations written before the orientation
+#: lock existed; their training, references and pretraining data were built
+#: unlocked, so their stated lock is exactly 0.0.
+_PRE_LOCK_CAMPAIGNS = frozenset({
+    "bh76w411_repr.svp_grid2.yaml", "bh76w411_repr.tzvpd_grid2_df.yaml",
+    "dfs_step7.svp_grid2.yaml", "dfs_step7.svp_grid2_v2.yaml",
+    "dfs_step7.svp_grid2_v3.yaml", "dfs_step7.svp_grid2_v3_full25.yaml",
+    "dfs_step7.svp_grid2_v3_rung35ab.yaml", "dfs_step7.tzvpd_grid2_df.yaml",
+    "step7.yaml",
+})
+
+
 def test_pretraining_lock_is_the_training_lock():
     """The generator's lock strength is ``orientation_lock.DEFAULT_STRENGTH``,
     every deployment configuration STATES its own lock rather than inheriting
@@ -736,6 +748,14 @@ def test_pretraining_lock_is_the_training_lock():
             assert raw.get("allow_irreproducible_degenerate") is True, name
             reason = raw.get("irreproducible_degenerate_reason")
             assert isinstance(reason, str) and reason.strip(), name
+            if name in _PRE_LOCK_CAMPAIGNS:
+                # The pre-2026-08 campaigns ran unlocked throughout, and their
+                # data and CCSD reference caches are keyed on lock 0.0; any
+                # other value here discards both (the defect a re-statement at
+                # the calibrated lock introduced and a review measured).
+                assert float(value) == 0.0, (
+                    f"{name} is a pre-lock campaign whose data was built "
+                    f"unlocked; it states orientation_lock_strength={value!r}")
         else:
             # A grid-3 campaign builds every degenerate atom reproducibly
             # ONLY with the lock on, and needs no waiver then.
@@ -745,10 +765,13 @@ def test_pretraining_lock_is_the_training_lock():
                 "built at the calibrated lock, and unlocked it would be "
                 "refused as irreproducible")
             assert "allow_irreproducible_degenerate" not in raw, name
-    assert len(paths) >= 15, paths
-    # Nine of the tracked configurations run below grid level 3 (the six
-    # *.local.yaml working copies that also do are not in the tree).
+    # A clean checkout tracks nine coarse-grid configurations; the six
+    # *.local.yaml working copies present on some machines are gitignored and
+    # must not be load-bearing here.
+    assert len(paths) >= 9, paths
     assert len(coarse) >= 9, coarse
+    assert _PRE_LOCK_CAMPAIGNS <= set(coarse), (
+        sorted(_PRE_LOCK_CAMPAIGNS - set(coarse)))
 
 
 def test_system_columns_hand_the_lock_to_the_precompute(monkeypatch):

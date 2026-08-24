@@ -1209,6 +1209,26 @@ def _pretrain_choice(d, key: str, default: str, allowed) -> str:
     return v
 
 
+def _build_pretrain_from(raw: dict, *, source=None) -> PretrainConfig:
+    """Build the pretrain block, naming ``source`` in any retired-key warning.
+
+    A retired key warns rather than refuses, and the warning is only useful if
+    it says WHICH file still carries the key; the block builder itself does
+    not know the file, so the re-emission happens here."""
+    d = _require(raw, "pretrain", "<root>")
+    if source is None:
+        return _build_pretrain(d)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cfg = _build_pretrain(d)
+    for w in caught:
+        message = str(w.message)
+        if "is retired" in message:
+            message = f"{message} (in {source})"
+        warnings.warn_explicit(message, w.category, str(source), 0)
+    return cfg
+
+
 def _build_pretrain(d: dict) -> PretrainConfig:
     ctx = "pretrain"
     _reject_unknown_keys(d, PretrainConfig, ctx,
@@ -1527,7 +1547,7 @@ def load_grid_config(path: str) -> GridConfig:
         solvers=_build_solvers(_require(raw, "solvers", "<root>")),
         hyperparams=_build_hyperparams(_require(raw, "hyperparams", "<root>")),
         inputs=_build_inputs(_require(raw, "inputs", "<root>")),
-        pretrain=_build_pretrain(_require(raw, "pretrain", "<root>")),
+        pretrain=_build_pretrain_from(raw, source=path),
         cluster=_build_cluster(_require(raw, "cluster", "<root>"),
                                text=text, source=path),
         domain_profile=_require(raw, "domain_profile", "<root>"),
