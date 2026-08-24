@@ -1654,6 +1654,11 @@ _TRACKED_CONFIGS = (
     "dfs_step7.dfs6311_grid3_v5.yaml",
     "dfs_step7.dfs6311_grid3_v5mgga2.yaml",
     "dfs_step7.dfs6311_grid3_v6.yaml",
+    "dfs_step7.dfs6311_grid3_v6g1_size.yaml",
+    "dfs_step7.dfs6311_grid3_v6g2_families.yaml",
+    "dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml",
+    "dfs_step7.dfs6311_grid3_v6g3_dm.yaml",
+    "dfs_step7.dfs6311_grid3_v6g4_ablations.yaml",
     "dfs_step7.svp_grid2.yaml",
     "dfs_step7.svp_grid2_v2.yaml",
     "dfs_step7.svp_grid2_v3.yaml",
@@ -1702,7 +1707,7 @@ def test_tracked_configs_carry_valid_walltimes():
         assert path.is_file(), f"tracked config missing: {path}"
         _assert_walltimes_are_strings(path)
     _assert_walltimes_are_strings(example)
-    assert len(_TRACKED_CONFIGS) + 1 == 17, "tracked config count changed"
+    assert len(_TRACKED_CONFIGS) + 1 == 22, "tracked config count changed"
 
 
 def test_untracked_local_configs_carry_valid_walltimes():
@@ -2807,7 +2812,7 @@ def test_every_shipped_configuration_and_template_still_loads():
                                   / "examples" / "*.yaml")))
     if not paths:
         pytest.skip("no shipped configurations in this checkout")
-    assert len(paths) >= 17, paths
+    assert len(paths) >= 22, paths
     for path in paths:
         text = pathlib.Path(path).read_text().replace("CHANGE_ME_ARCH",
                                                       "deep_3x16")
@@ -2896,8 +2901,9 @@ def test_validate_accepts_a_production_identity_without_the_waiver():
 def test_every_shipped_configuration_states_a_waiver_its_identity_needs():
     """The refusal against the files it must not fire on: the eight
     pre-2026-08 campaigns (grid level 1 or 2, unlocked) and the ``step7.yaml``
-    template (grid level 1) all need the waiver they state, and the seven
-    grid-3 campaigns (v3, v4, v4gga, v4mgga2, v5, v5mgga2, v6) state none.
+    template (grid level 1) all need the waiver they state, and the twelve
+    grid-3 campaign files (v3, v4, v4gga, v4mgga2, v5, v5mgga2, the v6
+    reference and the five v6 group submissions) state none.
 
     The two bounds are the TRACKED counts. ``hpcjobs/.gitignore`` excludes
     ``configs/*.local.yaml``, every one of which is waived, so a bound written
@@ -2927,7 +2933,7 @@ def test_every_shipped_configuration_states_a_waiver_its_identity_needs():
         else:
             plain.append(os.path.basename(path))
     assert len(waived) >= 9, waived
-    assert len(plain) >= 7, plain
+    assert len(plain) >= 12, plain
 
 
 def test_a_retired_key_warning_names_the_file(tmp_path):

@@ -1,135 +1,113 @@
 # =============================================================================
-# dfs_step7.dfs6311_grid3_v6.yaml -- CAMPAIGN v6: every architecture in the
-# registry, resubmitted under the corrected spin scaling, the certified
-# pretraining and the enforced fidelity gate
-# (SPEC_pretrain_fidelity_program.md Sections 3.5 and 7).
+# dfs_step7.dfs6311_grid3_v6g2_families.yaml
+# -- CAMPAIGN v6, GROUP G2 (DESCRIPTOR FAMILIES, GGA):
+#    GGA rung, 40core queue scheme,
+#    6 architectures x 11 subset sizes = 66 cells.
 #
-# v6 retires v4gga, v5 and v5mgga2 as quantitative results: those runs trained
-# from pretrained networks that were 2.3-4.2 kcal/mol (descriptor-free) to
-# 13.2-56.1 kcal/mol (descriptor-carrying) from their parent functional on
-# atomization energies, which is larger than the architecture differences the
-# campaign exists to resolve (spec Section 2). Three things change in the
-# METHOD:
+# THE QUESTION: which descriptor family wins on the GGA rung at the fixed
+# 3x16 width -- none, attention, cusp, cusp+rung-3.5, cusp+rung-3.5 with
+# attention, and the multi-width rung-3.5 form.
 #
-#   1. SWEEP. Every architecture of `xcquinox.alec.ARCHITECTURES` is on the
-#      arch axis -- 31 names, enumerated below -- against v5's three. The
-#      descriptor-free architectures are included deliberately: they do not
-#      meet tol_AE = 1.0 kcal/mol either (spec Section 3.5).
-#   2. PRETRAINING. The `pretrain:` protocol block below turns on the DFS
-#      pretraining set in its entirety, every free atom of the BH76 / W4-11
-#      pools, the per-rung parent density and the per-spin-channel exchange
-#      footing that the corrected UKS exchange actually evaluates.
-#   3. THE GATE. `fidelity:` is ENFORCED at the program's binding tolerances,
-#      tol_AE = 1.0 kcal/mol and tol_atom = 1.0 mHa. No architecture's train
-#      task starts without a PASS certificate at
-#      <run_dir>/pretrain/<arch>/fidelity_certificate.json, and validate_run,
-#      merge_v4_arms and the figure suite refuse a run that lacks one.
+# ORDER: submission 2 of 5 in the v6 ladder --
+#   1. dfs_step7.dfs6311_grid3_v6g1_size.yaml
+#        GGA rung, 40core scheme, 4 architectures, 44 cells
+#   2. dfs_step7.dfs6311_grid3_v6g2_families.yaml
+#        GGA rung, 40core scheme, 6 architectures, 66 cells
+#   3. dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml
+#        meta-GGA rung, 96core scheme, 5 architectures, 55 cells
+#   4. dfs_step7.dfs6311_grid3_v6g3_dm.yaml
+#        GGA rung, 40core scheme, 3 architectures, 33 cells
+#   5. dfs_step7.dfs6311_grid3_v6g4_ablations.yaml
+#        GGA rung, 40core scheme, 2 architectures, 22 cells
 #
-# Everything else -- losses, solver, subset sizes, hyperparameters, run
-# identity, reference caches, seeding protocol, eval channels -- is v5's,
-# carried unchanged so that v5-vs-v6 on the five meta-GGA architectures
-# isolates the pretraining correction. The inherited value is quoted in a
-# comment wherever it is load-bearing.
+# SUBMISSION IS PER GROUP AND INDEPENDENT. Each of the five files is submitted
+# on its own and lands in its OWN run directory (`inputs.output_root` below),
+# with its own pretraining-data root, its own pretrain array and its own
+# fidelity certificate gate. No group waits on another: the order above is the
+# order the questions are worth answering in, not a dependency chain, and a
+# group that fails its certificate blocks its own train array and nothing else.
+# The 220 cells of the five groups are what the campaign submits; the reference
+# file dfs_step7.dfs6311_grid3_v6.yaml stays as the statement of the method and
+# is not itself submitted.
 #
-# MEASURED DIFF against v5. Both files were loaded and every field of the
-# resolved GridConfig tree flattened and compared, defaults included: of 135
-# fields, THIRTEEN differ. Seven are the method above (sweep.arch,
-# pretrain.dfs_set / pool_atoms / parent_density / exchange_footing /
-# validation_fraction / patience); the other six are bookkeeping and
-# resources, each documented at its own key -- pretrain.data_dir and
-# inputs.output_root (fresh roots), cluster.datagen_time and
-# cluster.pretrain_throttle (a stage v5 did not have, and a throttle v5 did
-# not need at three architectures), cluster.time and
-# cluster.timeout_retry_time (the train wall, raised for the four-channel
-# inline eval). The remaining 122 fields are identical, including every
-# hyperparameter, both solver blocks, the whole run identity, the three
-# reference-cache roots, the subset ledger, the seeding protocol and every
-# eval flag. The `fidelity:` block is not a difference either: v5 states no
-# such block and the dataclass defaults are exactly the values written out
-# below, so stating them is a statement of record.
+# INHERITED FROM THE REFERENCE FILE, UNCHANGED.
+# Every field except the architecture axis, the two roots and the two
+# retry-partition keys the 40-core scheme engages
+# is dfs_step7.dfs6311_grid3_v6.yaml's: the production identity (basis, grid
+# level, density fitting, `auxbasis` unset, the calibrated orientation lock,
+# the per-rung SCF seed), the pretraining protocol (the DFS set, the pool
+# atoms, the per-rung parent density, the spin-channel exchange footing, the
+# mesh share, the validation block), the enforced 1.0 kcal/mol / 1.0 mHa
+# certificate, the weight-zero objective placeholder that refuses submission,
+# every hyperparameter, both solver blocks, the subset ledger, the three
+# reference-cache roots, the walls and the job mail. The reference file's
+# header carries the method and its measured 13-field diff against v5; this
+# file states only what it adds.
 #
-# +---------------------------------------------------------------------------+
-# | THIS FILE IS THE STATEMENT OF THE METHOD, NOT THE SUBMISSION. The         |
-# | campaign is submitted as FIVE STANDALONE GROUP FILES, in this order:      |
-# |                                                                           |
-# |   1. dfs_step7.dfs6311_grid3_v6g1_size.yaml           GGA      44 cells   |
-# |   2. dfs_step7.dfs6311_grid3_v6g2_families.yaml       GGA      66 cells   |
-# |   3. dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml  meta-GGA 55 cells   |
-# |   4. dfs_step7.dfs6311_grid3_v6g3_dm.yaml             GGA      33 cells   |
-# |   5. dfs_step7.dfs6311_grid3_v6g4_ablations.yaml      GGA      22 cells   |
-# |                                                                           |
-# | Each group is submitted on its own, into its own run directory, with its  |
-# | own pretraining data root and its own certificate gate; none waits on     |
-# | another. Together they run 220 of the 341 cells below: eleven             |
-# | architectures are excluded from v6 by the campaign directive (named in    |
-# | the G4 file's header and in the pins' EXCLUDED_FROM_V6 list), and any of  |
-# | them rejoins by one line on a group's axis plus the matching pin line.    |
-# |                                                                           |
-# | EVERY GROUP FILE CARRIES THE SAME 0.0 PLACEHOLDER at                      |
-# | pretrain.energy_term_weight and is REFUSED at submit until the measured   |
-# | weight lands in it -- one line per file, the same number in all five      |
-# | (see the block beside the key below). This file inherits the refusal for  |
-# | the same reason, and is not submitted at all.                             |
-# +---------------------------------------------------------------------------+
+# QUEUE SCHEME: 40core, mirroring dfs_step7.dfs6311_grid3_v4gga.yaml. The
+# submit partition is chosen on the command line (`--partition`; the config
+# carries none deliberately, so a submission never silently lands on a queue
+# that exists on only one login instance), and BOTH retry routes are engaged
+# onto the 96-core / ~256 GB Milan nodes. v4gga records the two measured
+# risks that routing covers: deep_attn peaked at 142.8 GB RSS, inside a
+# 192 GB Skylake node but with modest headroom, and deep_attn r=26 measured
+# 42.14 h on 96 Milan cores, which on 40 Skylake cores can exceed the
+# queue's wall. The walls themselves are the reference file's, not v4gga's:
+# 72 h train and a 96 h timeout retry, sized to the four-channel inline
+# evaluation (see cluster.time).
+#
+# +-------------------------------------------------------------------------+
+# | THIS FILE IS REFUSED AT SUBMIT AS IT SHIPS. pretrain.energy_term_weight  |
+# | carries the 0.0 PLACEHOLDER, which is the objective WITHOUT the          |
+# | per-system energy term Section 7 binds, and validate_grid_semantics      |
+# | refuses that value alongside dfs_set: true and fidelity.enforce: true.   |
+# | Set it from the measured table (see the block beside the key). The file  |
+# | LOADS either way; the refusal is semantic, and every submission surface  |
+# | re-runs it.                                                              |
+# +-------------------------------------------------------------------------+
 #
 # PREREQUISITES, in order:
 #   a. hpcjobs/probe_pretrain_energy_weight.py has produced its table and
-#      pretrain.energy_term_weight below has been set from it.
-#   b. hpcjobs/seed_cache_scan.sbatch has completed into inputs.seed_cache_dir.
-#      Inherited from v5 and already complete for these species: only the five
-#      meta-GGA-rung architectures resolve to the SCAN seed, and their training
-#      species are v5's (same pool, same subset ledger). The 26 GGA-rung
-#      architectures seed from PBE and consult no cache.
-#   c. pretrain.data_dir is EMPTY or holds v6's own files. It is a FRESH root,
-#      not v5's: parent_density: auto writes two files whose PBE-parent name
-#      collides with v5's, and the rows differ in set, footing and objective.
+#      pretrain.energy_term_weight below has been set from it. The weight is
+#      ONE campaign-wide number measured once: the same value is written into
+#      all five group files.
+#   b. hpcjobs/seed_cache_scan.sbatch is NOT a prerequisite for this group:
+#      every architecture on this axis is GGA-rung, `seed_xc: auto` resolves to
+#      PBE for all of them, and no task reads inputs.seed_cache_dir.
+#   c. pretrain.data_dir is EMPTY or holds THIS GROUP's own files. It is this
+#      group's own root, not the reference file's and not another group's:
+#      `parent_density: auto` names its files after the parent functional, so
+#      two groups sharing a root would collide on the name.
 # =============================================================================
 
 sweep:
-  # THE WHOLE REGISTRY: 31 architectures, = len(sorted(xcquinox.alec.
-  # ARCHITECTURES)) enumerated at authoring time (2026-08-24). Listed in the
-  # order expand_grid canonicalizes to (`_canon_axis` = sorted(set(...))), so
-  # the arch axis reads in array-task order. With 11 subset sizes the grid is
-  # 31 x 1 x 1 x 11 x 1 = 341 cells: task index = arch_index * 11 +
-  # subset_index, i.e. tasks 0-10 are `deep`, 11-21 `deep_3x16`, and so on to
-  # 330-340 `shallow_attn`.
+  # GROUP G2 (DESCRIPTOR FAMILIES, GGA)'s axis: 6 of the 31 architectures of
+  # `xcquinox.alec.ARCHITECTURES`. Listed in the order expand_grid
+  # canonicalizes to (`_canon_axis` = sorted(set(...))), so the arch axis reads
+  # in array-task order. With 11 subset sizes the grid is 6 x 1 x 1 x
+  # 11 x 1 = 66 cells: task index = arch_index * 11 + subset_index, i.e.
+  # tasks 0-10 are `deep_3x16`,
+  #       11-21 are `deep_attn_3x16`,
+  #       22-32 are `deep_cusp_3x16`,
+  #       33-43 are `deep_rung35_3x16`,
+  #       44-54 are `deep_rung35_attn_3x16`,
+  #       55-65 are `deep_rung35ms_3x16`.
   #
-  # A NEW ARCHITECTURE ADDED TO THE REGISTRY MAKES THIS FILE STALE. The pin
-  # `test_v6_sweeps_every_registry_architecture` compares this axis against
-  # sorted(ARCHITECTURES) and goes red, which is the intent: v6 is "every
-  # architecture", not "the 31 that existed when it was written".
+  # THE FIVE GROUP AXES ARE PAIRWISE DISJOINT, and together with the eleven
+  # architectures the campaign directive excludes from v6 they cover the
+  # registry exactly. A NEW ARCHITECTURE ADDED TO THE REGISTRY MAKES THE GROUP
+  # SET STALE: the pin `test_v6_groups_and_the_exclusions_partition_the_registry`
+  # compares the union against sorted(ARCHITECTURES) and goes red naming the
+  # new name, which is the intent -- an architecture may only be left out of
+  # the campaign deliberately, in the exclusion list, never by falling through
+  # the gap between five files.
   arch:
-    - deep
     - deep_3x16
-    - deep_attn
     - deep_attn_3x16
-    - deep_combined
-    - deep_combined_3x16
-    - deep_combined_attn
-    - deep_combined_attn_3x16
-    - deep_cusp
     - deep_cusp_3x16
-    - deep_cusp_attn
-    - deep_cusp_mgga_3x16
-    - deep_dm
-    - deep_dm_3x16
-    - deep_dm_attn
-    - deep_mgga_3x16
-    - deep_mgga_attn_3x16
-    - deep_notransform
-    - deep_notransform_3x16
-    - deep_notransform_attn
-    - deep_notransform_attn_3x16
     - deep_rung35_3x16
     - deep_rung35_attn_3x16
-    - deep_rung35_mgga_3x16
     - deep_rung35ms_3x16
-    - deep_rung35ms_mgga_3x16
-    - deep_rung35only_3x16
-    - medium
-    - medium_attn
-    - shallow
-    - shallow_attn
   loss: [L5_gradnorm_vxc_step7]
   metric: [jsd]
   # v5's subset-size axis, unchanged (v5 line 35). 26 = the dfs_step7 pool
@@ -196,12 +174,12 @@ hyperparams:
   pad_group_to_common_shape: true
 
 inputs:
-  # PRODUCTION IDENTITY, VALUE-inherited from v5 (lines 96-103): the five
-  # fields resolve to the same values, and one of them is spelled
-  # differently -- 3.0e-5 here against v5's 0.00003, both of which parse to
-  # 3e-05 and equal orientation_lock.DEFAULT_STRENGTH. These five
-  # fields are exactly what `fidelity.run_identity` records on every
-  # certificate, so a change here invalidates every certificate the run wrote.
+  # PRODUCTION IDENTITY, byte-inherited from the reference file (v6 lines
+  # 192-204), which value-inherited it from v5. These five fields are exactly
+  # what `fidelity.run_identity` records on every certificate, so a change here
+  # invalidates every certificate this group writes AND breaks the comparison
+  # between groups: the five run directories are one campaign only because
+  # their identities are the same object.
   # DFS-paper parity: same basis for training AND the CCSD references, grid 3.
   basis: 6-311++G(3df,2pd)
   grid_level: 3
@@ -224,35 +202,43 @@ inputs:
   # at grid level 3"). The shipped templates state it because they run at grid
   # level 1; a production copy must drop it, and this one has.
   # Per-rung SCF seeding (v5 protocol): auto = registry-derived rung baseline.
-  # Over this sweep it resolves to SCAN for the 5 meta-GGA-rung architectures
-  # (deep_cusp_mgga_3x16, deep_mgga_3x16, deep_mgga_attn_3x16,
-  # deep_rung35_mgga_3x16, deep_rung35ms_mgga_3x16) and PBE for the other 26.
-  # It is the SAME predicate `pretrain.parent_density: auto` resolves the
-  # pretraining density with, so a meta-GGA architecture is pretrained on, and
-  # certified against, the functional its own SCF is seeded from.
+  # Every architecture on THIS axis is GGA-rung, so it resolves to PBE for all
+  # 6 of them and no task reads the SCAN cache below. It stays `auto`
+  # rather than the literal `pbe` because it is the SAME predicate
+  # `pretrain.parent_density: auto` resolves the pretraining density with: one
+  # rung statement read by both, so no group file can seed its SCF from one
+  # functional while certifying against the other.
   seed_xc: auto
-  # Root whose _intermediates/ holds the SCAN seeds. Inherited from v5 (line
-  # 110) and already complete: the meta-GGA archs' training species are v5's,
-  # and the 26 GGA-rung archs never read it.
+  # Root whose _intermediates/ holds the SCAN seeds. Carried from the reference
+  # file and NEVER READ on this axis -- a PBE-seeded architecture consults no
+  # cache -- so it is stated only to keep the five groups' `inputs` blocks one
+  # identical block. hpcjobs/seed_cache_scan.sbatch is not a prerequisite here.
   seed_cache_dir: /gpfs/scratch/awills/seed_cache_scan_6311ppg3df2pd_g3
-  # SAME subsets as v3/v4/v5 (apples-to-apples across the campaign lineage).
+  # SAME subsets as v3/v4/v5 and as the other four groups (apples-to-apples
+  # across the campaign lineage AND across the ladder).
   subset_ledger_path: /gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/alpha_on/subset_index_log.json
-  # SHARED with v3/v4/v5 (complete, relocked; input data keyed by
-  # species/basis/grid, none of which v6 moves).
+  # SHARED with v3/v4/v5 and with the other groups (complete, relocked; input
+  # data keyed by species/basis/grid, none of which any group moves). Read-only
+  # for every group, so sharing them couples nothing.
   external_refs_dir: /gpfs/scratch/awills/external_refs_dfs_6311ppg3df2pd_g3
   benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_6311ppg3df2pd_g3
   val_refs_dir: /gpfs/scratch/awills/external_refs_val_6311ppg3df2pd_g3
-  # Fresh output root: additive, every earlier run dir is untouched.
-  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v6
+  # THIS GROUP'S OWN output root: additive, every other run dir -- the other
+  # four groups' included -- is untouched, and `status`, `validate_run` and the
+  # figure suite each read one group's run at a time.
+  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v6g2_families
 
 pretrain:
-  # FRESH data_dir, NOT v5's. `parent_density: auto` writes TWO files -- a
-  # PBE-density one for the 26 GGA-rung archs and a SCAN-density one for the 5
-  # meta-GGA-rung archs -- and the PBE-parent name is the same name v5's file
-  # carries, so sharing v5's dir would either clobber it or be judged stale and
-  # regenerated in place. The rows differ from v5's in all three of set,
-  # footing and objective, so no v5 file is reusable here.
-  data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v6
+  # THIS GROUP'S OWN data_dir. `parent_density: auto` names its files after the
+  # parent functional, and on this axis it resolves to PBE for every
+  # architecture, so exactly ONE file is built here. A root shared between
+  # groups would collide on that name and, worse, be a write race the moment
+  # two groups' datagen jobs overlap -- which they may, because the groups are
+  # independent submissions with no ordering between them. The per-group copies
+  # are value-identical by construction: the rows are a deterministic function
+  # of the set, the footing, the objective and the run identity, all five of
+  # which are the same in all five files.
+  data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v6g2_families
   # Pretraining schedule, byte-inherited from v5 (lines 134-140).
   n_steps: 2500
   lr_start: 0.01
@@ -282,8 +268,9 @@ pretrain:
     F: 1
     Na: 1
   # --- pretraining protocol (spec Sections 3.2, 6 and 7) -------------------
-  # This is the block v6 exists to turn on. Each knob is stated, never
-  # inherited, so the file is a complete statement of the protocol it runs.
+  # The block v6 exists to turn on, stated in full in every group file so each
+  # one is a complete statement of the protocol it runs rather than a pointer
+  # to a file it is not submitted with.
   #
   # The SET (Section 7: "the DFS pretraining set in its entirety, plus every
   # atom of the BH76 / W4-11 pools"). dfs_set adds the DFS inventory -- 8 free
@@ -292,7 +279,8 @@ pretrain:
   # the merged BH76 / W4-11 pools at their production charges and spins (the 12
   # neutral elements plus the F- and Cl- anions that are BH76 reactants). Both
   # replace the historical four-atom default; the `atoms` list above extends it
-  # by Na.
+  # by Na. The set is the same in all five groups: a certificate is only
+  # comparable across groups if the networks were fitted to the same rows.
   dfs_set: true
   pool_atoms: true
   # The DENSITY the targets sit on. "auto" = each architecture's rung baseline
@@ -301,8 +289,10 @@ pretrain:
   # one rung predicate `inputs.seed_xc: auto`, the datagen stage's required-file
   # derivation and the pretraining targets all read, so a meta-GGA architecture
   # cannot be fitted against one parent while its SCF is seeded from the other.
-  # It splits this mixed-rung sweep across TWO data files, which is why the
-  # datagen wall below covers two reference-SCF passes over the set.
+  # Over THIS axis it resolves to PBE for every architecture, so the
+  # datagen stage builds ONE file (38 systems) and the wall below
+  # covers a single reference-SCF pass over the set; the mixed-rung, two-file
+  # case is the reference file's, not this group's.
   parent_density: auto
   # The open-shell exchange FOOTING, the correction of defect D1/D2. Each spin
   # channel's rows are posed at (2 rho_sigma, 4 sigma_sigma, features of the
@@ -336,7 +326,8 @@ pretrain:
   # still LOADS (the value is legal on its own), but every submission surface
   # -- prepare, submit, resubmit, resubmit-preflight and the deferred-eval
   # path -- re-runs the semantic check, so an unedited submission is stopped
-  # on the login node instead of after the datagen job and 31 pretrainings.
+  # on the login node instead of after this group's datagen job and its
+  # 6 pretrainings.
   #
   # Set it from the table `hpcjobs/probe_pretrain_energy_weight.py` writes.
   # That script's recommendation rule, verbatim from `recommend()`:
@@ -349,15 +340,15 @@ pretrain:
   #     has risen by more than `pointwise_factor` from its own weight-0 value.
   #
   # with margin_fraction = 0.5 and pointwise_factor = 3.0. The script prints
-  # the chosen weight on its `recommendation:` line; land that number here:
+  # the chosen weight on its `recommendation:` line; land that number here --
+  # the SAME number in all five group files:
   #
   #     sed -i 's/^  energy_term_weight: 0\.0$/  energy_term_weight: <W>/' \
-  #         hpcjobs/configs/dfs_step7.dfs6311_grid3_v6.yaml
+  #         hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g2_families.yaml
   #
   # The sweep measures at a REDUCED identity (def2-svp, 1000 steps, no
-  # validation hold-out) on six of the 31 architectures -- see the note in
-  # that script's header. The weight it returns is a starting point; the
-  # certificate at the production identity remains the arbiter.
+  # validation hold-out) on six of the 31 architectures (that script's
+  # header). It is a starting point; the production certificate is the arbiter.
   # =========================================================================
   energy_term_weight: 0.0
   # VALIDATION and the stop criterion, at the spec Section 7 / Task 7 defaults
@@ -390,55 +381,61 @@ cluster:
   #     42.14     + 8 = 50.1 h   if it was train time alone
   # and both exceed 48 h, so a 48 h wall wall-kills the large-subset
   # attention cells rather than the 24 h one v5 was protecting against. The
-  # larger reading is the one carried: 72 h is 1.44x it. The margin is not
-  # slack -- v6 puts FIVE depth-4 / width-32 attention architectures on the
-  # axis (deep_attn, deep_combined_attn, deep_cusp_attn, deep_dm_attn,
-  # deep_notransform_attn), a size no campaign has run: v3's three attention
-  # architectures were all 3x16, and v5's only one was deep_mgga_attn_3x16.
+  # larger reading is the one carried: 72 h is 1.44x it.
+  # This group's attention cells are `deep_attn_3x16` -- the measured
+  # cell itself -- and `deep_rung35_attn_3x16`, which adds four
+  # descriptor columns to it.
   # The corrected potential also adds a feature-response derivative per SCF
   # cycle, so no cell is faster than v3's.
   #
   # QUEUE ADMISSIBILITY: VERIFY WITH sinfo BEFORE THE FIRST SUBMISSION.
   # SEAWULF_RUNBOOK.md records the max walls as short-* 4 h, medium-* 12 h,
-  # long-28core 2 days and long-96core-shared "longer still" -- it does not
-  # state a number for the queue this campaign submits to. Check it with
-  #     sinfo -o "%20P %10l" -p long-96core-shared
-  # An over-cap --time is rejected at submit (cheap, and immediate). If the
-  # cap is below 72 h, submit at the cap with --time and expect the
-  # large-subset attention cells to requeue from their checkpoints
-  # (checkpoint_every: 10 above).
+  # long-28core 2 days and long-96core-shared "longer still"; v4gga records
+  # long-40core at 48 h. Check the queue this group is submitted to with
+  #     sinfo -o "%20P %10l" -p long-40core
+  # This file SHIPS the recorded long-40core figure, 48 h -- the value the
+  # v4gga campaign ran at on this queue -- because an over-cap --time is
+  # rejected at submit, and 72 h would refuse every task if 48 h is the cap.
+  # The ~50.1 h large-subset attention cells therefore wall-kill BY DESIGN
+  # into the timeout retry below, which routes onto the 96-core queue at
+  # 96 h and resumes from the checkpoint (checkpoint_every: 10 above); if
+  # sinfo shows a cap of 72 h or more, --time=72:00:00 at submit avoids the
+  # retry hop for those cells.
   #
-  # Peak measured RSS is 142.8 GB: submit to a ~256 GB partition
-  # (long-96core-shared), never a 128 GB one.
-  time: "72:00:00"
+  # Peak measured RSS is 142.8 GB: a 192 GB Skylake node holds it with modest
+  # headroom, and an OOM routes onto the 256 GB Milan nodes (see the retry keys
+  # below). Never a 128 GB node.
+  time: "48:00:00"
   cpus_per_task: 24
   array_throttle: 4
   eval_array_throttle: 4
   max_concurrent_tasks: 8
   max_array_size: 1000
   device: cpu
-  # OOM auto-retry -- engaged now that CPU XLA/LLVM *compile* OOMs classify as
-  # "oom" (not "deterministic"); see HISTORY Phase 15. To make a compile-OOM'd
-  # spec auto-resubmit onto more memory, uncomment and set this to a
-  # LARGER-per-node-memory partition that EXISTS on the login instance you
-  # submit from (e.g. long-96core-shared on milan1/2 ~256 GB, vs long-28core
-  # ~128 GB on login1/2 -- the names SEAWULF_RUNBOOK.md carries). Must be
-  # valid on the submitting instance or the retry sbatch is rejected. Leave unset
-  # if the biggest reachable node is already your submit --partition -- a
-  # same-partition retry cannot clear a deterministic compile OOM; the
-  # --xla_llvm_disable_expensive_passes trim in the train template is the
-  # no-bigger-node lever there.
-  # oom_retry_partition: long-96core-shared
-  # TIMEOUT auto-retry, ENGAGED. A cell that still hits the wall above is
-  # relaunched at this longer one and continues from its WS5 resume
-  # checkpoint; without the key the recovery is a manual `cluster resubmit`
-  # plus a separate re-eval, repeated across every large-subset attention
-  # cell. `timeout_retry_partition` stays UNSET for the reason v5 gives for
-  # leaving oom_retry_partition unset: the submit partition is already the
-  # largest reachable node, so a re-route buys nothing and the wall is the
-  # only lever. VERIFY 96 h against the queue cap with the same sinfo call
-  # as the wall above -- an over-cap retry is rejected days later, during
-  # recovery, rather than at submit.
+  # RETRY ESCALATES TO THE LARGER NODE CLASS: both keys carry v4gga's values
+  # because this group submits on the 40-core queue and the 96-core Milan nodes
+  # are the bigger box to fall back to; the meta-GGA group leaves both unset
+  # because it already submits on that largest class, where a re-route buys
+  # nothing.
+  # OOM auto-retry, ENGAGED, as in v4gga (which the 40-core scheme is taken
+  # from): CPU XLA/LLVM *compile* OOMs classify as "oom" rather than
+  # "deterministic" (HISTORY Phase 15), so an OOM'd cell resubmits onto the
+  # larger-per-node-memory 96-core Milan nodes (~256 GB, against the 40-core
+  # queue's 192 GB) and resumes from its checkpoint. The partition must exist
+  # on the login instance the submission is made from or the retry sbatch is
+  # rejected -- verify the spelling with the sinfo call above (the runbook
+  # names `long-96core-shared`; v4gga carries bare `long-96core`, which is the
+  # value inherited here).
+  oom_retry_partition: long-96core
+  # TIMEOUT auto-retry, ENGAGED, and on the 40-core scheme it carries a
+  # PARTITION as well as a wall: a wall-killed cell is relaunched on the
+  # larger, longer-wall queue and continues from its WS5 resume checkpoint.
+  # That is v4gga's recovery for this scheme's measured wall risk. Without the
+  # keys the recovery is a manual `cluster resubmit` plus a separate re-eval,
+  # repeated across every large-subset attention cell. VERIFY 96 h against the
+  # retry queue's cap with the same sinfo call as the wall above -- an over-cap
+  # retry is rejected days later, during recovery, rather than at submit.
+  timeout_retry_partition: long-96core
   timeout_retry_time: "96:00:00"
   # jax-0.7.0 PARITY env (matches the local dev/test stack the meta-GGA code was
   # tested on) -- a fresh, single-purpose conda-forge+pip env built from
@@ -450,17 +447,17 @@ cluster:
   account: ""
   preflight_time: "12:00:00"
   # Compile-smoke gate: the preflight compiles the heaviest attention cell once
-  # (n_steps=1) on its exclusive node before the 341-task array; a host-OOM
-  # there blocks the array via the afterok dep -- one cheap failure instead of
-  # hundreds. With TWELVE attention architectures on this axis (v5 had one)
-  # "heaviest" is a choice rather than an identification, so the selector
-  # orders the attention cells by subset size, then depth x width, then
-  # descriptor feature columns, then name
-  # (`_preflight._select_smoke_cell`). Here that is deep_combined_attn at
-  # subset 26 -- 4x32 with four descriptor columns -- and not the
-  # descriptor-free deep_attn of the same shape a first-maximal pick returns.
-  # The same preflight also sweeps every swept architecture's
-  # certificate with no exemption, which is the second thing that fails cheap.
+  # (n_steps=1) on its exclusive node before the 66-task array; a
+  # host-OOM there blocks the array via the afterok dep -- one cheap failure
+  # instead of 66. The selector orders the attention cells by subset
+  # size, then depth x width, then descriptor feature columns, then name
+  # (`_preflight._select_smoke_cell`), so the choice reads only the cells' own
+  # properties. On this axis that is
+  # `deep_rung35_attn_3x16` at subset 26 -- the same 3x16 shape as
+  # `deep_attn_3x16` but with four descriptor columns, which is the
+  # heavier compile and the larger recorded parent offset.
+  # The same preflight also sweeps every swept architecture's certificate with
+  # no exemption, which is the second thing that fails cheap.
   preflight_compile_smoke: true
   # 4 channels now, one of them 25-cycle (the coldstart diagnostic
   # runs all 25 cycles for every species): ~4x the 3-channel budget.
@@ -482,28 +479,32 @@ cluster:
   # jitted once rather than per snapshot interval. The margin is the point:
   # the train array is gated afterok on this job.
   pretrain_time: "12:00:00"
-  # STATED here although v5 left it unset (v5 had 3 distinct architectures;
-  # v6 has 31). Unset means every distinct architecture pretrains
-  # concurrently, i.e. 31 whole exclusive nodes at once, well past the
-  # max_concurrent_tasks: 8 fair-use figure this file states. 4 matches the
-  # train array's throttle; the wall above is per task, so throttling costs
-  # queue time and nothing else.
+  # STATED here although v5 left it unset (v5 had 3 distinct architectures).
+  # Unset means every distinct architecture pretrains concurrently, i.e.
+  # 6 whole exclusive nodes at once for this group alone, with the
+  # other groups possibly queued beside it. 4 is the reference file's value,
+  # kept identical in all five so the five pretrain arrays are one etiquette
+  # budget. The wall above is per task, so throttling costs queue time and
+  # nothing else.
   pretrain_throttle: 4
-  # Datagen builds the pretrain-data file(s) and every later stage waits on it.
-  # v5 had no key here and inherited pretrain_time; v6's datagen is a different
-  # job. At this identity the measured per-species precompute wall is 0.7 s for
-  # H, 0.6 s Li, 1.1 s O, 1.4 s C, 2.0 s N, 3.4 s H2O (32136 grid points),
-  # 3.5 s N2 (26616) and 5.2 s CH4 (49408). The v6 set's largest molecules --
-  # C3H8 (11 nuclei), C4H6 (10), SiCH6 (8), AlCl3 (4 heavy nuclei at a 3df
-  # basis), Si2 -- carry several times those grids and basis sets, and
-  # parent_density: auto builds a SECOND file on SCAN densities, whose SCF is
-  # the slower of the two. Four hours is roughly an order of magnitude of
-  # margin on the one job the whole graph waits for.
+  # Datagen builds this group's pretrain-data file and every later stage of
+  # this group waits on it. v5 had no key here and inherited pretrain_time;
+  # v6's datagen is a different job. At this identity the measured per-species
+  # precompute wall is 0.7 s for H, 0.6 s Li, 1.1 s O, 1.4 s C, 2.0 s N, 3.4 s
+  # H2O (32136 grid points), 3.5 s N2 (26616) and 5.2 s CH4 (49408). The v6
+  # set's largest molecules -- C3H8 (11 nuclei), C4H6 (10), SiCH6 (8), AlCl3
+  # (4 heavy nuclei at a 3df basis), Si2 -- carry several times those grids and
+  # basis sets. This group builds ONE file, on PBE
+  # densities, so the wall covers a single reference-SCF pass over the
+  # set rather than the reference file's two.
+  # Four hours is roughly an order of magnitude of margin on the one job the
+  # rest of this group's graph waits for.
   datagen_time: "04:00:00"
   # The 214-species held-out CCSD at 6-311++G(3df,2pd) (even DF) is slow for the
   # big species; the job is skip-if-complete + resumable, so it grinds through
   # across requeues. With the refs dirs shared and complete from v3-v5, this
-  # stage should reduce to a skip-if-current verification pass.
+  # stage should reduce to a skip-if-current verification pass -- for the first
+  # group submitted and, a fortiori, for the four after it.
   benchmark_refs_time: "24:00:00"
 
 domain_profile: dfs_step7
@@ -529,7 +530,8 @@ defer_eval: false
 # needed (a reason is required only above the 2.0 / 2.0 ceiling, or to set
 # `enforce: false`), and a reason written here would be copied into every
 # certificate this run writes. `enforce: true` means the pretrain task exits
-# non-zero on a FAIL and the train array's afterok dependency never releases.
+# non-zero on a FAIL and this group's train array never releases -- this
+# group's only, which is what makes the five gates independent.
 fidelity:
   tol_AE: 1.0               # kcal/mol
   tol_atom: 1.0             # mHa
