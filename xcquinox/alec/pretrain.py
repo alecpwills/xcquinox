@@ -96,6 +96,95 @@ def _compute_integration_weights(rho, grid_weights=None):
            jnp.broadcast_to(w_c, rho_safe.shape)
 
 
+class _PretrainLoss(eqx.Module):
+    """Pretraining objective: point-wise enhancement-factor residual plus an
+    optional per-system energy term.
+
+    Networks return the enhancement factor F; targets are stored as ``F - 1``,
+    so ``pred - 1`` aligns with ``ref_F``. ``weights=None`` gives the plain
+    mean of squared residuals; a 1-D ``weights`` aligned with the rows gives
+    the integration-weighted reduction
+    ``sum(w r^2) / (sum(w) + 1e-12)``.
+
+    The energy term is
+
+        w_E * (1 / N_sys) sum_s ( sum_{i in s} w_i e_LDA_i F^NN_i - E_s )^2
+
+    in Hartree^2, with ``E_s`` the parent's own value of the same quadrature
+    (``pretrain_data_gen._system_energy_targets``). It exists because the
+    point-wise residual alone does not bound a system's energy: measured across
+    seven architectures, the one with the LOWEST exchange residual carried the
+    LARGEST atomization-energy offset from its parent. The mean over systems
+    rather than the sum keeps the term's magnitude independent of how many
+    systems the set holds, so ``w_E`` means the same thing for a four-atom file
+    and a thirty-seven-system one. Rows belonging to no system -- the synthetic
+    (r_s, s, alpha) mesh -- carry zero weight and the sink segment index
+    ``n_systems``, which is asked of ``segment_sum`` and then dropped.
+
+    At ``energy_weight == 0`` the term is not evaluated at all, so the returned
+    value is the pre-existing loss bit for bit; that short circuit is the
+    reason the reduction is written twice.
+    """
+    weights: jnp.ndarray | None = None
+    energy_row_weight: jnp.ndarray | None = None
+    energy_segment: jnp.ndarray | None = None
+    energy_target: jnp.ndarray | None = None
+    energy_weight: float = eqx.field(static=True, default=0.0)
+    n_systems: int = eqx.field(static=True, default=0)
+
+    def parts(self, model, descriptors, ref_F):
+        """``(pointwise, energy)`` -- the two terms, the second unweighted."""
+        pred = jax.vmap(model)(descriptors).squeeze()
+        shifted = pred - 1.0
+        residual_sq = (shifted - ref_F) ** 2
+        if self.weights is None:
+            pointwise = jnp.mean(residual_sq)
+        else:
+            w = self.weights
+            pointwise = jnp.sum(w * residual_sq) / (jnp.sum(w) + 1e-12)
+        if self.energy_target is None:
+            return pointwise, jnp.zeros_like(pointwise)
+        e_nn = jax.ops.segment_sum(
+            self.energy_row_weight * pred, self.energy_segment,
+            num_segments=self.n_systems + 1)[:self.n_systems]
+        delta = e_nn - self.energy_target
+        return pointwise, jnp.sum(delta * delta) / self.n_systems
+
+    def __call__(self, model, descriptors, ref_F):
+        if self.energy_weight == 0.0 or self.energy_target is None:
+            pred = jax.vmap(model)(descriptors).squeeze()
+            pred = pred - 1.0
+            residual_sq = (pred - ref_F) ** 2
+            if self.weights is None:
+                return jnp.mean(residual_sq)
+            w = self.weights
+            return jnp.sum(w * residual_sq) / (jnp.sum(w) + 1e-12)
+        pointwise, energy = self.parts(model, descriptors, ref_F)
+        return pointwise + self.energy_weight * energy
+
+
+def _energy_term_inputs(pretrain_data, *, weight_key, lda_key, segment_key,
+                        target_key, n_mesh):
+    """``(row_weight, segment, target, n_systems)`` for one network's energy term.
+
+    ``row_weight_i = w_i e_LDA_i`` is Hartree per unit enhancement factor, so
+    ``sum_{i in s} row_weight_i F^NN_i`` is the network's XC energy of system
+    ``s`` on the rows the file stores. ``n_mesh`` synthetic rows are appended
+    with zero weight and the sink segment index, so the row set matches the
+    descriptor tensor the mesh was concatenated onto.
+    """
+    target = jnp.asarray(pretrain_data[target_key])
+    n_systems = int(target.shape[0])
+    row_weight = (jnp.asarray(pretrain_data[weight_key])
+                  * jnp.asarray(pretrain_data[lda_key]))
+    segment = jnp.asarray(pretrain_data[segment_key], dtype=jnp.int32)
+    if n_mesh:
+        row_weight = jnp.concatenate([row_weight, jnp.zeros(n_mesh)])
+        segment = jnp.concatenate(
+            [segment, jnp.full(n_mesh, n_systems, dtype=jnp.int32)])
+    return row_weight, segment, target, n_systems
+
+
 # Legacy lob_lim constants.
 #
 # The library-shaped skeletons constructed below are used ONLY to
@@ -137,7 +226,8 @@ _legacy_cnet_lob_lim: float = 2.0    # `xcquinox/net.py:2228` default
 # ---------------------------------------------------------------------------
 
 def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict,
-                                   *, for_cnet: bool = False) -> jnp.ndarray:
+                                   *, for_cnet: bool = False,
+                                   suffix: str = "_all") -> jnp.ndarray:
     """Assemble the (N, F) input array for pretraining from pretrain_data.
 
     Column order: [rho_all, sigma_all, *(per-descriptor columns)] where
@@ -160,25 +250,41 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
 
     Raises KeyError if any declared descriptor's pretrain key is
     absent from pretrain_data, there is NO zero-array fallback.
+
+    ``suffix`` selects the row block. ``"_all"`` (default) is the
+    total-density block, which carries the correlation rows always and the
+    exchange rows under the historical footing. ``"_x"`` is the per-channel
+    exchange block a file built on the exact-spin-scaling footing carries; the
+    correlation network never reads it, because correlation is
+    spin-interpolated rather than spin-scaled (von Barth and Hedin, J. Phys. C
+    5, 1629 (1972); Perdew and Wang, Phys. Rev. B 45, 13244 (1992)) and stays
+    on the total density with zeta.
     """
     from xcquinox.alec.descriptors import make_descriptor
-    cols = [pretrain_data["rho_all"], pretrain_data["sigma_all"]]
+    if for_cnet and suffix != "_all":
+        raise ValueError(
+            "the correlation network is posed on the total density, so its "
+            f"rows are the '_all' block; got suffix={suffix!r}."
+        )
+    cols = [pretrain_data["rho" + suffix], pretrain_data["sigma" + suffix]]
     if for_cnet and arch.use_polarized_correlation:
         zeta_all = pretrain_data.get("zeta_all")
         if zeta_all is None:
             zeta_all = jnp.zeros_like(pretrain_data["rho_all"])
         cols.append(zeta_all)
-    # Map descriptor.name -> key in pretrain_data.
-    _key_map = {"dm_statistics": "dm_all", "cusp": "cusp_all", "rung35": "rung35_all",
-                "rung35_multishell": "rung35ms_all", "metagga": "metagga_all"}
+    # Map descriptor.name -> the pretrain_data column STEM; the block suffix
+    # is appended, so one map serves both row blocks.
+    _key_map = {"dm_statistics": "dm", "cusp": "cusp", "rung35": "rung35",
+                "rung35_multishell": "rung35ms", "metagga": "metagga"}
     for spec in arch.descriptors:
-        key = _key_map.get(spec.name)
-        if key is None:
+        stem = _key_map.get(spec.name)
+        if stem is None:
             raise KeyError(
                 f"_assemble_pretrain_descriptors: no pretrain_data key "
                 f"mapping registered for descriptor {spec.name!r}; update "
                 f"_key_map in pretrain.py"
             )
+        key = stem + suffix
         arr = pretrain_data[key]
         # Width gate. A stale .npz written before a descriptor's feature count
         # changed silently widens the network input instead of failing: a
@@ -390,11 +496,49 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # Lift every array into JAX
     pretrain_data = {k: jnp.array(v) for k, v in pretrain_data_np.items()}
 
+    # Which row block the exchange network reads. A file built on the
+    # exact-spin-scaling footing carries the open-shell exchange rows
+    # separately, because the per-channel rows of an open shell are not its
+    # total-density rows; a file built on the historical footing has one block
+    # and the xnet reads it, byte-identically.
+    x_suffix = "_x" if "rho_x" in pretrain_data else "_all"
+    # The parent whose SELF-CONSISTENT density this architecture must pretrain
+    # on. A meta-GGA network fit on a PBE density is fit to a density its SCF
+    # never sees.
+    from xcquinox.alec.pretrain_data_gen import (
+        read_pretrain_manifest, resolve_parent_density)
+    want_reference = resolve_parent_density(
+        spec.arch, getattr(spec, "parent_density", "pbe"))
+    _manifest = read_pretrain_manifest(npz_path)
+    file_reference = str((_manifest or {}).get("reference_xc", "pbe"))
+    if _manifest is not None and file_reference != want_reference:
+        raise ValueError(
+            f"run_pretrain: architecture {spec.arch.name!r} resolves to the "
+            f"{want_reference!r} parent density, but {npz_path!r} was built on "
+            f"the {file_reference!r} density. Point data_dir at the "
+            f"{want_reference} file or set pretrain.parent_density explicitly."
+        )
+    energy_weight = float(getattr(spec, "energy_term_weight", 0.0))
+    if energy_weight > 0.0 and "system_all" not in pretrain_data:
+        raise ValueError(
+            "run_pretrain: pretrain.energy_term_weight > 0 needs the per-row "
+            "system index 'system_all' and the per-system energy table, which "
+            f"{npz_path!r} predates. Regenerate it with "
+            "pretrain_data_gen.ensure_pretrain_data."
+        )
+
     # --- Assemble descriptor tensors ---
     # The xnet input is zeta-blind; the cnet input carries the zeta column
     # when the architecture uses polarized correlation. They are
     # identical for the unpolarized (default) architecture.
-    descriptors = _assemble_pretrain_descriptors(spec.arch, pretrain_data)
+    # At the historical footing the call is the historical one, so a wrapper
+    # installed on the pre-protocol seam ``(arch, data, for_cnet)`` keeps
+    # serving the total-density block unchanged.
+    if x_suffix == "_all":
+        descriptors = _assemble_pretrain_descriptors(spec.arch, pretrain_data)
+    else:
+        descriptors = _assemble_pretrain_descriptors(spec.arch, pretrain_data,
+                                                     suffix=x_suffix)
     descriptors_c = _assemble_pretrain_descriptors(
         spec.arch, pretrain_data, for_cnet=True)
 
@@ -404,11 +548,13 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # SCAN's alpha-dependence); GGA archs keep the PBE targets. The SCAN columns are
     # always present (pretrain_data_gen writes them + the staleness guard regens).
     if bool(getattr(spec.arch, "meta_gga", False)):
-        Fx_target = pretrain_data["Fx_scan_all"]
+        Fx_target = pretrain_data["Fx_scan" + x_suffix]
         Fc_target = pretrain_data["Fc_scan_all"]
+        e_x_key, e_c_key = "e_x_parent_scan_sys", "e_c_parent_scan_sys"
     else:
-        Fx_target = pretrain_data["Fx_all"]
+        Fx_target = pretrain_data["Fx" + x_suffix]
         Fc_target = pretrain_data["Fc_all"]
+        e_x_key, e_c_key = "e_x_parent_sys", "e_c_parent_sys"
 
     # (s, alpha) parameter mesh -- appended ONLY for a meta-GGA arch, and only
     # when the mesh can define every descriptor that arch consumes.
@@ -437,9 +583,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
                 Fx_target, Fc_target)
             mesh_used = True
             from xcquinox.alec.pretrain_data_gen import MESH_WEIGHT_FRACTION
+            _share = float(pretrain_data_np.get("mesh_weight_fraction",
+                                                MESH_WEIGHT_FRACTION))
             print(f"[pretrain] (s, alpha) mesh appended: "
                   f"{pretrain_data['rho_mesh'].shape[0]} nodes "
-                  f"({100.0 * MESH_WEIGHT_FRACTION:.0f}% effective "
+                  f"({100.0 * _share:.0f}% effective "
                   "loss-weight share per channel, by construction)",
                   flush=True)
         elif not has_mesh:
@@ -471,27 +619,25 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # eqx.Module instance so that xcTrainer can call `loss(model, descriptors,
     # ref_F)` with the familiar 3-arg API. Weights are carried as a static
     # array field on the module (eqx handles the pytree correctly).
-    class _PretrainLoss(eqx.Module):
-        """Scalar MSE loss for pretraining enhancement networks.
-
-        Networks return 1 + F_enhancement; targets are stored as (F - 1),
-        so pred - 1.0 aligns with ref_F. When ``weights`` is None (the
-        ``"unweighted"`` branch) the reduction is a plain mean of squared
-        residuals: preserving the exact prior behavior byte-for-byte. When
-        ``weights`` is a 1-D array aligned with the descriptor rows
-        (``"integration"`` branch) the reduction is
-        ``sum(w * residual ** 2) / (sum(w) + 1e-12)``.
-        """
-        weights: jnp.ndarray | None = None
-
-        def __call__(self, model, descriptors, ref_F):
-            pred = jax.vmap(model)(descriptors).squeeze()
-            pred = pred - 1.0
-            residual_sq = (pred - ref_F) ** 2
-            if self.weights is None:
-                return jnp.mean(residual_sq)
-            w = self.weights
-            return jnp.sum(w * residual_sq) / (jnp.sum(w) + 1e-12)
+    n_mesh_rows = int(pretrain_data["rho_mesh"].shape[0]) if mesh_used else 0
+    energy_kwargs_x = {}
+    energy_kwargs_c = {}
+    if energy_weight > 0.0:
+        _rw, _seg, _tgt, _ns = _energy_term_inputs(
+            pretrain_data, weight_key="weights" + x_suffix,
+            lda_key="e_lda_x" + x_suffix, segment_key="system" + x_suffix,
+            target_key=e_x_key, n_mesh=n_mesh_rows)
+        energy_kwargs_x = dict(energy_row_weight=_rw, energy_segment=_seg,
+                               energy_target=_tgt, n_systems=_ns,
+                               energy_weight=energy_weight)
+        _rw, _seg, _tgt, _ns = _energy_term_inputs(
+            pretrain_data, weight_key="weights_all", lda_key="e_lda_c_all",
+            segment_key="system_all", target_key=e_c_key, n_mesh=n_mesh_rows)
+        energy_kwargs_c = dict(energy_row_weight=_rw, energy_segment=_seg,
+                               energy_target=_tgt, n_systems=_ns,
+                               energy_weight=energy_weight)
+    n_systems = int(pretrain_data[e_x_key].shape[0]) \
+        if e_x_key in pretrain_data else 0
 
     integration_weights_complete: bool | None = None  # set below for "integration" mode
     if spec.loss_weighting == "integration":
@@ -520,7 +666,10 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
                   flush=True)
         else:
             integration_weights_complete = True
-        w_x, w_c = _compute_integration_weights(rho_all, grid_weights)
+        w_x, _unused = _compute_integration_weights(
+            pretrain_data["rho" + x_suffix],
+            pretrain_data.get("weights" + x_suffix))
+        _unused, w_c = _compute_integration_weights(rho_all, grid_weights)
         if mesh_used:
             # The |rho*eps_LDA| factor is a grid-importance measure for
             # PHYSICAL densities. A mesh node carries no quadrature measure,
@@ -534,17 +683,22 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             # that channel's total loss weight is exactly
             # MESH_WEIGHT_FRACTION, by construction.
             from xcquinox.alec.pretrain_data_gen import MESH_WEIGHT_FRACTION
+            # The share the DATA was built at. A file written before the share
+            # became configurable carries no such key and falls back to the
+            # constant it was built with.
+            mesh_fraction = float(pretrain_data_np.get(
+                "mesh_weight_fraction", MESH_WEIGHT_FRACTION))
             n_mesh = int(pretrain_data["rho_mesh"].shape[0])
-            scale = MESH_WEIGHT_FRACTION / (1.0 - MESH_WEIGHT_FRACTION)
+            scale = mesh_fraction / (1.0 - mesh_fraction)
             w_x = jnp.concatenate(
                 [w_x, jnp.full(n_mesh, float(jnp.sum(w_x)) * scale / n_mesh)])
             w_c = jnp.concatenate(
                 [w_c, jnp.full(n_mesh, float(jnp.sum(w_c)) * scale / n_mesh)])
-        loss_fn_x = _PretrainLoss(weights=w_x)
-        loss_fn_c = _PretrainLoss(weights=w_c)
+        loss_fn_x = _PretrainLoss(weights=w_x, **energy_kwargs_x)
+        loss_fn_c = _PretrainLoss(weights=w_c, **energy_kwargs_c)
     else:  # "unweighted": validated at construction
-        loss_fn_x = _PretrainLoss()
-        loss_fn_c = _PretrainLoss()
+        loss_fn_x = _PretrainLoss(**energy_kwargs_x)
+        loss_fn_c = _PretrainLoss(**energy_kwargs_c)
 
     checkpoint_dir = spec.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -671,6 +825,20 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # cross-checks (a meta-GGA checkpoint trained WITHOUT the mesh has
         # the underdetermined-alpha clone this key exists to expose).
         "pretrain_mesh": bool(mesh_used),
+        # Pretraining-set provenance the Section 3.3 certificate and HISTORY
+        # read: which systems the fit saw, on which parent density, at which
+        # exchange footing, and how hard the per-system energy term pulled.
+        "reference_xc": want_reference,
+        "exchange_footing": str(
+            (_manifest or {}).get("exchange_footing", "total")),
+        "energy_term_weight": energy_weight,
+        "n_systems": n_systems,
+        "n_rows_x": int(descriptors.shape[0]),
+        "n_rows_c": int(descriptors_c.shape[0]),
+        "energy_term_x_final": float(
+            loss_fn_x.parts(xnet_trained, descriptors, Fx_target)[1]),
+        "energy_term_c_final": float(
+            loss_fn_c.parts(cnet_trained, descriptors_c, Fc_target)[1]),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }
