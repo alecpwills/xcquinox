@@ -73,6 +73,17 @@ inputs:
   basis: def2-svp
   grid_level: 1
   output_root: /nonexistent/CHANGE_ME/runs
+  # The matrix runs at grid level 1 and pretrains on O, whose 3P term that
+  # quadrature does not resolve, so the data generator refuses the build
+  # unless the run waives it: two draws of those rows are two different files
+  # under one manifest identity. Waived with its reason, as the generator
+  # requires. The orientation lock is left unstated and therefore takes the
+  # calibrated 3e-5; were it set to 0.0 the fidelity certificate would still
+  # evaluate degenerate free atoms at 3e-5 while the pretraining rows sat at
+  # 0.0.
+  allow_irreproducible_degenerate: true
+  irreproducible_degenerate_reason: >-
+    example / workflow-verification identity at grid level 1; never a campaign
 
 # 50 pretraining steps on H (2S = 1) and O (2S = 2): one spin-1 and one spin-2
 # open shell, enough for the generator to write every descriptor column

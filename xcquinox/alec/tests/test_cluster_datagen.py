@@ -9,7 +9,10 @@ without running any real PBE SCF (the generator seam is monkeypatched).
 """
 from __future__ import annotations
 
+import os
 import types
+
+import pytest
 
 from xcquinox.alec.cluster import _datagen
 
@@ -374,3 +377,167 @@ def test_main_logs_the_lock_it_generates_at(monkeypatch, tmp_path):
     monkeypatch.setattr(_datagen, "_log", printed.append)
     assert _datagen.main([str(run_dir)]) == 0
     assert "orientation_lock_strength=0.0001" in "\n".join(printed)
+
+
+# ---------------------------------------------------------------------------
+# The irreproducible-degenerate waiver reaches the generator from the YAML
+# ---------------------------------------------------------------------------
+
+def _cfg_waived(waived, reason="a stated reason", *, lock=3e-5, grid=1):
+    cfg = _cfg2(["deep_3x16"], True, lock=lock)
+    cfg.inputs.grid_level = grid
+    cfg.inputs.allow_irreproducible_degenerate = waived
+    cfg.inputs.irreproducible_degenerate_reason = reason
+    return cfg
+
+
+def test_main_carries_the_waiver_the_configuration_states(monkeypatch,
+                                                          tmp_path):
+    """The refusal is applied to the requested identity inside
+    ``ensure_pretrain_data``, so a run whose YAML waives it must say so at the
+    call: without the keyword the stage returns 1 and the pretrain array's
+    ``afterok`` chain goes ``DependencyNeverSatisfied``, even where the file
+    is already on disk and current."""
+    rc, calls = _run_main(monkeypatch, tmp_path, _cfg_waived(True))
+    assert rc == 0
+    assert calls[0][1]["allow_irreproducible_degenerate"] is True
+
+
+def test_main_states_no_waiver_when_the_configuration_grants_none(monkeypatch,
+                                                                  tmp_path):
+    """False is the generator's own default, so a configuration that waives
+    nothing reaches it with exactly the keyword set it always did and its
+    existing data file stays current."""
+    rc, calls = _run_main(monkeypatch, tmp_path, _cfg_waived(False))
+    assert rc == 0
+    assert "allow_irreproducible_degenerate" not in calls[0][1]
+
+
+def test_main_logs_whether_the_waiver_was_granted(monkeypatch, tmp_path):
+    cfg = _cfg_waived(True, "the run record must carry this")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "resolved_config.yaml").write_text("dummy: 1\n")
+    monkeypatch.setattr(_datagen, "load_grid_config", lambda p: cfg)
+    monkeypatch.setattr(_datagen, "_ensure_pretrain_data",
+                        lambda data_dir, **kw: f"{data_dir}/x.npz")
+    printed = []
+    monkeypatch.setattr(_datagen, "_log", printed.append)
+    assert _datagen.main([str(run_dir)]) == 0
+    text = "\n".join(printed)
+    assert "allow_irreproducible_degenerate=True" in text
+    assert "the run record must carry this" in text
+
+
+def test_the_generators_waiver_default_is_off():
+    """The harness states the flag only when it is granted, which is only
+    equivalent to stating False while the generator's own default IS False.
+    Pinned so a changed generator default cannot silently waive every run."""
+    import inspect
+
+    from xcquinox.alec import pretrain_data_gen as pdg
+    for fn in (pdg.ensure_pretrain_data, pdg.generate_pretrain_data_npz):
+        param = inspect.signature(fn).parameters[
+            "allow_irreproducible_degenerate"]
+        assert param.default is False, fn.__name__
+
+
+def test_a_pre_protocol_namespace_grants_no_waiver(monkeypatch, tmp_path):
+    """A ``resolved_config.yaml`` written before the key existed reloads
+    without it; the stage must read a refusal, not raise ``AttributeError``
+    inside the try and report a generation failure that never happened."""
+    cfg = _cfg2(["deep_3x16"], True, lock=3e-5)
+    assert not hasattr(cfg.inputs, "allow_irreproducible_degenerate")
+    rc, calls = _run_main(monkeypatch, tmp_path, cfg)
+    assert rc == 0
+    assert "allow_irreproducible_degenerate" not in calls[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Every shipped configuration clears the refusal gate
+# ---------------------------------------------------------------------------
+
+def _shipped_config_paths():
+    """``hpcjobs/configs/*.yaml`` plus the two shipped example templates.
+
+    Empty outside a source checkout (an installed wheel carries neither), in
+    which case the test below skips rather than asserting on an empty glob.
+    """
+    import glob
+
+    from xcquinox.alec.cluster import _datagen as dg
+    cluster_dir = os.path.dirname(os.path.abspath(dg.__file__))
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(cluster_dir)))
+    paths = sorted(glob.glob(os.path.join(repo_root, "hpcjobs", "configs",
+                                          "*.yaml")))
+    examples = os.path.join(cluster_dir, "examples")
+    paths += sorted(glob.glob(os.path.join(examples, "*.yaml")))
+    return [p for p in paths if os.path.isfile(p)]
+
+
+def test_every_shipped_configuration_clears_the_datagen_refusal(monkeypatch,
+                                                                tmp_path):
+    """The real ``_datagen.main`` is run over every deployment configuration
+    and every shipped template, with the generator stubbed at its boundary so
+    only the refusal decides.
+
+    The gate refuses a spatially degenerate free atom below grid level 3 or at
+    an unlocked SCF, BEFORE the currency check, so a configuration that trips
+    it cannot run its datagen stage at all -- not even where the required
+    ``.npz`` is already on disk and current. Fifteen deployment
+    configurations and both templates sit below grid level 3, so each of them
+    must state the waiver and its reason; the six grid-level-3 campaigns must
+    not need it. No unit test drove a shipped configuration through this stage
+    before, which is how a tree in which two thirds of them could not
+    generate their data passed green."""
+    import yaml as _yaml
+
+    from xcquinox.alec import pretrain_data_gen as pdg
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    paths = _shipped_config_paths()
+    if not paths:
+        pytest.skip("no shipped configurations in this checkout")
+    assert len(paths) >= 17, paths
+
+    # The generator's own boundary: the real ensure_pretrain_data runs, so the
+    # real refusal, the real system resolution and the real degeneracy rule
+    # decide, and nothing is built.
+    monkeypatch.setattr(pdg, "pretrain_data_is_current",
+                        lambda *a, **k: False)
+    monkeypatch.setattr(
+        pdg, "generate_pretrain_data_npz",
+        lambda out_dir, **kw: os.path.join(out_dir, "built.npz"))
+    monkeypatch.setattr(_datagen, "_ensure_pretrain_data",
+                        pdg.ensure_pretrain_data)
+
+    refused, built = [], []
+    for path in paths:
+        run_dir = tmp_path / os.path.basename(path)
+        run_dir.mkdir()
+        # One TOKEN is substituted, the way ``workflow_matrix.write_matrix_yaml``
+        # substitutes it: the matrix template names its architecture
+        # CHANGE_ME_ARCH, and every other placeholder in these files is a path
+        # the stubbed generator never opens.
+        text = open(path).read().replace("CHANGE_ME_ARCH", "deep_3x16")
+        (run_dir / "resolved_config.yaml").write_text(text)
+        printed = []
+        monkeypatch.setattr(_datagen, "_log", printed.append)
+        rc = _datagen.main([str(run_dir)])
+        (built if rc == 0 else refused).append(
+            (os.path.basename(path), "\n".join(printed)))
+    assert refused == [], [(name, log.splitlines()[-1])
+                           for name, log in refused]
+    assert len(built) == len(paths)
+
+    # ... and the waiver is stated exactly where the identity needs it.
+    for path in paths:
+        raw = (_yaml.safe_load(open(path).read()) or {}).get("inputs") or {}
+        cfg = load_grid_config(path)
+        waived = cfg.inputs.allow_irreproducible_degenerate
+        if cfg.inputs.grid_level >= pdg.COARSE_DEGENERATE_MIN_GRID_LEVEL:
+            assert waived is False, os.path.basename(path)
+            assert "allow_irreproducible_degenerate" not in raw, path
+        else:
+            assert waived is True, os.path.basename(path)
+            assert cfg.inputs.irreproducible_degenerate_reason.strip(), path
+        assert cfg.inputs.orientation_lock_strength > 0.0, path

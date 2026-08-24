@@ -1533,11 +1533,15 @@ def load_pretrain_data_npz(npz_path):
 
 #: Grid level below which a spatially degenerate free atom's rows are not
 #: reproducible between processes. Measured on the locked O atom: at the
-#: generator's own DEFAULT_GRID_LEVEL of 1 two independent processes differ by
-#: 3e-3 in rho, 0.64 in the iso-orbital indicator and 3.7e-6 Ha in the stored
-#: exchange energy, while at level 3 the same comparison reproduces to 3e-11
-#: relative. The lock fixes WHICH member of the P-term manifold the SCF
-#: converges to; it cannot make a quadrature that coarse resolve it.
+#: generator's own DEFAULT_GRID_LEVEL of 1 independent processes differ at the
+#: 1e-3..1e-1 level in rho, by more than unity in the iso-orbital indicator and
+#: at the 1e-6 Ha level in the stored exchange energy, while at level 3 the
+#: same comparison reproduces to 3e-11 relative. The spreads are stated as
+#: orders of magnitude because they are samples of a process-to-process
+#: scatter and not bounds: two independent sets of draws gave 3e-3 / 0.64 /
+#: 3.7e-6 Ha and 5.7e-2 / 12.4 / 1.3e-6 Ha. The lock fixes WHICH member of the
+#: P-term manifold the SCF converges to; it cannot make a quadrature that
+#: coarse resolve it.
 COARSE_DEGENERATE_MIN_GRID_LEVEL = 3
 
 
@@ -1580,15 +1584,18 @@ def _check_irreproducible_degenerate(systems, basis, grid_level,
     because the defect is the same one either way:
 
     - **A coarse grid.** Below :data:`COARSE_DEGENERATE_MIN_GRID_LEVEL` the
-      quadrature does not resolve the P term: two locked draws of the O atom
-      at level 1 differ by 3e-3 in rho, 0.64 in the iso-orbital indicator and
-      3.7e-6 Ha in the stored exchange energy, against 3e-11 relative at
-      level 3.
+      quadrature does not resolve the P term: locked draws of the O atom at
+      level 1 differ at the 1e-3..1e-1 level in rho, by more than unity in the
+      iso-orbital indicator and at the 1e-6 Ha level in the stored exchange
+      energy, against 3e-11 relative at level 3. The figures are orders of
+      magnitude spanning two independent sets of draws (3e-3 / 0.64 / 3.7e-6
+      Ha and 5.7e-2 / 12.4 / 1.3e-6 Ha), not bounds.
     - **No orientation lock.** With ``orientation_lock_strength`` at zero the
       SCF may land on any orientation of the hole however fine the grid is:
-      two unlocked draws of the O atom at level 3 kept 11682 against 11680
-      rows and disagreed by 2.6e-7 Ha in the total energy, so the row set
-      itself -- not merely its values -- depends on which process wrote it.
+      unlocked draws of the O atom at level 3 keep different numbers of rows
+      and disagree at the 3e-7 Ha level in the total energy (2.6e-7 Ha over
+      one pair, 2.9e-7 Ha over a later triple), so the row set itself -- not
+      merely its values -- depends on which process wrote it.
 
     The generation is refused under either condition unless the caller says
     explicitly that it wants the unreproducible build anyway -- the reference
@@ -1613,16 +1620,17 @@ def _check_irreproducible_degenerate(systems, basis, grid_level,
             reasons.append(
                 f"the grid is below level "
                 f"{COARSE_DEGENERATE_MIN_GRID_LEVEL}, so the quadrature does "
-                "not resolve the term (two locked draws of O at level 1 "
-                "differ by 3e-3 in rho, 0.64 in the iso-orbital indicator "
-                "and 3.7e-6 Ha in the stored exchange energy, against 3e-11 "
-                "relative at level 3)")
+                "not resolve the term (locked draws of O at level 1 differ at "
+                "the 1e-3..1e-1 level in rho, by more than unity in the "
+                "iso-orbital indicator and at the 1e-6 Ha level in the stored "
+                "exchange energy between draws, against 3e-11 relative at "
+                "level 3)")
         if unlocked:
             reasons.append(
                 "the orientation lock is off, so the SCF may land on any "
-                "orientation of the hole however fine the grid is (two "
-                "unlocked draws of O at level 3 kept 11682 against 11680 "
-                "rows and disagreed by 2.6e-7 Ha in the total energy)")
+                "orientation of the hole however fine the grid is (unlocked "
+                "draws of O at level 3 keep different row counts and disagree "
+                "at the 3e-7 Ha level in the total energy)")
         raise ValueError(
             f"pretraining system(s) {', '.join(flagged)} are spatially "
             f"degenerate free atoms, and their rows at grid level "
@@ -1633,8 +1641,10 @@ def _check_irreproducible_degenerate(systems, basis, grid_level,
             + "; ".join(reasons) + ". Use grid level "
             f">= {COARSE_DEGENERATE_MIN_GRID_LEVEL} with "
             f"orientation_lock_strength={PRETRAIN_ORIENTATION_LOCK_STRENGTH:g}"
-            ", or pass allow_irreproducible_degenerate=True to build the "
-            "unreproducible file deliberately."
+            ", or build the unreproducible file deliberately by passing "
+            "allow_irreproducible_degenerate=True (from a harness "
+            "configuration: inputs.allow_irreproducible_degenerate, which "
+            "requires inputs.irreproducible_degenerate_reason)."
         )
     return True
 

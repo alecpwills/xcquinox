@@ -824,10 +824,16 @@ def _fake_all_columns(monkeypatch):
 
 def test_generator_refuses_a_degenerate_atom_below_grid_level_3(tmp_path):
     """At the generator's own default grid level the locked O rows are NOT
-    reproducible between processes -- rho spreads by 3e-3, the iso-orbital
-    indicator by 0.64 and the stored E_x by 3.7e-6 Ha, against 3e-11 relative
-    at grid level 3 -- while the manifest records an identity the file
-    therefore does not have. The generation is refused rather than written."""
+    reproducible between processes -- across separate sets of draws rho
+    spreads at the 1e-3..1e-1 level, the iso-orbital indicator by more than
+    unity and the stored E_x at the 1e-6 Ha level, against 3e-11 relative at
+    grid level 3 -- while the manifest records an identity the file therefore
+    does not have. The generation is refused rather than written.
+
+    The spreads are quoted as ORDERS OF MAGNITUDE because they are samples of
+    a process-to-process scatter rather than bounds: two independent sets of
+    draws measured 3e-3 / 0.64 / 3.7e-6 Ha and 5.7e-2 / 12.4 / 1.3e-6 Ha, so a
+    single figure would be read as a reproducible quantity and is not one."""
     with pytest.raises(ValueError, match="grid level") as excinfo:
         pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("O", 2),),
                                        basis="sto-3g", grid_level=1)
@@ -835,15 +841,23 @@ def test_generator_refuses_a_degenerate_atom_below_grid_level_3(tmp_path):
     assert "O" in message
     assert "grid level 1" in message
     assert "allow_irreproducible_degenerate" in message
+    # The remedy an operator reading a datagen log actually has: the YAML key.
+    assert "inputs.allow_irreproducible_degenerate" in message
+    assert "inputs.irreproducible_degenerate_reason" in message
+    # The order-of-magnitude form spans both sets of draws.
+    assert "1e-3..1e-1" in message
+    assert "more than unity" in message
+    assert "1e-6 Ha" in message
+    assert "0.64" not in message and "3e-3" not in message
     assert not os.listdir(tmp_path)
 
 
 def test_generator_refuses_an_unlocked_degenerate_atom_at_a_fine_grid(tmp_path):
     """A fine grid is not sufficient. With the lock OFF the SCF may land on
-    any orientation of the 2p hole, so two draws of the O atom at grid level 3
-    kept different numbers of rows (11682 against 11680) and disagreed by
-    2.6e-7 Ha in the total energy -- a different file at one manifest
-    identity. The refusal covers the lock as well as the grid."""
+    any orientation of the 2p hole, so independent draws of the O atom at grid
+    level 3 keep different numbers of rows and disagree at the 3e-7 Ha level
+    in the total energy -- a different file at one manifest identity. The
+    refusal covers the lock as well as the grid."""
     with pytest.raises(ValueError, match="orientation lock") as excinfo:
         pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("O", 2),),
                                        basis="sto-3g", grid_level=3,
@@ -852,6 +866,11 @@ def test_generator_refuses_an_unlocked_degenerate_atom_at_a_fine_grid(tmp_path):
     assert "O" in message
     assert "grid level 3" in message
     assert "allow_irreproducible_degenerate" in message
+    # Row COUNTS differ; the energy spread is stated to one order (2.9e-7 Ha
+    # over three draws here against 2.6e-7 Ha when the guard was written).
+    assert "row counts" in message
+    assert "3e-7 Ha" in message
+    assert "11682" not in message
     assert not os.listdir(tmp_path)
 
 

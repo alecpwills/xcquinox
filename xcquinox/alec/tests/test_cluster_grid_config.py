@@ -1,5 +1,6 @@
 """Tests for xcquinox.alec.cluster.grid_config: the HPC harness config layer."""
 import json
+import os
 import re
 
 import pytest
@@ -2208,26 +2209,34 @@ def test_the_harness_lock_default_is_the_one_lock_constant():
     default of 3e-5 -- silently rebuilt a run's pretraining rows at a lock the
     run was not trained at."""
     from xcquinox.alec.cluster.grid_config import (
-        default_orientation_lock_strength)
+        DEFAULT_ORIENTATION_LOCK_STRENGTH)
     from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
     from xcquinox.alec.pretrain_data_gen import (
         PRETRAIN_ORIENTATION_LOCK_STRENGTH)
     built = InputPaths(external_refs_dir="/r", subset_ledger_path="/l",
                        basis="def2-svp", grid_level=3, output_root="/o")
     assert built.orientation_lock_strength == DEFAULT_STRENGTH
-    assert default_orientation_lock_strength() == DEFAULT_STRENGTH
+    # The harness reads the SAME object, not a copy that agrees today.
+    assert DEFAULT_ORIENTATION_LOCK_STRENGTH is DEFAULT_STRENGTH
     assert DEFAULT_STRENGTH == PRETRAIN_ORIENTATION_LOCK_STRENGTH
 
 
 def test_the_harness_lock_default_keeps_the_reader_closure_numpy_free():
-    """The default is resolved by a CALL, not by a module-body import.
+    """The constant is bound from the leaf module that holds it, never from
+    ``orientation_lock`` itself.
 
     ``cluster status``, ``validate_run`` and the certificate readers walk
     ``fidelity``'s import closure, which runs through this module and must
     stay free of numeric stacks (pinned by
     ``test_cluster_fidelity.test_fidelity_module_body_carries_no_heavy_import``);
-    ``orientation_lock.py`` carries numpy for the quadrupole operator, so
-    binding the constant in the module body would pull it into every reader."""
+    ``orientation_lock.py`` carries numpy for the quadrupole operator, while
+    ``orientation_lock_default.py`` carries nothing at all. Deferring the
+    import into a ``default_factory`` instead is what this test used to
+    require, and it did not work: the factory runs whenever the field is not
+    supplied -- every configuration that does not state the lock, which is the
+    case the default exists for -- so numpy reached those readers anyway
+    (measured 223 modules after such a load, against 121 before the default
+    existed)."""
     import ast
     import inspect
 
@@ -2240,8 +2249,11 @@ def test_the_harness_lock_default_keeps_the_reader_closure_numpy_free():
         elif isinstance(node, ast.ImportFrom) and node.module:
             body_imports.add(node.module)
     assert not any(name.split(".")[0] in ("numpy", "jax", "pyscf")
-                   or name.endswith("orientation_lock")
+                   or name.endswith(".orientation_lock")
+                   or name == "orientation_lock"
                    for name in body_imports), sorted(body_imports)
+    assert "xcquinox.alec.orientation_lock_default" in body_imports, sorted(
+        body_imports)
 
 
 def test_the_library_solver_lock_stays_opt_in(tmp_path):
@@ -2373,3 +2385,216 @@ def test_the_seed_range_is_stated_once():
     from xcquinox.alec.cluster.grid_config import _MAX_SEED
     from xcquinox.alec.config import MAX_SEED
     assert _MAX_SEED == MAX_SEED
+
+
+# ---------------------------------------------------------------------------
+# inputs.orientation_lock_strength is bounded and type-checked at parse
+# ---------------------------------------------------------------------------
+
+def _inputs_dict(**extra):
+    d = {"external_refs_dir": "/r", "subset_ledger_path": "/l",
+         "basis": "def2-svp", "grid_level": 3, "output_root": "/o"}
+    d.update(extra)
+    return d
+
+
+@pytest.mark.parametrize("value", [
+    -1.0,                      # a negative lock is a sign-flipped bias
+    -3e-5,
+    True,                      # float(True) is 1.0, 4 orders above the lock
+    False,                     # float(False) is 0.0, which is UNLOCKED
+    "abc",
+    [1],
+    {"strength": 1},
+    float("nan"),
+    float("inf"),
+    float("-inf"),
+])
+def test_inputs_bounds_the_orientation_lock_at_parse(value):
+    """The lock is an identity-bearing physical quantity -- the coefficient on
+    the traceless-quadrupole h_core bias the references, the training SCF and
+    the pretraining rows are all built at -- so it is read like every other
+    number in this file rather than with a bare ``float()``.
+
+    A negative value is not zero, so the degeneracy refusal does not fire on
+    it, and the generator would write a degenerate atom's rows under a
+    sign-flipped bias while the manifest recorded a legitimate identity; the
+    training path refuses it much later, in the spec builder on a compute
+    node. ``float(True)`` is 1.0, four orders above the calibrated strength,
+    and a list raises ``TypeError``, which passes every ``except ValueError``
+    handler in the load path and surfaces naming no key."""
+    from xcquinox.alec.cluster.grid_config import _build_inputs
+    with pytest.raises(ValueError) as exc:
+        _build_inputs(_inputs_dict(orientation_lock_strength=value))
+    assert "inputs.orientation_lock_strength" in str(exc.value)
+    assert repr(value) in str(exc.value) or repr(float(value)) in str(exc.value)
+
+
+@pytest.mark.parametrize("value,expected", [
+    (0.0, 0.0),                # deliberately unlocked, still legal
+    (3e-5, 3e-5),
+    ("3.0e-5", 3e-5),          # the quoted spelling a YAML may carry
+    (1e-4, 1e-4),
+    (0, 0.0),                  # an integer zero
+])
+def test_inputs_accepts_every_lock_a_configuration_states(value, expected):
+    from xcquinox.alec.cluster.grid_config import _build_inputs
+    built = _build_inputs(_inputs_dict(orientation_lock_strength=value))
+    assert built.orientation_lock_strength == expected
+    assert isinstance(built.orientation_lock_strength, float)
+
+
+@pytest.mark.parametrize("raw", [{}, {"orientation_lock_strength": None}])
+def test_an_unstated_lock_is_the_calibrated_default(raw):
+    """Absent and explicitly null both mean "not stated", which is the
+    calibrated lock; only a written 0.0 turns it off."""
+    from xcquinox.alec.cluster.grid_config import (
+        DEFAULT_ORIENTATION_LOCK_STRENGTH, _build_inputs)
+    assert (_build_inputs(_inputs_dict(**raw)).orientation_lock_strength
+            == DEFAULT_ORIENTATION_LOCK_STRENGTH)
+
+
+# ---------------------------------------------------------------------------
+# inputs.allow_irreproducible_degenerate: the YAML waiver and its reason
+# ---------------------------------------------------------------------------
+
+def test_the_degenerate_waiver_is_off_and_unexplained_by_default():
+    from xcquinox.alec.cluster.grid_config import _build_inputs
+    built = _build_inputs(_inputs_dict())
+    assert built.allow_irreproducible_degenerate is False
+    assert built.irreproducible_degenerate_reason is None
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, 0, None, [], "yes"])
+def test_the_degenerate_waiver_is_a_real_boolean(value):
+    """``bool("false")`` is True and so are the quoted forms of YAML 1.1's
+    ``no`` and ``0``, so coercion would grant the waiver in a configuration
+    whose author refused it; ``bool(None)`` reads an empty key as a refusal
+    without remark."""
+    from xcquinox.alec.cluster.grid_config import _build_inputs
+    with pytest.raises(ValueError) as exc:
+        _build_inputs(_inputs_dict(allow_irreproducible_degenerate=value))
+    assert "inputs.allow_irreproducible_degenerate" in str(exc.value)
+
+
+@pytest.mark.parametrize("reason", [None, "", "   ", 1, True, ["a reason"]])
+def test_the_degenerate_waiver_requires_a_written_reason(reason):
+    """The waiver authorises a pretraining file whose degenerate-atom rows are
+    one arbitrary member of a manifold, which is exactly what the manifest
+    identity is meant to exclude, so it carries prose the way a loosened
+    certificate tolerance does. A boolean or a number is not a reason, and
+    ``str(False)`` is the non-empty string ``'False'``, so the value is
+    refused rather than coerced."""
+    from xcquinox.alec.cluster.grid_config import _build_inputs
+    raw = _inputs_dict(allow_irreproducible_degenerate=True)
+    if reason is not None:
+        raw["irreproducible_degenerate_reason"] = reason
+    with pytest.raises(ValueError) as exc:
+        _build_inputs(raw)
+    assert "inputs.irreproducible_degenerate_reason" in str(exc.value)
+
+
+def test_the_degenerate_waiver_loads_with_its_reason():
+    from xcquinox.alec.cluster.grid_config import _build_inputs
+    built = _build_inputs(_inputs_dict(
+        allow_irreproducible_degenerate=True,
+        irreproducible_degenerate_reason="grid level 1 example, never a "
+                                         "campaign"))
+    assert built.allow_irreproducible_degenerate is True
+    assert built.irreproducible_degenerate_reason.startswith("grid level 1")
+
+
+def test_a_reason_without_the_waiver_is_kept_and_grants_nothing():
+    """Prose is not permission: the reason may be written ahead of the flag
+    (or left behind when it is withdrawn) without silently waiving anything."""
+    from xcquinox.alec.cluster.grid_config import _build_inputs
+    built = _build_inputs(_inputs_dict(
+        irreproducible_degenerate_reason="drafted, not granted"))
+    assert built.allow_irreproducible_degenerate is False
+    assert built.irreproducible_degenerate_reason == "drafted, not granted"
+
+
+def test_the_waiver_round_trips_through_the_resolved_config(tmp_path):
+    """Every worker re-reads ``resolved_config.yaml``; a waiver dropped there
+    would refuse the datagen stage of a run the login node accepted."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    raw = _base_config_dict()
+    raw["inputs"]["allow_irreproducible_degenerate"] = True
+    raw["inputs"]["irreproducible_degenerate_reason"] = "a stated reason"
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    again = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert again.inputs.allow_irreproducible_degenerate is True
+    assert again.inputs.irreproducible_degenerate_reason == "a stated reason"
+
+
+# ---------------------------------------------------------------------------
+# The parser's import closure: the lock constant is read without numpy
+# ---------------------------------------------------------------------------
+
+#: Upper bound on the modules present after ``load_grid_config`` has run with
+#: the package ``__init__`` modules stubbed. Measured on a configuration that
+#: does not state the lock: 122 with the constant in its own leaf module,
+#: against 223 when it was reached through ``orientation_lock`` (which carries
+#: numpy for the quadrupole operator) and 121 before the harness had a lock
+#: default at all. Any bound between 122 and 223 discriminates; 200 leaves the
+#: parser room for a stdlib import.
+_PARSER_CLOSURE_MODULE_BOUND = 200
+
+
+def test_load_grid_config_pulls_in_no_numeric_stack(tmp_path):
+    """``cluster status`` and ``validate_run`` resolve a configuration to read
+    one field off it, and the pretrain / datagen / preflight workers resolve
+    one before they decide whether there is anything to do. None of them may
+    pay for numpy, jax or pyscf to do it.
+
+    Measured on the BINDINGS rather than the source: the previous form
+    deferred ``from orientation_lock import DEFAULT_STRENGTH`` into a
+    ``default_factory``, which kept the module BODY clean while importing
+    numpy on every ``InputPaths`` construction -- that is, on every load. The
+    count is therefore taken after a real ``load_grid_config`` call, not after
+    the import."""
+    yaml = pytest.importorskip("yaml")
+    import subprocess
+    import sys
+
+    from xcquinox.alec.cluster import grid_config as gc
+    path = os.path.abspath(gc.__file__)
+    cluster_dir = os.path.dirname(path)
+    alec_dir = os.path.dirname(cluster_dir)
+    xcq_dir = os.path.dirname(alec_dir)
+    cfg_path = tmp_path / "grid.yaml"
+    cfg_path.write_text(yaml.safe_dump(_base_config_dict()))
+    probe = """
+import importlib.util, json, sys, types
+paths = {"xcquinox": %r, "xcquinox.alec": %r, "xcquinox.alec.cluster": %r}
+for name, path in paths.items():
+    stub = types.ModuleType(name)
+    stub.__path__ = [path]
+    sys.modules[name] = stub
+base = len(sys.modules)
+spec = importlib.util.spec_from_file_location(
+    "xcquinox.alec.cluster.grid_config", %r)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+imported = len(sys.modules)
+cfg = module.load_grid_config(%r)
+print(json.dumps({"base": base, "imported": imported,
+                  "loaded": len(sys.modules), "modules": sorted(sys.modules),
+                  "lock": cfg.inputs.orientation_lock_strength}))
+""" % (xcq_dir, alec_dir, cluster_dir, path, str(cfg_path))
+    out = subprocess.run([sys.executable, "-c", probe],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    modules = set(result["modules"])
+    heavy = sorted(root for root in ("numpy", "scipy", "jax", "jaxlib",
+                                     "equinox", "optax", "pyscf", "pyscfad",
+                                     "ase", "pandas", "torch")
+                   if root in modules)
+    assert not heavy, (heavy, result["loaded"])
+    assert result["loaded"] < _PARSER_CLOSURE_MODULE_BOUND, result["loaded"]
+    # The load really happened, so the counts are a resolved configuration's
+    # cost and not an aborted one's.
+    assert result["lock"] == 3e-5

@@ -48,9 +48,16 @@ h_core).
 """
 import numpy as np
 
-# Recommended lock strength (Hartree per Bohr^2 coefficient on the traceless
-# quadrupole). See the module docstring for the calibration argument.
-DEFAULT_STRENGTH: float = 3e-5
+from xcquinox.alec.orientation_lock_default import DEFAULT_STRENGTH
+
+# ``DEFAULT_STRENGTH`` (Hartree per Bohr^2 coefficient on the traceless
+# quadrupole) is defined in ``orientation_lock_default``, a module that imports
+# nothing, and re-exported here. The harness config parser reads the same
+# object out of that leaf: its readers -- ``cluster status``, ``validate_run``,
+# the certificate readers -- must not pay for the numpy this module needs, and
+# the constant must not be restated for them. See the module docstring above
+# for the calibration argument.
+__all__ = ["DEFAULT_STRENGTH", "orientation_lock_bias"]
 
 # Fixed, symmetric, TRACELESS weight matrix with three distinct eigenvalues
 # (~ -1.21, -0.83, +2.03) and generic (non-axis-aligned) principal axes. Do not

@@ -26,6 +26,19 @@ import os
 import re
 import warnings
 
+# The ONE definition of the calibrated orientation-lock strength, in a module
+# that imports nothing. It is bound in this module's BODY deliberately: the
+# earlier form deferred ``from orientation_lock import DEFAULT_STRENGTH`` into
+# a ``default_factory`` to keep numpy out of the certificate readers' closure,
+# and did not achieve it -- the factory runs whenever the field is not
+# supplied, which is every configuration that does not state the lock, i.e.
+# exactly the case the default exists for. Measured with the package __init__
+# modules stubbed, on such a configuration: 223 modules after a load with
+# numpy present, against 121 before the harness had a lock default at all and
+# 122 here.
+from xcquinox.alec.orientation_lock_default import (
+    DEFAULT_STRENGTH as DEFAULT_ORIENTATION_LOCK_STRENGTH)
+
 
 # ---------------------------------------------------------------------------
 # Module constants
@@ -38,26 +51,6 @@ VALID_METRICS = frozenset({"l2", "jsd"})
 # Allowed values for the GridConfig string-enum fields.
 VALID_ON_PRECOMPUTE_FAILURE = frozenset({"abort", "drop_failed_species"})
 VALID_BH76_MODE = frozenset({"reaction_energy", "barrier_height"})
-
-
-def default_orientation_lock_strength() -> float:
-    """The run-level orientation lock a configuration gets when it states none.
-
-    ``orientation_lock.DEFAULT_STRENGTH``, imported rather than restated: the
-    harness default, the pretrain-data generator's default and the
-    certificate's per-atom fallback must be ONE number, and the disagreement
-    that existed -- a harness default of 0.0 against a generator default of
-    3e-5 -- rebuilt a run's pretraining rows at a Hamiltonian the run was not
-    solved at.
-
-    Imported at CALL time, as ``fidelity.atom_orientation_lock_strength`` is
-    and for the same reason: ``cluster status``, ``validate_run`` and the
-    certificate readers walk this module's import closure, which must stay
-    free of numeric stacks, while ``orientation_lock.py`` carries numpy for
-    the quadrupole operator.
-    """
-    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
-    return float(DEFAULT_STRENGTH)
 
 
 # ---------------------------------------------------------------------------
@@ -234,11 +227,26 @@ class InputPaths:
     # 2026-08-23: the default is the calibrated lock, not 0.0. It is the value
     # the production configurations carry and the value the data generator
     # builds at, and an unlocked degenerate open shell is not reproducible
-    # between processes at all -- two draws of the free O atom at grid level 3
-    # kept 11682 against 11680 rows and disagreed by 2.6e-7 Ha in the total
-    # energy. A configuration that ran unlocked states 0.0 explicitly.
-    orientation_lock_strength: float = field(
-        default_factory=default_orientation_lock_strength)
+    # between processes at all -- independent draws of the free O atom at grid
+    # level 3 keep different numbers of rows and disagree at the 3e-7 Ha level
+    # in the total energy. A run may still state 0.0 deliberately.
+    orientation_lock_strength: float = DEFAULT_ORIENTATION_LOCK_STRENGTH
+    # The one waiver of the data generator's irreproducible-degenerate
+    # refusal, which fires when a spatially degenerate free atom is asked for
+    # below grid level 3 or with the lock off. Both builds write a file whose
+    # degenerate rows are one arbitrary member of a manifold under a manifest
+    # that records a definite identity, so the waiver is deliberate, carries a
+    # written reason and is recorded in the manifest. The shipped templates
+    # and the pre-2026-08 campaigns run at grid level 1 or 2 and state it; a
+    # grid-level-3 campaign does not need it.
+    #
+    # A waived run that is ALSO unlocked disagrees with its own certificate on
+    # the degenerate atoms: ``fidelity`` evaluates them at the calibrated lock
+    # whatever the run states, so the certificate would bound E_xc on a
+    # density the network was not pretrained against (see the comment at that
+    # branch in ``cluster/fidelity.py``).
+    allow_irreproducible_degenerate: bool = False
+    irreproducible_degenerate_reason: str | None = None
     # Hold-out benchmark reference-density dir (W4-11+BH76 pool). When set,
     # ``submit`` ALSO submits one standalone benchmark_refs job (CCSD + PBE
     # densities, no OEP) that starts once the train array has begun, and the
@@ -910,8 +918,69 @@ def _parse_channel_weights(raw) -> tuple:
     return tuple(sorted((str(k), float(v)) for k, v in items))
 
 
+def _orientation_lock(d, ctx: str) -> float:
+    """The run-level orientation-lock strength, bounded at parse.
+
+    An absent key and an explicit null both mean "not stated", which is the
+    calibrated lock; only a written number is a statement, and a written 0.0
+    is the statement that the run is unlocked.
+
+    The value is read through the house number reader rather than with a bare
+    ``float()`` because it is an identity-bearing physical quantity -- the
+    coefficient on the traceless-quadrupole h_core bias that the CCSD
+    references, the training SCF and the pretraining rows are all built at --
+    and the coercions that reader exists to refuse all reach it: ``float(True)``
+    is 1.0, four orders above the calibrated strength; ``float(None)`` and a
+    list raise ``TypeError``, which passes every ``except ValueError`` handler
+    in the load path; and a NaN escapes any bound written against it.
+
+    Negative is refused HERE rather than downstream. It is not zero, so the
+    generator's degeneracy refusal does not fire on it, and a degenerate
+    atom's rows would be written under a sign-flipped bias while the manifest
+    recorded a legitimate identity; ``SolverConfig`` catches it later, in the
+    spec builder on a compute node, after the data is on disk. There is no
+    upper bound: no measurement anchors one, and the lock is an energy
+    coefficient whose only hard requirement is that it be finite and not
+    reverse the operator.
+    """
+    if d.get("orientation_lock_strength") is None:
+        return float(DEFAULT_ORIENTATION_LOCK_STRENGTH)
+    return _config_number(d, "orientation_lock_strength",
+                          DEFAULT_ORIENTATION_LOCK_STRENGTH, minimum=0,
+                          ctx=ctx)
+
+
 def _build_inputs(d: dict) -> InputPaths:
     ctx = "inputs"
+    # The waiver of the data generator's irreproducible-degenerate refusal
+    # carries prose, for the reason ``fidelity.override_reason`` does: it
+    # authorises a pretraining file whose degenerate-atom rows are one
+    # arbitrary member of a manifold under a manifest that records a definite
+    # identity, which is the defect the manifest exists to exclude. A
+    # non-string is refused rather than coerced -- ``str(False)`` is the
+    # non-empty string ``'False'``, so ``irreproducible_degenerate_reason:
+    # false`` would otherwise read as a written reason -- and a blank string
+    # is not a reason either.
+    allow_irreproducible = _config_bool(
+        d, "allow_irreproducible_degenerate", False, ctx=ctx)
+    reason = d.get("irreproducible_degenerate_reason")
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError(
+            f"grid config key '{ctx}.irreproducible_degenerate_reason' must "
+            f"be a string or null, got {type(reason).__name__} ({reason!r}); "
+            "a boolean or a number is not a reason. The value states why this "
+            "run's pretraining data may be built at an identity that does not "
+            "reproduce between processes")
+    if allow_irreproducible and not (reason or "").strip():
+        raise ValueError(
+            f"grid config key '{ctx}.allow_irreproducible_degenerate' is "
+            f"true, so '{ctx}.irreproducible_degenerate_reason' must be a "
+            f"non-empty string, got {reason!r}. The waiver permits a "
+            "pretraining file whose spatially degenerate free atoms' rows are "
+            "one arbitrary member of their manifold -- below grid level 3 the "
+            "quadrature does not resolve the term, and with the lock off the "
+            "SCF may land anywhere on it -- so the run record states why that "
+            "was acceptable")
     seed_xc = str(d.get("seed_xc", "pbe"))
     if seed_xc not in ("pbe", "scan", "auto"):
         raise ValueError(
@@ -926,10 +995,9 @@ def _build_inputs(d: dict) -> InputPaths:
         output_root=_require(d, "output_root", ctx),
         density_fit=bool(d.get("density_fit", False)),
         auxbasis=d.get("auxbasis"),
-        orientation_lock_strength=(
-            float(d["orientation_lock_strength"])
-            if d.get("orientation_lock_strength") is not None
-            else default_orientation_lock_strength()),
+        orientation_lock_strength=_orientation_lock(d, ctx),
+        allow_irreproducible_degenerate=allow_irreproducible,
+        irreproducible_degenerate_reason=reason,
         benchmark_refs_dir=d.get("benchmark_refs_dir"),
         val_refs_dir=d.get("val_refs_dir"),
         seed_xc=seed_xc,
@@ -957,28 +1025,29 @@ _LOSS_WEIGHTINGS = ("unweighted", "integration")
 _MAX_SEED = 2 ** 32 - 2
 
 
-def _pretrain_bool(d, key: str, default: bool) -> bool:
-    """Read one pretraining switch; a non-boolean is a config error.
+def _config_bool(d, key: str, default: bool, ctx: str = "pretrain") -> bool:
+    """Read one switch out of a raw config section; a non-boolean is an error.
 
     Refused rather than coerced, as ``fidelity.enforce`` is: ``bool("false")``
     is True -- and so are the quoted forms of YAML 1.1's ``no`` and ``0`` --
     so coercion turns the switch ON in a config whose author wrote it OFF,
     while ``bool(None)`` (an empty ``dfs_set:``) reads as OFF without remark.
-    Both switches select the pretraining SYSTEM SET, so either misreading
-    changes what the run fits.
+    The pretraining switches select the SYSTEM SET, so either misreading
+    changes what the run fits, and ``inputs.allow_irreproducible_degenerate``
+    grants permission to write a file whose identity is not reproducible.
     """
     v = d.get(key, default)
     if not isinstance(v, bool):
         raise ValueError(
-            f"grid config key 'pretrain.{key}' must be a boolean "
+            f"grid config key '{ctx}.{key}' must be a boolean "
             f"(true/false), got {type(v).__name__} ({v!r})")
     return v
 
 
-def _pretrain_number(d, key: str, default, whole: bool = False,
-                     minimum=None, maximum=None, minimum_open: bool = False,
-                     maximum_open: bool = False):
-    """Read one pretraining number out of a raw ``pretrain`` mapping.
+def _config_number(d, key: str, default, whole: bool = False,
+                   minimum=None, maximum=None, minimum_open: bool = False,
+                   maximum_open: bool = False, ctx: str = "pretrain"):
+    """Read one number out of a raw config section (``pretrain`` by default).
 
     The reasoning of ``_fidelity_tolerance``: a boolean or a container is a
     config error rather than something to coerce -- ``float(True)`` is 1.0 and
@@ -1012,7 +1081,7 @@ def _pretrain_number(d, key: str, default, whole: bool = False,
     kind = "a whole number" if whole else "a number"
     if isinstance(v, bool) or not isinstance(v, (int, float, str)):
         raise ValueError(
-            f"grid config key 'pretrain.{key}' must be {kind}, got "
+            f"grid config key '{ctx}.{key}' must be {kind}, got "
             f"{type(v).__name__} ({v!r})")
     out = None
     if whole and isinstance(v, int):
@@ -1027,28 +1096,28 @@ def _pretrain_number(d, key: str, default, whole: bool = False,
             out = float(v)
         except ValueError:
             raise ValueError(
-                f"grid config key 'pretrain.{key}' must be {kind}, got "
+                f"grid config key '{ctx}.{key}' must be {kind}, got "
                 f"{type(v).__name__} ({v!r})") from None
         if not math.isfinite(out):
             raise ValueError(
-                f"grid config key 'pretrain.{key}' must be a FINITE number, "
+                f"grid config key '{ctx}.{key}' must be a FINITE number, "
                 f"got {v!r}; a NaN value satisfies neither side of the bound "
                 "it is checked against and turns every comparison against it "
                 "into the sense of that comparison rather than a measurement")
         if whole and out != int(out):
             raise ValueError(
-                f"grid config key 'pretrain.{key}' must be a whole number, "
+                f"grid config key '{ctx}.{key}' must be a whole number, "
                 f"got {v!r}; int() would truncate it to {int(out)} and run a "
                 "schedule other than the one written")
     if minimum is not None and (out <= minimum if minimum_open
                                 else out < minimum):
         raise ValueError(
-            f"grid config key 'pretrain.{key}' must be "
+            f"grid config key '{ctx}.{key}' must be "
             f"{'>' if minimum_open else '>='} {minimum}, got {v!r}")
     if maximum is not None and (out >= maximum if maximum_open
                                 else out > maximum):
         raise ValueError(
-            f"grid config key 'pretrain.{key}' must be "
+            f"grid config key '{ctx}.{key}' must be "
             f"{'<' if maximum_open else '<='} {maximum}, got {v!r}")
     return int(out) if whole else out
 
@@ -1075,30 +1144,30 @@ def _build_pretrain(d: dict) -> PretrainConfig:
     ctx = "pretrain"
     return PretrainConfig(
         data_dir=_require(d, "data_dir", ctx),
-        n_steps=_pretrain_number(d, "n_steps", 1000, whole=True, minimum=0,
+        n_steps=_config_number(d, "n_steps", 1000, whole=True, minimum=0,
                                  minimum_open=True),
         # A non-positive Adam rate is a no-op (0) or an ascent (< 0), so the
         # start is strictly positive; lr_end may be 0, which is a linear
         # anneal to zero and a legitimate schedule.
-        lr_start=_pretrain_number(d, "lr_start", 1e-2, minimum=0,
+        lr_start=_config_number(d, "lr_start", 1e-2, minimum=0,
                                   minimum_open=True),
-        lr_end=_pretrain_number(d, "lr_end", 1e-5, minimum=0),
+        lr_end=_config_number(d, "lr_end", 1e-5, minimum=0),
         # A FRACTION of n_steps, not a step count: decay_start_step =
         # int(lr_decay_start * n_steps).
-        lr_decay_start=_pretrain_number(d, "lr_decay_start", 0.2, minimum=0,
+        lr_decay_start=_config_number(d, "lr_decay_start", 0.2, minimum=0,
                                         maximum=1),
         # optax.clip_by_global_norm(0.0) zeroes every gradient and (-1.0)
         # reverses it; neither is a run, and the consumer has no None branch
         # (a None reaches the update and raises there, not at load).
-        grad_clip=_pretrain_number(d, "grad_clip", 1.0, minimum=0,
+        grad_clip=_config_number(d, "grad_clip", 1.0, minimum=0,
                                    minimum_open=True),
-        seed=_pretrain_number(d, "seed", 42, whole=True, minimum=0,
+        seed=_config_number(d, "seed", 42, whole=True, minimum=0,
                               maximum=_MAX_SEED),
         loss_weighting=_pretrain_choice(
             d, "loss_weighting", "integration", _LOSS_WEIGHTINGS),
         atoms=_parse_pretrain_atoms(d.get("atoms")),
-        dfs_set=_pretrain_bool(d, "dfs_set", False),
-        pool_atoms=_pretrain_bool(d, "pool_atoms", False),
+        dfs_set=_config_bool(d, "dfs_set", False),
+        pool_atoms=_config_bool(d, "pool_atoms", False),
         parent_density=_pretrain_choice(
             d, "parent_density", "pbe", _PARENT_DENSITIES),
         exchange_footing=_pretrain_choice(
@@ -1107,27 +1176,27 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         # 0 and 1, the range pretrain_data_gen._check_generator_arguments (the
         # only consumer) requires. A share of 0 is not a mesh and a share of 1
         # leaves the atomic grids no weight at all.
-        mesh_fraction=_pretrain_number(d, "mesh_fraction", 0.3, minimum=0,
+        mesh_fraction=_config_number(d, "mesh_fraction", 0.3, minimum=0,
                                        minimum_open=True, maximum=1,
                                        maximum_open=True),
         # A loss weight, in inverse Hartree^2: 0 turns the energy term off, a
         # negative one rewards the network for getting the energy wrong.
-        energy_term_weight=_pretrain_number(d, "energy_term_weight", 0.0,
+        energy_term_weight=_config_number(d, "energy_term_weight", 0.0,
                                             minimum=0),
         # A FRACTION of the multi-nucleus systems: 0 = no split; 1 would hold
         # out the whole set and fit nothing.
-        validation_fraction=_pretrain_number(d, "validation_fraction", 0.0,
+        validation_fraction=_config_number(d, "validation_fraction", 0.0,
                                              minimum=0, maximum=1,
                                              maximum_open=True),
         # The held-out permutation's seed, bounded like the initialization
         # seed and for the same reason (see _MAX_SEED).
-        validation_seed=_pretrain_number(d, "validation_seed", 0, whole=True,
+        validation_seed=_config_number(d, "validation_seed", 0, whole=True,
                                          minimum=0, maximum=_MAX_SEED),
         # Optimizer steps between validations: 0 or negative is not a period.
-        validate_every=_pretrain_number(d, "validate_every", 50, whole=True,
+        validate_every=_config_number(d, "validate_every", 50, whole=True,
                                         minimum=0, minimum_open=True),
         # Validations without improvement before the stop; 0 = no early stop.
-        patience=_pretrain_number(d, "patience", 0, whole=True, minimum=0),
+        patience=_config_number(d, "patience", 0, whole=True, minimum=0),
     )
 
 

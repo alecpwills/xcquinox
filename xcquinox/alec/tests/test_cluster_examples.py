@@ -309,3 +309,62 @@ def test_example_states_the_orientation_lock_explicitly():
     assert float(raw["orientation_lock_strength"]) == DEFAULT_STRENGTH
     cfg = load_grid_config(_example_path())
     assert cfg.inputs.orientation_lock_strength == DEFAULT_STRENGTH
+
+
+# ---------------------------------------------------------------------------
+# The shipped templates run at grid level 1, which no degenerate free atom is
+# reproducible at
+# ---------------------------------------------------------------------------
+
+def _template_paths():
+    """Both shipped templates: the copy-me sweep and the workflow matrix."""
+    import xcquinox.alec.cluster as cluster_pkg
+    pkg_dir = os.path.dirname(os.path.abspath(cluster_pkg.__file__))
+    return [os.path.join(pkg_dir, "examples", name)
+            for name in ("grid_step7.yaml", "workflow_matrix_template.yaml")]
+
+
+@pytest.mark.parametrize("path", _template_paths())
+def test_the_templates_waive_the_degenerate_refusal_with_a_reason(path):
+    """Both templates are def2-svp at grid level 1 and their pretraining sets
+    contain the O atom, whose 3P term that quadrature does not resolve, so the
+    data generator refuses to build their rows unless the waiver is stated.
+    Without it a copy of the canonical template fails its datagen stage and
+    every later stage goes ``DependencyNeverSatisfied``.
+
+    The waiver carries prose, and the templates' prose says what they are: a
+    verification identity, never a campaign. A production configuration runs
+    at grid level 3, where the same rows reproduce to 3e-11 relative, and
+    needs no waiver at all."""
+    pytest.importorskip("yaml")
+    raw = _raw_yaml(path)["inputs"]
+    assert raw.get("allow_irreproducible_degenerate") is True, path
+    reason = raw.get("irreproducible_degenerate_reason")
+    assert isinstance(reason, str) and reason.strip(), path
+    assert "example" in reason and "never a campaign" in reason
+    cfg = load_grid_config(path)
+    assert cfg.inputs.allow_irreproducible_degenerate is True
+    assert cfg.inputs.irreproducible_degenerate_reason == reason
+
+
+@pytest.mark.parametrize("path", _template_paths())
+def test_the_templates_state_the_certificate_consequence_of_an_unlocked_waiver(
+        path):
+    """A waived run may also be UNLOCKED, and the fidelity certificate still
+    evaluates a degenerate free atom at the calibrated lock while such a run's
+    pretraining rows sit at 0.0. The comment beside the flag says so, because
+    the two are set in different files and the mismatch is invisible from
+    either one."""
+    with open(path) as f:
+        lines = f.read().splitlines()
+    keys = [i for i, line in enumerate(lines)
+            if line.strip().startswith("allow_irreproducible_degenerate:")]
+    assert len(keys) == 1, (path, keys)
+    comment = []
+    i = keys[0] - 1
+    while i >= 0 and lines[i].strip().startswith("#"):
+        comment.insert(0, lines[i].strip().lstrip("#").strip())
+        i -= 1
+    text = " ".join(comment)
+    assert "certificate" in text, (path, text)
+    assert "0.0" in text, (path, text)

@@ -95,8 +95,23 @@ inputs:
   output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/svp_grid2_v3_full25
   benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_svp_g2
   val_refs_dir: /gpfs/scratch/awills/external_refs_val_dfs_svp_g2
-  # campaign ran unlocked; stated so the harness default (3e-5) cannot change it
-  orientation_lock_strength: 0.0
+  # The pretraining data these campaigns consumed was built at the data
+  # generator's own lock, 3e-5, which before 2026-08 was the only lock in play
+  # (the harness passed none). Stated here so a re-run rebuilds it at the same
+  # Hamiltonian; the program's decision is that a re-run is a LOCKED run. What
+  # the historical training SCF ran at -- unlocked -- is recorded in those
+  # runs' own metadata, not in this file.
+  orientation_lock_strength: 3.0e-5
+  # Grid level 2 does not resolve a spatially degenerate free atom's P
+  # term whatever the lock is, so a rebuild of this campaign's pretraining
+  # rows is not reproducible between processes and the data generator refuses
+  # it unless the run says otherwise. Waived deliberately: this is the
+  # identity the finished campaign was run at.
+  allow_irreproducible_degenerate: true
+  irreproducible_degenerate_reason: >-
+    historical campaign identity at grid level 2; the finished runs
+    consumed pretraining data built here, and the campaign is not re-run at a
+    finer grid
 
 pretrain:
   data_dir: /gpfs/scratch/awills/pretrain_data_dfs_svp_g2_allelem

@@ -81,6 +81,20 @@ inputs:
   # same member of its manifold everywhere. Stated rather than inherited; 0.0
   # turns it off, at the cost of a build that does not reproduce.
   orientation_lock_strength: 3.0e-5
+  # The data generator refuses to build a spatially degenerate free atom's
+  # rows below grid level 3, or with the lock off, because neither identity
+  # reproduces between processes -- at grid level 1 the quadrature does not
+  # resolve the P term, and unlocked the SCF may land anywhere on it. This
+  # template runs at grid level 1 and its default pretraining set contains O,
+  # so it states the waiver; a production run at grid level 3 with the lock on
+  # needs none. The waiver requires a written reason, which the run record
+  # carries. NOTE for a waived run that ALSO sets orientation_lock_strength to
+  # 0.0: the fidelity certificate still evaluates degenerate free atoms at the
+  # calibrated 3e-5, so it would bound E_xc on a density the network was not
+  # pretrained against.
+  allow_irreproducible_degenerate: true
+  irreproducible_degenerate_reason: >-
+    example / workflow-verification identity at grid level 1; never a campaign
 
 # --- pretrain stage: one run_pretrain job per distinct architecture --------
 # The pretrain stage builds a PretrainSpec per arch and writes the resulting
@@ -120,7 +134,7 @@ pretrain:
   # The OBJECTIVE. energy_term_weight weights the per-system energy term
   # mean_s (E_xc^NN_s - E_xc^parent_s)^2 in inverse Hartree^2, beside the
   # point-wise enhancement-factor residual.
-  energy_term_weight: 0.0   # v6: see HISTORY (chosen by measured sweep)
+  energy_term_weight: 0.0   # v6: hpcjobs/probe_pretrain_energy_weight.py table
   # VALIDATION and the stop criterion: a seeded fraction of the multi-nucleus
   # systems is withheld and scored every validate_every steps; training stops
   # after `patience` validations without improvement and keeps the best

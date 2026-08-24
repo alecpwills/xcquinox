@@ -353,6 +353,16 @@ def prepare_inputs(
         from xcquinox.alec.cluster._datagen import (_protocol_keywords,
                                                     _required_data_specs)
         _extra = _protocol_keywords(cfg.pretrain)
+        # The refusal the generator applies to the requested identity (a
+        # spatially degenerate free atom below grid level 3, or with the lock
+        # off) precedes the currency check, so the preflight raises on a file
+        # that is already on disk and current unless the run's waiver reaches
+        # it here too. Stated only where it is granted, for the reason the
+        # datagen stage states it only there.
+        _waiver = ({"allow_irreproducible_degenerate": True}
+                   if bool(getattr(cfg.inputs,
+                                   "allow_irreproducible_degenerate", False))
+                   else {})
         for _polarized, _reference_xc in _required_data_specs(cfg):
             _call = dict(_extra)
             # The reference density is named only when the call is not the
@@ -373,6 +383,7 @@ def prepare_inputs(
                 # pinned at another lock (0.0 in the pre-lock campaigns) must
                 # not be served the locked file.
                 orientation_lock_strength=cfg.inputs.orientation_lock_strength,
+                **_waiver,
                 **_call,
             )
 

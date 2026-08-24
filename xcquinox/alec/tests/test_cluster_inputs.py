@@ -654,3 +654,38 @@ def test_prepare_inputs_states_an_unlocked_run_rather_than_defaulting(
     prepare_inputs(cfg)
 
     assert calls[0][1]["orientation_lock_strength"] == 0.0
+
+
+def test_prepare_inputs_carries_the_waiver_the_configuration_states(
+        tmp_path, stub_pool, stub_refs, monkeypatch):
+    """The preflight ensures the same files the datagen stage does, and the
+    refusal is applied to the requested identity before the currency check, so
+    a waived run must state the waiver here too. Otherwise a run whose datagen
+    stage completed raises in the preflight over a file already on disk."""
+    import dataclasses
+    cfg = _protocol_cfg(tmp_path)
+    cfg = dataclasses.replace(
+        cfg, inputs=dataclasses.replace(
+            cfg.inputs, orientation_lock_strength=3e-5,
+            allow_irreproducible_degenerate=True,
+            irreproducible_degenerate_reason="grid level 1 example"))
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+    calls = _pretrain_calls(monkeypatch)
+
+    prepare_inputs(cfg)
+
+    assert len(calls) == 1
+    assert calls[0][1]["allow_irreproducible_degenerate"] is True
+
+
+def test_prepare_inputs_states_no_waiver_when_none_is_granted(
+        tmp_path, stub_pool, stub_refs, monkeypatch):
+    """False is the generator's own default, so a run that waives nothing
+    reaches it with the keyword set it always did."""
+    cfg = _protocol_cfg(tmp_path)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+    calls = _pretrain_calls(monkeypatch)
+
+    prepare_inputs(cfg)
+
+    assert "allow_irreproducible_degenerate" not in calls[0][1]

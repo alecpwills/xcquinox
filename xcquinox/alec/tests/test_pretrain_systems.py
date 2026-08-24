@@ -689,17 +689,24 @@ def test_deployment_config_paths_is_empty_without_the_directory(monkeypatch,
 
 
 def test_pretraining_lock_is_the_training_lock():
-    """The generator's lock strength is ``orientation_lock.DEFAULT_STRENGTH``
-    and the value every production configuration that locks trains at, so
-    the degenerate radicals' pretraining rows sit on the component the
-    training SCF and the fidelity certificate see.
+    """The generator's lock strength is ``orientation_lock.DEFAULT_STRENGTH``,
+    and every shipped configuration STATES that value, so the degenerate
+    radicals' and open p-shell atoms' pretraining rows sit on the component
+    the training SCF and the fidelity certificate see.
 
-    Every shipped configuration STATES the key. The harness default is the
-    lock, so an omitted key is no longer a statement that the campaign ran
-    unlocked -- it silently adopts the lock and rebuilds that campaign's
-    pretraining rows at a Hamiltonian it was not run at. The older unlocked
-    campaigns therefore carry an explicit 0.0, and their recorded methodology
-    is unaffected by the default."""
+    The key is stated rather than inherited: the harness default is now the
+    lock, so an omitted key no longer distinguishes a campaign that chose it
+    from one that never considered it. The value is the lock in all of them,
+    including the earlier campaigns whose TRAINING SCF ran unlocked: their
+    pretraining data was built at the generator's own 3e-5 (before the harness
+    passed a lock at all, the generator's default was the only one in play),
+    and a re-run of any of them is a locked run by decision. What the
+    historical training SCF ran at is recorded in those runs' own metadata,
+    not in the configuration that would rebuild them.
+
+    Pinning 0.0 in those files instead, as an earlier revision did, recorded a
+    lock their data was never built at AND an identity the generator refuses
+    to produce, so their datagen stage could not run at all."""
     import yaml
     from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
     assert pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH == DEFAULT_STRENGTH == 3e-5
@@ -708,25 +715,34 @@ def test_pretraining_lock_is_the_training_lock():
         pytest.skip("no hpcjobs/configs in this checkout; the constant above "
                     "is still pinned, there is simply no deployed "
                     "configuration to cross-check it against")
-    locked, unlocked = [], []
+    coarse = []
     for path in paths:
+        name = os.path.basename(path)
         with open(path) as f:
-            cfg = yaml.safe_load(f) or {}
-        value = (cfg.get("inputs") or {}).get("orientation_lock_strength")
+            raw = (yaml.safe_load(f) or {}).get("inputs") or {}
+        value = raw.get("orientation_lock_strength")
         assert value is not None, (
-            f"{os.path.basename(path)} does not state "
-            "inputs.orientation_lock_strength; the harness default is the "
-            "training lock, so an omitted key changes what this campaign's "
-            "pretraining data is built at")
-        if float(value) == 0.0:
-            unlocked.append(os.path.basename(path))
+            f"{name} does not state inputs.orientation_lock_strength; the "
+            "harness default is the training lock, so an omitted key changes "
+            "what this campaign's pretraining data is built at")
+        assert float(value) == pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH, (
+            f"{name} states orientation_lock_strength={value!r}; the "
+            "pretraining data every campaign consumed was built at the "
+            "generator's own lock")
+        # Below grid level 3 the quadrature does not resolve a degenerate free
+        # atom's term whatever the lock is, so those campaigns' identities are
+        # waived deliberately and the waiver carries its reason.
+        if int(raw["grid_level"]) < pdg.COARSE_DEGENERATE_MIN_GRID_LEVEL:
+            coarse.append(name)
+            assert raw.get("allow_irreproducible_degenerate") is True, name
+            reason = raw.get("irreproducible_degenerate_reason")
+            assert isinstance(reason, str) and reason.strip(), name
         else:
-            assert float(value) == pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH, path
-            locked.append(os.path.basename(path))
-    assert len(locked) >= 6, locked
-    # Nine of the tracked configurations ran unlocked (the six *.local.yaml
-    # working copies that also do are not in the tree).
-    assert len(unlocked) >= 9, unlocked
+            assert "allow_irreproducible_degenerate" not in raw, name
+    assert len(paths) >= 15, paths
+    # Nine of the tracked configurations run below grid level 3 (the six
+    # *.local.yaml working copies that also do are not in the tree).
+    assert len(coarse) >= 9, coarse
 
 
 def test_system_columns_hand_the_lock_to_the_precompute(monkeypatch):

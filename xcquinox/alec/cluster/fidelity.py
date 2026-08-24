@@ -988,6 +988,12 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     # an orientation-LOCKED reference density, so the certificate's atomic
     # E_xc does not depend on which orientation of the hole the SCF happened
     # to converge to; molecules and spherical atoms keep the run's setting.
+    # Consequence for a run that waives the generator's
+    # irreproducible-degenerate refusal at lock 0.0
+    # (inputs.allow_irreproducible_degenerate): its pretraining rows sit at
+    # 0.0 while this fallback measures the degenerate atoms at the calibrated
+    # lock, so the certificate bounds those atoms on a density the network was
+    # not pretrained against.
     run_lock = float(getattr(inputs, "orientation_lock_strength", 0.0))
     atom_lock = atom_orientation_lock_strength() if run_lock == 0.0 else 0.0
     locked_atoms = []

@@ -85,6 +85,10 @@ _CHEAP_XCQ_MODULES = frozenset({
     "xcquinox.alec.cluster.grid_config",
     "xcquinox.alec.cluster.domain",
     "xcquinox.alec.cluster.materialize",
+    # The calibrated orientation-lock strength, and nothing else: the harness
+    # parser's default reads it in its module body, and it must not drag
+    # ``orientation_lock``'s numpy in behind it.
+    "xcquinox.alec.orientation_lock_default",
 })
 
 # Upper bound on the modules present in sys.modules after the file is executed
@@ -112,6 +116,10 @@ def _module_body_imports(path, package):
     function-local import is what the contract asks for, so it must not
     register; a class body does execute on import, and is caught by the
     closure measurement below rather than by this walk.
+
+    Returns ``(imports, parsed_to_nothing)``. The second value separates a
+    module with no imports -- which a constants-only leaf legitimately is --
+    from a file the walk failed to read.
     """
     import ast
     assert path is not None, (
@@ -119,6 +127,7 @@ def _module_body_imports(path, package):
     with open(path, encoding="utf-8") as f:
         tree = ast.parse(f.read())
     out = []
+    empty = not tree.body
     stack = list(reversed(tree.body))
     while stack:
         node = stack.pop()
@@ -136,7 +145,7 @@ def _module_body_imports(path, package):
                 out.append(node.module or "")
         else:
             stack.extend(reversed(list(ast.iter_child_nodes(node))))
-    return out
+    return out, empty
 
 
 def test_fidelity_module_body_carries_no_heavy_import():
@@ -175,10 +184,15 @@ def test_fidelity_module_body_carries_no_heavy_import():
             continue
         seen.add(name)
         package = name.rsplit(".", 1)[0]
-        imports = _module_body_imports(path, package)
-        assert imports, (
-            "%s (%s) has a module body carrying no import at all; the file "
-            "measured is not the module the walk names" % (name, path))
+        imports, empty = _module_body_imports(path, package)
+        # A module that parses to NOTHING is not the module the walk names --
+        # a wrong path, or a file the loader never wrote. A module that parses
+        # to statements but no imports is legitimate: the lock constant's leaf
+        # home is exactly that, and is why the check is emptiness rather than
+        # the absence of imports.
+        assert not empty, (
+            "%s (%s) parses to an empty module body; the file measured is "
+            "not the module the walk names" % (name, path))
         for imported in imports:
             closure.append(imported)
             root = imported.split(".")[0]
@@ -1815,6 +1829,51 @@ def test_certificate_locks_degenerate_atoms_when_the_run_lock_is_off(tmp_path):
     assert lock["strength"] == fid.atom_orientation_lock_strength()
     assert lock["run_orientation_lock_strength"] == 0.0
     assert "orientation" in lock["note"]
+    assert payload["identity"]["orientation_lock_strength"] == 0.0
+
+
+def test_the_certificate_atom_lock_of_an_unlocked_run_is_the_calibrated_one(
+        tmp_path):
+    """A run that WAIVES the degenerate-atom refusal and stays unlocked has
+    its pretraining rows built at 0.0, while the certificate still measures a
+    degenerate free atom at ``orientation_lock.DEFAULT_STRENGTH``.
+
+    The certificate's rule is deliberate -- an unlocked atomic E_xc depends on
+    which orientation the SCF happened to reach, so the bound would not be a
+    measurement -- and it is left alone. The consequence is pinned here rather
+    than left to be rediscovered: for exactly the atoms whose degeneracy
+    motivates the lock, such a run is certified against a density it was not
+    pretrained on. No shipped configuration produces the combination (each one
+    states the calibrated lock), and it is reachable only through the YAML
+    waiver.
+
+    The configuration is built through ``load_grid_config`` so the two halves
+    of the statement -- what the harness accepts and what the certificate then
+    does -- are joined on one object."""
+    import yaml
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    raw = _minimal_raw_config(archs=["deep_3x16"])
+    raw["inputs"]["orientation_lock_strength"] = 0.0
+    raw["inputs"]["allow_irreproducible_degenerate"] = True
+    raw["inputs"]["irreproducible_degenerate_reason"] = (
+        "an unlocked coarse identity, stated deliberately")
+    cfg_path = tmp_path / "grid.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw))
+    cfg = load_grid_config(str(cfg_path))
+    assert cfg.inputs.allow_irreproducible_degenerate is True
+    assert cfg.inputs.orientation_lock_strength == 0.0
+
+    systems = _tiny_oracle_set() + (_free_atom("O", spin=2),)
+    seen = {}
+    payload = fid.fidelity_certificate(
+        cfg, run_dir, "deep_3x16", oracle_set=systems,
+        evaluate=_lock_spy(seen))
+    assert seen["atom_O"] == DEFAULT_STRENGTH
+    assert seen["atom_O"] != cfg.inputs.orientation_lock_strength
+    assert payload["atom_orientation_lock"]["strength"] == DEFAULT_STRENGTH
     assert payload["identity"]["orientation_lock_strength"] == 0.0
 
 

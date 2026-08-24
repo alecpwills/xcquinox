@@ -38,7 +38,12 @@ its manifold under a different lock; stating the run's value asks the currency
 check at the run's own Hamiltonian. Only a knob that DIFFERS from the generator's default
 is passed, so a configuration written before the protocol change reaches the
 generator with exactly the keyword set it always did and its existing file
-stays current.
+stays current. ``inputs.allow_irreproducible_degenerate`` travels the same
+way: the generator refuses a spatially degenerate free atom below grid level 3
+or with the lock off, BEFORE the currency check, so a configuration at such an
+identity -- the shipped templates and the pre-2026-08 campaigns, all at grid
+level 1 or 2 -- cannot run this stage at all unless it states the waiver, and
+the waiver is stated to the generator only where it is granted.
 
 JAX precision
 -------------
@@ -254,13 +259,27 @@ def main(argv=None) -> int:
     # An empty config tuple leaves the generator on its DEFAULT_PRETRAIN_ATOMS,
     # and every other unset knob leaves it on its own default.
     extra = _protocol_keywords(cfg.pretrain)
+    # The waiver of the generator's irreproducible-degenerate refusal is a
+    # RUN-level statement rather than a protocol knob, and is passed only when
+    # it is granted: False is the generator's own default (pinned by
+    # ``test_the_generators_waiver_default_is_off``), so a configuration that
+    # waives nothing reaches the generator with exactly the keyword set it
+    # always did. Read through ``getattr`` so a namespace reloaded from a
+    # resolved_config.yaml written before the key existed resolves.
+    waived = bool(getattr(cfg.inputs, "allow_irreproducible_degenerate",
+                          False))
+    waiver = {"allow_irreproducible_degenerate": True} if waived else {}
     _log(
         f"archs={list(cfg.sweep.arch)} -> required: {required} | "
         f"basis={cfg.inputs.basis} grid_level={cfg.inputs.grid_level} "
         f"density_fit={cfg.inputs.density_fit} "
         f"orientation_lock_strength={cfg.inputs.orientation_lock_strength} "
+        f"allow_irreproducible_degenerate={waived} "
         f"data_dir={data_dir} | protocol={extra}"
     )
+    if waived:
+        _log("irreproducible-degenerate build permitted by the run: "
+             f"{getattr(cfg.inputs, 'irreproducible_degenerate_reason', None)}")
     try:
         for polarized, reference_xc in specs:
             # Per-iteration copy: mutating ``extra`` in the loop would leak one
@@ -288,6 +307,7 @@ def main(argv=None) -> int:
                 # stating the run's value asks the currency check at the run's
                 # own Hamiltonian instead of at the generator's.
                 orientation_lock_strength=cfg.inputs.orientation_lock_strength,
+                **waiver,
                 **call,
             )
             _log(f"ensured pretrain data (polarized={polarized}, "

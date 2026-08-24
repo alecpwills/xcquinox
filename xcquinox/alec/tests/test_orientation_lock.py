@@ -326,3 +326,37 @@ def test_pyscfad_backend_adds_bias_to_get_hcore():
     delta = np.asarray(mf1.get_hcore()) - np.asarray(mf0.get_hcore())
     bias = np.asarray(md1["mol_metadata"]["orientation_lock_bias"])
     assert np.allclose(delta, bias, atol=1e-8)
+
+
+# ---------------------------------------------------------------------------
+# The calibrated strength has ONE definition, in a module that carries no
+# numeric stack
+# ---------------------------------------------------------------------------
+def test_the_default_strength_has_one_definition():
+    """``orientation_lock.DEFAULT_STRENGTH`` IS the object defined in
+    ``orientation_lock_default``, not a second literal that happens to agree.
+
+    The constant is read by the harness parser as well as by this module, and
+    a parser that reads it must not pay for numpy (the quadrupole operator
+    below needs it, ``load_grid_config`` does not), so the number lives in a
+    leaf module both import."""
+    from xcquinox.alec import orientation_lock, orientation_lock_default
+    assert (orientation_lock.DEFAULT_STRENGTH
+            is orientation_lock_default.DEFAULT_STRENGTH)
+    assert DEFAULT_STRENGTH is orientation_lock_default.DEFAULT_STRENGTH
+    assert orientation_lock_default.DEFAULT_STRENGTH == 3e-5
+
+
+def test_the_constants_module_imports_nothing():
+    """Its whole purpose is to be importable from a numeric-free reader, so
+    its body carries no import at all -- an added one would travel into
+    ``load_grid_config``'s closure with it."""
+    import ast
+    import inspect
+
+    from xcquinox.alec import orientation_lock_default as old
+    tree = ast.parse(inspect.getsource(old))
+    imports = [node for node in ast.walk(tree)
+               if isinstance(node, (ast.Import, ast.ImportFrom))]
+    assert imports == [], [ast.dump(node) for node in imports]
+    assert tree.body, "the module parsed to an empty body"
