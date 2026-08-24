@@ -50,9 +50,10 @@ the BH76 / W4-11 pools), the per-channel exchange footing, the polarized
 correlation objective every production configuration under ``hpcjobs/configs/``
 sets (``--no-polarized`` measures the unpolarized one instead), and the
 orientation lock the data generator locks degenerate open shells with. The
-GGA-rung architectures pretrain against the PBE parent and the meta-GGA rung
-against SCAN, because the certificate is per rung and a meta-GGA network fit
-on a PBE density is fit to a density its own SCF never visits.
+architectures carrying no meta-GGA descriptor pretrain against the PBE parent
+and the meta-GGA rung against SCAN, because the certificate is per rung and a
+meta-GGA network fit on a PBE density is fit to a density its own SCF never
+visits.
 
 The default identity is def2-svp / grid level 3. Level 3 is a floor, not a
 preference: the generator refuses a degenerate open-shell atom below it (the
@@ -78,9 +79,11 @@ different identity. That is also how the sweep is batched over architectures
 when one wall cannot hold it: several submissions, each with ``--archs`` and
 ``--resume`` on the same ``--out``, accumulate into one table.
 
-Exit codes: 0 -- a weight cleared the gate on every architecture; 2 -- the
-sweep completed and no weight did (a finding: the table is still written);
-1 -- the sweep itself failed.
+Exit codes: 0 -- a weight cleared the gate on every architecture MEASURED
+(which is the requested list, not necessarily the whole default set: see the
+recommendation line, which names them); 2 -- the sweep completed and no weight
+did (a finding: the table is still written); 1 -- the sweep itself failed; 3 --
+an exception escaped the sweep, whose partial table is still written.
 """
 from __future__ import annotations
 
@@ -90,6 +93,7 @@ import math
 import os
 import sys
 import time
+import traceback
 
 # x64 is required before JAX is imported by anything below: the per-system
 # energies are O(10 Ha) sums whose differences are read at the 1e-6 Ha level.
@@ -168,6 +172,48 @@ SMOKE_N_STEPS = 5
 DEFAULT_RECON_RTOL = 1.0e-6
 
 _HARTREE_TO_MHA = 1000.0
+
+#: Exit code for an exception that escaped the sweep itself. The other three
+#: are outcomes the sweep reached -- 0 a weight cleared, 2 none did, 1 a cell
+#: or a refusal broke a run that still finished its schedule -- so an escape
+#: needs a code of its own: read as a 1 it would be indistinguishable from a
+#: completed sweep whose cells failed, and read as a signal death (which is
+#: what the interpreter's own teardown can turn it into, see the entry point)
+#: it would be indistinguishable from a wall-clock kill.
+EXIT_UNHANDLED = 3
+
+#: The partial-table writer :func:`main` installs once it knows the identity
+#: and holds the rows. Module level because the entry point has to reach it
+#: after ``main``'s frame is gone, on the way out of an exception.
+_PARTIAL_WRITER = None
+
+
+def _install_partial_writer(writer):
+    """Register (or clear, with ``None``) the writer of the partial table."""
+    global _PARTIAL_WRITER
+    _PARTIAL_WRITER = writer
+    return writer
+
+
+def write_partial_table():
+    """Write whatever the sweep has measured so far, from outside ``main``.
+
+    Returns True when a table was written, False when there is nothing
+    registered to write with. It runs on the way out of a failure, so it never
+    raises: an exception here would replace the traceback of the failure that
+    called it with one about the table.
+    """
+    writer = _PARTIAL_WRITER
+    if writer is None:
+        return False
+    try:
+        writer(complete=False)
+    except Exception as exc:                                   # noqa: BLE001
+        print(f"probe_pretrain_energy_weight: the partial table could not be "
+              f"written ({type(exc).__name__}: {exc}); the cells measured "
+              f"before the failure are lost.", file=sys.stderr)
+        return False
+    return True
 
 
 def log(msg):
@@ -377,6 +423,15 @@ def recommend(rows, *, tol_atom_mha=TOL_ATOM_MHA, tol_ae_kcal=TOL_AE_KCAL,
     non-finite entry is a failure, not a missing value -- a diverged fit is
     exactly what the cap exists to reject.
 
+    "Every architecture" is every architecture THIS TABLE HOLDS, which is not
+    the sweep's four defaults when the run was batched over architectures
+    (``--archs`` per submission, accumulating through ``--resume``). A verdict
+    read off a half-finished batch would otherwise claim "every architecture"
+    of a set it never measured, so the returned dict names what it read
+    (``archs_measured``), names the default architectures it did not
+    (``archs_unmeasured_default``), says so in the reason line, and carries
+    the one-bit form as ``covers_default_archs``.
+
     When nothing clears, the fallback is the weight that MINIMIZES the worst
     gate quantity IN UNITS OF ITS OWN MARGIN (so the two tolerances compare)
     among those still inside the point-wise cap (and among all of them if the
@@ -391,6 +446,9 @@ def recommend(rows, *, tol_atom_mha=TOL_ATOM_MHA, tol_ae_kcal=TOL_AE_KCAL,
     margin_mha = float(margin_fraction) * float(tol_atom_mha)
     margin_ae = float(margin_fraction) * float(tol_ae_kcal)
     archs = sorted({str(r["arch"]) for r in rows})
+    # The default architectures this table does NOT hold: a batched submission
+    # writes a complete-looking table for its own batch alone.
+    unmeasured_default = [a for a in DEFAULT_ARCHS if a not in set(archs)]
     weights = sorted({float(r["weight"]) for r in rows})
     by_cell = {(str(r["arch"]), float(r["weight"])): r for r in rows}
     baseline = {a: by_cell.get((a, 0.0)) for a in archs}
@@ -482,9 +540,24 @@ def recommend(rows, *, tol_atom_mha=TOL_ATOM_MHA, tol_ae_kcal=TOL_AE_KCAL,
             f"every architecture, neither point-wise loss above "
             f"{pointwise_factor:g}x its weight-0 value")
 
+    def _coverage_text():
+        """The architecture set the verdict is entitled to speak for."""
+        if not archs:
+            return "no architecture"
+        text = (f"the {len(archs)} architecture"
+                + ("" if len(archs) == 1 else "s")
+                + f" measured in this table ({', '.join(archs)})")
+        if unmeasured_default:
+            text += (f" -- a SUBSET of the sweep's default set: "
+                     f"{', '.join(unmeasured_default)} NOT measured")
+        return text
+
     def _verdict(weight, cleared, reason):
         return {
             "weight": weight, "cleared": cleared, "rule": rule,
+            "archs_measured": list(archs),
+            "archs_unmeasured_default": list(unmeasured_default),
+            "covers_default_archs": not unmeasured_default,
             "tol_atom_mHa": float(tol_atom_mha),
             "tol_AE_kcal": float(tol_ae_kcal),
             "margin_mHa": margin_mha,
@@ -509,8 +582,8 @@ def recommend(rows, *, tol_atom_mha=TOL_ATOM_MHA, tol_ae_kcal=TOL_AE_KCAL,
         choice = min(eligible, key=lambda e: e["weight"])
         return _verdict(
             choice["weight"], True,
-            f"weight {choice['weight']:g} clears both gates on all "
-            f"{len(archs)} architectures ({_gate_text(choice)}) inside the "
+            f"weight {choice['weight']:g} clears both gates on "
+            f"{_coverage_text()} ({_gate_text(choice)}) inside the "
             f"point-wise cap (worst ratio "
             f"{choice['worst_pointwise_ratio']:.3f}).")
 
@@ -526,8 +599,8 @@ def recommend(rows, *, tol_atom_mha=TOL_ATOM_MHA, tol_ae_kcal=TOL_AE_KCAL,
             "between.")
     choice = min(pool, key=lambda e: (e["worst_gate_ratio"], e["weight"]))
     reason = (f"NO swept weight clears {margin_mha:g} mHa on the atoms and "
-              f"{margin_ae:g} kcal/mol on the atomization energies of every "
-              f"architecture. Reported instead: weight "
+              f"{margin_ae:g} kcal/mol on the atomization energies of "
+              f"{_coverage_text()}. Reported instead: weight "
               f"{choice['weight']:g}, which minimizes the worst gate quantity "
               f"in units of its own margin "
               f"({choice['worst_gate_ratio']:.3f} on "
@@ -584,6 +657,19 @@ def format_table(rows, recommendation=None):
     if recommendation is not None:
         lines.append("")
         lines.append(f"rule: {recommendation['rule']}")
+        # Named rather than counted: a batched submission accumulates into
+        # this table one architecture list at a time, and a verdict printed
+        # without its coverage reads as a statement about the whole default
+        # set. A table written before the coverage was recorded carries no
+        # such key and is rendered as it always was.
+        measured = recommendation.get("archs_measured")
+        if measured is not None:
+            lines.append("architectures measured: "
+                         + (", ".join(measured) if measured else "none"))
+            absent = recommendation.get("archs_unmeasured_default") or []
+            if absent:
+                lines.append("sweep defaults NOT in this table: "
+                             + ", ".join(absent))
         weight = recommendation.get("weight")
         verdict = "CLEARS" if recommendation.get("cleared") else "DOES NOT CLEAR"
         lines.append(
@@ -1160,6 +1246,12 @@ def main(argv=None):
                             pointwise_factor=args.pointwise_factor)
         write_table(args.out, {
             "identity": identity,
+            # Beside the identity and deliberately NOT part of it: the
+            # architectures are what a batched sweep varies between
+            # submissions that share one table, so requiring them to agree
+            # would refuse the accumulation --resume exists for. Recorded so
+            # the table says which batch wrote it last.
+            "archs_requested": list(args.archs),
             "complete": bool(complete),
             "rows": rows,
             "failures": failures,
@@ -1167,6 +1259,10 @@ def main(argv=None):
             "total_wall_seconds": time.time() - t0,
         })
         return verdict
+
+    # From here on an exception that escapes this function still leaves the
+    # cells already measured on disk (see the entry point below).
+    _install_partial_writer(_write)
 
     # One data file per distinct (polarization, parent) pair, generated once
     # and reused by every cell that reads it.
@@ -1233,14 +1329,22 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    # The exit code IS the finding here (0 cleared / 2 did not / 1 broke), and
-    # JAX's atexit backend cleanup can corrupt the heap during interpreter
-    # shutdown ("corrupted size vs. prev_size", SIGABRT, code 134) AFTER the
-    # table has been written -- the same teardown that once made a green
-    # cluster regression batch read as FAILED (see
+    # The exit code IS the finding here (0 cleared / 2 did not / 1 broke /
+    # 3 escaped), and JAX's atexit backend cleanup can corrupt the heap during
+    # interpreter shutdown ("corrupted size vs. prev_size", SIGABRT, code 134)
+    # AFTER the table has been written -- the same teardown that once made a
+    # green cluster regression batch read as FAILED (see
     # xcquinox/alec/tests/conftest.py). SLURM would then record a signal death
     # for a sweep that completed. Leaving through os._exit skips teardown
     # entirely; the streams are flushed explicitly because it does not.
+    #
+    # EVERY path out of main() leaves through that one exit, an unhandled
+    # exception included: the teardown is no safer because the sweep broke,
+    # and a run that dies with a traceback still owes the cells it finished.
+    # The traceback is printed, the partial table is written, and the code is
+    # EXIT_UNHANDLED, which separates an escape from a completed sweep whose
+    # cells failed (1) and from the signal death a bare traceback plus a
+    # corrupted teardown would otherwise be reported as.
     try:
         _code = main()
     except SystemExit as _exc:      # argparse, and the sweep's own refusals
@@ -1250,6 +1354,13 @@ if __name__ == "__main__":
         elif not isinstance(_code, int):
             print(_code, file=sys.stderr)
             _code = 1
+    except BaseException:           # noqa: BLE001 - nothing may skip the exit
+        traceback.print_exc()
+        _code = EXIT_UNHANDLED
+        if write_partial_table():
+            print("probe_pretrain_energy_weight: the partial table was "
+                  "written, holding whatever cells were measured before the "
+                  "failure; --resume carries them over.", file=sys.stderr)
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(int(_code))

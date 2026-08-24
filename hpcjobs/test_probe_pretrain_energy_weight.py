@@ -12,11 +12,17 @@ fit. The RECOMMENDATION RULE: exercised on synthetic tables, including every
 edge the real table can present -- no weight clearing the gates, a weight
 clearing one and missing the other, a weight clearing them only on part of the
 architecture set, a weight buying the energy by destroying the point-wise fit,
-a gate quantity that was never measured, and a diverged cell. The JOB SCRIPT:
-the house shell idiom, the standing mail directives, the wall against the
-arithmetic that asks for it, and the exact invocation, since a script that
-activates the wrong environment or drops a flag produces a table that looks
-valid and is not.
+a gate quantity that was never measured, and a diverged cell, and -- because
+a sweep batched over architectures accumulates into one table -- that a verdict
+NAMES the architectures it read and says which sweep defaults it did not. The
+JOB SCRIPT: the house shell idiom, the standing mail directives, the wall
+against the arithmetic that asks for it, and the exact invocation, since a
+script that activates the wrong environment or drops a flag produces a table
+that looks valid and is not. The EXIT: the entry point is read as source, so
+the hard exit that keeps a corrupted interpreter teardown from replacing a
+completed sweep's code is pinned whether or not the teardown happens to abort
+on the machine running the tests, and an exception that escapes the sweep is
+executed end to end for its own exit code and its partial table.
 
 The ``--smoke`` end-to-end leg runs the real sweep at a two-system STO-3G
 identity in a SUBPROCESS, at BOTH polarizations -- ~20 s each, measured -- so
@@ -25,6 +31,7 @@ aborts at interpreter exit.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -381,6 +388,48 @@ def test_an_empty_table_chooses_nothing():
     assert "nothing to choose between" in out["reason"]
 
 
+def test_the_verdict_names_the_architectures_it_measured():
+    """A batch is not the set. ``EWSWEEP_ARCHS`` plus ``--resume`` is the
+    documented way to split the sweep across walls, and the architectures are
+    deliberately not part of the resume identity, so a first batch writes a
+    complete-looking table for its own architectures alone. Its verdict has to
+    say which those were, or the job mails a clearing result for a set it
+    never measured."""
+    rows = [_row("deep_3x16", 0.0, 9.0), _row("deep_3x16", 1.0, 0.2)]
+    out = pw.recommend(rows)
+    assert out["cleared"] is True
+    assert out["archs_measured"] == ["deep_3x16"]
+    assert out["covers_default_archs"] is False
+    assert set(out["archs_unmeasured_default"]) == (
+        set(pw.DEFAULT_ARCHS) - {"deep_3x16"})
+    assert "deep_3x16" in out["reason"]
+    assert "SUBSET" in out["reason"]
+    for absent in out["archs_unmeasured_default"]:
+        assert absent in out["reason"], absent
+
+
+def test_a_verdict_over_the_whole_default_set_claims_the_whole_set():
+    rows = []
+    for name in pw.DEFAULT_ARCHS:
+        rows += [_row(name, 0.0, 9.0), _row(name, 1.0, 0.2)]
+    out = pw.recommend(rows)
+    assert (out["cleared"], out["weight"]) == (True, 1.0)
+    assert out["covers_default_archs"] is True
+    assert out["archs_unmeasured_default"] == []
+    assert "SUBSET" not in out["reason"]
+    for name in pw.DEFAULT_ARCHS:
+        assert name in out["reason"], name
+
+
+def test_the_fallback_verdict_names_its_coverage_too():
+    # Nothing clears: the reported weight is a finding, and a finding read off
+    # part of the set is a finding about part of the set.
+    out = pw.recommend([_row("deep_3x16", 0.0, 9.0),
+                        _row("deep_3x16", 1.0, 4.0)])
+    assert out["cleared"] is False
+    assert "deep_3x16" in out["reason"] and "SUBSET" in out["reason"]
+
+
 def test_the_tolerance_and_margin_are_configurable():
     rows = [_row("a", 0.0, 9.0), _row("a", 1.0, 1.5)]
     assert pw.recommend(rows)["cleared"] is False
@@ -630,6 +679,25 @@ def test_format_table_renders_every_row_and_the_verdict():
     assert "recommendation: energy_term_weight = 1  [CLEARS]" in text
 
 
+def test_format_table_names_the_architectures_the_verdict_speaks_for():
+    rows = [_row("deep_3x16", 0.0, 9.0), _row("deep_3x16", 1.0, 0.2)]
+    text = pw.format_table(rows, pw.recommend(rows))
+    assert "architectures measured: deep_3x16" in text
+    assert "sweep defaults NOT in this table:" in text
+    for absent in set(pw.DEFAULT_ARCHS) - {"deep_3x16"}:
+        assert absent in text, absent
+
+
+def test_format_table_renders_a_verdict_written_before_the_coverage_keys():
+    # A table on disk from an earlier run carries no coverage keys; it still
+    # renders, rather than raising in the middle of a completed sweep's log.
+    verdict = pw.recommend([_row("a", 0.0, 9.0), _row("a", 1.0, 0.2)])
+    verdict.pop("archs_measured")
+    text = pw.format_table([_row("a", 1.0, 0.2)], verdict)
+    assert "architectures measured" not in text
+    assert "rule:" in text
+
+
 def test_format_table_renders_an_absent_cell_as_a_dash():
     row = _row("a", 1.0, 0.25)
     row["reference_xc"] = None
@@ -835,6 +903,20 @@ def test_a_batched_sweep_accumulates_into_one_table(tmp_path, monkeypatch):
     entry = next(e for e in payload["recommendation"]["per_weight"]
                  if e["weight"] == 1.0)
     assert entry["missing_archs"] == []
+    # The batch is recorded BESIDE the identity, not inside it -- inside, the
+    # second submission would be refused as a different measurement.
+    assert payload["archs_requested"] == ["deep_cusp_3x16"]
+    assert "archs" not in payload["identity"]
+    assert "archs_requested" not in payload["identity"]
+    # And the verdict says what it covers: two of the four defaults are still
+    # unmeasured, so the exit-0 line is not a statement about the whole set.
+    recommendation = payload["recommendation"]
+    assert recommendation["archs_measured"] == ["deep_3x16",
+                                                "deep_cusp_3x16"]
+    assert recommendation["covers_default_archs"] is False
+    assert sorted(recommendation["archs_unmeasured_default"]) == [
+        "deep_mgga_3x16", "deep_rung35_3x16"]
+    assert "SUBSET" in recommendation["reason"]
 
 
 # --------------------------------------------------------------------------- #
@@ -988,19 +1070,45 @@ def test_single_node_one_task_with_a_thread_cap_from_slurm():
 def test_the_wall_matches_its_derivation():
     """The request and the arithmetic in the header have to be the same job.
 
-    The measured per-step law (0.4527 us/row on the path the job runs) over the
-    2.88e6-row production sweep puts twenty cells at 7.25 h, and the estimate
-    at 8.25 h with the data generation; twice that is 16.5 h, and the pre-fix
-    library's extra 566 ms of compilation per step would want 22.8 h at the
-    same margin. The short-* queues cap at 4 h, so the request and the
-    partition also have to agree on a long queue.
+    The per-step law measured on the path the job runs (least squares
+    -1.36 ms + 0.4356 us/row over four row counts; 0.5218 us/row in a second
+    session, which is the slope the header carries) over the production
+    sweep's 2.41e6 rows puts twenty cells at 7.0 h and the estimate at 8.0 h
+    with the data generation; twice that is 16.0 h. The row count itself is
+    the part that has to be checked and not only quoted: the exchange block
+    spans two channels per OPEN shell and one per closed one, so it is
+    2 x 168344 + 981512 pruned points and not twice the whole set's. The
+    short-* queues cap at 4 h, so the request and the partition also have to
+    agree on a long queue.
     """
     t = _sbatch_text()
     assert "#SBATCH --time=24:00:00" in t
     assert "#SBATCH --partition=long-" in t
-    for quoted in ("0.4527 us/row", "2.88e6", "7.25 h", "8.25 h", "16.5 h",
-                   "572.6 ms", "22.8 h"):
+    for quoted in (
+            # the per-step law, and the slope actually carried
+            "0.4356 us/row", "0.5218 us/row",
+            # the grids: Becke-Lebedev, then what the mean field integrates
+            "1287200", "1149856", "168344", "981512",
+            # the exchange BLOCK count and the measured floor survivals
+            "1318200", "0.9775", "0.9743", "0.9663",
+            # the rows and the wall they buy
+            "1.123e6", "1.285e6", "2.41e6", "1257 s", "7.0 h", "8.0 h",
+            "16.0 h",
+            # and the pre-rework path the same wall still covers
+            "648 ms", "23.2 h"):
         assert quoted in t, quoted
+    # The arithmetic, not the strings alone. An exchange block per SPIN
+    # CHANNEL of every system -- the reading this replaces -- would give
+    # 2 x 1149856, and the quoted total would not reproduce.
+    assert 168344 + 981512 == 1149856
+    assert 2 * 168344 + 981512 == 1318200
+    rows = 1.123e6 + 1.285e6
+    assert abs(rows - 2.41e6) <= 0.01e6
+    cell_seconds = 1000 * rows * 0.5218e-6
+    assert abs(cell_seconds - 1257.0) < 15.0
+    assert abs(20 * cell_seconds / 3600.0 - 7.0) < 0.1
+    assert abs(20 * (cell_seconds + 0.6484 * 1000) / 3600.0 + 1.0
+               - 23.2 / 2.0) < 0.1
 
 
 def test_x64_is_on_and_the_platform_is_cpu():
@@ -1038,6 +1146,127 @@ def test_the_script_the_job_runs_exists():
     assert _SCRIPT.is_file()
 
 
+# --------------------------------------------------------------------------- #
+# The exit
+# --------------------------------------------------------------------------- #
+
+def _main_block():
+    """The script's ``if __name__ == "__main__":`` block, as an AST."""
+    for node in ast.parse(_SCRIPT.read_text()).body:
+        if (isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "__name__"):
+            return node
+    raise AssertionError("the script has no __main__ block")
+
+
+def _called_name(call):
+    """The dotted name a call node names -- ``sys.stdout.flush``, ``os._exit``,
+    ``main`` -- or '' for a call on anything but a plain attribute chain."""
+    parts, node = [], call.func
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return ""
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def test_the_entry_point_leaves_through_the_hard_exit():
+    """The hard exit is read out of the source, not inferred from a run.
+
+    JAX's atexit cleanup aborts the interpreter only sometimes on this
+    backend, so a returncode assertion detects a lost hard exit only on the
+    runs where the teardown happens to corrupt the heap -- it is a symptom
+    check, not a pin. (It does happen: an unrelated driver run against this
+    same path exited with "corrupted size vs. prev_size" while these numbers
+    were being measured.) The idiom is therefore asserted directly: the last
+    statement of the entry point is ``os._exit``, both streams are flushed
+    first because ``os._exit`` does not flush them, and no ``sys.exit`` --
+    which runs the teardown the idiom exists to skip -- is left anywhere in
+    the block.
+    """
+    block = _main_block()
+    last = block.body[-1]
+    assert isinstance(last, ast.Expr) and isinstance(last.value, ast.Call), (
+        ast.dump(last))
+    assert _called_name(last.value) == "os._exit"
+    names = [_called_name(node) for node in ast.walk(block)
+             if isinstance(node, ast.Call)]
+    assert "sys.stdout.flush" in names
+    assert "sys.stderr.flush" in names
+    assert "sys.exit" not in names
+
+
+def test_an_unhandled_exception_still_leaves_through_that_exit(tmp_path):
+    """An exception the sweep does not catch is not a licence to tear down.
+
+    The interpreter shutdown is no safer because the sweep broke, and a run
+    that dies with a traceback still owes the cells it finished. Executed on
+    a real escape -- an unknown basis, which raises out of the data
+    generation -- for the distinct exit code, the traceback and the partial
+    table.
+    """
+    env = dict(os.environ)
+    env.update(OMP_NUM_THREADS="4", OPENBLAS_NUM_THREADS="4",
+               MKL_NUM_THREADS="4", JAX_PLATFORMS="cpu",
+               XLA_FLAGS="--xla_cpu_multi_thread_eigen=false")
+    out = tmp_path / "table.json"
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--smoke", "--basis", "no_such_basis",
+         "--data-dir", str(tmp_path / "data"), "--out", str(out)],
+        env=env, capture_output=True, text=True, timeout=900)
+    assert proc.returncode == pw.EXIT_UNHANDLED, (
+        f"returncode={proc.returncode}\n"
+        + proc.stdout[-2000:] + proc.stderr[-2000:])
+    # Distinct from the sweep's own outcomes, which is the point of the code.
+    assert pw.EXIT_UNHANDLED not in (0, 1, 2)
+    assert "Traceback" in proc.stderr
+    assert "no_such_basis" in proc.stderr
+    payload = json.loads(out.read_text())
+    assert payload["complete"] is False
+    assert payload["rows"] == []
+    assert payload["identity"]["basis"] == "no_such_basis"
+
+
+def test_the_partial_table_writer_is_a_no_op_when_none_is_installed():
+    pw._install_partial_writer(None)
+    assert pw.write_partial_table() is False
+
+
+def test_the_partial_table_writer_never_raises_out_of_a_failure(capsys):
+    # It runs on the way out of an exception; raising here would replace that
+    # exception's traceback with one about the table.
+    def _boom(complete):
+        raise OSError("read-only file system")
+
+    pw._install_partial_writer(_boom)
+    try:
+        assert pw.write_partial_table() is False
+    finally:
+        pw._install_partial_writer(None)
+    assert "read-only file system" in capsys.readouterr().err
+
+
+def test_main_installs_a_writer_that_holds_the_cells_it_measured(
+        tmp_path, monkeypatch):
+    """The writer the entry point reaches is main's own, over main's rows."""
+    out = tmp_path / "t.json"
+    _stub_sweep(monkeypatch, {0.0: 9.0, 1.0: 0.2})
+    pw._install_partial_writer(None)
+    try:
+        assert pw.main(["--data-dir", str(tmp_path), "--out", str(out),
+                        "--archs", "deep_3x16", "--weights", "0,1"]) == 0
+        out.unlink()
+        assert pw.write_partial_table() is True
+        payload = json.loads(out.read_text())
+        assert payload["complete"] is False
+        assert [r["weight"] for r in payload["rows"]] == [0.0, 1.0]
+    finally:
+        pw._install_partial_writer(None)
+
+
 def test_the_sweep_can_be_batched_over_architectures():
     """A wall that cannot hold the whole sweep is split into submissions, each
     carrying its own architectures into the same table."""
@@ -1047,6 +1276,21 @@ def test_the_sweep_can_be_batched_over_architectures():
     # The empty-array expansion, without which `set -u` kills the job when no
     # batch is named.
     assert '${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"}' in t
+
+
+def test_the_verdict_line_names_the_architectures_the_batch_measured():
+    """Exit 0 mails "cleared"; a batched submission must not let that read as
+    a statement about the four defaults it did not measure."""
+    t = _sbatch_text()
+    assert "${ARCHS:-the four default architectures}" in t
+    assert "a swept weight cleared both gates on every architecture." not in t
+    assert "every architecture MEASURED" in t
+
+
+def test_an_escaped_exception_has_its_own_documented_code():
+    t = _sbatch_text()
+    assert "3 = an exception escaped the sweep" in t
+    assert "3) echo" in t
 
 
 def test_exit_code_two_is_documented_as_a_finding():

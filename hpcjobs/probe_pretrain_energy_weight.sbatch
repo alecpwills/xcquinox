@@ -20,67 +20,97 @@
 # Measure pretrain.energy_term_weight for campaign v6.
 #
 # WHAT: one pretraining run per (architecture, weight) cell of
-# hpcjobs/probe_pretrain_energy_weight.py -- by default the three GGA-rung
-# architectures against the PBE parent and the meta-GGA one against SCAN, at
-# weights 0, 0.1, 1, 10, 100, 1000 steps each -- reporting per cell the two
-# point-wise losses, the RMS per-system XC energy error, and BOTH quantities
-# the Section 3.3 certificate gates on: the maximum |dE_xc| over the ATOMS
-# against tol_atom = 1.0 mHa, and the maximum |dAE| over the molecules against
-# tol_AE = 1.0 kcal/mol. Both are maxima, not means, and neither implies the
-# other: an error shared by a molecule and its atoms cancels out of an
-# atomization energy. The sweep runs the POLARIZED correlation objective, the
-# one every configuration under hpcjobs/configs/ sets and the one the weight
-# will be applied to. The table it writes is the number the v6 YAMLs carry.
+# hpcjobs/probe_pretrain_energy_weight.py -- by default the three PBE-parent
+# architectures (deep_3x16, deep_cusp_3x16 and the rung-3.5 deep_rung35_3x16;
+# the parent is the density, not the rung) and the meta-GGA deep_mgga_3x16
+# against SCAN, at weights 0, 0.1, 1, 10 and 100 (1000 optimizer steps per
+# cell) -- reporting per cell the two point-wise losses, the RMS per-system
+# XC energy error, and BOTH quantities the Section 3.3 certificate gates on:
+# the maximum |dE_xc| over the ATOMS against tol_atom = 1.0 mHa, and the
+# maximum |dAE| over the molecules against tol_AE = 1.0 kcal/mol, both of
+# them maxima and not means, and neither implying the other: an error shared
+# by a molecule and its atoms cancels out of an atomization energy. The sweep
+# runs the POLARIZED correlation objective, the one every configuration under
+# hpcjobs/configs/ sets and the one the weight will be applied to. The table
+# it writes is the number the v6 YAMLs carry.
 #
-# WHY A JOB: the sweep is ~20 pretrainings over ~1e6 grid rows each. It is not
+# WHY A JOB: the sweep is ~20 pretrainings over ~2.4e6 rows each. It is not
 # a workstation task, and its result is a committed campaign parameter, so it
 # runs once at a stated identity with the log kept beside the table.
 #
 # WALL DERIVATION (the 24 h request). Measured on the path this job actually
 # runs -- the probe's own smoke cell, deep_rung35_3x16, energy term active,
 # polarized, four threads -- as the SLOPE of the cell wall against the step
-# count (10 and 60 steps, so the data load, the descriptor assembly and the
-# first compile cancel), at three row counts, twice:
+# count (100 and 1100 steps, or 50 and 550 on the two largest, so the data
+# load, the descriptor assembly and the single compile cancel), at four row
+# counts in one session:
 #
-#                                       run A       run B
-#     16350 rows (sto-3g, level 1)     6.380 ms    9.460 ms  per optimizer step
-#     48660 rows (def2-svp, level 3)  21.360 ms   20.820 ms
-#    566674 rows (def2-svp, level 9) 255.660 ms  222.760 ms
+#     16350 rows (sto-3g,   level 1)     5.916 ms  per optimizer step
+#     48660 rows (def2-svp, level 3)    20.734 ms
+#    137218 rows (def2-svp, level 5)    56.661 ms
+#    275588 rows (def2-svp, level 7)   119.389 ms
 #
-# One step is both networks. Least squares: per step = -0.85 ms + 0.4527 us/row
-# (A) and +2.53 ms + 0.3886 us/row (B), residuals under 0.7 ms -- the cost is
-# the rows, with no fixed cost per step above the spread between runs. The
-# larger slope, 0.4527 us/row, is the one carried below.
+# One step is both networks, and a row is an exchange-block row or a
+# correlation-block row. Least squares: per step = -1.36 ms + 0.4356 us/row,
+# residuals under 1.8 ms. The intercept is smaller than those residuals and
+# smaller than the run-to-run spread at a fixed row count (5.92 ms here
+# against 4.69 ms at 16350 rows in a second session on the same box), so
+# there is no fixed per-step cost: the training loop holds ONE filter_jit for
+# the whole run and compiles the update step once
+# (xcquinox/alec/pretrain.py, _train_pretrain_network). The larger of the two
+# sessions' slopes, 0.5218 us/row, is the one carried below.
 #
 # Row count of the production sweep. The 37-system set at def2-svp level 3
-# carries 1287200 quadrature points (counted, per species, from the grids
-# themselves) and 2564592 exchange points, every occupied spin channel
-# contributing its own block on the per-channel footing. The generator drops
-# points below its density floor; measured at this identity on the smoke pair,
-# 85.0 percent of the correlation points and 69.8 percent of the exchange
-# points survive, giving ~1.09e6 correlation and ~1.79e6 exchange rows, 2.88e6
-# in total. One cell is then 1000 x 2.88e6 x 0.4527 us = 1305 s, and twenty
-# cells (4 architectures x 5 weights) are 7.25 h. Generating the two
-# parent-density files is allowed 1 h. Estimate 8.25 h, so a 2x margin is
-# 16.5 h.
+# carries 1287200 Becke-Lebedev points, of which the mean field integrates
+# 1149856: pyscf drops the negligible-density points of the initial guess
+# before its first get_veff, and that pruned grid is the one the generator
+# rebuilds and the rows are drawn from. Twelve of the 37 systems are open
+# shell (168344 pruned points, 14.6 percent); the other 25 are closed
+# (981512).
 #
-# The 24 h request also covers the pre-fix library: before the unvalidated
-# pretraining path stopped re-compiling its update step every optimizer step,
-# the same cell cost 572.6 ms per step at 16350 rows, i.e. a fixed 566 ms of
-# compilation on top of the row term. That puts a production step at 1.87 s,
-# a cell at 1871 s, the sweep at 10.4 h and the estimate at 11.4 h -- 22.8 h at
-# the same 2x margin. One wall covers both, and the four-thread measurement is
-# itself conservative for a forty-core node.
+# ONLY an open shell contributes two exchange blocks. _system_columns writes
+# the per-channel exchange rows under the spin_channel footing when the system
+# is UKS and falls back to the total-density rows otherwise ("x_rows is None
+# for a closed-shell system, whose total-density rows already are that
+# footing"), so the exchange block spans 2 x open + 1 x closed = 1318200
+# points, not 2 x 1287200.
+#
+# The generator then drops the points under its density floor. Measured at
+# this identity as rows over pruned points: 0.9775 on closed shells (Be, CH4,
+# C2H2), and on open shells 0.9743 for the correlation block and 0.9663 per
+# exchange CHANNEL (Li, Cl, O). The He/Li smoke pair is not a proxy for the
+# exchange block -- it is 63 percent open shell by grid mass against the
+# production set's 15, and the open/closed split is exactly what decides one
+# exchange block or two. Weighting the measured fractions by the set's own
+# grid mass:
+#
+#     correlation ~ 0.9775 x 981512 + 0.9743 x 168344         = 1.123e6 rows
+#     exchange    ~ 0.9775 x 981512 + 2 x 0.9663 x 168344     = 1.285e6 rows
+#     total       ~ 2.41e6 rows
+#
+# One cell is then 1000 x 2.41e6 x 0.5218 us = 1257 s, and twenty cells
+# (4 architectures x 5 weights) are 7.0 h. Generating the two parent-density
+# files is allowed 1 h. Estimate 8.0 h, so a 2x margin is 16.0 h.
+#
+# The request also covered the library as it stood before that training loop
+# moved in-module, which re-compiled its update step every optimizer step at a
+# fixed 648 ms measured: a production step of 1.91 s, the sweep at 10.6 h and
+# the estimate at 11.6 h -- 23.2 h at the same 2x margin, still inside the
+# wall. The four-thread measurement is itself conservative for a forty-core
+# node.
 #
 # If a queue will not take 24 h, split the sweep instead of shortening it:
 # EWSWEEP_ARCHS names one batch of architectures per submission and --resume
 # accumulates them into the one table (see below).
 #
-# EXIT CODES. 0 = a weight cleared the gate on every architecture. 2 = the
-# sweep ran to completion and NO weight did; the table is written and the
-# finding is the table. Anything else is a failure of the sweep itself.
-# SLURM mails FAIL on 2 as on any non-zero code -- read the verdict line in
-# the log before treating it as a broken job.
+# EXIT CODES. 0 = a weight cleared the gate on every architecture MEASURED
+# -- this submission's batch plus whatever the resumed table already held,
+# named on the recommendation line and not necessarily the four defaults.
+# 2 = the sweep ran to completion and NO weight did; the table is written and
+# the finding is the table. 3 = an exception escaped the sweep; its traceback
+# is in the log and the partial table is still written. 1 = a cell failed, or
+# the sweep refused its arguments. SLURM mails FAIL on 2 as on any non-zero
+# code -- read the verdict line in the log before treating it as a broken job.
 #
 # Shell discipline: no `set -e` (conda activation returns non-zero on success
 # and would kill the job seconds in with an empty log); activation is verified
@@ -180,9 +210,15 @@ else
   echo "[ewsweep] NO TABLE WRITTEN -- not one cell finished."
 fi
 case "$RC" in
-  0) echo "[ewsweep] a swept weight cleared both gates on every architecture." ;;
+  0) echo "[ewsweep] a swept weight cleared both gates on every architecture"
+     echo "[ewsweep] IN THE TABLE. This submission measured:"
+     echo "[ewsweep]   ${ARCHS:-the four default architectures}"
+     echo "[ewsweep] The recommendation line above names the architectures the"
+     echo "[ewsweep] verdict covers: a batch clears only what it measured." ;;
   2) echo "[ewsweep] COMPLETED, the gates NOT cleared by any swept weight."
      echo "[ewsweep] That is the finding; the table is written. Not a crash." ;;
+  3) echo "[ewsweep] an exception ESCAPED the sweep -- traceback above."
+     echo "[ewsweep] The partial table is written; --resume carries it." ;;
   *) echo "[ewsweep] FAILED -- see the log above." ;;
 esac
 # A job killed at the wall still leaves every cell it finished in $OUT.
