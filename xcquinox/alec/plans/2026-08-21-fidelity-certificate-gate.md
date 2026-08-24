@@ -4687,7 +4687,7 @@ fixtures use non-registry arch names.
 - Produces:
   - `_arch_uncertified(run_dir: Path, arch: str) -> bool`
   - `arch_coverage(...)["uncertified"] -> List[str]`
-  - `fidelity_summary(run_dir: Path, archs=None) -> Dict[str, Any] | None` -- `{"n_archs": int, "max_atom_mHa": float, "max_dAE_kcalmol": float}`; `archs=None` means every architecture in the run's manifest grid
+  - `fidelity_summary(run_dir: Path, archs=None) -> Dict[str, Any] | None` -- `{"n_archs": int, "max_atom_mHa": float, "max_dAE_kcalmol": float}`; `archs=None` means every architecture in the run's manifest grid. As shipped (commit 73ce49ab4) the dictionary also carries `n_archs_without_numbers` (certificates that state no numbers, excluded from `n_archs`) and `not_pass` (`"arch (STATUS)"` for every contributing certificate that is not PASS), and the footer marks the line when `not_pass` is non-empty.
   - `provenance_footer(baseline, scan_baseline=None, fidelity=None) -> str`
   - `_FIDELITY_DISCLOSURE: str`, `_FIDELITY_GATE_DATE: str`, `_run_predates_fidelity_gate(run_id) -> bool`
 
@@ -5023,6 +5023,9 @@ and insert before the final `return s`:
         s += (f" Pretraining fidelity (worst of {fidelity['n_archs']} arch):"
               f" |dE_xc| atom <= {fidelity['max_atom_mHa']:.2f} mHa"
               f" / |dAE| <= {fidelity['max_dAE_kcalmol']:.2f} kcal/mol.")
+    # Shipped form (commit 73ce49ab4): the same sentence, followed by the
+    # number of certificates without numbers when non-zero and by the
+    # "arch (STATUS)" list of contributing certificates that did not pass.
 ```
 
 - [ ] **Step 6: Add the hard fail in `build_bh76w411_suite`**
