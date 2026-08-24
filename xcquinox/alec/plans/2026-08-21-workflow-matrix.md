@@ -2373,6 +2373,12 @@ Expected: PASS.
 > meaning of a defect the matrix found; the sketches below that expect a `ValueError` out of
 > `main` describe the pre-residual behaviour. `_refuse_repo_work_root` became
 > `_repo_path_refusal`, guarding all three paths.
+> Further shipped renames: the environment escape hatch the sketches call
+> `XCQUINOX_FIDELITY_OVERRIDE_REASON` / `FIDELITY_OVERRIDE_ENV` was removed in favour of the
+> certificate-file waiver (enforce false plus a written reason) plus `XCQUINOX_ALLOW_UNCERTIFIED=1`
+> at the training layer; and the oracle stage targets the oracle MODULE FILE with an exact `-k`
+> selector, not a test directory, so the `ORACLE_TEST_TARGET` passages describe the pre-residual
+> shape.
 
 **Files:**
 - Modify: `xcquinox/alec/cluster/workflow_matrix.py` (append after `write_matrix_report`)
