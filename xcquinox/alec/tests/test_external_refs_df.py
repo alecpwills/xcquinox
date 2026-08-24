@@ -63,7 +63,11 @@ def test_precompute_all_forwards_density_fit(tmp_path, monkeypatch):
     monkeypatch.setattr(er, "run_oep_cascade",
                         lambda *a, **k: None)
     monkeypatch.setattr(er, "resolve_geometry", lambda s: object())
-    monkeypatch.setattr(er, "_npz_is_complete", lambda p: False)
+    def fake_complete(path, **identity):
+        seen["complete"] = identity
+        return False
+
+    monkeypatch.setattr(er, "_npz_is_complete", fake_complete)
     monkeypatch.setattr(er, "_validate_overrides", lambda species: None)
 
     er.precompute_all([spec], cache_dir=tmp_path, basis="def2-tzvp",
@@ -71,6 +75,10 @@ def test_precompute_all_forwards_density_fit(tmp_path, monkeypatch):
                       density_fit=True, auxbasis="def2-tzvp-jkfit")
     assert seen["scf"] == (True, "def2-tzvp-jkfit")
     assert seen["ccsd"] == (True, "def2-tzvp-jkfit")
+    # The skip predicate is handed the run's identity (the seam the
+    # reference-cache currency check depends on).
+    assert seen["complete"] == {"basis": "def2-tzvp",
+                                "orientation_lock_strength": 0.0}
 
 
 @pytest.mark.slow

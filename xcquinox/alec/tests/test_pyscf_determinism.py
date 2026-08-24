@@ -649,8 +649,69 @@ def test_pinned_mean_field_deepcopies_but_does_not_pickle():
     clone = copy.deepcopy(mf)
     assert pinned_xc_block_size(clone) == REFERENCE_XC_BLKSIZE
     assert clone._xcquinox_eri_path == "incore"
-    with pytest.raises(Exception):
+    # pickle refuses the instance-level closures by name, not just anything.
+    with pytest.raises(AttributeError, match="local object"):
         pickle.dumps(mf)
+
+
+def test_pinned_mean_fields_are_freed_by_refcount_alone():
+    """The pins must not create reference cycles: a pinned mean-field (and
+    its integrator) dies at del with the cyclic collector disabled, exactly
+    as an unpinned one does. The OEP inner loop builds and drops one pinned
+    object per objective evaluation, so a cycle turns the loop into an
+    accumulator that only gc.collect() drains (measured before the fix:
+    the object survives del, and an 80-iteration build-and-discard loop
+    peaks 6x higher than unpinned)."""
+    import gc
+    import weakref
+    gc.disable()
+    try:
+        refs = []
+        for _ in range(3):
+            mol = gto.M(atom=_H2O_ATOM, basis="def2-svp", verbose=0)
+            mf = dft.RKS(mol)
+            pin_reference_scf(mf)
+            refs.append((weakref.ref(mf), weakref.ref(mf._numint)))
+            del mf
+        assert all(r() is None for r, _ in refs), \
+            "pinned mean-fields are kept alive by a reference cycle"
+        assert all(n() is None for _, n in refs), \
+            "pinned integrators are kept alive by a reference cycle"
+        mol = gto.M(atom=_H2O_ATOM, basis="def2-svp", verbose=0)
+        hf = scf.RHF(mol)
+        pin_reference_scf(hf)
+        wr = weakref.ref(hf)
+        del hf
+        assert wr() is None
+    finally:
+        gc.enable()
+
+
+def test_pin_order_with_density_fit_is_independent():
+    """All library call sites density-fit before pinning, but the reverse
+    order must not raise: the DF wrapper copies a pre-wrap "incore" stamp
+    into its __dict__, and pin_eri_path on the wrapper supersedes it with
+    the DF pin (the wrapper IS density-fitted; the inherited predicate is
+    never consulted). A repeated DF pin also re-asserts blockdim and the
+    sentinel, so an intervening assignment cannot silently unpin."""
+    from xcquinox.alec.pyscf_determinism import (
+        _DF_PINNED_MAX_MEMORY_MB, REFERENCE_DF_AUX_BLOCKDIM)
+    mol = gto.M(atom=_H2O_ATOM, basis="def2-svp", verbose=0)
+    mf = scf.RHF(mol)
+    assert pin_eri_path(mf) == "incore"
+    df = mf.density_fit()
+    assert df._xcquinox_eri_path == "incore"      # inherited by dict copy
+    assert pin_eri_path(df) == "df-aux240"        # superseded, not refused
+    assert df._xcquinox_eri_path == "df-aux240"
+    assert df.with_df.blockdim == REFERENCE_DF_AUX_BLOCKDIM
+    assert df.with_df.max_memory == _DF_PINNED_MAX_MEMORY_MB
+    assert mf._xcquinox_eri_path == "incore"      # the plain object keeps its pin
+    # Idempotent re-pin restores the attributes if something changed them.
+    df.with_df.max_memory = 4000
+    df.with_df.blockdim = 120
+    assert pin_eri_path(df) == "df-aux240"
+    assert df.with_df.blockdim == REFERENCE_DF_AUX_BLOCKDIM
+    assert df.with_df.max_memory == _DF_PINNED_MAX_MEMORY_MB
 
 
 def test_precompute_records_the_eri_path():
@@ -784,9 +845,11 @@ def _run_df_child(hold_gib):
 
 
 def test_df_reference_is_bitwise_identical_across_memory_histories():
-    """CH4 at the production basis is the smallest case whose fitted-tensor
-    loop exceeds one block (naux 288 against blockdim 240), so the DF
-    Coulomb and exchange summation ORDER is exercised, not just one block:
+    """CH4 at the production basis is the smallest of the report's probe
+    species whose fitted-tensor loop exceeds one block (naux 288 against
+    blockdim 240; pool-wide, 156 of the 214 BH76 and W4-11 species bind,
+    the smallest at naux 242), so the DF Coulomb and exchange summation
+    ORDER is exercised, not just one block:
     a clean process and one holding 2 GiB above pyscf's ceiling must agree
     bit for bit on the DF-PBE record and the DF Hartree-Fock determinant,
     with the aux loops held at the pinned blockdim in both."""

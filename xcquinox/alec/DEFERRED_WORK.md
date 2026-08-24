@@ -668,12 +668,18 @@ unaffected).
 
 **WHAT:** the spin-scaling spec's oracle O2 asks for a central-difference check of the assembled
 UKS Fock matrices against the three-block energy on H, Li, N and O with every descriptor active,
-"extended from Li/def2-svp to the production basis". All four species are now covered at
-def2-svp / grid level 1: O along a random symmetric direction, N along the diagonal and two
-off-diagonal element pairs of each channel (three architectures each), and H and Li along a
-rank-preserving rotation of their one-electron channel, plus Li probed at its own fixed point
-along a constrained and an unconstrained direction. The repetition at the production identity
-(6-311++G(3df,2pd), grid level 3) is not run.
+"extended from Li/def2-svp to the production basis". All four species are covered at def2-svp;
+since #27 closed the probe there is the rotation path of `_uks_fd_path` -- a rank-preserving
+orbital rotation of every populated channel -- run over the 124 harness cells of 31
+architectures x {H, Li, N, O}, plus Li probed at its own fixed point along a constrained and an
+unconstrained direction. The
+repetition at the production identity (6-311++G(3df,2pd), grid level 3) EXISTS as a slow-marked
+test, `test_solv01_split_xc.test_fd_consistency_uks_polarized_production_identity` (`-m slow`,
+the O atom, every architecture); what is deferred is RUNNING it. The figures on its record
+(1.5e-9 to 7.5e-8, the mask keeping 99.6% of the grid) were taken with the linear displacement
+and the indicator's clip-state straddle rows, before the smooth positive part of #27 and the
+move onto the rotation path, so the case ships with numbers that no longer describe the probe it
+now carries.
 
 **WHY DEFERRED:** cost, and the wrong machine for it. Each direction is two full three-block
 energy evaluations -- three descriptor blocks, three feature-response contractions -- plus one
@@ -683,29 +689,33 @@ threads; the production basis raises nao by roughly a factor of four and the gri
 which puts the same battery in the tens of minutes to hours and into the class of run this
 repository submits rather than runs on the workstation.
 
-**KNOWN (do not re-derive):** measured relative residuals at def2-svp / grid level 1 --
-3.8e-13 to 6.6e-11 (N, element directions, 1e-5 step, three architectures), 4.1e-11 to 4.6e-10
-(O, random symmetric direction, 1e-6 step), 7.8e-10 (H) and 8.7e-8 (Li) along the one-orbital
-rotation at the 1e-5 step, and 5.0e-10 for the alpha direction at Li's fixed point. The defect
-signal these bounds must stay below is the superseded two-block potential against the same
-three-block energy: 1.4e-4, 3.6e-5 and 7.1e-5 on O. Two things must be re-derived at the larger
-basis rather than carried over: the FD step (1e-5 to 1e-6 is right at def2-svp; a wider basis is
-worse conditioned) and the choice of direction. A random symmetric direction is unusable wherever
-a channel's iso-orbital indicator hugs the lower clip of `metagga.compute_alpha` -- N's beta
-channel holds 1s and 2s only, raw indicator median 3.2e-3 against O's 0.58, and a random step
-changes the clip state of 431 (h = 1e-6) to 710 (h = 1e-5) of its 4098 resolved points, which
-reads as a 6.0e-5 relative "failure" that is the clip's one-sided derivative (#27) and not a
-potential defect. Single-element directions cross the clip on zero points at both steps.
+**KNOWN (do not re-derive):** the current def2-svp record is the rotation-path run at grid level
+2 -- 1.8e-10 to 6.6e-8 relative over the 124 harness cells against `_TOL_UKS = 5e-7`, the
+guard-straddle mask removing zero points in every cell (re-measured 2026-08-24 on
+`deep_mgga_3x16`, `deep_3x16` and `deep_rung35_mgga_3x16` x {H, Li, N, O}: 1.9e-10 to 3.3e-8,
+`dropped_mass` exactly 0.0 and `kept_points` exactly 1.0 in all twelve) -- and, on the solver's
+own Fock pair at grid level 1, 2.9e-11 (H), 2.4e-10 (Li), 9.8e-11 (N) and 5.5e-11 (O) at the
+1e-5 step. The defect signal these bounds must stay below is the superseded two-block potential
+against the same three-block energy: 1.4e-4, 3.6e-5 and 7.1e-5 on O. Kept as the record of the
+earlier probe (linear displacement, clip-state straddle rows, grid level 1) and NOT as figures
+to compare a current run against: 3.8e-13 to 6.6e-11 (N, element directions, 1e-5 step, three
+architectures), 4.1e-11 to 4.6e-10 (O, random symmetric direction, 1e-6 step), 7.8e-10 (H) and
+8.7e-8 (Li) along the one-orbital rotation at the 1e-5 step, and 5.0e-10 for the alpha direction
+at Li's fixed point. The clip-state straddle that drove the direction choice then -- a random
+step changing the clip state of 431 (h = 1e-6) to 710 (h = 1e-5) of N's 4098 resolved beta
+points, reading as a 6.0e-5 relative "failure" that was the clip's one-sided derivative and not
+a potential defect -- cannot recur: the indicator has no lower clip to straddle. Two things must
+still be derived at the larger basis rather than carried over: the FD step (1e-5 to 1e-6 is
+right at def2-svp; a wider basis is worse conditioned) and the choice of direction (entry 30).
 
-**TRIGGER:** run on the cluster, either as a slow-marked test (`-m slow`) or as a cell of the
-workflow matrix, before the next production UKS campaign on the meta-GGA rungs, and whenever the
-three-block potential or the feature-response contraction is changed. #27 is closed (the smooth
-positive part in the energy of `compute_alpha`, the retired gate, and O2's probe moved onto the
-rotation manifold of every populated channel), so the figures in KNOWN above were taken on the
-superseded probe: the def2-svp residuals must be re-read from the current O2 run and the
-production case re-measured with the rotation path -- on which the N atom is no longer a
-clip-boundary pathology, so it can rejoin the production set; the descriptor's tail response
-(entry 30) still rules out the linear displacement there.
+**TRIGGER:** run the shipped slow-marked case on the cluster, on its own (`-m slow`) or as a cell
+of the workflow matrix, before the next production UKS campaign on the meta-GGA rungs, and
+whenever the three-block potential or the feature-response contraction is changed. The production
+residuals must be re-measured along the rotation path and the case's docstring restated from that
+run. Whether the N atom rejoins the production case is entry 30's question and is not settled
+here: the rotation path removes the clip-boundary pathology that excluded N, but the indicator's
+tail response still rules out any direction that leaves the cone of positive semidefinite
+matrices there, and no rotation-path measurement of N at the production identity has been taken.
 
 ## 29. Reference SCF quadrature order depends on process memory (2026-08-23) -- CLOSED 2026-08-24 (<hash>)
 
@@ -785,12 +795,17 @@ so a production record is reproducible only up to its thread count). Every recor
 in `mol_metadata` (precompute) or the SCF cache payload (`external_refs`) so a mismatch is
 visible. The density-fitted auxiliary loops are pinned as well (found in review: `df_jk.get_jk` sizes its
 Coulomb and exchange aux blocks from `dfobj.max_memory - lib.current_memory()`, a dependence the
-def2-svp fitting bases cannot expose -- naux 49-113 against blockdim 240 -- while the production
+def2-svp fitting bases cannot expose -- naux 77-113 against blockdim 240 -- while the production
 basis can: CH4 naux 288, C5H8 888): `pin_eri_path` on a density-fitted object holds
 `with_df.blockdim` at 240 (PySCF's own default) and `with_df.max_memory` at a sentinel, so the
-aux sums run over fixed 240-vector blocks and the fitted tensor builds in memory in one pass
-(354 MB at the largest pool species), stamped `"df-aux240"`. Proven on CH4 at the production
-basis (the smallest case whose aux loop exceeds one block), one thread: unpinned, a clean process
+aux sums run over fixed 240-vector blocks and the fitted tensor builds in memory in one pass -- a
+real memory request: the 353.6 MB tensor plus two same-size scratch buffers at the largest pool
+species, 1060.7 MB allocated and +700 MB peak resident, where a starved unpinned build would have
+spilled to disk (+25 MB at acetic against +231 MB pinned); accepted for one code path with one
+bitwise proof, paid on the reference stage whose CCSD step dwarfs it -- stamped `"df-aux240"`.
+Proven on CH4 at the production basis (the smallest of the probe species whose aux loop exceeds
+one block; pool-wide 156 of the 214 BH76 and W4-11 species bind, the smallest at naux 242), one
+thread: unpinned, a clean process
 and one holding 3.6 GiB differ on the DF-PBE dm and e_tot and on the DF Hartree-Fock determinant
 (-40.21286479375725 against ...2); pinned, all four agree exactly (hf dm fb2d9313..., e_tot
 -40.46264253036452). Before this pin the unpinned exchange loop moved the O-atom HF density by
@@ -798,7 +813,11 @@ and one holding 3.6 GiB differ on the DF-PBE dm and e_tot and on the DF Hartree-
 histories -- below the CCSD convergence floor and every consumer's tolerance, the scale that keeps
 the stamps out of the CCSD cache identity. A stale integral-path decision cannot survive a
 `reset` to a different system (the pinned predicate raises), and a pinned mean-field does not
-pickle (deepcopy and `mf.copy()` preserve the pins; no reference path pickles one).
+pickle (deepcopy and `mf.copy()` preserve the pins; no reference path pickles one). The pins hold
+their owner only through weak references, so a pinned object is freed by refcounting exactly as an
+unpinned one (a strong closure reference had turned the OEP inner loop's build-and-discard into an
+accumulator; measured and removed), and pinning before or after `density_fit()` lands on the same
+DF pin.
 
 **Cache identities:** none of the stamps enters an identity -- not the `external_refs` cache
 filenames (a CCSD reference is hours per species at the production identity, and a 1e-13 change in
@@ -806,12 +825,12 @@ the HF seed does not move a CCSD density above its own floor), not the pretraini
 not the precompute memo. Existing caches load unchanged and report the stamps as None
 (`test_run_scf_with_cache_records_the_pins_and_keeps_an_older_cache`); the closed-shell fixture
 of O3 reproduces on all keys (its probe is one block and incore under both its own pins and
-these). Tests: `tests/test_pyscf_determinism.py` (38: the seams on `NumInt.block_loop`,
+these). Tests: `tests/test_pyscf_determinism.py` (40: the seams on `NumInt.block_loop`,
 `_is_mem_enough` and the DF aux loops, the wrappers, the escalation-tier and HF-meanfield pins,
-the bound against the pools, the metadata and cache stamps, the OEP objects, the reset guard and
-the pickling contract, and two multi-process end-to-end tests -- def2-svp and DF-CH4 at the
-production basis -- that require bit-identical records across memory histories with the pins and
-different ones without).
+the bound against the pools, the metadata and cache stamps, the OEP objects, the reset guard, the
+pickling and refcount-freeing contracts, the density-fit ordering, and two multi-process
+end-to-end tests -- def2-svp and DF-CH4 at the production basis -- that require bit-identical
+records across memory histories with the pins and different ones without).
 
 ## 30. The iso-orbital indicator's tail response makes the meta-GGA Fock hyper-sensitive off the SCF manifold (found 2026-08-24)
 

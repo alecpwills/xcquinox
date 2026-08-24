@@ -23,11 +23,12 @@ reference SCF followed the memory history of the process that ran it.
    (``max(4, int(min(blockdim, mem * .3e6 / 8 / nao**2)))`` for J), so the
    number of fitted-tensor blocks the J and K sums run over follows live
    memory once naux exceeds one block. The def2-svp fitting bases stay
-   under one block (O: naux 49, H2O: 113, against blockdim 240), so the
+   under one block (O: naux 77, H2O: 113, against blockdim 240), so the
    dependence cannot bind there; at the production basis it does (CH4:
    naux 288, two blocks at normal headroom; C5H8: 888, four blocks, or 222
-   blocks of 4 once the process passes the ceiling), and every production
-   campaign runs density fitting.
+   blocks of 4 once the process passes the ceiling; 156 of the 214 BH76 and
+   W4-11 species exceed one block at that basis, the smallest at naux 242),
+   and every production campaign runs density fitting.
 
 Measured on the O atom (def2-svp, grid level 3, orientation lock on, one
 thread): a clean process integrates the 11904-point grid in one block with
@@ -61,11 +62,25 @@ On a density-fitted object it instead holds ``with_df.blockdim`` at
 :data:`REFERENCE_DF_AUX_BLOCKDIM` (240, PySCF's own default) and
 ``with_df.max_memory`` at a sentinel, so the auxiliary loops run at the
 blockdim whatever the live memory, and the fitted tensor is built in
-memory in one pass (``naux * nao (nao + 1) / 2 * 8`` bytes: 14 MB for CH4,
-354 MB for C5H8 at the production basis, the largest pool species) with a
-chunking that no longer follows live memory either; the decision is
-stamped as ``"df-aux240"``. :func:`pin_reference_scf` applies the
+memory in one pass. That build is a real memory request: ``cholesky_eri``
+holds the tensor (``naux * nao (nao + 1) / 2 * 8`` bytes; 11.4 MB for CH4,
+353.6 MB for C5H8, the largest pool species) plus two scratch buffers of
+the same size in the single pass the sentinel forces -- a 1060.7 MB
+allocation with a measured peak of +700 MB resident at C5H8 and +231 MB at
+acetic, where an unpinned build under a starved budget would have spilled
+to disk at +25 MB. Forced incore is kept deliberately: one code path with
+one bitwise proof, paid on the reference-generation stage whose CCSD step
+dwarfs it. The decision is stamped as ``"df-aux240"``, and the pin is
+independent of ordering against ``density_fit()``: pinning first and
+wrapping afterwards leaves an inherited non-DF stamp that the next pin
+supersedes rather than refuses. :func:`pin_reference_scf` applies the
 applicable pins and reports them with the thread count.
+
+The pins hold their owner only through weak references, so a pinned
+object is freed by refcounting exactly as an unpinned one is; a closure
+that held the mean-field strongly turned every build-and-discard loop --
+one inner SCF per OEP objective evaluation -- into an accumulator that
+only the cycle collector drained, measured and removed.
 
 A pinned object is no longer picklable: the pins are instance-level
 closures, so ``pickle.dumps`` fails loudly rather than silently shedding
@@ -133,6 +148,7 @@ is inside the tolerances that already held both orders.
 from __future__ import annotations
 
 import inspect
+import weakref
 from typing import NamedTuple
 
 from pyscf import lib
@@ -196,9 +212,11 @@ REFERENCE_DF_AUX_BLOCKDIM: int = 240
 
 #: Sentinel ceiling (MB) held on a density-fitted reference object so the
 #: memory-derived bound of its auxiliary loops never undercuts the blockdim
-#: and its fitted-tensor build is in-memory and single-pass. Not a resource
-#: request: what is allocated is bounded by the blockdim buffers and the
-#: fitted tensor itself (module docstring).
+#: and its fitted-tensor build is in-memory and single-pass. The forced
+#: in-memory build is a real resource request -- the fitted tensor plus two
+#: same-size scratch buffers, 1060.7 MB allocated and +700 MB peak resident
+#: at the largest pool species (module docstring) -- accepted for one code
+#: path with one bitwise proof.
 _DF_PINNED_MAX_MEMORY_MB: float = 1e9
 
 
@@ -272,12 +290,20 @@ def pin_xc_block_size(mf, blksize: int = REFERENCE_XC_BLKSIZE) -> int | None:
             f"{list(parameters)}; update pin_xc_block_size before relying "
             "on it")
 
+    owner = weakref.ref(ni)
+
     def block_loop(mol, grids, nao=None, deriv=0, max_memory=2000,
                    non0tab=None, blksize=None, buf=None):
+        integrator = owner()
+        if integrator is None:
+            raise RuntimeError(
+                "this pinned block_loop outlived the integrator it was "
+                "installed on; pin a live mean-field instead of keeping "
+                "the bare closure")
         if blksize is None:
             blksize = pinned
-        return unpinned(ni, mol=mol, grids=grids, nao=nao, deriv=deriv,
-                        max_memory=max_memory, non0tab=non0tab,
+        return unpinned(integrator, mol=mol, grids=grids, nao=nao,
+                        deriv=deriv, max_memory=max_memory, non0tab=non0tab,
                         blksize=blksize, buf=buf)
 
     block_loop.__doc__ = (
@@ -329,12 +355,17 @@ def pin_eri_path(mf, incore_budget_mb: float = REFERENCE_ERI_INCORE_MB) -> str:
     already = getattr(mf, _ERI_PIN_ATTR, None)
     if with_df is not None:
         path = f"df-aux{REFERENCE_DF_AUX_BLOCKDIM}"
-        if already is not None:
-            if already != path:
-                raise ValueError(
-                    f"this mean-field's integral path is already pinned to "
-                    f"{already!r}; refusing to re-pin it to {path!r}")
-            return path
+        if (already is not None and already != path
+                and already.startswith("df-")):
+            raise ValueError(
+                f"this mean-field's integral path is already pinned to "
+                f"{already!r}; refusing to re-pin it to {path!r}")
+        # A non-DF stamp here was inherited from a pin taken BEFORE
+        # density_fit() (the wrapper copies __dict__): superseded, since
+        # the object is density-fitted now and never consults the
+        # inherited predicate. The assignments below also run on an
+        # idempotent re-pin, restoring blockdim and the sentinel if
+        # something changed them in between.
         with_df.blockdim = REFERENCE_DF_AUX_BLOCKDIM
         with_df.max_memory = _DF_PINNED_MAX_MEMORY_MB
         setattr(mf, _ERI_PIN_ATTR, path)
@@ -348,13 +379,21 @@ def pin_eri_path(mf, incore_budget_mb: float = REFERENCE_ERI_INCORE_MB) -> str:
         return path
     incore = path == "incore"
     nao_at_pin = int(mf.mol.nao)
+    owner = weakref.ref(mf)
 
     def _pinned_is_mem_enough():
-        if int(mf.mol.nao) != nao_at_pin:
+        obj = owner()
+        if obj is None:
+            # The pinned owner is gone; a surviving __dict__ copy (a
+            # second-order or density-fitting wrapper) still gets the
+            # pinned decision, which is a pure function of the nao it was
+            # derived from.
+            return incore
+        if int(obj.mol.nao) != nao_at_pin:
             raise RuntimeError(
                 f"the integral path of this mean-field was pinned for "
                 f"nao={nao_at_pin} but its molecule now has "
-                f"nao={int(mf.mol.nao)} (reset to a different system?); "
+                f"nao={int(obj.mol.nao)} (reset to a different system?); "
                 "build and pin a fresh mean-field instead of reusing this "
                 "one")
         return incore
