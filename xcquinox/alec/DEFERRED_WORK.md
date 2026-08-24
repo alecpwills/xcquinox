@@ -653,3 +653,31 @@ workflow matrix, before the next production UKS campaign on the meta-GGA rungs, 
 three-block potential or the feature-response contraction is changed. Closing #27 (a smooth
 positive part in the energy of `compute_alpha`) also changes what the check measures on the
 one-electron channels and should be paired with it.
+
+## #29 -- reference SCF quadrature order depends on process memory (2026-08-23)
+
+**WHAT:** PySCF sizes the XC grid loop of the reference SCF from
+`mol.max_memory - lib.current_memory()`, so the block size, and with it the summation order of
+the quadrature, changes with the memory the process has accumulated. The same `MoleculeSpec`
+gave `E_non_xc` of -67.0032708185235, ...53, ...56 and ...59 in one process depending only on
+what had run before (the closed-shell byte-identity recorder, O3 of the spin-scaling oracles,
+1.8 GB against 4.1 GB resident), and the reference PBE SCF is likewise not bit-reproducible at
+more than one BLAS thread (four distinct `dm_pbe` digests for H2 in one process). The effect is
+at the 1e-13 relative level and sits inside every tolerance the identity and certificate layers
+use (`_LOCKED_REPRO_TOL`, `PARENT_GRID_TOL_HA`), so no result is wrong; it is a floor that any
+bitwise comparison of records or any cache keyed on a digest of a record must respect.
+
+**WHY deferred:** pinning the order means fixing the block size (a large `mol.max_memory` makes
+the whole grid one block) in `data.precompute_fixed_density_data`'s reference SCF and in
+`external_refs`, which changes the memory profile of every production stage and must be measured
+on the cluster before it is the default.
+
+**KNOWN:** the O3 recorder pins `MoleBase.max_memory` (not `lib.param.MAX_MEMORY`, which is read
+at class definition) and the thread count, and with those pins HEAD and the `ae204537e` tree agree
+on all eight keys of all 31 architectures exactly; without them the last eight records
+alphabetically differed. The Tasks 5-6 report's 1e-13 H2O "input drift" is this effect.
+
+**TRIGGER:** before any workflow that compares records bitwise across processes (a cache keyed
+on record digests, a cross-node reproducibility test), pin the block size in the two reference
+paths, measure peak memory at the production identity on the cluster, and record the floor that
+remains.
