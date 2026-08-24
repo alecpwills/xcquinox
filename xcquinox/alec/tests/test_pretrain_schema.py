@@ -80,14 +80,25 @@ def _install_fake(monkeypatch, factory):
 # ---------------------------------------------------------------------------
 
 def test_default_output_matches_the_recorded_reference(tmp_path):
-    """Every column the generator wrote before the pretraining-protocol change
-    is bit-identical at the default configuration, so a YAML already in flight
-    trains on the same numbers. New keys may appear; old ones may not move.
-    (The .npz CONTAINER is a zip whose headers carry write timestamps, so the
-    pin is on array contents, not on the file's bytes.) The recording predates
+    """Every column the generator writes at the default configuration is
+    bit-identical to the recorded fixture, so a YAML already in flight trains
+    on the same numbers. New keys may appear; old ones may not move. (The
+    .npz CONTAINER is a zip whose headers carry write timestamps, so the pin
+    is on array contents, not on the file's bytes.) The recording predates
     the orientation lock; both atoms carry one s function, on which the
     traceless-quadrupole bias vanishes identically, so the locked default
-    reproduces it."""
+    reproduces it.
+
+    The fixture was re-recorded when the iso-orbital indicator's lower bound
+    became a smooth positive part (``metagga.compute_alpha``, width 1e-5;
+    DEFERRED_WORK.md entry 27). Against the previous recording exactly two
+    keys moved: ``metagga_all`` on 1200 of 1200 rows, from the hard clip's
+    0.0 (largest raw residue 1.4e-10) to the smoothing's floor 5.0e-6 (both
+    atoms are one orbital in this basis), and ``metagga_mesh`` on 560 of 560
+    rows by at most 5.0e-6 (the alpha = 0 nodes by the floor, the others by
+    ``width^2 / (4 alpha)`` <= 2.5e-10); every other key -- rho, sigma, the
+    PBE and SCAN targets, cusp, dm, rung35, rung35ms, weights, zeta, on the
+    atomic rows and on the mesh -- is bit-identical."""
     ref = dict(np.load(_FIXTURE))
     _path, got = _gen(tmp_path)
     missing = sorted(set(ref) - set(got))
@@ -98,10 +109,18 @@ def test_default_output_matches_the_recorded_reference(tmp_path):
         np.testing.assert_array_equal(got[key], ref[key], err_msg=key)
 
 
+def _legacy_view(ref):
+    """The recorded fixture without the keys the protocol change added: the
+    pre-protocol file format (the fixture itself was re-recorded after the
+    change and carries them all)."""
+    return {k: v for k, v in ref.items() if k not in _NEW_DEFAULT_KEYS}
+
+
 def test_default_output_adds_only_the_documented_new_keys(tmp_path):
     ref = dict(np.load(_FIXTURE))
     _path, got = _gen(tmp_path)
-    assert sorted(set(got) - set(ref)) == _NEW_DEFAULT_KEYS
+    assert set(got) == set(ref)
+    assert sorted(set(got) - set(_legacy_view(ref))) == _NEW_DEFAULT_KEYS
 
 
 def test_default_output_writes_no_exchange_block(tmp_path):
@@ -512,12 +531,15 @@ def test_loader_refuses_a_single_precision_or_misaligned_column(tmp_path):
         pdg.load_pretrain_data_npz(path)
 
 
-def test_loader_accepts_a_legacy_file():
-    """A file written before the protocol (the recorded fixture) carries the
-    total-density block and the mesh but no system table; it loads, and its
-    layout says so, because an existing production file is still valid data
-    for the point-wise loss."""
-    got = pdg.load_pretrain_data_npz(_FIXTURE)
+def test_loader_accepts_a_legacy_file(tmp_path):
+    """A file written before the protocol (the recorded fixture stripped of
+    the keys the protocol added, ``_legacy_view``) carries the total-density
+    block and the mesh but no system table; it loads, and its layout says so,
+    because an existing production file is still valid data for the
+    point-wise loss."""
+    legacy = tmp_path / "legacy.npz"
+    np.savez(legacy, **_legacy_view(dict(np.load(_FIXTURE))))
+    got = pdg.load_pretrain_data_npz(str(legacy))
     assert "system_all" not in got
     assert pdg.pretrain_npz_layout(set(got)) == {
         "polarized": True, "descriptors": True, "exchange_footing": "total",
@@ -563,6 +585,43 @@ def test_manifest_records_the_new_identity(tmp_path):
     assert meta["orientation_lock_strength"] == \
         pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH == 3e-5
     assert meta["x64"] is True
+    from xcquinox.alec.metagga import ALPHA_DEFINITION
+    assert meta["alpha_definition"] == ALPHA_DEFINITION \
+        == "smooth_positive_part:width=1e-05"
+
+
+def test_a_manifest_from_before_the_indicator_smoothing_is_not_current(
+        tmp_path):
+    """The iso-orbital indicator is a stored column, and its definition moved
+    when its lower bound became a smooth positive part
+    (``metagga.compute_alpha``): the hard clip wrote 0.0 on every one-orbital
+    row where the smoothing writes width / 2 = 5e-6 (1200 of 1200 rows of
+    the default set's H atom, the mesh's alpha = 0 nodes), with no other key
+    changing. A manifest without ``alpha_definition`` (every file written
+    before the key existed) reads as the hard-clipped definition and is
+    stale at every identity; one naming another definition is stale too;
+    the live one is current. The key is not a request parameter -- the
+    generator can only write the live definition -- so there is no identity
+    at which a pre-smoothing file is served."""
+    from xcquinox.alec.metagga import ALPHA_DEFINITION
+    path, _got = _gen(tmp_path)
+    sysm = pdg.resolve_pretrain_systems(atoms=_TINY)
+    base = dict(basis="sto-3g", grid_level=0, systems=sysm)
+    assert pdg.pretrain_data_is_current(path, **base) is True
+    mpath = str(path) + ".manifest.json"
+    meta = pdg.read_pretrain_manifest(path)
+    assert meta["alpha_definition"] == ALPHA_DEFINITION
+    for stale in ({k: v for k, v in meta.items() if k != "alpha_definition"},
+                  {**meta, "alpha_definition": "hard_clip"},
+                  {**meta, "alpha_definition":
+                   "smooth_positive_part:width=1e-06"}):
+        with open(mpath, "w") as f:
+            json.dump(stale, f)
+        assert pdg.pretrain_data_is_current(path, **base) is False, stale.get(
+            "alpha_definition", "<absent>")
+    with open(mpath, "w") as f:
+        json.dump(meta, f)
+    assert pdg.pretrain_data_is_current(path, **base) is True
 
 
 def test_manifest_x64_flag_is_the_live_jax_configuration(tmp_path):
@@ -588,13 +647,23 @@ def test_manifest_x64_flag_is_the_live_jax_configuration(tmp_path):
 
 def test_currency_check_legacy_manifest_is_current_at_the_legacy_identity(
         tmp_path):
-    """A file written before this change carries no reference_xc / footing /
-    systems / lock / x64 keys. They read as the values the historical
-    generator used -- PBE, the total footing, the atom list, NO orientation
-    lock, double precision -- so the file is current for a request at that
-    identity and stale for the production one, whose lock the historical rows
-    of a degenerate atom were not computed at."""
+    """A file written before the protocol change carries no reference_xc /
+    footing / systems / lock / x64 keys. They read as the values the
+    historical generator used -- PBE, the total footing, the atom list, NO
+    orientation lock, double precision -- so, with its indicator definition
+    stated, the file is current for a request at that identity and stale for
+    the production one, whose lock the historical rows of a degenerate atom
+    were not computed at. Without the ``alpha_definition`` key the file
+    predates the smoothing of the indicator's lower bound and its alpha rows
+    are the hard-clipped ones, so it is stale at every identity (the
+    definition is not a request parameter; see
+    ``test_a_manifest_from_before_the_indicator_smoothing_is_not_current``)."""
+    from xcquinox.alec.metagga import ALPHA_DEFINITION
     p = _legacy_stub(tmp_path)
+    assert pdg.pretrain_data_is_current(
+        p, basis="def2-svp", grid_level=1, atoms=[("H", 1)],
+        orientation_lock_strength=0.0) is False
+    p = _legacy_stub(tmp_path, alpha_definition=ALPHA_DEFINITION)
     assert pdg.pretrain_data_is_current(
         p, basis="def2-svp", grid_level=1, atoms=[("H", 1)],
         orientation_lock_strength=0.0) is True
