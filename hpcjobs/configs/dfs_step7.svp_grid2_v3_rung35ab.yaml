@@ -67,23 +67,29 @@ inputs:
   output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/svp_grid2_v3_rung35ab
   benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_svp_g2
   val_refs_dir: /gpfs/scratch/awills/external_refs_val_dfs_svp_g2
-  # The pretraining data these campaigns consumed was built at the data
-  # generator's own lock, 3e-5, which before 2026-08 was the only lock in play
-  # (the harness passed none). Stated here so a re-run rebuilds it at the same
-  # Hamiltonian; the program's decision is that a re-run is a LOCKED run. What
-  # the historical training SCF ran at -- unlocked -- is recorded in those
-  # runs' own metadata, not in this file.
-  orientation_lock_strength: 3.0e-5
-  # Grid level 2 does not resolve a spatially degenerate free atom's P
-  # term whatever the lock is, so a rebuild of this campaign's pretraining
-  # rows is not reproducible between processes and the data generator refuses
-  # it unless the run says otherwise. Waived deliberately: this is the
-  # identity the finished campaign was run at.
+  # These campaigns ran UNLOCKED -- in training, in their CCSD references and
+  # in their pretraining data. The data generator applied no orientation lock
+  # at all before 2026-08-23, and every pretraining manifest and reference
+  # intermediate they left on disk carries the unlocked identity (no lock key
+  # in the manifests; no _ol tag on any of the cached intermediates). Stated
+  # as 0.0 rather than left to the harness default, which is now the
+  # calibrated 3e-5: an omitted key would re-identify the campaign, so a
+  # re-run would discard the pretraining file it consumed and recompute its
+  # whole CCSD reference set.
+  orientation_lock_strength: 0.0
+  # Two conditions at once, and one waiver covers both: grid level 2 does not
+  # resolve a spatially degenerate free atom's P term whatever the lock is,
+  # and with the lock off the SCF may land on any orientation of the hole
+  # however fine the grid. This campaign's degenerate-atom rows are one
+  # arbitrary member of their manifold, so the data generator refuses to
+  # rebuild them unless the run says otherwise. Waived deliberately: this IS
+  # the identity the finished campaign was run at, and the waiver is what puts
+  # that on the record.
   allow_irreproducible_degenerate: true
   irreproducible_degenerate_reason: >-
-    historical campaign identity at grid level 2; the finished runs
-    consumed pretraining data built here, and the campaign is not re-run at a
-    finer grid
+    historical campaign identity at grid level 2, unlocked; the finished
+    runs consumed pretraining data and CCSD references built at exactly this
+    identity, and the campaign is not re-run at a finer grid
 
 pretrain:
   data_dir: /gpfs/scratch/awills/pretrain_data_dfs_svp_g2_allelem

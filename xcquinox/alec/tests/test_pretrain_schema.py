@@ -825,7 +825,7 @@ def _fake_all_columns(monkeypatch):
 def test_generator_refuses_a_degenerate_atom_below_grid_level_3(tmp_path):
     """At the generator's own default grid level the locked O rows are NOT
     reproducible between processes -- across separate sets of draws rho
-    spreads at the 1e-3..1e-1 level, the iso-orbital indicator by more than
+    spreads at the 1e-3..1e-1 level, the iso-orbital indicator by of order
     unity and the stored E_x at the 1e-6 Ha level, against 3e-11 relative at
     grid level 3 -- while the manifest records an identity the file therefore
     does not have. The generation is refused rather than written.
@@ -833,7 +833,10 @@ def test_generator_refuses_a_degenerate_atom_below_grid_level_3(tmp_path):
     The spreads are quoted as ORDERS OF MAGNITUDE because they are samples of
     a process-to-process scatter rather than bounds: two independent sets of
     draws measured 3e-3 / 0.64 / 3.7e-6 Ha and 5.7e-2 / 12.4 / 1.3e-6 Ha, so a
-    single figure would be read as a reproducible quantity and is not one."""
+    single figure would be read as a reproducible quantity and is not one. The
+    indicator's own spread ran 0.55 to 2.46 over six draw pairs, three of them
+    below unity, so the message says "of order unity" rather than naming a
+    floor no draw pair establishes."""
     with pytest.raises(ValueError, match="grid level") as excinfo:
         pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("O", 2),),
                                        basis="sto-3g", grid_level=1)
@@ -846,7 +849,7 @@ def test_generator_refuses_a_degenerate_atom_below_grid_level_3(tmp_path):
     assert "inputs.irreproducible_degenerate_reason" in message
     # The order-of-magnitude form spans both sets of draws.
     assert "1e-3..1e-1" in message
-    assert "more than unity" in message
+    assert "of order unity" in message
     assert "1e-6 Ha" in message
     assert "0.64" not in message and "3e-3" not in message
     assert not os.listdir(tmp_path)
@@ -933,3 +936,316 @@ def test_a_spherical_atom_is_unaffected_by_either_condition(monkeypatch,
                                           orientation_lock_strength=lock)
     meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
     assert meta["allow_irreproducible_degenerate"] is False
+
+
+# ---------------------------------------------------------------------------
+# The three layout keys name themselves when they go missing
+# ---------------------------------------------------------------------------
+#
+# ``zeta_all``, ``cusp_all`` and ``rho_x`` are not ordinary columns: their
+# PRESENCE is what declares the polarization, the descriptors and the exchange
+# footing. A file that lost one reads as a file written without it, and the
+# refusal then names the columns that go with the missing key -- every one of
+# them present and correct -- while the key itself is never mentioned.
+
+@pytest.mark.parametrize("sentinel,companion", [
+    ("zeta_all", "zeta_mesh"),
+    ("cusp_all", "dm_all"),
+    ("rho_x", "sigma_x"),
+])
+def test_a_deleted_layout_key_is_named_by_the_reader(sentinel, companion):
+    keys = pdg.pretrain_npz_keys(polarized=True, descriptors=True,
+                                 exchange_footing="spin_channel")
+    with pytest.raises(ValueError) as excinfo:
+        pdg.pretrain_npz_layout(keys - {sentinel})
+    message = str(excinfo.value)
+    assert sentinel in message, message
+    # the companions are still reported, as the evidence rather than as the
+    # defect
+    assert companion in message, message
+
+
+def test_a_configuration_without_a_block_is_not_a_missing_layout_key():
+    """The other direction: a file written unpolarized, descriptor-free or on
+    the total footing carries neither the layout key nor its companions, and
+    is a configuration rather than a torn file."""
+    for polarized in (False, True):
+        for descriptors in (False, True):
+            for footing in ("total", "spin_channel"):
+                keys = pdg.pretrain_npz_keys(polarized=polarized,
+                                             descriptors=descriptors,
+                                             exchange_footing=footing)
+                layout = pdg.pretrain_npz_layout(keys)
+                assert layout["polarized"] is polarized
+                assert layout["descriptors"] is descriptors
+                assert layout["exchange_footing"] == footing
+
+
+def test_a_legacy_file_keeps_its_layout_reading():
+    """A pre-protocol file (no system table) carries the historical columns
+    and, when it was written with them, the descriptors; the layout keys read
+    the same way there."""
+    legacy = {f"{s}_all" for s in ("rho", "sigma", "Fx", "Fc", "weights",
+                                   "Fx_scan", "Fc_scan", "metagga", "zeta",
+                                   "cusp", "dm", "rung35", "rung35ms")}
+    layout = pdg.pretrain_npz_layout(legacy)
+    assert layout == {"polarized": True, "descriptors": True,
+                      "exchange_footing": "total", "system_table": False,
+                      "mesh": False}
+    with pytest.raises(ValueError, match="cusp_all"):
+        pdg.pretrain_npz_layout(legacy - {"cusp_all"})
+
+
+def test_the_reader_refuses_a_torn_file_by_its_missing_key(monkeypatch,
+                                                           tmp_path):
+    """End to end through the reader: a written file with one layout key
+    stripped is refused on the way back in, naming the key."""
+    def _cols(system, **kw):
+        keep = ("rho", "sigma", "Fx", "Fx_scan", "metagga", "weights",
+                "cusp", "dm", "rung35", "rung35ms")
+        x = {k: v for k, v in _fake_columns(5, polarized=False).items()
+             if k in keep}
+        return _fake_columns(x_rows=x)
+
+    _install_fake(monkeypatch, _cols)
+    path = pdg.generate_pretrain_data_npz(
+        str(tmp_path), atoms=_TINY, basis="sto-3g", grid_level=0,
+        exchange_footing="spin_channel")
+    with np.load(path) as z:
+        arrays = {k: np.array(z[k]) for k in z.files if k != "rho_x"}
+    np.savez(path, **arrays)
+    with pytest.raises(ValueError, match="rho_x"):
+        pdg.load_pretrain_data_npz(path)
+
+
+# ---------------------------------------------------------------------------
+# The exchange footing is a property of the FILE, not of the manifest alone
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("built,declared", [("total", "spin_channel"),
+                                            ("spin_channel", "total")])
+def test_a_manifest_declaring_the_other_footing_is_not_current(monkeypatch,
+                                                               tmp_path,
+                                                               built,
+                                                               declared):
+    """The ``*_x`` block IS the spin_channel footing and its absence IS the
+    total one, so a manifest that names one beside a file carrying the other
+    describes rows the file does not hold. Every other identity key matches,
+    so without this the file would be served and the pretraining objective
+    would read exchange rows on a footing the run did not ask for."""
+    def _cols(system, **kw):
+        x = None
+        if built == "spin_channel":
+            keep = ("rho", "sigma", "Fx", "Fx_scan", "metagga", "weights",
+                    "cusp", "dm", "rung35", "rung35ms")
+            x = {k: v for k, v in _fake_columns(5, polarized=False).items()
+                 if k in keep}
+        return _fake_columns(x_rows=x)
+
+    _install_fake(monkeypatch, _cols)
+    path = pdg.generate_pretrain_data_npz(
+        str(tmp_path), atoms=_TINY, basis="sto-3g", grid_level=0,
+        exchange_footing=built)
+    systems = pdg.resolve_pretrain_systems(atoms=_TINY)
+    assert pdg.pretrain_data_is_current(
+        path, basis="sto-3g", grid_level=0, systems=systems,
+        exchange_footing=built) is True
+    # the manifest is rewritten to declare the other footing; nothing else
+    # about the file changes
+    mpath = pdg._pretrain_manifest_path(path)
+    meta = json.loads(open(mpath).read())
+    meta["exchange_footing"] = declared
+    with open(mpath, "w") as f:
+        json.dump(meta, f)
+    assert pdg.pretrain_data_is_current(
+        path, basis="sto-3g", grid_level=0, systems=systems,
+        exchange_footing=declared) is False
+
+
+def test_the_footing_check_leaves_a_manifest_only_stub_alone(tmp_path):
+    """The block comparison is gated on a real data file (``Fx_all``): a stub
+    written by a test or a partial writer carries neither footing and is
+    judged by the manifest keys alone, as before."""
+    p = tmp_path / "pretrain_data.npz"
+    np.savez(p, rho_all=np.ones(1))
+    pdg._write_pretrain_manifest(p, basis="sto-3g", grid_level=0,
+                                 density_fit=False, atoms=(("H", 1),),
+                                 systems=pdg.resolve_pretrain_systems(
+                                     atoms=(("H", 1),)),
+                                 exchange_footing="spin_channel")
+    assert pdg.pretrain_data_is_current(
+        p, basis="sto-3g", grid_level=0,
+        systems=pdg.resolve_pretrain_systems(atoms=(("H", 1),)),
+        exchange_footing="spin_channel") is True
+
+
+# ---------------------------------------------------------------------------
+# The precision field, end to end
+# ---------------------------------------------------------------------------
+
+def test_generation_in_single_precision_is_refused_and_writes_nothing(
+        tmp_path):
+    """With ``jax_enable_x64`` off the generator does not produce a file.
+
+    The manifest's ``x64`` field says a file was written in double precision;
+    what makes that a fact rather than a claim is that the generator cannot
+    write anything else. Two guards refuse it, in this order:
+
+    - the grid-identity check in ``_system_columns`` fires first -- the AO
+      table the precompute stored is single precision, and the replayed
+      libcint evaluation of the same grid differs from it by far more than the
+      1e-10 that check allows, so the run stops before a column is assembled
+      (``RuntimeError``: the rebuilt integration grid ... is not the one
+      ``precompute_fixed_density_data`` used);
+    - with that check disabled the schema refuses the column itself
+      (``ValueError``: pretrain data column 'cusp_all' is float32, not
+      float64), which is the guarantee the manifest field records.
+
+    With BOTH disabled a file is written, so this test measures the pair
+    rather than either one. The same configuration with x64 on writes the file
+    normally, which ties the refusal to the precision and not to the system.
+    """
+    import jax
+    from xcquinox.alec.data import clear_precompute_cache
+    kw = dict(atoms=(("He", 0),), basis="sto-3g", grid_level=0)
+    control = tmp_path / "with_x64"
+    assert pdg.generate_pretrain_data_npz(str(control), **kw)
+    single = tmp_path / "without_x64"
+    single.mkdir()
+    jax.config.update("jax_enable_x64", False)
+    try:
+        with pytest.raises((RuntimeError, ValueError)) as excinfo:
+            pdg.generate_pretrain_data_npz(str(single), **kw)
+    finally:
+        jax.config.update("jax_enable_x64", True)
+        # the failed build left its single-precision MoleculeData in the
+        # process-level precompute cache; a later double-precision test of the
+        # same species would otherwise be handed it
+        clear_precompute_cache()
+    assert "quadrature" in str(excinfo.value) or "float64" in str(excinfo.value)
+    assert os.listdir(single) == []
+
+
+def test_a_single_precision_manifest_is_stale_for_a_double_precision_run(
+        tmp_path):
+    """The recorded precision is part of the identity end to end: a file whose
+    manifest says it was computed in single precision is regenerated for a run
+    in double, and current only for a request that asks for single."""
+    path = pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("He", 0),),
+                                          basis="sto-3g", grid_level=0)
+    systems = pdg.resolve_pretrain_systems(atoms=(("He", 0),))
+    ident = dict(basis="sto-3g", grid_level=0, systems=systems)
+    assert pdg.pretrain_data_is_current(path, **ident) is True
+    mpath = pdg._pretrain_manifest_path(path)
+    meta = json.loads(open(mpath).read())
+    assert meta["x64"] is True
+    meta["x64"] = False
+    with open(mpath, "w") as f:
+        json.dump(meta, f)
+    assert pdg.pretrain_data_is_current(path, **ident) is False
+    assert pdg.pretrain_data_is_current(path, x64=False, **ident) is True
+
+
+# ---------------------------------------------------------------------------
+# The waiver cannot reach a caller that granted none
+# ---------------------------------------------------------------------------
+
+def test_a_waived_file_is_never_served_to_a_non_waiving_caller(monkeypatch,
+                                                               tmp_path):
+    """``pretrain_data_is_current`` does not compare the waiver, and does not
+    need to.
+
+    The generator's refusal is a function of the systems, the basis, the grid
+    level and the lock -- all four members of the identity the currency check
+    compares -- and ``ensure_pretrain_data`` applies it to the REQUESTED
+    identity before asking whether the file is current. So a caller that
+    matches a waived file necessarily reproduces that file's own refusal and
+    is turned away first; at an identity that needs no waiver the flag was
+    never exercised and the manifest records False. Both halves are checked
+    here against a file that IS on disk and current.
+    """
+    seen = []
+
+    def _fake_generate(out_dir, **kw):
+        seen.append(kw)
+        p = os.path.join(out_dir, pdg.pretrain_data_filename(
+            kw["polarized"], kw["reference_xc"]))
+        np.savez(p, rho_all=np.ones(1))
+        pdg._write_pretrain_manifest(
+            p, basis=kw["basis"], grid_level=kw["grid_level"],
+            density_fit=kw["density_fit"], auxbasis=kw["auxbasis"],
+            systems=kw["systems"],
+            atoms=tuple((s.name, s.spin) for s in kw["systems"]),
+            reference_xc=kw["reference_xc"],
+            exchange_footing=kw["exchange_footing"],
+            mesh_fraction=kw["mesh_fraction"],
+            orientation_lock_strength=kw["orientation_lock_strength"],
+            allow_irreproducible_degenerate=True)
+        return p
+
+    monkeypatch.setattr(pdg, "generate_pretrain_data_npz", _fake_generate)
+    # An identity that NEEDS the waiver (grid level 1, degenerate O): the
+    # waived build writes a file whose manifest records the waiver ...
+    waived = dict(atoms=(("O", 2),), basis="sto-3g", grid_level=1)
+    path = pdg.ensure_pretrain_data(str(tmp_path),
+                                    allow_irreproducible_degenerate=True,
+                                    **waived)
+    meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
+    assert meta["allow_irreproducible_degenerate"] is True
+    # ... the file is current at that identity ...
+    assert pdg.pretrain_data_is_current(
+        path, basis="sto-3g", grid_level=1,
+        systems=pdg.resolve_pretrain_systems(atoms=(("O", 2),))) is True
+    # ... and a caller that grants no waiver is refused BEFORE that check,
+    # so the waived file is unreachable rather than merely uncompared.
+    with pytest.raises(ValueError, match="grid level"):
+        pdg.ensure_pretrain_data(str(tmp_path), **waived)
+    assert len(seen) == 1
+
+
+def test_at_an_identity_needing_no_waiver_the_flag_was_never_exercised(
+        monkeypatch, tmp_path):
+    """The other half: at grid level 3 with the lock on, a caller granting the
+    waiver and one refusing it produce the same file, and the manifest records
+    the permission as unexercised, so there is nothing for the currency check
+    to compare."""
+    _fake_all_columns(monkeypatch)
+    production = dict(atoms=(("O", 2),), basis="sto-3g", grid_level=3)
+    p1 = pdg.ensure_pretrain_data(str(tmp_path / "granted"),
+                                  allow_irreproducible_degenerate=True,
+                                  **production)
+    p2 = pdg.ensure_pretrain_data(str(tmp_path / "refused"), **production)
+    for p in (p1, p2):
+        meta = json.loads(open(pdg._pretrain_manifest_path(p)).read())
+        assert meta["allow_irreproducible_degenerate"] is False
+    assert pdg.pretrain_data_is_current(
+        p1, basis="sto-3g", grid_level=3,
+        systems=pdg.resolve_pretrain_systems(atoms=(("O", 2),))) is True
+
+
+def test_ensure_hands_the_generator_one_statement_of_the_set(monkeypatch,
+                                                             tmp_path):
+    """The resolved system list is the ONLY statement of the set that reaches
+    the generator.
+
+    ``ensure_pretrain_data`` resolves ``atoms`` / ``dfs_set`` / ``pool_atoms``
+    into a system tuple, checks the file against it and builds from it. It
+    used to pass the raw ``atoms`` alongside that tuple; the generator ignores
+    ``atoms`` whenever ``systems`` is given, so the second argument said the
+    same thing again and invited the two to disagree -- a future generator
+    that preferred ``atoms`` would build a set the currency check never
+    examined."""
+    seen = {}
+
+    def _fake_generate(out_dir, **kw):
+        seen.update(kw)
+        p = os.path.join(out_dir, pdg.pretrain_data_filename(
+            kw["polarized"], kw["reference_xc"]))
+        np.savez(p, rho_all=np.ones(1))
+        return p
+
+    monkeypatch.setattr(pdg, "generate_pretrain_data_npz", _fake_generate)
+    pdg.ensure_pretrain_data(str(tmp_path), atoms=_TINY, basis="sto-3g",
+                             grid_level=0)
+    assert "atoms" not in seen, sorted(seen)
+    assert seen["systems"] == pdg.resolve_pretrain_systems(atoms=_TINY)

@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import warnings
 
 import pytest
 
@@ -1631,7 +1632,7 @@ def test_walltime_literal_not_taken_from_another_section(tmp_path):
     p = tmp_path / "grid.yaml"
     # An earlier section carrying a clock-shaped `time:` whose base-60 value
     # (28800) differs from the cluster block's (43200).
-    p.write_text("decoy:\n  time: 8:00:00\n"
+    p.write_text("x-decoy:\n  time: 8:00:00\n"
                  + yaml.safe_dump(raw) + yaml.safe_dump({"cluster": cluster})
                  + "  time: 12:00:00\n")
     cfg = load_grid_config(str(p))
@@ -1728,7 +1729,9 @@ def _write_cluster_header_yaml(tmp_path, header, key_lines, decoy=True):
 
     ``key_lines`` is appended inside the block. A decoy section carrying a
     clock-shaped ``time:`` is placed FIRST, so any scan that is not confined to
-    the cluster block finds it before the authored value.
+    the cluster block finds it before the authored value. It is spelled
+    ``x-decoy`` because the loader's blocks are closed: an ``x-`` key is the
+    one thing a document may carry that no builder reads.
     """
     yaml = pytest.importorskip("yaml")
     raw = _base_config_dict()
@@ -1736,7 +1739,7 @@ def _write_cluster_header_yaml(tmp_path, header, key_lines, decoy=True):
     cluster.pop("time", None)
     block = yaml.safe_dump({"cluster": cluster})
     body = block[len("cluster:\n"):]
-    text = ("decoy:\n  time: 8:00:00\n" if decoy else "")
+    text = ("x-decoy:\n  time: 8:00:00\n" if decoy else "")
     text += yaml.safe_dump(raw) + header + "\n" + body + key_lines
     p = tmp_path / "grid.yaml"
     p.write_text(text)
@@ -1776,7 +1779,7 @@ def test_nested_mapping_inside_the_cluster_block_supplies_no_literal(tmp_path):
     level deeper carries 28800 as well, so without the indent rule an authored
     ``480:00`` (minutes:seconds, refusable) is accepted as ``8:00:00``."""
     path = _write_cluster_header_yaml(
-        tmp_path, "cluster:", "  notes:\n    time: 8:00:00\n  time: 480:00\n")
+        tmp_path, "cluster:", "  x-notes:\n    time: 8:00:00\n  time: 480:00\n")
     with pytest.raises(ValueError, match=re.escape("cluster.time")):
         load_grid_config(path)
 
@@ -1785,7 +1788,7 @@ def test_nested_mapping_does_not_shadow_a_valid_top_level_wall(tmp_path):
     """The reverse ordering: a nested decoy must not make a correctly written
     top-level wall unrecoverable."""
     path = _write_cluster_header_yaml(
-        tmp_path, "cluster:", "  notes:\n    time: 480:00\n  time: 8:00:00\n")
+        tmp_path, "cluster:", "  x-notes:\n    time: 480:00\n  time: 8:00:00\n")
     assert load_grid_config(path).cluster.time == "8:00:00"
 
 
@@ -2598,3 +2601,244 @@ print(json.dumps({"base": base, "imported": imported,
     # The load really happened, so the counts are a resolved configuration's
     # cost and not an aborted one's.
     assert result["lock"] == 3e-5
+
+
+# ---------------------------------------------------------------------------
+# Unknown keys: a block this loader reads is CLOSED
+# ---------------------------------------------------------------------------
+#
+# Every builder reads the keys it knows and nothing enumerated the rest, so a
+# misspelled knob loaded at its default with the file appearing to set it.
+# ``pretrain: {patiense: 10}`` is the case that prompted this: it left
+# ``patience`` at 0, i.e. no early stop at all, in a configuration written to
+# stop after ten validations.
+
+#: One unknown key per block, with the block's own dict-building helper. The
+#: values are irrelevant -- the key alone decides -- but each is a plausible
+#: misspelling of a real key of that block, which is the case that matters.
+_TYPO_PER_BLOCK = (
+    ("sweep", "archs"),
+    ("hyperparams", "grad_clipping"),
+    ("inputs", "grid_levels"),
+    ("pretrain", "patiense"),
+    ("cluster", "cpus_per_taks"),
+    ("fidelity", "tol_ae"),
+)
+
+
+@pytest.mark.parametrize("block,typo", _TYPO_PER_BLOCK)
+def test_load_refuses_an_unknown_key_in_a_flat_block(tmp_path, block, typo):
+    """A key no builder reads is refused, naming the key and the block's
+    accepted set. Silently ignoring it is what let ``patiense: 10`` load with
+    ``patience`` at 0."""
+    raw = _base_config_dict()
+    raw.setdefault("fidelity", {"tol_AE": 1.0})
+    raw[block][typo] = 10
+    with pytest.raises(ValueError) as excinfo:
+        load_grid_config(_write(tmp_path, "c.yaml", raw))
+    message = str(excinfo.value)
+    assert block in message
+    assert typo in message
+    # ... and the accepted set, so the fix is in the message.
+    accepted = {"sweep": "arch", "hyperparams": "grad_clip",
+                "inputs": "grid_level", "pretrain": "patience",
+                "cluster": "cpus_per_task", "fidelity": "tol_AE"}[block]
+    assert accepted in message
+
+
+def test_load_refuses_an_unknown_key_at_the_top_level(tmp_path):
+    raw = _base_config_dict()
+    raw["inline_evals"] = True
+    with pytest.raises(ValueError) as excinfo:
+        load_grid_config(_write(tmp_path, "c.yaml", raw))
+    assert "inline_evals" in str(excinfo.value)
+    assert "inline_eval" in str(excinfo.value)
+
+
+def test_load_refuses_an_unknown_key_in_a_named_solver(tmp_path):
+    """The solver NAMES are free-form -- they are what the ``solver`` sweep
+    axis references -- but each named solver's own block is closed."""
+    raw = _base_config_dict()
+    raw["solvers"]["fast"]["max_cycle"] = 5
+    with pytest.raises(ValueError) as excinfo:
+        load_grid_config(_write(tmp_path, "c.yaml", raw))
+    assert "solvers.fast" in str(excinfo.value)
+    assert "max_cycle'" in str(excinfo.value)
+    assert "max_cycles" in str(excinfo.value)
+
+
+def test_a_free_form_solver_name_is_not_an_unknown_key(tmp_path):
+    """The check closes the solver BLOCK, not the mapping of names above it:
+    a sweep may name its solvers anything."""
+    raw = _base_config_dict()
+    raw["solvers"]["whatever_name_i_like"] = {"mode": "scf", "max_cycles": 3}
+    raw["sweep"]["solver"] = ["fast", "whatever_name_i_like"]
+    cfg = load_grid_config(_write(tmp_path, "c.yaml", raw))
+    assert cfg.solvers["whatever_name_i_like"].max_cycles == 3
+
+
+def test_the_misspelled_early_stop_no_longer_loads_as_no_early_stop(tmp_path):
+    """The case this refusal exists for, stated as the defect it was: the
+    knob a run was configured with, one letter wrong, and a run with no early
+    stop at all."""
+    raw = _base_config_dict()
+    raw["pretrain"]["patiense"] = 10
+    with pytest.raises(ValueError, match="patiense"):
+        load_grid_config(_write(tmp_path, "c.yaml", raw))
+    raw["pretrain"].pop("patiense")
+    raw["pretrain"]["patience"] = 10
+    assert load_grid_config(_write(tmp_path, "c.yaml", raw)).pretrain.patience \
+        == 10
+
+
+def test_a_retired_pretrain_key_loads_and_names_itself(tmp_path):
+    """``pretrain.pretrain_root`` names the retired ``<pretrain_root>/<run_id>
+    /<arch>`` checkpoint layout. Four shipped configurations still carry it,
+    one of them tracked, so it is accepted -- with a warning naming it, since
+    an accepted key that does nothing is the same silence in a smaller room."""
+    raw = _base_config_dict()
+    raw["pretrain"]["pretrain_root"] = "/shared/pretrain"
+    with pytest.warns(UserWarning, match="pretrain.pretrain_root"):
+        cfg = load_grid_config(_write(tmp_path, "c.yaml", raw))
+    assert cfg.pretrain.data_dir == "/shared/pretrain_data"
+
+
+def test_the_accepted_keys_are_the_dataclass_fields(tmp_path):
+    """The accepted set is derived from the target dataclass rather than
+    listed, so a field added later is accepted with no second edit -- and the
+    ``resolved_config.yaml`` round trip, which is ``dataclasses.asdict`` of
+    exactly those fields, is accepted by construction."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    cfg = load_grid_config(_write(tmp_path, "c.yaml", _base_config_dict()))
+    again = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert again == cfg
+
+
+def test_every_shipped_configuration_and_template_still_loads():
+    """The closed blocks are checked against the files that must keep
+    working: every deployment configuration in ``hpcjobs/configs`` and both
+    shipped templates. A refusal here is a key this loader stopped accepting.
+    """
+    import glob
+    import pathlib
+    import warnings as _warnings
+    root = pathlib.Path(__file__).resolve().parents[3]
+    paths = sorted(glob.glob(str(root / "hpcjobs" / "configs" / "*.yaml")))
+    paths += sorted(glob.glob(str(root / "xcquinox" / "alec" / "cluster"
+                                  / "examples" / "*.yaml")))
+    if not paths:
+        pytest.skip("no shipped configurations in this checkout")
+    assert len(paths) >= 17, paths
+    for path in paths:
+        text = pathlib.Path(path).read_text().replace("CHANGE_ME_ARCH",
+                                                      "deep_3x16")
+        target = pathlib.Path(path)
+        if "CHANGE_ME_ARCH" in pathlib.Path(path).read_text():
+            import tempfile
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml",
+                                             delete=False) as f:
+                f.write(text)
+                target = pathlib.Path(f.name)
+        try:
+            with _warnings.catch_warnings():
+                _warnings.simplefilter("ignore")
+                cfg = load_grid_config(str(target))
+        finally:
+            if target != pathlib.Path(path):
+                os.unlink(target)
+        assert cfg.inputs.basis, path
+
+
+# ---------------------------------------------------------------------------
+# The irreproducible-degenerate waiver is refused where it grants nothing
+# ---------------------------------------------------------------------------
+
+def test_the_reproducible_grid_level_is_stated_once():
+    """The level at which a degenerate free atom's rows reproduce is one
+    number: the parser's copy and the generator's constant. A parser that
+    waived at a level the generator refuses at (or the reverse) would pass
+    submit and fail on a compute node."""
+    from xcquinox.alec.cluster.grid_config import _MIN_REPRODUCIBLE_GRID_LEVEL
+    from xcquinox.alec.pretrain_data_gen import (
+        COARSE_DEGENERATE_MIN_GRID_LEVEL)
+    assert _MIN_REPRODUCIBLE_GRID_LEVEL == COARSE_DEGENERATE_MIN_GRID_LEVEL
+
+
+def _cfg_with_waiver(grid_level, lock, *, waived=True):
+    return _cfg_with(inputs_kwargs=dict(
+        grid_level=grid_level, orientation_lock_strength=lock,
+        allow_irreproducible_degenerate=waived,
+        irreproducible_degenerate_reason=("copied from the template"
+                                          if waived else None)))
+
+
+def test_validate_refuses_a_waiver_the_identity_does_not_need():
+    """A copy of a shipped template promoted to a production identity keeps
+    the waiver it was shipped with. At grid level 3 with the lock on the
+    generator refuses nothing, so the waiver grants a permission the run never
+    exercises -- and stays dormant only until the next edit of the identity,
+    when it would authorise the build it was never meant to cover."""
+    cfg = _cfg_with_waiver(3, 3e-5)
+    with pytest.raises(ValueError) as excinfo:
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+    message = str(excinfo.value)
+    assert "waiver stated without need" in message
+    # the identity is named, so the reader knows which half to change
+    assert "grid level 3" in message
+    assert "3e-05" in message
+    assert "inputs.allow_irreproducible_degenerate" in message
+    assert "inputs.irreproducible_degenerate_reason" in message
+
+
+@pytest.mark.parametrize("grid_level,lock", [
+    (1, 3e-5),    # the shipped templates: coarse, locked
+    (2, 3e-5),    # the pre-2026-08 campaigns' grid
+    (3, 0.0),     # fine grid, unlocked: the SCF still picks the orientation
+    (1, 0.0),     # both conditions at once
+])
+def test_validate_accepts_the_waiver_where_the_identity_needs_it(grid_level,
+                                                                 lock):
+    """Every identity the generator actually refuses keeps its waiver."""
+    cfg = _cfg_with_waiver(grid_level, lock)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_accepts_a_production_identity_without_the_waiver():
+    """The other direction: grid level 3 with the lock on and no waiver is the
+    production case and passes."""
+    cfg = _cfg_with_waiver(3, 3e-5, waived=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_every_shipped_configuration_states_a_waiver_its_identity_needs():
+    """The refusal against the files it must not fire on: the fifteen
+    pre-2026-08 campaigns (grid level 1 or 2, unlocked) and both templates
+    (grid level 1) all need the waiver they state, and the six grid-3
+    campaigns state none."""
+    import glob
+    import pathlib
+    import warnings as _warnings
+    from xcquinox.alec.cluster.grid_config import _MIN_REPRODUCIBLE_GRID_LEVEL
+    root = pathlib.Path(__file__).resolve().parents[3]
+    paths = sorted(glob.glob(str(root / "hpcjobs" / "configs" / "*.yaml")))
+    if not paths:
+        pytest.skip("no shipped configurations in this checkout")
+    waived, plain = [], []
+    for path in paths:
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            cfg = load_grid_config(path)
+        needs = (int(cfg.inputs.grid_level) < _MIN_REPRODUCIBLE_GRID_LEVEL
+                 or float(cfg.inputs.orientation_lock_strength) == 0.0)
+        if cfg.inputs.allow_irreproducible_degenerate:
+            assert needs, f"{path}: waiver stated without need"
+            waived.append(os.path.basename(path))
+        else:
+            plain.append(os.path.basename(path))
+    assert len(waived) >= 15, waived
+    assert len(plain) >= 6, plain

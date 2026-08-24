@@ -540,4 +540,18 @@ def test_every_shipped_configuration_clears_the_datagen_refusal(monkeypatch,
         else:
             assert waived is True, os.path.basename(path)
             assert cfg.inputs.irreproducible_degenerate_reason.strip(), path
-        assert cfg.inputs.orientation_lock_strength > 0.0, path
+        # The lock is WRITTEN DOWN in every deployment configuration rather
+        # than inherited: the harness default is the calibrated lock, so an
+        # omitted key would re-identify the fifteen pre-2026-08 campaigns,
+        # which ran unlocked and whose pretraining files and cached CCSD
+        # intermediates all carry the unlocked identity. Its VALUE is pinned
+        # only where the identity depends on it -- a grid-3 campaign builds
+        # its degenerate atoms reproducibly only with the lock on. Below that
+        # level the waiver covers either lock, and the two shipped templates
+        # are not campaigns (grid_step7.yaml states 3e-5; the matrix template
+        # inherits it deliberately, with the reason in the file).
+        if "hpcjobs" in path:
+            assert "orientation_lock_strength" in raw, path
+        if cfg.inputs.grid_level >= pdg.COARSE_DEGENERATE_MIN_GRID_LEVEL:
+            assert (cfg.inputs.orientation_lock_strength
+                    == pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH), path

@@ -282,9 +282,22 @@ def main(argv=None) -> int:
              f"{getattr(cfg.inputs, 'irreproducible_degenerate_reason', None)}")
     try:
         for polarized, reference_xc in specs:
-            # Per-iteration copy: mutating ``extra`` in the loop would leak one
-            # iteration's reference_xc into the next, which on a mixed-rung
-            # sweep builds the SCAN file twice and never builds the PBE one.
+            # Per-iteration copy, so ``extra`` stays the RUN's protocol
+            # keywords and each call carries those plus at most this file's
+            # own reference_xc. It cannot leak a stale parent today, and the
+            # earlier comment here claimed it could: the assignment below is
+            # reached on every iteration once the mapping is non-empty, and
+            # ``_required_data_specs`` returns a sorted list, so 'pbe'
+            # precedes 'scan' at equal polarization. What the copy does change
+            # is the one ordering in which a SCAN file is built before a PBE
+            # one -- a sweep mixing an unpolarized meta-GGA arch with a
+            # polarized GGA one -- from a pre-protocol configuration, whose
+            # mapping is empty: with the copy the PBE call names no parent at
+            # all, which is the keyword set that configuration's existing data
+            # file was written under and is still current at; without it the
+            # call carries an explicit reference_xc='pbe'. The copy is
+            # otherwise defensive, and is what keeps a keyword added here
+            # under a condition from persisting into the following file.
             call = dict(extra)
             # The reference density is named only when the call is not the
             # historical one, so a pre-protocol configuration reaches the

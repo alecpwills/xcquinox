@@ -562,6 +562,60 @@ def _require(d: dict, key: str, ctx: str):
     return d[key]
 
 
+#: Keys a block once read and no longer does. Accepted with a warning rather
+#: than refused: ``pretrain.pretrain_root`` names the retired
+#: ``<pretrain_root>/<run_id>/<arch>`` checkpoint layout (the stage now writes
+#: under the run directory, see :func:`pretrain_checkpoint_dir`) and four
+#: shipped configurations still state it, one of them tracked. A load that
+#: fails on a key the harness itself once wrote is a worse failure than the
+#: silence the refusal below exists to end.
+_RETIRED_PRETRAIN_KEYS = ("pretrain_root",)
+
+
+def _reject_unknown_keys(d, dc_type, ctx: str, *, retired=()):
+    """Refuse a key this loader does not read, naming it and the accepted set.
+
+    An unknown key is otherwise SILENTLY IGNORED: every builder below reads
+    the keys it knows and nothing enumerates the rest, so ``pretrain:
+    {patiense: 10}`` loads with ``patience`` at its default of 0 and the file
+    reads as though it had set it. These blocks carry the system set, the
+    schedule and the stop criterion, so a typo of that kind is a run other
+    than the one written, with nothing anywhere reporting a problem.
+
+    The accepted keys are the target dataclass's own FIELDS, which is exactly
+    what ``__main__._config_to_raw_dict`` writes with ``dataclasses.asdict``:
+    a ``resolved_config.yaml`` round trip is therefore accepted by
+    construction, and a field added later is accepted without a second edit
+    here. A block that is not a mapping is left to the builder's own check,
+    which names the section and the type it got.
+
+    A key spelled ``x-<something>`` is accepted anywhere and read by nothing:
+    the closed schema otherwise leaves a YAML author nowhere to define an
+    ANCHOR for reuse, or to park a note beside the values it describes, and
+    the ``x-`` prefix is the established spelling for a field a schema does
+    not own. It is an explicit statement that the key is not a harness knob,
+    which a misspelling is not.
+    """
+    if not isinstance(d, dict):
+        return
+    accepted = frozenset(f.name for f in fields(dc_type))
+    unknown = sorted(str(k) for k in d
+                     if str(k) not in accepted and str(k) not in retired
+                     and not str(k).startswith("x-"))
+    if unknown:
+        raise ValueError(
+            f"grid config section {ctx!r} carries unknown key(s) "
+            f"{', '.join(repr(k) for k in unknown)}; this loader reads only "
+            f"{', '.join(sorted(accepted))}. An unread key is not applied, so "
+            "the run would take the default of whatever the key was meant to "
+            "set while the file appears to state it")
+    for key in sorted(str(k) for k in d if str(k) in retired):
+        warnings.warn(
+            f"grid config key {ctx + '.' + key!r} is retired: the harness no "
+            "longer reads it and its value has no effect on the run",
+            stacklevel=2)
+
+
 # ---------------------------------------------------------------------------
 # Cluster walltimes
 #
@@ -844,6 +898,7 @@ def normalize_cluster_walltimes(cluster: dict, *, text: str = "",
 
 def _build_sweep(d: dict) -> SweepAxes:
     """Build SweepAxes from a raw dict; list fields become tuples."""
+    _reject_unknown_keys(d, SweepAxes, "sweep")
     return SweepAxes(
         arch=tuple(_require(d, "arch", "sweep")),
         loss=tuple(_require(d, "loss", "sweep")),
@@ -863,6 +918,10 @@ def _build_solvers(d: dict) -> dict[str, SolverNamed]:
     out: dict[str, SolverNamed] = {}
     for name, sd in d.items():
         ctx = f"solvers.{name}"
+        # The OUTER mapping is free-form -- its keys are the solver names the
+        # ``solver`` sweep axis references -- so only each named solver's own
+        # block is closed.
+        _reject_unknown_keys(sd, SolverNamed, ctx)
         mixer_kwargs = _parse_mixer_kwargs(sd.get("mixer_kwargs"), ctx)
         out[str(name)] = SolverNamed(
             mode=_require(sd, "mode", ctx),
@@ -882,6 +941,7 @@ def _build_solvers(d: dict) -> dict[str, SolverNamed]:
 
 def _build_hyperparams(d: dict) -> HyperParams:
     ctx = "hyperparams"
+    _reject_unknown_keys(d, HyperParams, ctx)
     return HyperParams(
         n_steps=_require(d, "n_steps", ctx),
         lr_start=_require(d, "lr_start", ctx),
@@ -952,6 +1012,7 @@ def _orientation_lock(d, ctx: str) -> float:
 
 def _build_inputs(d: dict) -> InputPaths:
     ctx = "inputs"
+    _reject_unknown_keys(d, InputPaths, ctx)
     # The waiver of the data generator's irreproducible-degenerate refusal
     # carries prose, for the reason ``fidelity.override_reason`` does: it
     # authorises a pretraining file whose degenerate-atom rows are one
@@ -1023,6 +1084,14 @@ _LOSS_WEIGHTINGS = ("unweighted", "integration")
 # metadata records the number that was written. create_network_pair keys cnet
 # at seed + 1, so the top of the range is excluded too.
 _MAX_SEED = 2 ** 32 - 2
+# The grid level at and above which a spatially degenerate free atom's rows
+# reproduce between processes, restated here from
+# ``pretrain_data_gen.COARSE_DEGENERATE_MIN_GRID_LEVEL`` for the reason the
+# parent-density set is restated: that module pulls JAX and PySCF, and this
+# parser runs on the login node. The two are pinned equal by
+# ``test_the_reproducible_grid_level_is_stated_once``, so a level one layer
+# waives and the other refuses cannot ship.
+_MIN_REPRODUCIBLE_GRID_LEVEL = 3
 
 
 def _config_bool(d, key: str, default: bool, ctx: str = "pretrain") -> bool:
@@ -1142,27 +1211,29 @@ def _pretrain_choice(d, key: str, default: str, allowed) -> str:
 
 def _build_pretrain(d: dict) -> PretrainConfig:
     ctx = "pretrain"
+    _reject_unknown_keys(d, PretrainConfig, ctx,
+                         retired=_RETIRED_PRETRAIN_KEYS)
     return PretrainConfig(
         data_dir=_require(d, "data_dir", ctx),
         n_steps=_config_number(d, "n_steps", 1000, whole=True, minimum=0,
-                                 minimum_open=True),
+                               minimum_open=True),
         # A non-positive Adam rate is a no-op (0) or an ascent (< 0), so the
         # start is strictly positive; lr_end may be 0, which is a linear
         # anneal to zero and a legitimate schedule.
         lr_start=_config_number(d, "lr_start", 1e-2, minimum=0,
-                                  minimum_open=True),
+                                minimum_open=True),
         lr_end=_config_number(d, "lr_end", 1e-5, minimum=0),
         # A FRACTION of n_steps, not a step count: decay_start_step =
         # int(lr_decay_start * n_steps).
         lr_decay_start=_config_number(d, "lr_decay_start", 0.2, minimum=0,
-                                        maximum=1),
+                                      maximum=1),
         # optax.clip_by_global_norm(0.0) zeroes every gradient and (-1.0)
         # reverses it; neither is a run, and the consumer has no None branch
         # (a None reaches the update and raises there, not at load).
         grad_clip=_config_number(d, "grad_clip", 1.0, minimum=0,
-                                   minimum_open=True),
+                                 minimum_open=True),
         seed=_config_number(d, "seed", 42, whole=True, minimum=0,
-                              maximum=_MAX_SEED),
+                            maximum=_MAX_SEED),
         loss_weighting=_pretrain_choice(
             d, "loss_weighting", "integration", _LOSS_WEIGHTINGS),
         atoms=_parse_pretrain_atoms(d.get("atoms")),
@@ -1177,24 +1248,24 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         # only consumer) requires. A share of 0 is not a mesh and a share of 1
         # leaves the atomic grids no weight at all.
         mesh_fraction=_config_number(d, "mesh_fraction", 0.3, minimum=0,
-                                       minimum_open=True, maximum=1,
-                                       maximum_open=True),
+                                     minimum_open=True, maximum=1,
+                                     maximum_open=True),
         # A loss weight, in inverse Hartree^2: 0 turns the energy term off, a
         # negative one rewards the network for getting the energy wrong.
         energy_term_weight=_config_number(d, "energy_term_weight", 0.0,
-                                            minimum=0),
+                                          minimum=0),
         # A FRACTION of the multi-nucleus systems: 0 = no split; 1 would hold
         # out the whole set and fit nothing.
         validation_fraction=_config_number(d, "validation_fraction", 0.0,
-                                             minimum=0, maximum=1,
-                                             maximum_open=True),
+                                           minimum=0, maximum=1,
+                                           maximum_open=True),
         # The held-out permutation's seed, bounded like the initialization
         # seed and for the same reason (see _MAX_SEED).
         validation_seed=_config_number(d, "validation_seed", 0, whole=True,
-                                         minimum=0, maximum=_MAX_SEED),
+                                       minimum=0, maximum=_MAX_SEED),
         # Optimizer steps between validations: 0 or negative is not a period.
         validate_every=_config_number(d, "validate_every", 50, whole=True,
-                                        minimum=0, minimum_open=True),
+                                      minimum=0, minimum_open=True),
         # Validations without improvement before the stop; 0 = no early stop.
         patience=_config_number(d, "patience", 0, whole=True, minimum=0),
     )
@@ -1253,6 +1324,7 @@ def _build_fidelity(d) -> FidelityConfig:
         raise ValueError(
             f"grid config section 'fidelity' must be a mapping, got "
             f"{type(d).__name__}")
+    _reject_unknown_keys(d, FidelityConfig, "fidelity")
     reason = d.get("override_reason")
     # A non-string reason is REFUSED, never coerced. str(False) is the
     # non-empty string 'False', so coercion would let `override_reason: false`
@@ -1340,6 +1412,7 @@ def _build_cluster(d: dict, *, text: str = "",
     with any number refused rather than restored.
     """
     ctx = "cluster"
+    _reject_unknown_keys(d, ClusterResources, ctx)
     d = normalize_cluster_walltimes(d, text=text, source=source)
     return ClusterResources(
         partition=_require(d, "partition", ctx),
@@ -1447,6 +1520,7 @@ def load_grid_config(path: str) -> GridConfig:
             f"grid config {path!r}: top-level must be a mapping, got "
             f"{type(raw).__name__}"
         )
+    _reject_unknown_keys(raw, GridConfig, "<root>")
 
     return GridConfig(
         sweep=_build_sweep(_require(raw, "sweep", "<root>")),
@@ -1796,6 +1870,38 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"pretrain.validation_seed must be in [0, {_MAX_SEED}], got "
             f"{pt.validation_seed}"
         )
+
+    # --- the irreproducible-degenerate waiver -------------------------------
+    # The waiver authorises a pretraining file whose spatially degenerate free
+    # atoms' rows are one arbitrary member of their manifold. Exactly two
+    # identities produce such a file (pretrain_data_gen.
+    # _check_irreproducible_degenerate): a grid below
+    # _MIN_REPRODUCIBLE_GRID_LEVEL, and the lock at zero. At a production
+    # identity -- grid level >= 3 with the lock on -- the generator refuses
+    # nothing, so a stated waiver permits nothing and is instead a leftover of
+    # the template it was copied from. Refused rather than warned, because the
+    # flag is dormant only until the next edit of the identity: it would then
+    # authorise the very build it was never meant to cover, silently.
+    inp = cfg.inputs
+    if getattr(inp, "allow_irreproducible_degenerate", False):
+        _level = int(inp.grid_level)
+        _lock = float(getattr(inp, "orientation_lock_strength", 0.0))
+        if _level >= _MIN_REPRODUCIBLE_GRID_LEVEL and _lock > 0.0:
+            raise ValueError(
+                "inputs.allow_irreproducible_degenerate: waiver stated "
+                f"without need at grid level {_level} with "
+                f"orientation_lock_strength={_lock:g}. Every spatially "
+                "degenerate free atom's rows reproduce at that identity "
+                f"(grid level >= {_MIN_REPRODUCIBLE_GRID_LEVEL} with the lock "
+                "on), so the data generator refuses nothing here and the "
+                "waiver grants a permission the run never exercises -- the "
+                "manifest records it as unexercised. The shipped templates "
+                "state it because they run at grid level 1; a copy promoted "
+                "to a production identity must drop both "
+                "inputs.allow_irreproducible_degenerate and "
+                "inputs.irreproducible_degenerate_reason, or the next change "
+                "of basis or grid level silently authorises an irreproducible "
+                "build")
 
     # --- certificate tolerance bounds --------------------------------------
     # The program's binding decision is tol_AE = 1.0 kcal/mol and tol_atom =

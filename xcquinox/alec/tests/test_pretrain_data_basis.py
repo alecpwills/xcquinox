@@ -117,8 +117,12 @@ def test_legacy_manifest_without_auxbasis_stays_current(tmp_path):
 def test_ensure_regenerates_only_when_stale(tmp_path, monkeypatch):
     calls = []
 
-    def fake_generate(out_dir, *, atoms, basis, grid_level, polarized,
-                      descriptors, density_fit, auxbasis=None,
+    # ``atoms`` has a default because ``ensure_pretrain_data`` hands the
+    # generator the RESOLVED system list and nothing else; a fake that still
+    # required the atom list would pin a duplicate argument rather than the
+    # basis behaviour this test is about.
+    def fake_generate(out_dir, *, basis, grid_level, polarized,
+                      descriptors, density_fit, atoms=None, auxbasis=None,
                       cusp_log_transform=True, **kwargs):
         calls.append(basis)
         path = os.path.join(out_dir, "pretrain_data_polarized.npz"

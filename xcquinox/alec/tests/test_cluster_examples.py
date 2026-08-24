@@ -266,25 +266,6 @@ def test_example_ships_the_binding_certificate_tolerances():
     assert cfg.fidelity.enforce is True
 
 
-def test_example_sets_every_pretraining_protocol_field():
-    """The shipped template names each pretraining-protocol knob explicitly at
-    its default, with the v6 value in a comment, so a copy of it is a complete
-    statement of the protocol rather than a set of invisible defaults."""
-    pytest.importorskip("yaml")
-    raw = _raw_yaml(_example_path())["pretrain"]
-    for key, value in (("dfs_set", False), ("pool_atoms", False),
-                       ("parent_density", "pbe"),
-                       ("exchange_footing", "total"),
-                       ("mesh_fraction", 0.3), ("energy_term_weight", 0.0),
-                       ("validation_fraction", 0.0), ("validation_seed", 0),
-                       ("validate_every", 50), ("patience", 0)):
-        assert key in raw, f"grid_step7.yaml is missing pretrain.{key}"
-        assert raw[key] == value, (key, raw[key], value)
-    cfg = load_grid_config(_example_path())
-    assert cfg.pretrain.dfs_set is False
-    assert cfg.pretrain.parent_density == "pbe"
-
-
 def test_example_gives_datagen_a_wall_of_its_own():
     """Datagen builds the pretrain-data file(s) and every later stage waits on
     it, so it gets its own wall rather than inheriting the pretrain tier."""
@@ -368,3 +349,59 @@ def test_the_templates_state_the_certificate_consequence_of_an_unlocked_waiver(
     text = " ".join(comment)
     assert "certificate" in text, (path, text)
     assert "0.0" in text, (path, text)
+
+
+#: The pretraining-protocol knobs, with the value both shipped templates run
+#: at. They are the pre-protocol defaults: the canonical template reproduces
+#: the step-7 pretraining, and the workflow matrix is a wiring check that
+#: moves no knob away from the default it is verifying the wiring of. The v6
+#: value sits in a comment beside each one in the files.
+_PROTOCOL_KNOBS = (("dfs_set", False), ("pool_atoms", False),
+                   ("parent_density", "pbe"),
+                   ("exchange_footing", "total"),
+                   ("mesh_fraction", 0.3), ("energy_term_weight", 0.0),
+                   ("validation_fraction", 0.0), ("validation_seed", 0),
+                   ("validate_every", 50), ("patience", 0))
+
+
+@pytest.mark.parametrize("path", _template_paths())
+def test_the_templates_set_every_pretraining_protocol_field(path):
+    """BOTH shipped templates name each pretraining-protocol knob explicitly,
+    so a copy of either is a complete statement of the protocol it runs rather
+    than a set of invisible defaults.
+
+    The matrix template is held to the same completeness as the canonical one:
+    it is the file every architecture's workflow verification is rendered
+    from, and a knob it leaves unstated is a knob whose default can change
+    under a verification that reports nothing about it."""
+    pytest.importorskip("yaml")
+    raw = _raw_yaml(path)["pretrain"]
+    name = os.path.basename(path)
+    for key, value in _PROTOCOL_KNOBS:
+        assert key in raw, f"{name} is missing pretrain.{key}"
+        assert raw[key] == value, (name, key, raw[key], value)
+    cfg = load_grid_config(path)
+    for key, value in _PROTOCOL_KNOBS:
+        assert getattr(cfg.pretrain, key) == value, (name, key)
+
+
+@pytest.mark.parametrize("path", _template_paths())
+def test_the_templates_state_the_v6_value_beside_each_protocol_knob(path):
+    """Each knob carries the campaign-v6 value in a comment on its own line,
+    which is what makes the stated default a decision rather than an
+    inheritance. Read from the text, since a comment is invisible to the
+    parser.
+
+    Only the ``pretrain:`` block is scanned: ``validate_every`` names a knob
+    in ``hyperparams`` too (the training loop's validation period), and the
+    two are different periods of different loops."""
+    with open(path) as f:
+        lines = f.read().splitlines()
+    start = lines.index("pretrain:")
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i][:1] not in ("", " ", "#")), len(lines))
+    block = lines[start:end]
+    for key, _value in _PROTOCOL_KNOBS:
+        stated = [ln for ln in block if ln.strip().startswith(f"{key}:")]
+        assert len(stated) == 1, (path, key, stated)
+        assert "# v6:" in stated[0], (path, key, stated[0])

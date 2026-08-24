@@ -1195,6 +1195,24 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
     ``atoms`` comparison (``atoms`` is otherwise resolved into systems the
     same way); a manifest without a system list is compared through its atom
     projection (:func:`_composition_matches`).
+
+    THE WAIVER IS DELIBERATELY NOT COMPARED.
+    ``allow_irreproducible_degenerate`` is recorded in the manifest and read
+    by nothing here, and a waived file therefore cannot reach a caller that
+    granted no waiver. The reason is that the waiver is a FUNCTION of the
+    identity this check already compares: the generator's refusal
+    (:func:`_check_irreproducible_degenerate`) fires on the systems, the basis,
+    the grid level and the lock, all four of which must match for the file to
+    be current at all, and :func:`ensure_pretrain_data` applies that refusal to
+    the REQUESTED identity before ever asking whether the file is current. So
+    at an identity that needs the waiver a non-waiving caller is refused
+    before the comparison, and at an identity that does not need it the flag
+    was never exercised -- the manifest records False there whatever the
+    caller passed. Measured over the six combinations of the flag with (grid
+    level 1, lock 3e-5), (grid level 3, lock 0) and (grid level 3, lock 3e-5),
+    with the file present at exactly the requested identity: the only
+    combination in which a non-waiving caller is served is the one at which
+    the permission grants nothing.
     """
     if not os.path.isfile(npz_path):
         return False
@@ -1241,6 +1259,19 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
     # only tests) are not spuriously flagged.
     if "Fx_all" in _keys and (
             "metagga_all" not in _keys or "Fx_scan_all" not in _keys):
+        return False
+    # The manifest's exchange FOOTING against the file's own blocks. The
+    # footing is not a property the manifest can assert on its own: the
+    # ``*_x`` block IS the spin_channel footing, and its absence IS the total
+    # one (pretrain_npz_layout reads the footing off ``rho_x`` for exactly
+    # that reason). A manifest that names one while the file carries the other
+    # matched every identity key above and would be served, and the exchange
+    # rows the pretraining objective then reads are not the ones the run asked
+    # for -- per channel at the doubled density, or on the total density, with
+    # nothing to tell them apart downstream. Gated on ``Fx_all`` so a
+    # manifest-only stub is not flagged.
+    if "Fx_all" in _keys and ("rho_x" in _keys) != (
+            str(exchange_footing) == "spin_channel"):
         return False
     # A file written before the (s, alpha) parameter mesh lacks the *_mesh keys.
     # Without them a meta_gga arch pretrains on the atomic grids alone, which
@@ -1303,8 +1334,11 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
                                 mesh_fraction=mesh_fraction,
                                 orientation_lock_strength=orientation_lock_strength):
         return out_path
+    # ``systems`` alone: the generator takes the resolved tuple whenever it is
+    # given and ignores ``atoms`` entirely, so passing both stated one input
+    # twice and invited the two to disagree.
     return generate_pretrain_data_npz(
-        data_dir, atoms=atoms, systems=systems, basis=basis,
+        data_dir, systems=systems, basis=basis,
         grid_level=grid_level, polarized=polarized, descriptors=descriptors,
         density_fit=density_fit, auxbasis=auxbasis,
         cusp_log_transform=cusp_log_transform, progress=progress,
@@ -1388,6 +1422,39 @@ _KNOWN_KEYS = frozenset(
                       exchange_footing="spin_channel"))
 
 
+#: The three keys whose PRESENCE declares a configuration, with what each
+#: declares and the keys that accompany it. A file that lost one of them is
+#: read as a file written without that configuration, and its companions then
+#: have no slot -- so the refusal below would name the companions, which are
+#: present and correct, and never the key that is actually missing. Each entry
+#: is ``(sentinel, what it declares, companions)``.
+_LAYOUT_SENTINELS = (
+    ("zeta_all", "the spin-polarized (zeta-carrying) total-density block",
+     ("zeta_mesh",)),
+    ("cusp_all", "the descriptor columns",
+     tuple(f"{s}_all" for s in _DESCRIPTOR_STEMS if s != "cusp")
+     + tuple(f"{s}_x" for s in _DESCRIPTOR_STEMS)),
+    ("rho_x", "the spin_channel exchange block",
+     tuple(f"{s}_x" for s in _X_CORE if s != "rho")),
+)
+
+
+def _missing_layout_sentinel(keys):
+    """The layout key a key set has LOST, or ``None``.
+
+    A sentinel counts as lost only when its companions are present: a file
+    that carries none of a block's columns was written without that block,
+    which is a configuration and not a defect.
+    """
+    for sentinel, declares, companions in _LAYOUT_SENTINELS:
+        if sentinel in keys:
+            continue
+        present = sorted(k for k in companions if k in keys)
+        if present:
+            return sentinel, declares, present
+    return None
+
+
 def pretrain_npz_layout(keys):
     """Which blocks a key set carries, and that it is a consistent schema.
 
@@ -1400,12 +1467,29 @@ def pretrain_npz_layout(keys):
     historical core of the total-density block plus whatever newer optional
     columns it has, nothing else. An existing production file is therefore
     still readable for the point-wise loss; a torn or foreign file is not.
+
+    A file that has lost one of the three LAYOUT KEYS -- ``zeta_all``,
+    ``cusp_all``, ``rho_x``, whose presence is what declares the polarization,
+    the descriptors and the exchange footing -- is named for the key it lost
+    (:func:`_missing_layout_sentinel`). Without that the layout reads as the
+    other configuration and the refusal names the columns that accompany the
+    missing key, every one of them present and correct, which points the
+    reader at the wrong end of the file.
     """
     keys = set(keys)
     unknown = sorted(keys - _KNOWN_KEYS)
     if unknown:
         raise ValueError(
             f"pretrain data carries keys outside the schema: {unknown}")
+    lost = _missing_layout_sentinel(keys)
+    if lost is not None:
+        sentinel, declares, present = lost
+        raise ValueError(
+            f"pretrain data is missing the layout key {sentinel!r} while "
+            f"carrying {present}: {sentinel!r} is what declares "
+            f"{declares}, so without it the file reads as one written without "
+            "that configuration and the columns above have no slot in the "
+            "layout. The missing key is the defect, not the columns")
     layout = {
         "polarized": "zeta_all" in keys,
         "descriptors": "cusp_all" in keys,
@@ -1534,12 +1618,14 @@ def load_pretrain_data_npz(npz_path):
 #: Grid level below which a spatially degenerate free atom's rows are not
 #: reproducible between processes. Measured on the locked O atom: at the
 #: generator's own DEFAULT_GRID_LEVEL of 1 independent processes differ at the
-#: 1e-3..1e-1 level in rho, by more than unity in the iso-orbital indicator and
+#: 1e-3..1e-1 level in rho, by of order unity in the iso-orbital indicator and
 #: at the 1e-6 Ha level in the stored exchange energy, while at level 3 the
 #: same comparison reproduces to 3e-11 relative. The spreads are stated as
 #: orders of magnitude because they are samples of a process-to-process
 #: scatter and not bounds: two independent sets of draws gave 3e-3 / 0.64 /
-#: 3.7e-6 Ha and 5.7e-2 / 12.4 / 1.3e-6 Ha. The lock fixes WHICH member of the
+#: 3.7e-6 Ha and 5.7e-2 / 12.4 / 1.3e-6 Ha, and the indicator's spread over
+#: six draw pairs ran 0.55 to 2.46, so unity is the middle of that scatter
+#: rather than a floor under it. The lock fixes WHICH member of the
 #: P-term manifold the SCF converges to; it cannot make a quadrature that
 #: coarse resolve it.
 COARSE_DEGENERATE_MIN_GRID_LEVEL = 3
@@ -1585,11 +1671,12 @@ def _check_irreproducible_degenerate(systems, basis, grid_level,
 
     - **A coarse grid.** Below :data:`COARSE_DEGENERATE_MIN_GRID_LEVEL` the
       quadrature does not resolve the P term: locked draws of the O atom at
-      level 1 differ at the 1e-3..1e-1 level in rho, by more than unity in the
+      level 1 differ at the 1e-3..1e-1 level in rho, by of order unity in the
       iso-orbital indicator and at the 1e-6 Ha level in the stored exchange
       energy, against 3e-11 relative at level 3. The figures are orders of
       magnitude spanning two independent sets of draws (3e-3 / 0.64 / 3.7e-6
-      Ha and 5.7e-2 / 12.4 / 1.3e-6 Ha), not bounds.
+      Ha and 5.7e-2 / 12.4 / 1.3e-6 Ha), not bounds; the indicator ran 0.55 to
+      2.46 over six draw pairs, three of them below unity.
     - **No orientation lock.** With ``orientation_lock_strength`` at zero the
       SCF may land on any orientation of the hole however fine the grid is:
       unlocked draws of the O atom at level 3 keep different numbers of rows
@@ -1621,7 +1708,7 @@ def _check_irreproducible_degenerate(systems, basis, grid_level,
                 f"the grid is below level "
                 f"{COARSE_DEGENERATE_MIN_GRID_LEVEL}, so the quadrature does "
                 "not resolve the term (locked draws of O at level 1 differ at "
-                "the 1e-3..1e-1 level in rho, by more than unity in the "
+                "the 1e-3..1e-1 level in rho, by of order unity in the "
                 "iso-orbital indicator and at the 1e-6 Ha level in the stored "
                 "exchange energy between draws, against 3e-11 relative at "
                 "level 3)")

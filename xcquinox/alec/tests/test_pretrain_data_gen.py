@@ -397,8 +397,19 @@ def test_spin_channel_rows_refuse_a_restricted_density_matrix():
                                    descriptors=False)
 
 
-# The O-atom column builds below run at grid level 3, the production level:
-# the parent density now carries the training orientation lock
+# The O-atom column builds below run at grid level 3, the production level and
+# the level at which the program will write these rows at all: the generator
+# REFUSES a spatially degenerate free atom below
+# pretrain_data_gen.COARSE_DEGENERATE_MIN_GRID_LEVEL unless the run states the
+# irreproducible-degenerate waiver, because that quadrature does not resolve
+# the P term and independent processes then write different rows under one
+# manifest identity. These tests call ``_atom_columns`` directly, below that
+# gate, so nothing stops them building coarse -- but the columns they compare
+# would be an identity no run produces, and the comparison would carry the
+# process-to-process scatter that is the reason it does not.
+#
+# The measurement that first set this level still holds beside it: the parent
+# density carries the training orientation lock
 # (pretrain_data_gen.PRETRAIN_ORIENTATION_LOCK_STRENGTH), and on the coarse
 # level-1 atomic grid the lock's 2p splitting competes with the grid's own
 # angular anisotropy, so the locked PBE SCF of O stalls there under pyscf's

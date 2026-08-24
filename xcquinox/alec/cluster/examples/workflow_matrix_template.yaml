@@ -101,6 +101,42 @@ pretrain:
   atoms:
     H: 1
     O: 2
+  # --- pretraining protocol ------------------------------------------------
+  # Stated at the values this matrix runs at, which are the pre-protocol
+  # defaults, so a copy of this file is a complete statement of the protocol
+  # it exercises rather than a set of invisible defaults. The campaign-v6
+  # value follows each one, as in grid_step7.yaml; the matrix does NOT track
+  # it, because the matrix is a wiring check and every knob it moves away from
+  # the default is a second thing that can fail here for reasons that have
+  # nothing to do with the wiring.
+  #
+  # The SET is `atoms` above (H and O), so both set switches are off.
+  dfs_set: false            # v6: true
+  pool_atoms: false         # v6: true
+  # The DENSITY the targets sit on. Deliberately "pbe" rather than "auto":
+  # auto would build a SCAN-density file for a meta-GGA architecture, which is
+  # a second reference SCF per system on top of the one this matrix needs, and
+  # the SCAN UKS of an open p-shell atom does not converge at this identity
+  # (def2-svp, grid level 1) under pyscf's defaults.
+  parent_density: pbe       # v6: auto
+  # The open-shell exchange FOOTING. "total" keeps one row block, which is
+  # what the 50-step run needs to exercise the loss; "spin_channel" is a
+  # different row set and a different data identity.
+  exchange_footing: total   # v6: spin_channel
+  # The synthetic (r_s, s, alpha) mesh's share of the total integration
+  # weight, at the generator's own constant.
+  mesh_fraction: 0.3        # v6: 0.3
+  # The OBJECTIVE: the point-wise enhancement-factor residual alone.
+  energy_term_weight: 0.0   # v6: hpcjobs/probe_pretrain_energy_weight.py table
+  # VALIDATION and the stop criterion, both OFF. The matrix pretrains on two
+  # free atoms, and the split holds out MULTI-NUCLEUS systems only, so a
+  # non-zero fraction would hold out nothing here and the monitor would score
+  # an empty set; with the fraction at 0 there is no validation to time and
+  # `validate_every` never fires within the 50 steps.
+  validation_fraction: 0.0  # v6: 0.2
+  validation_seed: 0        # v6: 0
+  validate_every: 50        # v6: 50
+  patience: 0               # v6: 10
 
 # SLURM fields are rendered but never submitted: the matrix runs `submit` in
 # its default dry-run to create the run directory and resolved config, then

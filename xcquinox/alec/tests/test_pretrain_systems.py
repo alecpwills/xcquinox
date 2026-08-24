@@ -690,23 +690,25 @@ def test_deployment_config_paths_is_empty_without_the_directory(monkeypatch,
 
 def test_pretraining_lock_is_the_training_lock():
     """The generator's lock strength is ``orientation_lock.DEFAULT_STRENGTH``,
-    and every shipped configuration STATES that value, so the degenerate
-    radicals' and open p-shell atoms' pretraining rows sit on the component
-    the training SCF and the fidelity certificate see.
+    every deployment configuration STATES its own lock rather than inheriting
+    one, and every grid-level-3 campaign states that value, so those
+    campaigns' degenerate radicals and open p-shell atoms carry the same
+    component in the pretraining rows, the training SCF and the certificate.
 
-    The key is stated rather than inherited: the harness default is now the
-    lock, so an omitted key no longer distinguishes a campaign that chose it
-    from one that never considered it. The value is the lock in all of them,
-    including the earlier campaigns whose TRAINING SCF ran unlocked: their
-    pretraining data was built at the generator's own 3e-5 (before the harness
-    passed a lock at all, the generator's default was the only one in play),
-    and a re-run of any of them is a locked run by decision. What the
-    historical training SCF ran at is recorded in those runs' own metadata,
-    not in the configuration that would rebuild them.
+    The key is stated rather than inherited because the harness default is now
+    the calibrated lock, so an omitted key would silently RE-IDENTIFY the
+    fifteen pre-2026-08 campaigns. Those ran unlocked throughout: the data
+    generator applied no lock at all before 2026-08-23, and their pretraining
+    manifests and reference intermediates on disk carry no lock key and no
+    ``_ol`` tag. They therefore state 0.0 -- the identity their data was in
+    fact built at, which a re-run reproduces and whose files and CCSD
+    references it reuses -- together with the waiver their grid level 1 or 2
+    and their unlocked SCF both require.
 
-    Pinning 0.0 in those files instead, as an earlier revision did, recorded a
-    lock their data was never built at AND an identity the generator refuses
-    to produce, so their datagen stage could not run at all."""
+    The value is NOT pinned to the calibrated lock below grid level 3: a
+    coarse-grid campaign is waived whatever its lock is, so both 0.0 (the
+    historical campaigns) and the calibrated value are legitimate there. What
+    is pinned is that the key is written down."""
     import yaml
     from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
     assert pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH == DEFAULT_STRENGTH == 3e-5
@@ -723,12 +725,9 @@ def test_pretraining_lock_is_the_training_lock():
         value = raw.get("orientation_lock_strength")
         assert value is not None, (
             f"{name} does not state inputs.orientation_lock_strength; the "
-            "harness default is the training lock, so an omitted key changes "
-            "what this campaign's pretraining data is built at")
-        assert float(value) == pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH, (
-            f"{name} states orientation_lock_strength={value!r}; the "
-            "pretraining data every campaign consumed was built at the "
-            "generator's own lock")
+            "harness default is the calibrated lock, so an omitted key "
+            "re-identifies this campaign's pretraining data and every "
+            "reference intermediate cached under its name")
         # Below grid level 3 the quadrature does not resolve a degenerate free
         # atom's term whatever the lock is, so those campaigns' identities are
         # waived deliberately and the waiver carries its reason.
@@ -738,6 +737,13 @@ def test_pretraining_lock_is_the_training_lock():
             reason = raw.get("irreproducible_degenerate_reason")
             assert isinstance(reason, str) and reason.strip(), name
         else:
+            # A grid-3 campaign builds every degenerate atom reproducibly
+            # ONLY with the lock on, and needs no waiver then.
+            assert float(value) == pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH, (
+                f"{name} runs at grid level {raw['grid_level']} and states "
+                f"orientation_lock_strength={value!r}; a grid-3 campaign is "
+                "built at the calibrated lock, and unlocked it would be "
+                "refused as irreproducible")
             assert "allow_irreproducible_degenerate" not in raw, name
     assert len(paths) >= 15, paths
     # Nine of the tracked configurations run below grid level 3 (the six
