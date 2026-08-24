@@ -639,9 +639,12 @@ def test_pinned_eri_predicate_refuses_a_reset_to_a_different_system():
 
 def test_pinned_mean_field_deepcopies_but_does_not_pickle():
     """The pins are instance-level closures: copy.deepcopy and mf.copy()
-    preserve them; pickle is refused by Python (documented limitation --
-    no reference path pickles a mean-field)."""
+    preserve them and the predicate, but the clone's grid loop is the
+    ORIGINAL object's pinned closure, so once the original is collected the
+    clone refuses by name instead of silently running unpinned; pickle is
+    refused by Python (no reference path copies or pickles a mean-field)."""
     import copy
+    import gc
     import pickle
     _, mf = _h2o_rks(build_grid=False)
     pin_xc_block_size(mf)
@@ -652,6 +655,12 @@ def test_pinned_mean_field_deepcopies_but_does_not_pickle():
     # pickle refuses the instance-level closures by name, not just anything.
     with pytest.raises(AttributeError, match="local object"):
         pickle.dumps(mf)
+    # The loud half: the clone outliving its original does not integrate
+    # silently unpinned -- the pinned loop names the dead integrator.
+    del mf
+    gc.collect()
+    with pytest.raises(RuntimeError, match="outlived the integrator"):
+        clone.kernel()
 
 
 def test_pinned_mean_fields_are_freed_by_refcount_alone():

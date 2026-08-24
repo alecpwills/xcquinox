@@ -22,13 +22,11 @@ reference SCF followed the memory history of the process that ran it.
    blocks from ``dfobj.max_memory - lib.current_memory()``
    (``max(4, int(min(blockdim, mem * .3e6 / 8 / nao**2)))`` for J), so the
    number of fitted-tensor blocks the J and K sums run over follows live
-   memory once naux exceeds one block. The def2-svp fitting bases stay
-   under one block (O: naux 77, H2O: 113, against blockdim 240), so the
-   dependence cannot bind there; at the production basis it does (CH4:
-   naux 288, two blocks at normal headroom; C5H8: 888, four blocks, or 222
-   blocks of 4 once the process passes the ceiling; 156 of the 214 BH76 and
-   W4-11 species exceed one block at that basis, the smallest at naux 242),
-   and every production campaign runs density fitting.
+   memory once naux exceeds one block. Over the pools at def2-svp the
+   auxiliary count runs 18 to 519 and 87 of 214 species exceed one
+   block; the probe systems used in the tests here stay under it
+   (O: naux 77, H2O: 113, against blockdim 240), which is why the
+   binding case is exercised at the production basis (CH4: naux 288).
 
 Measured on the O atom (def2-svp, grid level 3, orientation lock on, one
 thread): a clean process integrates the 11904-point grid in one block with
@@ -84,8 +82,11 @@ only the cycle collector drained, measured and removed.
 
 A pinned object is no longer picklable: the pins are instance-level
 closures, so ``pickle.dumps`` fails loudly rather than silently shedding
-them (``copy.deepcopy`` and ``mf.copy()`` preserve the pins; no reference
-path pickles a mean-field).
+them. ``copy.deepcopy`` and ``mf.copy()`` preserve the pins and the
+predicate, but a clone integrates through the ORIGINAL object's pinned
+grid loop: once the original is collected, the clone's ``kernel()``
+refuses by name rather than silently running unpinned. No reference path
+copies or pickles a mean-field.
 
 Block-size bound. One block holds ``comp * blksize * nao`` doubles of AO
 values (``comp`` = 1 for values, 4 with the gradient the GGA and meta-GGA
