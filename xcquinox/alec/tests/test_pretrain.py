@@ -791,20 +791,20 @@ def test_pretrainspec_validate_n_steps_negative():
 # ---------------------------------------------------------------------------
 
 def test_run_pretrain_separates_checkpoints_and_saves_xnet_early(tmp_path, monkeypatch):
-    """run_pretrain gives xnet/cnet their OWN periodic-checkpoint subdirs (so
-    their ``xc.eqx.<step>`` snapshots don't clobber each other), and serialises
+    """run_pretrain gives xnet/cnet their OWN periodic-snapshot subdirs (so
+    their ``xc.eqx.<step>`` files don't clobber each other), and serialises
     the final ``xnet.eqx`` BEFORE cnet training (durable if cnet later fails).
 
-    Heavy work is stubbed: the xcTrainer seam is faked, descriptors/networks
-    are stubbed, and a minimal real ``pretrain_data.npz`` is written, so this
-    is fixture-free and fast while still exercising run_pretrain's real
-    control flow (trainer construction + save ordering).
+    Heavy work is stubbed: descriptors and networks are stubbed and a minimal
+    real ``pretrain_data.npz`` is written, so this is fixture-free and fast
+    while still exercising run_pretrain's real control flow. Every write is
+    observed through the serialisation call itself rather than through a faked
+    trainer, so the order and the destinations are the ones the run performs.
     """
     import numpy as np
     import jax
     import jax.numpy as jnp
     import equinox as eqx
-    import xcquinox.train
     import xcquinox.alec.pretrain as ptmod
 
     data_dir = tmp_path / "data"
@@ -832,49 +832,49 @@ def test_run_pretrain_separates_checkpoints_and_saves_xnet_early(tmp_path, monke
     )
 
     ckdir = tmp_path / "ck"
-    xnet_final = os.path.join(str(ckdir), "xnet.eqx")
 
-    constructed = []           # checkpoint_dir each trainer was built with
-    xnet_present_at_call = []  # did xnet.eqx already exist when each trainer ran
-
-    class _FakeTrainer:
-        def __init__(self, *, model, checkpoint_dir, **kw):
-            self.model = model
-            constructed.append(checkpoint_dir)
-
-        def __call__(self, *args, **kwargs):
-            xnet_present_at_call.append(os.path.isfile(xnet_final))
-            return self.model, [0.2, 0.1]
-
-    monkeypatch.setattr(xcquinox.train, "xcTrainer", _FakeTrainer)
-
-    save_order = []  # basenames serialized, in order
+    saved = []  # (path, xnet.eqx already on disk?) in serialisation order
     real_ser = eqx.tree_serialise_leaves
 
     def _spy_ser(path, tree):
-        save_order.append(os.path.basename(path))
+        saved.append((str(path),
+                      os.path.isfile(os.path.join(str(ckdir), "xnet.eqx"))))
         return real_ser(path, tree)
 
     monkeypatch.setattr(ptmod.eqx, "tree_serialise_leaves", _spy_ser)
 
+    # 120 steps so the periodic snapshots exist at all: the interval a run
+    # asks for is max(50, n_steps // 10), which exceeds any schedule below 50.
     spec = PretrainSpec(
         arch=_make_arch(), data_dir=str(data_dir), checkpoint_dir=str(ckdir),
-        n_steps=3, lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.0,
+        n_steps=120, lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.0,
         grad_clip=1.0, seed=0, loss_weighting="unweighted",
     )
     ptmod.run_pretrain(spec)
 
-    # xnet trainer -> <ck>/xnet, cnet trainer -> <ck>/cnet (no shared dir).
-    assert constructed == [
-        os.path.join(str(ckdir), "xnet"),
-        os.path.join(str(ckdir), "cnet"),
-    ]
-    # Durability: xnet.eqx is absent when the xnet trainer runs (1st call) but
-    # PRESENT by the time the cnet trainer runs (2nd call), i.e. the final
-    # xnet was persisted before cnet training, not after.
-    assert xnet_present_at_call == [False, True]
+    paths = [pth for pth, _present in saved]
+    names = [os.path.basename(pth) for pth in paths]
+    # xnet snapshots -> <ck>/xnet, cnet snapshots -> <ck>/cnet (no shared dir),
+    # so the two nets cannot overwrite each other's xc.eqx.<step>.
+    snap_dirs = {os.path.dirname(pth) for pth in paths
+                 if os.path.basename(pth).startswith("xc.eqx.")}
+    assert snap_dirs == {os.path.join(str(ckdir), "xnet"),
+                         os.path.join(str(ckdir), "cnet")}
+    assert snap_dirs and len(snap_dirs) == 2
+    # Every snapshot is numbered at the interval the run asked for.
+    for pth in paths:
+        base = os.path.basename(pth)
+        if base.startswith("xc.eqx."):
+            assert int(base.rsplit(".", 1)[1]) % 50 == 0
+    # Durability: every cnet write happens with xnet.eqx already on disk, and
+    # no xnet write does, i.e. the final xnet was persisted before the cnet
+    # phase rather than after it.
+    for pth, present in saved:
+        in_cnet = os.path.join(str(ckdir), "cnet") in pth \
+            or os.path.basename(pth) == "cnet.eqx"
+        assert present is in_cnet, (pth, present)
     # The final xnet.eqx is serialized BEFORE cnet.eqx.
-    assert save_order.index("xnet.eqx") < save_order.index("cnet.eqx")
+    assert names.index("xnet.eqx") < names.index("cnet.eqx")
     # Finals land at the top level of checkpoint_dir.
     assert os.path.isfile(os.path.join(str(ckdir), "xnet.eqx"))
     assert os.path.isfile(os.path.join(str(ckdir), "cnet.eqx"))

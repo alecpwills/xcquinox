@@ -223,6 +223,57 @@ class ArchitectureConfig:
                         f"str/tuple coercion), got {type(entry).__name__} = "
                         f"{entry!r}"
                     )
+        # The rung is one fact, so its two statements must agree HERE, at
+        # construction, rather than being reconciled by whichever reader gets
+        # there first. Both directions are refused: the flag without the
+        # descriptor has no alpha to gate on, and the descriptor without the
+        # flag used to be resolved onto the SCAN parent density by
+        # `resolve_parent_density` while `run_pretrain` fitted it to the PBE
+        # targets from the flag alone -- 23.8 mHa per system off its parent,
+        # reported by nothing.
+        _descriptor_names = tuple(spec.name for spec in self.descriptors)
+        if bool(self.meta_gga) != ArchitectureConfig.is_meta_gga(self):
+            raise ValueError(
+                f"ArchitectureConfig {self.name!r}: meta_gga="
+                f"{bool(self.meta_gga)} disagrees with its descriptor list "
+                f"{_descriptor_names!r}, which "
+                + ("carries" if ArchitectureConfig.is_meta_gga(self)
+                   else "does not carry")
+                + " the 'metagga' descriptor. The meta-GGA rung is one fact: "
+                "the flag switches the DFS UEG gate and the Lieb-Oxford "
+                "ceiling, the descriptor supplies the iso-orbital alpha that "
+                "gate reads, and the pretraining parent density, the "
+                "enhancement-factor targets and the (s, alpha) mesh are all "
+                "selected from it. Give the architecture both or neither."
+            )
+
+    @staticmethod
+    def is_meta_gga(arch) -> bool:
+        """Whether ``arch`` is on the meta-GGA rung: the ONE predicate.
+
+        Defined as "the ``metagga`` descriptor is present", because that
+        descriptor is what supplies the iso-orbital alpha the rung is made of;
+        the ``meta_gga`` flag is the same fact stated twice, and
+        :meth:`__post_init__` refuses an architecture on which the two
+        disagree, so either reading answers the same for anything
+        constructible.
+
+        One definition because the question used to be asked two ways.
+        ``pretrain_data_gen.resolve_parent_density`` read the flag OR the
+        descriptor while ``pretrain.run_pretrain`` selected the
+        enhancement-factor targets, the per-system parent-energy keys and the
+        (s, alpha) mesh from the flag ALONE, so an architecture carrying the
+        descriptor without the flag was fitted to PBE targets on the SCAN
+        self-consistent density -- measured 23.8 mHa per system off its
+        parent, with nothing in the run reporting a disagreement.
+
+        A static method rather than a property because the callers include
+        code that receives arch-LIKE objects (the energy-weight sweep's
+        consistency check, test doubles), and the predicate has to answer for
+        those too rather than turning into an AttributeError.
+        """
+        return any(getattr(spec, "name", None) == "metagga"
+                   for spec in getattr(arch, "descriptors", ()))
 
     @property
     def x_has_lieb_oxford_constraint(self) -> bool:

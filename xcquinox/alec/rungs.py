@@ -39,10 +39,13 @@ def arch_ingredients(name: str) -> Tuple[bool, bool]:
 
     Strictly registry-derived; raises ``KeyError`` for unregistered names.
     """
-    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.config import ArchitectureConfig, get_architecture
     cfg = get_architecture(name)
     desc = {getattr(d, "name", None) for d in getattr(cfg, "descriptors", ())}
-    has_meta = bool(getattr(cfg, "meta_gga", False)) or "metagga" in desc
+    # The meta-GGA rung through the one predicate every reader shares, so the
+    # seed functional this drives cannot disagree with the pretraining parent
+    # density `resolve_parent_density` resolves for the same architecture.
+    has_meta = ArchitectureConfig.is_meta_gga(cfg)
     # by prefix: the registry names both rung35 and rung35_multishell
     has_r35 = any(n and n.startswith("rung35") for n in desc)
     return has_meta, has_r35

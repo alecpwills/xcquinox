@@ -40,11 +40,16 @@ def test_staleness_forces_regen_when_metagga_column_absent(tmp_path):
     p = tmp_path / "pretrain_data.npz"
     np.savez(p, rho_all=np.ones(3), sigma_all=np.ones(3), Fx_all=np.ones(3),
              Fc_all=np.ones(3), weights_all=np.ones(3))
+    # The manifest states the live indicator definition, so the staleness
+    # below comes from the missing columns and not from the definition key.
+    from xcquinox.alec.metagga import ALPHA_DEFINITION
     with open(str(p) + ".manifest.json", "w") as f:
         json.dump({"basis": "def2-svp", "grid_level": 1, "density_fit": False,
-                   "auxbasis": None, "atoms": [["H", 1]]}, f)
+                   "auxbasis": None, "atoms": [["H", 1]],
+                   "alpha_definition": ALPHA_DEFINITION}, f)
     assert pdg.pretrain_data_is_current(
-        p, basis="def2-svp", grid_level=1, atoms=[("H", 1)]) is False
+        p, basis="def2-svp", grid_level=1, atoms=[("H", 1)],
+        orientation_lock_strength=0.0) is False
 
 
 def test_staleness_forces_regen_when_multishell_column_absent(tmp_path):
@@ -52,8 +57,10 @@ def test_staleness_forces_regen_when_multishell_column_absent(tmp_path):
     carries ``rung35_all`` but not ``rung35ms_all``; the manifest matches, but a
     ``rung35_multishell`` arch would KeyError at pretrain time. Same argument as
     the cusp -> rung35 gate one generation earlier."""
+    from xcquinox.alec.metagga import ALPHA_DEFINITION
     manifest = {"basis": "def2-svp", "grid_level": 1, "density_fit": False,
-                "auxbasis": None, "atoms": [["H", 1]]}
+                "auxbasis": None, "atoms": [["H", 1]],
+                "alpha_definition": ALPHA_DEFINITION}
     # stale: single-width column present, multi-width absent.
     p = tmp_path / "pretrain_data.npz"
     np.savez(p, rho_all=np.ones(3), sigma_all=np.ones(3),
@@ -70,7 +77,9 @@ def test_staleness_forces_regen_when_multishell_column_absent(tmp_path):
     with open(str(p2) + ".manifest.json", "w") as f:
         json.dump(manifest, f)
     # A legacy manifest carries no orientation-lock key, so its identity is
-    # the unlocked one; it is asked for at lock 0.0.
+    # the unlocked one; it is asked for at lock 0.0. It does state the live
+    # indicator definition above: without that key every file is stale, its
+    # alpha rows being the hard-clipped ones (test_pretrain_schema).
     assert pdg.pretrain_data_is_current(
         p2, basis="def2-svp", grid_level=1, atoms=[("H", 1)],
         orientation_lock_strength=0.0) is True
@@ -145,12 +154,12 @@ def test_assemble_pretrain_input_includes_alpha_for_mgga():
 
 def test_pretrain_target_routes_scan_for_mgga(tmp_path, monkeypatch):
     """run_pretrain feeds the SCAN targets (Fx_scan_all/Fc_scan_all) to a meta_gga
-    arch and the PBE targets (Fx_all/Fc_all) to a GGA arch. The xcTrainer is stubbed
-    to capture the target array each phase consumes, so the REAL routing branch in
-    run_pretrain runs (a GGA cannot fit SCAN's alpha-dependence, so the meta-GGA nets
-    must pretrain to SCAN). The targets are made numerically distinct so the consumed
-    array identifies which branch was taken."""
-    import xcquinox.train
+    arch and the PBE targets (Fx_all/Fc_all) to a GGA arch. The training loop is
+    stubbed to capture the target array each phase consumes, so the REAL routing
+    branch in run_pretrain runs (a GGA cannot fit SCAN's alpha-dependence, so the
+    meta-GGA nets must pretrain to SCAN). The targets are made numerically distinct
+    so the consumed array identifies which branch was taken."""
+    import xcquinox.alec.pretrain as ptmod
     from xcquinox.alec.config import ARCHITECTURES, PretrainSpec
     from xcquinox.alec.pretrain import run_pretrain
 
@@ -170,18 +179,14 @@ def test_pretrain_target_routes_scan_for_mgga(tmp_path, monkeypatch):
     )
 
     def _run_capture(arch, ckpt_dir):
-        """Drive run_pretrain with a stub trainer; return [Fx_target, Fc_target]."""
+        """Drive run_pretrain with a stubbed loop; return [Fx_target, Fc_target]."""
         captured = []
 
-        class _StubTrainer:
-            def __init__(self, *, model, **_kw):
-                self.model = model
+        def _stub_train(model, _optimizer, _loss, _desc, ref_train, *_a, **_kw):
+            captured.append(np.asarray(ref_train))
+            return model, [0.0], {"history": [], "steps_run": 1}
 
-            def __call__(self, _epochs, _inputs, targets):
-                captured.append(np.asarray(targets[0]))
-                return self.model, [0.0]
-
-        monkeypatch.setattr(xcquinox.train, "xcTrainer", _StubTrainer)
+        monkeypatch.setattr(ptmod, "_train_pretrain_network", _stub_train)
         run_pretrain(PretrainSpec(arch=arch, data_dir=str(tmp_path),
                                   checkpoint_dir=str(ckpt_dir), n_steps=1))
         return captured

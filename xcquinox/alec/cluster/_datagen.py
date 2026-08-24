@@ -186,6 +186,11 @@ def _required_data_specs(cfg):
 
     requested = getattr(cfg.pretrain, "parent_density", "pbe")
     specs: dict[tuple, None] = {}
+    # The rung is not read locally: `resolve_parent_density` asks
+    # `ArchitectureConfig.is_meta_gga`, the one predicate the SCF seed
+    # (`rungs.arch_ingredients`) and the pretraining targets
+    # (`pretrain.run_pretrain`) also read, so the file this stage builds is
+    # the file that worker opens and the density it fits against.
     for arch in _swept_architectures(cfg):
         polarized = bool(getattr(arch, "use_polarized_correlation", False))
         specs.setdefault(

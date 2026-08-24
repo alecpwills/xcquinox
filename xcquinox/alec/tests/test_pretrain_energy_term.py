@@ -1118,6 +1118,9 @@ def _write_system_npz(directory, *, natoms, segment=None, n_systems=None,
     np.savez(os.path.join(directory, "pretrain_data.npz"),
              rho_all=np.linspace(0.1, 2.0, n),
              sigma_all=np.linspace(0.0, 1.0, n),
+             # The iso-orbital alpha column, so a meta-GGA-rung architecture
+             # can read this file too; a GGA-rung one never asks for it.
+             metagga_all=np.linspace(0.0, 2.0, n).reshape(-1, 1),
              Fx_all=fx, Fc_all=fc, Fx_scan_all=fx_s, Fc_scan_all=fc_s,
              weights_all=w, e_lda_x_all=e_lda_x, e_lda_c_all=e_lda_c,
              system_all=seg,
@@ -1465,3 +1468,389 @@ def test_a_file_without_an_energy_table_records_null_not_zero(tmp_path):
     assert md["energy_term_c_final"] is None
     assert md["energy_term_max_abs_dE_mHa"] is None
     assert md["energy_term_rms_dE_mHa"] is None
+
+
+# ---------------------------------------------------------------------------
+# The unvalidated path leaves the periodic snapshots the trajectory scripts read
+# ---------------------------------------------------------------------------
+
+def _expected_snapshots(losses, serialize_every):
+    """The ``xc.eqx.<step>`` names the trainer's rule produces for a curve.
+
+    Written out here from ``xcquinox/train.py:148-152`` rather than called
+    from the module under test: positive interval no larger than the
+    schedule, 0-based index a multiple of it, and the loss strictly better
+    than the last snapshot's (watermark seeded at 1e10).
+    """
+    n = len(losses)
+    if serialize_every <= 0 or serialize_every > n:
+        return []
+    out, best = [], 1e10
+    for k, value in enumerate(losses):
+        if k % serialize_every == 0 and value < best:
+            out.append(f"xc.eqx.{k}")
+            best = value
+    return out
+
+
+def test_the_unvalidated_path_writes_the_periodic_snapshots(tmp_path):
+    """With nothing held out the run keeps the periodic ``xc.eqx.<step>``
+    family: two legacy trajectory scripts list that directory and select from
+    it by step number, so a run that stopped leaving them would silently give
+    those scripts nothing to restart from. The cadence is the trainer's --
+    interval ``max(50, n_steps // 10)``, 0-based indices, and only where the
+    loss improves on the last snapshot -- and the file at index ``k`` holds
+    the network whose loss is ``losses[k]``, not the one the step produced."""
+    from xcquinox.alec.networks import create_network_pair
+    from xcquinox.alec.pretrain import _PRETRAIN_SERIALIZE_EVERY
+    d = tmp_path / "snap"
+    d.mkdir()
+    _write_system_npz(str(d), natoms=(2, 3))
+    arch = ArchitectureConfig.from_spec("t_snap", 2, 8)
+    ck = tmp_path / "ck_snap"
+    n_steps = 120
+    md = run_pretrain(PretrainSpec(
+        arch=arch, data_dir=str(d), checkpoint_dir=str(ck), n_steps=n_steps,
+        seed=0, loss_weighting="unweighted"))
+    assert md["validation"]["active"] is False
+    every = _PRETRAIN_SERIALIZE_EVERY(n_steps)
+    assert every == 50 and every <= n_steps
+    for sub, curve in (("xnet", "losses_x.npy"), ("cnet", "losses_c.npy")):
+        losses = [float(v) for v in np.load(ck / curve)]
+        assert len(losses) == n_steps
+        want = _expected_snapshots(losses, every)
+        # A curve that improves throughout puts a snapshot at every due index;
+        # the test is only meaningful if there is more than the first one.
+        assert len(want) >= 2, want
+        assert sorted(p.name for p in (ck / sub).iterdir()) == sorted(want)
+    # The snapshot at index k is the network whose loss the run recorded as
+    # losses[k] -- the model as it ENTERED step k+1, not the one that step
+    # produced. Checked on the first snapshot, whose model is the untrained
+    # initialization the run started from.
+    x_skel, _c_skel = create_network_pair(arch, seed=0)
+    first = eqx.tree_deserialise_leaves(str(ck / "xnet" / "xc.eqx.0"), x_skel)
+    with np.load(os.path.join(str(d), "pretrain_data.npz")) as raw:
+        data = {k: jnp.asarray(raw[k]) for k in raw.files}
+    desc = _assemble_pretrain_descriptors(arch, data)
+    got = float(jnp.mean(
+        (jax.vmap(first)(desc).squeeze() - 1.0 - data["Fx_all"]) ** 2))
+    assert got == pytest.approx(float(np.load(ck / "losses_x.npy")[0]),
+                                rel=1e-12)
+    initial = float(jnp.mean(
+        (jax.vmap(x_skel)(desc).squeeze() - 1.0 - data["Fx_all"]) ** 2))
+    assert got == pytest.approx(initial, rel=1e-12)
+
+
+def test_a_short_unvalidated_run_writes_no_snapshot_at_all(tmp_path):
+    """The interval a run asks for, ``max(50, n_steps // 10)``, exceeds any
+    schedule below 50 steps, and the trainer's rule declines to serialise at
+    all when the interval is longer than the run. Short runs therefore leave
+    the two net subdirectories empty, which is what they did before."""
+    d = tmp_path / "short"
+    d.mkdir()
+    _write_system_npz(str(d), natoms=(2, 3))
+    run_pretrain(_spec(tmp_path, str(d)))  # n_steps = 2
+    ck = tmp_path / "ck"  # the checkpoint_dir _spec builds
+    assert list((ck / "xnet").iterdir()) == []
+    assert list((ck / "cnet").iterdir()) == []
+
+
+def test_the_snapshot_rule_is_the_trainers(tmp_path):
+    """``_snapshot_due`` transcribed against the same rule written out
+    independently, over the interval bounds, the 0-based multiples and the
+    improvement gate."""
+    from xcquinox.alec.pretrain import _snapshot_due
+    losses = [0.5, 0.4, 0.9, 0.3, 0.35, 0.2, 0.1, 0.05]
+    for every in (0, 1, 2, 3, 9):
+        best, got = 1e10, []
+        for k, value in enumerate(losses):
+            if _snapshot_due(k, len(losses), every, value, best):
+                got.append(f"xc.eqx.{k}")
+                best = value
+        assert got == _expected_snapshots(losses, every), (every, got)
+    # An interval longer than the schedule writes nothing, and a due step
+    # whose loss did not improve is skipped.
+    assert _snapshot_due(0, 4, 5, 0.1, 1e10) is False
+    assert _snapshot_due(2, 8, 2, 0.9, 0.4) is False
+    assert _snapshot_due(2, 8, 2, 0.3, 0.4) is True
+
+
+# ---------------------------------------------------------------------------
+# A fit that overflowed is not a functional, validated or not
+# ---------------------------------------------------------------------------
+
+def _nan_target_dir(directory, column):
+    """A pretrain file whose ``column`` is non-finite on every row."""
+    _write_system_npz(directory, natoms=(2, 3))
+    path = os.path.join(directory, "pretrain_data.npz")
+    with np.load(path) as raw:
+        cols = {k: np.array(raw[k]) for k in raw.files}
+    cols[column] = np.full(cols[column].shape, np.nan)
+    np.savez(path, **cols)
+    return path
+
+
+def test_an_unvalidated_run_refuses_a_non_finite_trajectory(tmp_path):
+    """With nothing held out there is no monitor to catch an overflow, and the
+    network the fit hands back is one of NaNs that serialises and loads like
+    any other. The trajectory is the criterion there: one non-finite entry and
+    the run has no product."""
+    from xcquinox.alec.pretrain import PretrainDiverged
+    d = tmp_path / "nan_x"
+    d.mkdir()
+    _nan_target_dir(str(d), "Fx_all")
+    ck = tmp_path / "ck"
+    with pytest.raises(PretrainDiverged, match="non-finite training loss"):
+        run_pretrain(_spec(tmp_path, str(d)))  # validation_fraction 0
+    assert not (ck / "xnet.eqx").exists()
+    assert not (ck / "cnet.eqx").exists()
+    failure = json.loads((ck / "pretrain_failed.json").read_text())
+    assert failure["network"] == "xnet"
+    assert failure["reason"] == "a recorded training loss is non-finite"
+    assert failure["first_non_finite_step"] == 1
+    assert failure["n_non_finite"] == failure["steps_run"] == 2
+    # Strict JSON: the trajectory it records is entirely non-finite.
+    assert "NaN" not in (ck / "pretrain_failed.json").read_text()
+    assert failure["losses"] == [None, None]
+
+
+def test_the_refusal_keeps_the_periodic_snapshots_and_drops_the_finals(
+        tmp_path):
+    """The periodic ``xc.eqx.<step>`` files predate the overflow -- the
+    improvement gate cannot pass a non-finite value, so every snapshot on disk
+    was written from a finite loss -- and they are the last good state a
+    restart would want. What must not survive is the pair downstream loads."""
+    from xcquinox.alec.pretrain import PretrainDiverged
+    d = tmp_path / "nan_c"
+    d.mkdir()
+    _nan_target_dir(str(d), "Fc_all")  # the xnet fits, the cnet overflows
+    ck = tmp_path / "ck_nan_c"
+    n_steps = 120
+    with pytest.raises(PretrainDiverged, match="cnet"):
+        run_pretrain(PretrainSpec(
+            arch=ArchitectureConfig.from_spec("t_nan_c", 2, 8),
+            data_dir=str(d), checkpoint_dir=str(ck), n_steps=n_steps, seed=0,
+            loss_weighting="unweighted"))
+    # The xnet's own snapshots were written from finite losses and are kept,
+    # while the final pair -- including the xnet.eqx this run had already
+    # persisted before the cnet phase -- is gone.
+    kept = sorted(p.name for p in (ck / "xnet").iterdir())
+    assert kept and all(n.startswith("xc.eqx.") for n in kept)
+    assert not (ck / "xnet.eqx").exists()
+    assert not (ck / "cnet.eqx").exists()
+    # The cnet's trajectory is non-finite from its first step, so the gate
+    # never passed and it left no snapshot of its own.
+    assert list((ck / "cnet").iterdir()) == []
+    failure = json.loads((ck / "pretrain_failed.json").read_text())
+    assert failure["network"] == "cnet"
+    assert failure["first_non_finite_step"] == 1
+
+
+def test_a_saturating_network_keeps_its_loss_finite_under_a_huge_rate(
+        tmp_path):
+    """Why the refusal is written against the TRAJECTORY and not against the
+    learning rate: the pretrained networks are bounded by construction (the
+    enhancement factor is clamped), so even at a rate of 1e14 the loss stays
+    finite and there is nothing to refuse. An overflow reaches these runs
+    through the DATA, which is what the two tests above drive."""
+    d = tmp_path / "huge_lr"
+    d.mkdir()
+    _write_system_npz(str(d), natoms=(2, 3))
+    ck = tmp_path / "ck_huge"
+    md = run_pretrain(PretrainSpec(
+        arch=ArchitectureConfig.from_spec("t_huge", 2, 8), data_dir=str(d),
+        checkpoint_dir=str(ck), n_steps=6, seed=0,
+        loss_weighting="unweighted", lr_start=1e14, lr_end=1e14,
+        grad_clip=1e30))
+    assert np.all(np.isfinite(np.load(ck / "losses_x.npy")))
+    assert np.isfinite(md["final_loss_x"])
+    assert (ck / "xnet.eqx").is_file() and (ck / "cnet.eqx").is_file()
+
+
+# ---------------------------------------------------------------------------
+# The snapshot cadence against the trainer it was transcribed from
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("lr,expect_gap", ((0.05, False), (1.1, True)))
+def test_the_snapshot_cadence_matches_the_library_trainer(tmp_path, lr,
+                                                          expect_gap):
+    """The cadence rule lives in two places -- ``xcquinox/train.py`` and, so
+    the pretraining loop leaves the same files behind, transcribed into
+    ``_PRETRAIN_SERIALIZE_EVERY`` / ``_snapshot_due``. This runs the LIBRARY
+    trainer for the same schedule into its own directory and requires the set
+    of ``xc.eqx.<k>`` indices it writes to be the set the transcription
+    predicts from the trainer's own loss curve, so a change upstream turns
+    this red rather than silently splitting the two families.
+
+    Both branches of the rule are exercised: a converging rate writes at every
+    due index, a diverging one improves only at the first and skips the rest.
+    """
+    import optax
+    import xcquinox.train
+    from xcquinox.alec.pretrain import (_PRETRAIN_SERIALIZE_EVERY,
+                                        _snapshot_due)
+    n_steps = 120
+    every = _PRETRAIN_SERIALIZE_EVERY(n_steps)
+    assert every == 50 and every <= n_steps
+    d = tmp_path / f"traj_{lr}"
+    d.mkdir()
+    desc = jnp.stack([jnp.zeros(2), jnp.ones(2)], axis=1)
+    ref = jnp.asarray([1.0, 1.0])
+    trainer = xcquinox.train.xcTrainer(
+        model=_EchoModel(jnp.asarray(0.0)), optim=optax.sgd(lr),
+        loss=_PretrainLoss(weights=jnp.ones(2)), steps=n_steps, do_jit=True,
+        serialize_every=every, checkpoint_dir=str(d))
+    _model, losses = trainer(1, [desc], [ref])
+    assert len(losses) == n_steps
+    written = sorted(int(p.name.rsplit(".", 1)[1]) for p in d.iterdir()
+                     if p.name.startswith("xc.eqx."))
+    best, predicted = 1e10, []
+    for k, value in enumerate(losses):
+        if _snapshot_due(k, n_steps, every, value, best):
+            predicted.append(k)
+            best = value
+    assert written == predicted, (written, predicted)
+    assert written[0] == 0
+    # The two cells differ in whether the improvement gate skips a due index.
+    assert (written != [0, 50, 100]) is expect_gap, (lr, written)
+
+
+# ---------------------------------------------------------------------------
+# The meta-GGA rung is one predicate, and four readers share it
+# ---------------------------------------------------------------------------
+
+def _mgga_and_gga():
+    """A meta-GGA-rung and a GGA-rung architecture from the registry."""
+    from xcquinox.alec.config import get_architecture
+    return get_architecture("deep_mgga_3x16"), get_architecture("deep_3x16")
+
+
+def test_an_architecture_whose_rung_statements_disagree_is_refused():
+    """The rung is one fact stated twice -- the ``meta_gga`` flag switches the
+    DFS UEG gate and the Lieb-Oxford ceiling, the ``metagga`` descriptor
+    supplies the iso-orbital alpha that gate reads -- so the two must agree at
+    CONSTRUCTION rather than be reconciled by whichever reader gets there
+    first. Both directions are refused, and the message names both."""
+    from xcquinox.alec.config import FeatureSpec
+    with pytest.raises(ValueError) as descriptor_only:
+        ArchitectureConfig(name="descriptor_only", depth=3, nodes=16,
+                           descriptors=(FeatureSpec(name="metagga"),))
+    text = str(descriptor_only.value)
+    assert "meta_gga=False" in text and "'metagga'" in text
+    assert "descriptor_only" in text
+    with pytest.raises(ValueError) as flag_only:
+        ArchitectureConfig(name="flag_only", depth=3, nodes=16,
+                           descriptors=(FeatureSpec(name="cusp"),),
+                           meta_gga=True)
+    text = str(flag_only.value)
+    assert "meta_gga=True" in text and "does not carry" in text
+    # Both together, and neither, are architectures.
+    both = ArchitectureConfig.from_spec("both", 3, 16,
+                                        descriptors=["metagga"],
+                                        meta_gga=True)
+    neither = ArchitectureConfig.from_spec("neither", 3, 16)
+    assert ArchitectureConfig.is_meta_gga(both) is True
+    assert ArchitectureConfig.is_meta_gga(neither) is False
+
+
+def test_the_predicate_answers_for_an_architecture_like_object():
+    """The predicate is a static method rather than a property because its
+    callers include code that receives arch-LIKE objects -- the energy-weight
+    sweep's own consistency check builds them, and so do test doubles. It has
+    to answer for those instead of raising AttributeError."""
+    import types
+    like = types.SimpleNamespace(
+        descriptors=(types.SimpleNamespace(name="metagga"),))
+    assert ArchitectureConfig.is_meta_gga(like) is True
+    assert ArchitectureConfig.is_meta_gga(types.SimpleNamespace()) is False
+
+
+@pytest.mark.parametrize("name", sorted(__import__(
+    "xcquinox.alec.config", fromlist=["ARCHITECTURES"]).ARCHITECTURES))
+def test_every_registered_architecture_states_its_rung_once(name):
+    """Every architecture in the registry carries the flag and the descriptor
+    together or carries neither, so the predicate and the flag answer the same
+    for all of them and no registry entry was in the state the refusal now
+    closes."""
+    from xcquinox.alec.config import get_architecture
+    arch = get_architecture(name)
+    assert ArchitectureConfig.is_meta_gga(arch) is bool(arch.meta_gga), name
+
+
+def test_reader_1_the_pretraining_parent_density_reads_the_predicate():
+    """``pretrain_data_gen.resolve_parent_density`` under ``"auto"``."""
+    mgga, gga = _mgga_and_gga()
+    assert pdg.resolve_parent_density(mgga, "auto") == "scan"
+    assert pdg.resolve_parent_density(gga, "auto") == "pbe"
+
+
+def test_reader_2_the_scf_seed_functional_reads_the_predicate():
+    """``rungs.arch_ingredients``, which ``seed_xc_for_arch`` drives. The seed
+    the SCF starts from and the density the pretraining fits must be the same
+    rung baseline, which is why they share the predicate rather than each
+    carrying a rule."""
+    from xcquinox.alec.rungs import arch_ingredients, seed_xc_for_arch
+    assert arch_ingredients("deep_mgga_3x16")[0] is True
+    assert arch_ingredients("deep_3x16")[0] is False
+    assert seed_xc_for_arch("deep_mgga_3x16") == "scan"
+    assert seed_xc_for_arch("deep_3x16") == "pbe"
+
+
+def test_reader_3_the_datagen_stage_reads_the_predicate():
+    """``cluster/_datagen._required_data_specs``: which pretrain-data files a
+    sweep has to build. A mixed-rung sweep needs BOTH densities, and the file
+    it writes has to be the file the pretrain worker opens."""
+    import types
+    from xcquinox.alec.cluster import _datagen
+
+    def _cfg(archs):
+        return types.SimpleNamespace(
+            sweep=types.SimpleNamespace(arch=list(archs)),
+            use_polarized_correlation=False,
+            pretrain=types.SimpleNamespace(parent_density="auto"))
+
+    assert _datagen._required_data_specs(_cfg(["deep_mgga_3x16"])) == \
+        [(False, "scan")]
+    assert _datagen._required_data_specs(_cfg(["deep_3x16"])) == \
+        [(False, "pbe")]
+    assert _datagen._required_data_specs(
+        _cfg(["deep_3x16", "deep_mgga_3x16"])) == [(False, "pbe"),
+                                                   (False, "scan")]
+
+
+def test_reader_4_run_pretrain_selects_its_targets_from_the_predicate(
+        tmp_path, monkeypatch):
+    """``run_pretrain``'s enhancement-factor targets, its per-system
+    parent-energy keys and its (s, alpha) mesh. This is the reader that used
+    to ask the question differently: it took the FLAG while the parent density
+    was resolved from the flag OR the descriptor, so an architecture carrying
+    the descriptor alone was fitted to the PBE targets on the SCAN
+    self-consistent density."""
+    import xcquinox.alec.pretrain as ptmod
+    d = tmp_path / "rung_targets"
+    d.mkdir()
+    # Fx_all is 0.1 and Fx_scan_all is 0.3 in this file, so the captured
+    # target array says which parent's rows the fit was given.
+    _write_system_npz(str(d), natoms=(2, 3))
+    captured = []
+
+    def _stub_train(model, _optimizer, _loss, _desc, ref_train, *_a, **_kw):
+        captured.append(np.asarray(ref_train).reshape(-1))
+        return model, [0.0], {"history": [], "steps_run": 1}
+
+    monkeypatch.setattr(ptmod, "_train_pretrain_network", _stub_train)
+    mgga = ArchitectureConfig.from_spec("t_rung_mgga", 2, 8,
+                                        descriptors=["metagga"],
+                                        meta_gga=True)
+    gga = ArchitectureConfig.from_spec("t_rung_gga", 2, 8)
+    for arch, want_fx, want_ref in ((mgga, 0.3, "scan"), (gga, 0.1, "pbe")):
+        captured.clear()
+        md = ptmod.run_pretrain(PretrainSpec(
+            arch=arch, data_dir=str(d),
+            checkpoint_dir=str(tmp_path / f"ck_{arch.name}"), n_steps=2,
+            seed=0, loss_weighting="unweighted", parent_density="pbe"))
+        np.testing.assert_allclose(captured[0], want_fx)
+        assert md["meta_gga"] is (want_ref == "scan")
+        # The per-system energy keys follow the same reading: the metadata's
+        # measured term is built on the parent the rung names.
+        assert pdg.resolve_parent_density(arch, "auto") == want_ref

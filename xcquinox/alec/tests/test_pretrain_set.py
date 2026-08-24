@@ -309,21 +309,22 @@ def test_resolve_parent_density_auto_is_the_rung_baseline():
             seed_xc_for_arch(name), name
 
 
-def test_resolve_parent_density_auto_reads_the_meta_gga_ingredient():
-    """The rung is carried by the meta-GGA INGREDIENT, which
-    ``rungs.arch_ingredients`` reads as the ``meta_gga`` flag OR a "metagga"
-    descriptor. The pairing of the two is enforced in
-    ``ArchitectureConfig.from_spec`` alone (``config.py``, "meta_gga=True
-    requires a 'metagga' descriptor"), and only in that direction; the
-    dataclass constructor used below enforces neither, so an architecture
-    assembled outside ``from_spec`` can carry the descriptor alone -- a case
-    the registry sweep above cannot reach, and one that would pretrain a
-    meta-GGA network on a PBE density its own SCF never visits."""
+def test_resolve_parent_density_auto_reads_the_one_rung_predicate():
+    """The rung is carried by the meta-GGA INGREDIENT, and there is now one
+    predicate for it: ``ArchitectureConfig.is_meta_gga``, "the 'metagga'
+    descriptor is present". The architecture that used to expose the seam --
+    the descriptor without the flag, resolved to the SCAN density here while
+    ``run_pretrain`` fitted it to the PBE targets from the flag alone -- can no
+    longer be built, because the two statements of the rung must agree at
+    construction."""
     from xcquinox.alec.config import ArchitectureConfig, FeatureSpec
-    arch = ArchitectureConfig(name="ad_hoc_metagga", depth=3, nodes=16,
-                              descriptors=(FeatureSpec(name="metagga"),))
-    assert arch.meta_gga is False
-    assert pdg.resolve_parent_density(arch, "auto") == "scan"
+    with pytest.raises(ValueError, match="meta_gga=False disagrees"):
+        ArchitectureConfig(name="ad_hoc_metagga", depth=3, nodes=16,
+                           descriptors=(FeatureSpec(name="metagga"),))
+    consistent = ArchitectureConfig.from_spec(
+        "ad_hoc_metagga", 3, 16, descriptors=["metagga"], meta_gga=True)
+    assert ArchitectureConfig.is_meta_gga(consistent) is True
+    assert pdg.resolve_parent_density(consistent, "auto") == "scan"
 
 
 def test_lda_exchange_coefficient_is_the_one_libxc_returns():

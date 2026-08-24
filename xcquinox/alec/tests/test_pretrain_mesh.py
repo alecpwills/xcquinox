@@ -35,13 +35,20 @@ def test_mesh_columns_realize_the_design_nodes():
     assert cols["metagga"].shape == (n, 1)
     for k in ("rho", "sigma", "Fx_scan", "Fc_scan", "weights", "zeta"):
         assert np.all(np.isfinite(cols[k])), k
-    # The recovered alpha equals the design grid broadcast over (rs, s).
+    # The recovered alpha equals the design grid broadcast over (rs, s),
+    # through the smooth positive part compute_alpha applies to its lower
+    # bound: a design node at alpha = 0 is a one-orbital point and reads
+    # width / 2 = 5e-6, every other node its value plus width^2 / (4 alpha).
+    from xcquinox.alec.metagga import (
+        _ALPHA_SMOOTHING_WIDTH, smooth_positive_part)
     design = np.broadcast_arrays(
         np.asarray(pdg.MESH_RS)[:, None, None],
         np.asarray(pdg.MESH_S)[None, :, None],
         np.asarray(pdg.MESH_ALPHA)[None, None, :])[2].ravel()
-    np.testing.assert_allclose(cols["metagga"].reshape(-1), design,
+    expect = np.asarray(smooth_positive_part(design, _ALPHA_SMOOTHING_WIDTH))
+    np.testing.assert_allclose(cols["metagga"].reshape(-1), expect,
                                rtol=1e-6, atol=1e-8)
+    assert np.max(np.abs(expect - design)) == 0.5 * _ALPHA_SMOOTHING_WIDTH
     # Targets are enhancement-factor residuals in the same clipped convention
     # as the atomic path (ratio - 1, clipped to [-5, 5]).
     assert np.all(cols["Fx_scan"] >= -5.0) and np.all(cols["Fx_scan"] <= 5.0)
@@ -56,10 +63,14 @@ def test_mesh_columns_realize_the_design_nodes():
 # ---------------------------------------------------------------------------
 
 def _manifest(p, atoms=(("H", 1),)):
+    # States the live indicator definition, so a staleness asserted below is
+    # the mesh's absence and not the definition key's (test_pretrain_schema).
+    from xcquinox.alec.metagga import ALPHA_DEFINITION
     with open(str(p) + ".manifest.json", "w") as f:
         json.dump({"basis": "def2-svp", "grid_level": 1, "density_fit": False,
                    "auxbasis": None,
-                   "atoms": [[s, sp] for s, sp in atoms]}, f)
+                   "atoms": [[s, sp] for s, sp in atoms],
+                   "alpha_definition": ALPHA_DEFINITION}, f)
 
 
 def test_staleness_forces_regen_when_mesh_absent(tmp_path):
@@ -152,26 +163,23 @@ def _mgga_arch(name="t_mgga", **kw):
 
 
 def test_mesh_rows_reach_only_the_pure_metagga_arch(tmp_path, monkeypatch):
-    """Row counts and targets, captured from the real run_pretrain branch via
-    a stub trainer: the pure-(metagga,) arch consumes atomic+mesh rows with
-    the SCAN targets extended by the mesh targets; a GGA arch and a
+    """Row counts and targets, captured from the real run_pretrain branch by
+    stubbing the training loop: the pure-(metagga,) arch consumes atomic+mesh
+    rows with the SCAN targets extended by the mesh targets; a GGA arch and a
     multi-descriptor meta-GGA arch consume the atomic rows alone."""
-    import xcquinox.train
+    import xcquinox.alec.pretrain as ptmod
 
     _write_synthetic(tmp_path, with_mesh=True)
     captured = {}
 
-    class _StubTrainer:
-        def __init__(self, *, model, **_kw):
-            self.model = model
+    def _stub_train(model, _optimizer, _loss_train, desc_train, ref_train,
+                    *_a, **_kw):
+        captured.setdefault("shapes", []).append(
+            (np.asarray(desc_train).shape[0],
+             np.asarray(ref_train).reshape(-1)))
+        return model, [0.0], {"history": [], "steps_run": 1}
 
-        def __call__(self, _epochs, inputs, targets, **_kw):
-            captured.setdefault("shapes", []).append(
-                (np.asarray(inputs[0]).shape[0],
-                 np.asarray(targets[0]).reshape(-1)))
-            return self.model, [0.0]
-
-    monkeypatch.setattr(xcquinox.train, "xcTrainer", _StubTrainer)
+    monkeypatch.setattr(ptmod, "_train_pretrain_network", _stub_train)
 
     mgga = _mgga_arch()
     run_pretrain(_spec(tmp_path, mgga))
@@ -212,16 +220,12 @@ def test_mesh_effective_loss_share_is_the_stated_fraction(tmp_path, monkeypatch)
     _write_synthetic(tmp_path, with_mesh=True)
     captured = []
 
-    class _StubTrainer:
-        def __init__(self, *, model, loss=None, **_kw):
-            self.model = model
-            captured.append(getattr(loss, "weights", None))
+    def _stub_train(model, _optimizer, loss_train, _desc, _ref, *_a, **_kw):
+        captured.append(getattr(loss_train, "weights", None))
+        return model, [0.0], {"history": [], "steps_run": 1}
 
-        def __call__(self, _epochs, _inputs, _targets, **_kw):
-            return self.model, [0.0]
-
-    import xcquinox.train
-    monkeypatch.setattr(xcquinox.train, "xcTrainer", _StubTrainer)
+    import xcquinox.alec.pretrain as ptmod
+    monkeypatch.setattr(ptmod, "_train_pretrain_network", _stub_train)
 
     spec = PretrainSpec(arch=_mgga_arch("t_mgga_share"),
                         data_dir=str(tmp_path),

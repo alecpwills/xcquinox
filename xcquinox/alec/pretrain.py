@@ -20,7 +20,6 @@ import optax
 from equinox._filters import is_array_like
 
 import xcquinox.net
-import xcquinox.train
 
 from xcquinox.alec.config import ArchitectureConfig, PretrainSpec
 from xcquinox.alec.networks import AlecGGA_XNet, AlecGGA_CNet, create_network_pair
@@ -491,24 +490,90 @@ def _validation_split(loss, descriptors, ref_F, segment, n_systems, held_out,
 
 _PRETRAIN_MONITORS = ("pointwise", "loss")
 
+# ``xcTrainer`` seeds its best-loss watermark with this literal
+# (``xcquinox/train.py:90``) and only lowers it when it writes a snapshot, so
+# the first due step always writes whatever its loss is.
+_SNAPSHOT_SEED_LOSS = 1e10
+
+
+def _PRETRAIN_SERIALIZE_EVERY(n_steps):
+    """The periodic-snapshot interval a pretraining run asks for.
+
+    ``max(50, n_steps // 10)`` is the value ``run_pretrain`` handed
+    ``xcTrainer`` before the loop moved in-module, kept verbatim so the file
+    family a run leaves behind does not move with it. It exceeds any schedule
+    below 50 steps, which is why short runs carry no snapshots at all.
+    """
+    return max(50, int(n_steps) // 10)
+
+
+def _snapshot_due(index, n_steps, serialize_every, loss, best_loss):
+    """Whether ``xcTrainer`` would write ``xc.eqx.<index>`` at this step.
+
+    The rule is transcribed from ``xcquinox/train.py:148-152`` so the loop
+    here leaves the same file family behind as the trainer it replaced, which
+    is what the two legacy trajectory scripts read
+    (``scripts/sv_train_traj.py:87``, ``scripts/pt_validation.py:277-281``,
+    both keying on ``int(name.split('.')[-1])``):
+
+    - ``serialize_every`` must be positive AND no larger than the schedule, so
+      a short run writes nothing at all (``run_pretrain`` asks for
+      ``max(50, n_steps // 10)``, which exceeds any schedule below 50 steps);
+    - the step index is 0-BASED and must be a multiple of ``serialize_every``,
+      so the first snapshot is the network as it entered the run;
+    - the loss must IMPROVE on the last snapshot's, which is why a due step
+      can pass without writing and why the numbering has gaps.
+
+    ``index`` is the 0-based step, ``loss`` the value that step reported, and
+    ``best_loss`` the watermark (:data:`_SNAPSHOT_SEED_LOSS` until the first
+    write).
+    """
+    every = int(serialize_every)
+    return (every > 0 and every <= int(n_steps)
+            and (int(index) % every) == 0 and float(loss) < float(best_loss))
+
 
 def _train_pretrain_network(model, optimizer, loss_train, desc_train,
-                            ref_train, loss_val, desc_val, ref_val, *,
+                            ref_train, loss_val=None, desc_val=None,
+                            ref_val=None, *,
                             n_steps, validate_every, patience, monitor,
-                            progress_callback=None, checkpoint_path=None):
-    """Full-batch pretraining with held-out-system validation and early stop.
+                            progress_callback=None, checkpoint_path=None,
+                            snapshot_dir=None, serialize_every=0):
+    """Full-batch pretraining, with held-out-system validation when asked for.
 
-    Returns ``(best_model, losses, record)``. The loop is written here rather
-    than driven through ``xcquinox.train.xcTrainer`` because a stop criterion
-    needs the optimizer STATE and the learning-rate schedule to survive across
-    validations: ``xcTrainer`` initializes its optimizer state in its
+    Returns ``(best_model, losses, record)``. This is the only training loop
+    ``run_pretrain`` uses. It is written here rather than driven through
+    ``xcquinox.train.xcTrainer`` for two reasons. A stop criterion needs the
+    optimizer STATE and the learning-rate schedule to survive across
+    validations, and ``xcTrainer`` initializes its optimizer state in its
     constructor and returns no state, so chunking a run through it would reset
-    Adam's moments and restart the schedule at every validation. The
-    unvalidated path still goes through ``xcTrainer`` unchanged, which is what
-    keeps a run without validation byte-identical. On identical rows the two
-    are the same arithmetic (one full-batch step per iteration on the same
-    loss and optimizer chain) and reproduce each other's trajectory bit for
-    bit.
+    Adam's moments and restart the schedule at every validation. And
+    ``xcTrainer`` couples its jit to its cache clearing
+    (``xcquinox/train.py:100-106``): the step is compiled only on the
+    iterations for which ``step % clear_every == 0``, and the same condition
+    clears the JAX caches at :134-136 and :163-165, so the one value for which
+    every step is jitted, 1, is also the value that recompiles every step.
+    Measured on a 3x16 net, marginal wall per optimizer step: 234.96 ms at
+    4000 rows and 233.17 ms at 16350 rows through the trainer -- independent
+    of the row count, i.e. compilation rather than work -- against 0.94 ms and
+    4.53 ms here, which holds one ``filter_jit`` for the whole run and clears
+    nothing. Raising ``clear_every`` does not close that gap: the
+    non-clearing steps then run UNJITTED and the trajectory moves (first
+    departure at step 2, ``0x1.ea418905eea20p-7`` against ``...21p-7``).
+
+    On identical rows the two are the same arithmetic -- one full-batch step
+    per iteration on the same loss and the same optimizer chain, the optimizer
+    state initialized the same way -- and reproduce each other's trajectory
+    and final weights bit for bit, which is what lets the unvalidated path
+    move here without moving any number.
+
+    ``loss_val`` of ``None`` is the unvalidated mode: nothing is scored, the
+    LAST model is returned, and the record carries no history. It is what a
+    run at ``validation_fraction`` 0 asks for, and it reproduces
+    ``xcTrainer``'s artifacts as well as its arithmetic: ``snapshot_dir`` with
+    a ``serialize_every`` writes the periodic ``xc.eqx.<step>`` snapshots at
+    the trainer's own cadence (see :func:`_snapshot_due`), which is the file
+    family the two legacy trajectory scripts read.
 
     ``monitor`` names the quantity scored on the held-out rows every
     ``validate_every`` steps and at the last step: ``"loss"`` is the objective
@@ -528,7 +593,9 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
     result: :func:`run_pretrain` refuses it with :class:`PretrainDiverged`
     rather than writing the initialization as the run's checkpoint (see
     :func:`_refuse_a_diverged_fit`), and a direct caller of this function must
-    make the same check on the record.
+    make the same check on the record. The unvalidated mode has no score to
+    call non-finite and therefore no such refusal: it returns whatever the
+    schedule produced, exactly as the trainer did.
     """
     if monitor not in _PRETRAIN_MONITORS:
         raise ValueError(
@@ -541,7 +608,9 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
         raise ValueError(
             f"n_steps must be > 0, validate_every > 0 and patience >= 0; got "
             f"{n_steps}, {every}, {patience}")
-    w_e = float(loss_val.energy_weight) if monitor == "loss" else 0.0
+    validating = loss_val is not None
+    w_e = (float(loss_val.energy_weight)
+           if validating and monitor == "loss" else 0.0)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     @eqx.filter_jit
@@ -557,7 +626,11 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
     losses, history = [], []
     best_value, best_step, best_model = float("inf"), 0, model
     stale, stopped_early = 0, False
+    snapshot_best = _SNAPSHOT_SEED_LOSS
     for step in range(1, n_steps + 1):
+        # The model this step is about to move: the trainer serialises the
+        # network whose loss the step reports, not the one the step produces.
+        scored_model = model
         model, opt_state, value = _step(model, opt_state, loss_train,
                                         desc_train, ref_train)
         losses.append(float(value))
@@ -566,6 +639,14 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
                 progress_callback(step, n_steps, losses[-1])
             except Exception:  # noqa: BLE001 - a logging callback never stops a fit
                 pass
+        if _snapshot_due(step - 1, n_steps, serialize_every, losses[-1],
+                         snapshot_best) and snapshot_dir is not None:
+            eqx.tree_serialise_leaves(
+                os.path.join(snapshot_dir, f"xc.eqx.{step - 1}"),
+                scored_model)
+            snapshot_best = losses[-1]
+        if not validating:
+            continue
         if step % every and step != n_steps:
             continue
         pointwise, energy = _evaluate(model, loss_val, desc_val, ref_val)
@@ -589,11 +670,21 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
                  if stopped_early else ""), flush=True)
         if stopped_early:
             break
-    record = {"monitor": monitor, "best_step": best_step,
+    if not validating:
+        # Nothing was scored, so the result is the last model, exactly as the
+        # trainer returned it. `best_value` stays None rather than inf: there
+        # is no best, and a number here would invite a comparison.
+        best_model, best_step, best_value = model, len(losses), None
+    # ``monitor`` of None is the unvalidated mode's marker; no separate flag,
+    # because run_pretrain records the per-network entry only when a split ran
+    # and a constant-true key would say nothing there.
+    record = {"monitor": monitor if validating else None,
+              "best_step": best_step,
               "best_value": best_value, "stopped_early": stopped_early,
               "steps_run": len(losses),
               "n_rows_train": int(jnp.asarray(desc_train).shape[0]),
-              "n_rows_val": int(jnp.asarray(desc_val).shape[0]),
+              "n_rows_val": (0 if not validating
+                             else int(jnp.asarray(desc_val).shape[0])),
               "history": history}
     return best_model, losses, record
 
@@ -612,8 +703,77 @@ def _refuse_a_diverged_fit(record, *, network, arch_name, checkpoint_dir,
     one -- and passes through.
     """
     history = list(record.get("history") or ())
-    if not history or np.isfinite(float(record.get("best_value", np.inf))):
+    if not history:
+        # Nothing was scored: an unvalidated run, which has no criterion to
+        # fail here. Its trajectory is checked instead, by
+        # :func:`_refuse_a_non_finite_trajectory`.
         return
+    if np.isfinite(float(record.get("best_value", np.inf))):
+        return
+    _fail_a_pretrain(
+        f"run_pretrain: the {network} fit of {arch_name!r} (checkpoint_dir "
+        f"{checkpoint_dir!r}) scored {len(history)} validation(s) and no "
+        "finite validation value was recorded, so the best-validation network "
+        "is the untrained initialization. No final checkpoint was written; "
+        "the scores are in 'pretrain_failed.json'. Lower pretrain.lr_start or "
+        "check the target columns for a non-finite entry.",
+        network=network, arch_name=arch_name, checkpoint_dir=checkpoint_dir,
+        reason="no finite validation value was recorded",
+        also_remove=also_remove,
+        monitor=record.get("monitor"), n_validations=len(history),
+        steps_run=record.get("steps_run"), history=history)
+
+
+def _refuse_a_non_finite_trajectory(losses, *, network, arch_name,
+                                    checkpoint_dir, also_remove=()):
+    """Refuse to write a network whose TRAINING loss went non-finite.
+
+    The held-out monitor cannot cover a run with nothing held out, and a fit
+    that overflowed still hands back a network -- of NaNs -- that serializes
+    and loads like any other. Writing it would put that network behind the
+    training stage's ``xnet.eqx``, which is the same failure
+    :class:`PretrainDiverged` exists for, so the trajectory itself is the
+    criterion here: one non-finite entry anywhere in it and the run has no
+    product.
+
+    The check guards the final serialisation, so it covers both paths; on a
+    validated run :func:`_refuse_a_diverged_fit` has already fired for the
+    same fit, because a non-finite training loss makes the weights non-finite
+    and every held-out score with them.
+
+    The periodic ``xc.eqx.<step>`` snapshots already on disk are LEFT in
+    place. They were written before the overflow, from finite losses (the
+    improvement gate cannot pass a non-finite value), so they are the last
+    good state of the fit and the material a restart would want; what must not
+    survive is the run's final checkpoint, which is what downstream loads.
+    """
+    values = [float(v) for v in losses]
+    bad = [k for k, v in enumerate(values) if not np.isfinite(v)]
+    if not bad:
+        return
+    _fail_a_pretrain(
+        f"run_pretrain: the {network} fit of {arch_name!r} (checkpoint_dir "
+        f"{checkpoint_dir!r}) recorded a non-finite training loss at step "
+        f"{bad[0] + 1} of {len(values)} ({len(bad)} of them), so the network "
+        "it would hand back is not a functional. No final checkpoint was "
+        "written; the periodic snapshots that predate the overflow are kept, "
+        "and the trajectory is in 'pretrain_failed.json'. Lower "
+        "pretrain.lr_start or check the target columns for a non-finite "
+        "entry.",
+        network=network, arch_name=arch_name, checkpoint_dir=checkpoint_dir,
+        reason="a recorded training loss is non-finite",
+        also_remove=also_remove,
+        steps_run=len(values), n_non_finite=len(bad),
+        first_non_finite_step=bad[0] + 1, losses=values)
+
+
+def _fail_a_pretrain(message, *, network, arch_name, checkpoint_dir, reason,
+                     also_remove=(), **extra):
+    """Write ``pretrain_failed.json`` and raise :class:`PretrainDiverged`.
+
+    ``also_remove`` names the final checkpoints this run had already written
+    for the OTHER network, which must not outlive the run that produced them.
+    """
     for path in also_remove:
         try:
             os.remove(path)
@@ -623,22 +783,13 @@ def _refuse_a_diverged_fit(record, *, network, arch_name, checkpoint_dir,
         "arch_name": arch_name,
         "network": network,
         "checkpoint_dir": checkpoint_dir,
-        "reason": "no finite validation value was recorded",
-        "monitor": record.get("monitor"),
-        "n_validations": len(history),
-        "steps_run": record.get("steps_run"),
-        "history": history,
+        "reason": reason,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
     }
+    failure.update(extra)
     _write_metadata(os.path.join(checkpoint_dir, "pretrain_failed.json"),
                     failure)
-    raise PretrainDiverged(
-        f"run_pretrain: the {network} fit of {arch_name!r} (checkpoint_dir "
-        f"{checkpoint_dir!r}) scored {len(history)} validation(s) and no "
-        "finite validation value was recorded, so the best-validation network "
-        "is the untrained initialization. No final checkpoint was written; "
-        "the scores are in 'pretrain_failed.json'. Lower pretrain.lr_start or "
-        "check the target columns for a non-finite entry.")
+    raise PretrainDiverged(message)
 
 
 # Legacy lob_lim constants.
@@ -1057,7 +1208,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # carrying the row index but not the per-system table, the LDA column
         # or the block's own quadrature weights would otherwise fail with a
         # bare KeyError deep in the loss assembly.
-        _scan_rung = bool(getattr(spec.arch, "meta_gga", False))
+        _scan_rung = ArchitectureConfig.is_meta_gga(spec.arch)
         _needed = _energy_column_keys(
             x_suffix,
             "e_x_parent_scan_sys" if _scan_rung else "e_x_parent_sys",
@@ -1088,7 +1239,12 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # DFS-faithful meta_gga archs pretrain to SCAN (a GGA structurally cannot fit
     # SCAN's alpha-dependence); GGA archs keep the PBE targets. The SCAN columns are
     # always present (pretrain_data_gen writes them + the staleness guard regens).
-    if bool(getattr(spec.arch, "meta_gga", False)):
+    # The rung is read through the one predicate the parent-density resolution
+    # uses, so the targets cannot be the other parent's: reading the flag here
+    # while resolve_parent_density read the flag OR the descriptor put an
+    # architecture carrying the descriptor alone on the SCAN density against
+    # PBE targets, 23.8 mHa per system off its parent.
+    if ArchitectureConfig.is_meta_gga(spec.arch):
         Fx_target = pretrain_data["Fx_scan" + x_suffix]
         Fc_target = pretrain_data["Fc_scan_all"]
         e_x_key, e_c_key = "e_x_parent_scan_sys", "e_c_parent_scan_sys"
@@ -1119,7 +1275,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # the share became configurable carries no such key and falls back to the
     # constant it was built with.
     mesh_share = None
-    if bool(getattr(spec.arch, "meta_gga", False)):
+    if ArchitectureConfig.is_meta_gga(spec.arch):
         desc_names = tuple(getattr(d, "name", None) for d in spec.arch.descriptors)
         has_mesh = "Fx_scan_mesh" in pretrain_data
         if desc_names == ("metagga",) and has_mesh:
@@ -1152,7 +1308,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     else:
         xnet, cnet = create_network_pair(spec.arch, seed=spec.seed)
 
-    # --- PretrainLoss (scalar MSE, compatible with xcTrainer) ---
+    # --- PretrainLoss (scalar MSE) ---
     #
     # Loss weighting is controlled by `spec.loss_weighting`:
     #   "unweighted" (default): plain mean of squared residuals.
@@ -1161,11 +1317,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     #                           computed once from pretrain_data["rho_all"]
     #                           (see _compute_integration_weights).
     #
-    # The xnet and cnet are trained in separate trainer calls using different
-    # weight arrays (w_x vs w_c). Each is baked into its own closure-like
-    # eqx.Module instance so that xcTrainer can call `loss(model, descriptors,
-    # ref_F)` with the familiar 3-arg API. Weights are carried as a static
-    # array field on the module (eqx handles the pytree correctly).
+    # The xnet and cnet are fitted separately with different weight arrays
+    # (w_x vs w_c). Each is baked into its own closure-like eqx.Module
+    # instance so the training loop can call `loss(model, descriptors, ref_F)`
+    # with the familiar 3-arg API. Weights are carried as a static array field
+    # on the module (eqx handles the pytree correctly).
     n_mesh_rows = int(pretrain_data["rho_mesh"].shape[0]) if mesh_used else 0
     # The energy term's inputs are assembled whenever the file carries them,
     # at ANY weight: the objective uses them only above zero (below, the loss
@@ -1281,7 +1437,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     checkpoint_dir = spec.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # Helper: build phase progress callbacks for xcTrainer 3-arg form
+    # Helper: build phase progress callbacks for the loop's 3-arg form
     def _x_callback(step, total, loss):
         if progress_callback is not None:
             progress_callback({
@@ -1304,11 +1460,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
                 "timestamp": time.time(),
             })
 
-    # Per-network checkpoint subdirs. xcTrainer serialises its periodic
-    # best-loss snapshots as ``<checkpoint_dir>/xc.eqx.<step>``: if both the
-    # xnet and cnet trainers share one checkpoint_dir they clobber each other's
-    # snapshots. Give each its own subdir; the FINAL xnet.eqx/cnet.eqx still
-    # land at the top level (what downstream consumes).
+    # Per-network checkpoint subdirs. The periodic best-loss snapshots are
+    # written as ``<subdir>/xc.eqx.<step>``: if the xnet and the cnet shared
+    # one directory they would clobber each other's. Give each its own; the
+    # FINAL xnet.eqx/cnet.eqx still land at the top level (what downstream
+    # consumes).
     #
     # The validated path's best-so-far snapshot is named
     # ``<net>_val_best.eqx``, mirroring the training stage's
@@ -1332,10 +1488,12 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # ones seen. What is monitored is the objective itself on the held-out
     # rows -- the point-wise term plus the energy term at the run's weight --
     # so the checkpoint kept is the one that generalizes on what was
-    # optimized. A fraction of 0 (the default) reproduces the unvalidated
-    # schedule exactly, through the same xcTrainer call as before. The
-    # fallbacks are the PretrainSpec defaults themselves, read off the class,
-    # for a spec object built before the protocol fields existed.
+    # optimized. A fraction of 0 (the default) runs the full schedule with
+    # nothing scored, through the same loop in its unvalidated mode, which
+    # reproduces the pre-protocol trajectories, checkpoints and periodic
+    # snapshots. The fallbacks are the PretrainSpec defaults themselves, read
+    # off the class, for a spec object built before the protocol fields
+    # existed.
     val_fraction = float(getattr(spec, "validation_fraction",
                                  PretrainSpec.validation_fraction))
     val_seed = int(getattr(spec, "validation_seed",
@@ -1403,22 +1561,6 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
     )
-    # NOTE on the unvalidated branch's cost. ``xcTrainer`` couples its jit to
-    # its cache clearing (``xcquinox/train.py:100-106``): the step is compiled
-    # only when ``step % clear_every == 0``, and the same condition clears the
-    # JAX caches at :134-136 and :163-165, so the ONE value for which every
-    # step is jitted, 1, is also the value that recompiles every step. Measured
-    # here on a 3x16 net, marginal wall per optimizer step: 234.96 ms at 4000
-    # rows and 233.17 ms at 16350 rows at the default clear_every of 1 --
-    # independent of the row count, i.e. compilation rather than work -- against
-    # 0.94 ms and 4.53 ms for the loop below, which holds one filter_jit for
-    # the whole run and clears nothing. Raising clear_every does NOT fix it:
-    # the non-clearing steps then take the ``else`` branch and run UNJITTED,
-    # which is only ~11x better and moves the trajectory (first departure at
-    # step 2, 0x1.ea418905eea20p-7 against ...21p-7). Closing the gap therefore
-    # needs the two conditions in the trainer separated; that file is the seam,
-    # not this one, and the loop below is already pinned bit for bit against
-    # the trainer on identical rows.
     if held_out:
         seg_x = _padded_segment(pretrain_data["system" + x_suffix],
                                 n_mesh_rows, n_split)
@@ -1439,21 +1581,19 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
                                checkpoint_dir=checkpoint_dir)
         fit_x = (lx_tr, dx_tr, fx_tr)
     else:
-        trainer_x = xcquinox.train.xcTrainer(
-            model=xnet,
-            optim=optimizer_x,
-            loss=loss_fn_x,
-            steps=spec.n_steps,
-            do_jit=True,
-            serialize_every=max(50, spec.n_steps // 10),
-            checkpoint_dir=xnet_ckpt_dir,
-            progress_callback=_x_callback,
-        )
-        xnet_trained, losses_x = trainer_x(1, [descriptors], [Fx_target])
+        xnet_trained, losses_x, _unvalidated_x = _train_pretrain_network(
+            xnet, optimizer_x, loss_fn_x, descriptors, Fx_target,
+            n_steps=spec.n_steps, validate_every=spec.n_steps, patience=0,
+            monitor=monitor, progress_callback=_x_callback,
+            snapshot_dir=xnet_ckpt_dir,
+            serialize_every=_PRETRAIN_SERIALIZE_EVERY(spec.n_steps))
         fit_x = (loss_fn_x, descriptors, Fx_target)
     # Persist the final xnet immediately, BEFORE cnet training starts, so a
     # job that dies or times out during the (separate) cnet phase does not lose
     # the already-completed xnet result.
+    _refuse_a_non_finite_trajectory(losses_x, network="xnet",
+                                    arch_name=spec.arch.name,
+                                    checkpoint_dir=checkpoint_dir)
     eqx.tree_serialise_leaves(xnet_path, xnet_trained)
 
     # --- Train cnet (fresh optimizer) ---
@@ -1486,21 +1626,20 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
                                also_remove=(xnet_path,))
         fit_c = (lc_tr, dc_tr, fc_tr)
     else:
-        trainer_c = xcquinox.train.xcTrainer(
-            model=cnet,
-            optim=optimizer_c,
-            loss=loss_fn_c,
-            steps=spec.n_steps,
-            do_jit=True,
-            serialize_every=max(50, spec.n_steps // 10),
-            checkpoint_dir=cnet_ckpt_dir,
-            progress_callback=_c_callback,
-        )
-        cnet_trained, losses_c = trainer_c(1, [descriptors_c], [Fc_target])
+        cnet_trained, losses_c, _unvalidated_c = _train_pretrain_network(
+            cnet, optimizer_c, loss_fn_c, descriptors_c, Fc_target,
+            n_steps=spec.n_steps, validate_every=spec.n_steps, patience=0,
+            monitor=monitor, progress_callback=_c_callback,
+            snapshot_dir=cnet_ckpt_dir,
+            serialize_every=_PRETRAIN_SERIALIZE_EVERY(spec.n_steps))
         fit_c = (loss_fn_c, descriptors_c, Fc_target)
     duration = time.time() - t0
 
     # --- Save artifacts ---
+    _refuse_a_non_finite_trajectory(losses_c, network="cnet",
+                                    arch_name=spec.arch.name,
+                                    checkpoint_dir=checkpoint_dir,
+                                    also_remove=(xnet_path,))
     eqx.tree_serialise_leaves(cnet_path, cnet_trained)
 
     losses_x_np = np.array(losses_x, dtype=np.float64)
@@ -1565,7 +1704,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # "pretrain_steps" above. Absent from files written before
         # 2026-08-06, which is why the validator treats their absence as a
         # legacy warning rather than a failure.
-        "meta_gga": bool(spec.arch.meta_gga),
+        "meta_gga": ArchitectureConfig.is_meta_gga(spec.arch),
         "n_extra_features": int(spec.arch.n_extra_features),
         # Whether the (s, alpha) parameter mesh was appended to this
         # pretrain's inputs -- checkpoint provenance the run validator

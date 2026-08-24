@@ -270,14 +270,15 @@ def resolve_parent_density(arch, parent_density):
     too; the agreement with ``seed_xc_for_arch`` over the whole registry is
     pinned by test.
 
-    The meta-GGA rung is read the way ``rungs.arch_ingredients`` reads it -- the
-    ``meta_gga`` flag OR a ``"metagga"`` descriptor. The guard in
-    ``ArchitectureConfig.from_spec`` rejects only the other direction (the flag
-    without the descriptor); the dataclass constructor accepts either alone,
-    so an architecture assembled outside ``from_spec`` can carry the descriptor
-    alone,
-    and resolving that one to PBE would pretrain a meta-GGA network on a density
-    its own SCF never visits.
+    The meta-GGA rung is read through ``ArchitectureConfig.is_meta_gga``, the
+    one predicate every reader of the rung shares -- this function,
+    ``rungs.arch_ingredients``, the datagen stage's required-file derivation
+    and ``pretrain.run_pretrain``. It used to be asked two ways: here as the
+    ``meta_gga`` flag OR a ``"metagga"`` descriptor, and in ``run_pretrain``
+    as the flag alone, so an architecture carrying the descriptor without the
+    flag resolved to the SCAN density here and was fitted to the PBE targets
+    there, 23.8 mHa per system off its parent. The two statements of the rung
+    must now agree at construction, so the question has one answer.
     """
     if parent_density in ("pbe", "scan"):
         return parent_density
@@ -286,11 +287,8 @@ def resolve_parent_density(arch, parent_density):
             "parent_density must be 'pbe', 'scan' or 'auto'; got "
             f"{parent_density!r}."
         )
-    descriptor_names = {getattr(d, "name", None)
-                        for d in getattr(arch, "descriptors", ())}
-    has_meta_gga = (bool(getattr(arch, "meta_gga", False))
-                    or "metagga" in descriptor_names)
-    return "scan" if has_meta_gga else "pbe"
+    from xcquinox.alec.config import ArchitectureConfig
+    return "scan" if ArchitectureConfig.is_meta_gga(arch) else "pbe"
 
 
 def _dfs_pretrain_records(level):
