@@ -1653,6 +1653,7 @@ _TRACKED_CONFIGS = (
     "dfs_step7.dfs6311_grid3_v4mgga2.yaml",
     "dfs_step7.dfs6311_grid3_v5.yaml",
     "dfs_step7.dfs6311_grid3_v5mgga2.yaml",
+    "dfs_step7.dfs6311_grid3_v6.yaml",
     "dfs_step7.svp_grid2.yaml",
     "dfs_step7.svp_grid2_v2.yaml",
     "dfs_step7.svp_grid2_v3.yaml",
@@ -1701,7 +1702,7 @@ def test_tracked_configs_carry_valid_walltimes():
         assert path.is_file(), f"tracked config missing: {path}"
         _assert_walltimes_are_strings(path)
     _assert_walltimes_are_strings(example)
-    assert len(_TRACKED_CONFIGS) + 1 == 16, "tracked config count changed"
+    assert len(_TRACKED_CONFIGS) + 1 == 17, "tracked config count changed"
 
 
 def test_untracked_local_configs_carry_valid_walltimes():

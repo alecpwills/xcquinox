@@ -1,0 +1,434 @@
+# =============================================================================
+# dfs_step7.dfs6311_grid3_v6.yaml -- CAMPAIGN v6: every architecture in the
+# registry, resubmitted under the corrected spin scaling, the certified
+# pretraining and the enforced fidelity gate
+# (SPEC_pretrain_fidelity_program.md Sections 3.5 and 7).
+#
+# v6 retires v4gga, v5 and v5mgga2 as quantitative results: those runs trained
+# from pretrained networks that were 2.3-4.2 kcal/mol (descriptor-free) to
+# 13.2-56.1 kcal/mol (descriptor-carrying) from their parent functional on
+# atomization energies, which is larger than the architecture differences the
+# campaign exists to resolve (spec Section 2). Three things change here, and
+# nothing else does:
+#
+#   1. SWEEP. Every architecture of `xcquinox.alec.ARCHITECTURES` is on the
+#      arch axis -- 31 names, enumerated below -- against v5's three. The
+#      descriptor-free architectures are included deliberately: they do not
+#      meet tol_AE = 1.0 kcal/mol either (spec Section 3.5).
+#   2. PRETRAINING. The `pretrain:` protocol block below turns on the DFS
+#      pretraining set in its entirety, every free atom of the BH76 / W4-11
+#      pools, the per-rung parent density and the per-spin-channel exchange
+#      footing that the corrected UKS exchange actually evaluates.
+#   3. THE GATE. `fidelity:` is ENFORCED at the program's binding tolerances,
+#      tol_AE = 1.0 kcal/mol and tol_atom = 1.0 mHa. No architecture's train
+#      task starts without a PASS certificate at
+#      <run_dir>/pretrain/<arch>/fidelity_certificate.json, and validate_run,
+#      merge_v4_arms and the figure suite refuse a run that lacks one.
+#
+# Everything else -- losses, solver, subset sizes, hyperparameters, run
+# identity, reference caches, seeding protocol, eval channels -- is v5's,
+# carried unchanged so that v5-vs-v6 on the five meta-GGA architectures
+# isolates the pretraining correction. The inherited value is quoted in a
+# comment wherever it is load-bearing.
+#
+# +-------------------------------------------------------------------------+
+# | BEFORE SUBMISSION, ONE EDIT IS REQUIRED: pretrain.energy_term_weight     |
+# | ships at the 0.0 PLACEHOLDER, which is the objective WITHOUT the         |
+# | per-system energy term Section 7 binds. Set it from the measured table   |
+# | (see the block beside the key) or the pretraining runs the pre-protocol  |
+# | objective and the certificate is expected to fail.                       |
+# +-------------------------------------------------------------------------+
+#
+# PREREQUISITES, in order:
+#   a. hpcjobs/probe_pretrain_energy_weight.py has produced its table and
+#      pretrain.energy_term_weight below has been set from it.
+#   b. hpcjobs/seed_cache_scan.sbatch has completed into inputs.seed_cache_dir.
+#      Inherited from v5 and already complete for these species: only the five
+#      meta-GGA-rung architectures resolve to the SCAN seed, and their training
+#      species are v5's (same pool, same subset ledger). The 26 GGA-rung
+#      architectures seed from PBE and consult no cache.
+#   c. pretrain.data_dir is EMPTY or holds v6's own files. It is a FRESH root,
+#      not v5's: parent_density: auto writes two files whose PBE-parent name
+#      collides with v5's, and the rows differ in set, footing and objective.
+# =============================================================================
+
+sweep:
+  # THE WHOLE REGISTRY: 31 architectures, = len(sorted(xcquinox.alec.
+  # ARCHITECTURES)) enumerated at authoring time (2026-08-24). Listed in the
+  # order expand_grid canonicalizes to (`_canon_axis` = sorted(set(...))), so
+  # the arch axis reads in array-task order. With 11 subset sizes the grid is
+  # 31 x 1 x 1 x 11 x 1 = 341 cells: task index = arch_index * 11 +
+  # subset_index, i.e. tasks 0-10 are `deep`, 11-21 `deep_3x16`, and so on to
+  # 330-340 `shallow_attn`.
+  #
+  # A NEW ARCHITECTURE ADDED TO THE REGISTRY MAKES THIS FILE STALE. The pin
+  # `test_v6_sweeps_every_registry_architecture` compares this axis against
+  # sorted(ARCHITECTURES) and goes red, which is the intent: v6 is "every
+  # architecture", not "the 31 that existed when it was written".
+  arch:
+    - deep
+    - deep_3x16
+    - deep_attn
+    - deep_attn_3x16
+    - deep_combined
+    - deep_combined_3x16
+    - deep_combined_attn
+    - deep_combined_attn_3x16
+    - deep_cusp
+    - deep_cusp_3x16
+    - deep_cusp_attn
+    - deep_cusp_mgga_3x16
+    - deep_dm
+    - deep_dm_3x16
+    - deep_dm_attn
+    - deep_mgga_3x16
+    - deep_mgga_attn_3x16
+    - deep_notransform
+    - deep_notransform_3x16
+    - deep_notransform_attn
+    - deep_notransform_attn_3x16
+    - deep_rung35_3x16
+    - deep_rung35_attn_3x16
+    - deep_rung35_mgga_3x16
+    - deep_rung35ms_3x16
+    - deep_rung35ms_mgga_3x16
+    - deep_rung35only_3x16
+    - medium
+    - medium_attn
+    - shallow
+    - shallow_attn
+  loss: [L5_gradnorm_vxc_step7]
+  metric: [jsd]
+  # v5's subset-size axis, unchanged (v5 line 35). 26 = the dfs_step7 pool
+  # size, so the largest cell is the whole training pool.
+  subset_size: [1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 26]
+  solver: [full_3]
+
+# DFS self-consistency: step-decaying mixer (alpha=0.3**step+0.3) + tail-weighted
+# energy loss on full_X. Byte-inherited from v5 (lines 41-61). (The orientation
+# lock is NOT set per-solver -- it is a run-level inputs field, authoritative
+# for the whole run.)
+solvers:
+  full_3:
+    mode: FULL
+    max_cycles: 3
+    feature_policy: REASSEMBLE
+    mixer_name: decaying_linear
+    mixer_kwargs: {base: 0.3, floor: 0.3}
+    scf_loss_use_tail: true
+    scf_loss_tail: 10
+    scf_loss_weight_power: 2.0
+  # ceiling fix, defined for a follow-up sweep (solver: [full_25]); not swept now.
+  full_25:
+    mode: FULL
+    max_cycles: 25
+    feature_policy: REASSEMBLE
+    scf_grad_checkpoint: true
+    mixer_name: decaying_linear
+    mixer_kwargs: {base: 0.3, floor: 0.3}
+    scf_loss_use_tail: true
+    scf_loss_tail: 10
+    scf_loss_weight_power: 2.0
+
+hyperparams:
+  # Byte-inherited from v5 (lines 63-92). 200 epochs: enough for full_3 with
+  # the LR schedule (decay starts at 50% = step 100, reaches lr_end by 200),
+  # with in-loop validation early-stop as the safety net. NOT 150: the
+  # early-stop guard (patience >= n_checks-1, with n_checks = n_steps //
+  # validate_every) trips at 150 (6 checks, patience 5); 200 gives 8 checks so
+  # patience 5 is non-degenerate and early-stop can fire.
+  n_steps: 200
+  lr_start: 0.001
+  lr_end: 0.00001
+  lr_decay_start: 0.5
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  density_per_electron: true
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  seed: 42
+  weight_decay: 0.0001
+  val_frac: 0.2
+  validate_every: 25
+  patience: 5
+  early_stop_min_delta: 0.1
+  checkpoint_every: 10
+  # Shape padding: one common (n_ao, n_grid, naux) target over the whole batch so
+  # the de-fused per-molecule kernels collapse to one compile per spin-type instead
+  # of one per molecule -- at this basis/grid the per-molecule compile count drove
+  # the process mapping count into the vm.max_map_count ceiling. Results-neutral
+  # input pass (see xcquinox.alec.padding).
+  pad_group_to_common_shape: true
+
+inputs:
+  # PRODUCTION IDENTITY, byte-inherited from v5 (lines 96-103). These five
+  # fields are exactly what `fidelity.run_identity` records on every
+  # certificate, so a change here invalidates every certificate the run wrote.
+  # DFS-paper parity: same basis for training AND the CCSD references, grid 3.
+  basis: 6-311++G(3df,2pd)
+  grid_level: 3
+  # DF makes non-DF-infeasible 6-311++G(3df,2pd) CCSD tractable. As in v5,
+  # `auxbasis` is deliberately LEFT UNSET -> auto-selected from the orbital
+  # basis; the certificate records the resolved identity's auxbasis as null,
+  # matching the run's. DF density ~ exact for density-matching.
+  density_fit: true
+  # Orientation lock (run-level, authoritative): locks OH/CH/NO reference +
+  # training densities to the SAME degenerate component (orientation_lock.py).
+  # 3.0e-5 == v5's 0.00003 == orientation_lock.DEFAULT_STRENGTH, the calibrated
+  # value. It is also what makes the degenerate free atoms of the pretraining
+  # set reproducible at grid level 3 -- see the absence of a waiver below.
+  orientation_lock_strength: 3.0e-5
+  # NO `allow_irreproducible_degenerate` HERE, DELIBERATELY. The data generator
+  # refuses a spatially degenerate free atom's rows only below grid level 3 or
+  # with the lock off; at grid 3 with the lock on it refuses nothing, so a
+  # stated waiver would grant a permission this run never exercises, and
+  # `validate_grid_semantics` REFUSES it outright ("waiver stated without need
+  # at grid level 3"). The shipped templates state it because they run at grid
+  # level 1; a production copy must drop it, and this one has.
+  # Per-rung SCF seeding (v5 protocol): auto = registry-derived rung baseline.
+  # Over this sweep it resolves to SCAN for the 5 meta-GGA-rung architectures
+  # (deep_cusp_mgga_3x16, deep_mgga_3x16, deep_mgga_attn_3x16,
+  # deep_rung35_mgga_3x16, deep_rung35ms_mgga_3x16) and PBE for the other 26.
+  # It is the SAME predicate `pretrain.parent_density: auto` resolves the
+  # pretraining density with, so a meta-GGA architecture is pretrained on, and
+  # certified against, the functional its own SCF is seeded from.
+  seed_xc: auto
+  # Root whose _intermediates/ holds the SCAN seeds. Inherited from v5 (line
+  # 110) and already complete: the meta-GGA archs' training species are v5's,
+  # and the 26 GGA-rung archs never read it.
+  seed_cache_dir: /gpfs/scratch/awills/seed_cache_scan_6311ppg3df2pd_g3
+  # SAME subsets as v3/v4/v5 (apples-to-apples across the campaign lineage).
+  subset_ledger_path: /gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/alpha_on/subset_index_log.json
+  # SHARED with v3/v4/v5 (complete, relocked; input data keyed by
+  # species/basis/grid, none of which v6 moves).
+  external_refs_dir: /gpfs/scratch/awills/external_refs_dfs_6311ppg3df2pd_g3
+  benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_6311ppg3df2pd_g3
+  val_refs_dir: /gpfs/scratch/awills/external_refs_val_6311ppg3df2pd_g3
+  # Fresh output root: additive, every earlier run dir is untouched.
+  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v6
+
+pretrain:
+  # FRESH data_dir, NOT v5's. `parent_density: auto` writes TWO files -- a
+  # PBE-density one for the 26 GGA-rung archs and a SCAN-density one for the 5
+  # meta-GGA-rung archs -- and the PBE-parent name is the same name v5's file
+  # carries, so sharing v5's dir would either clobber it or be judged stale and
+  # regenerated in place. The rows differ from v5's in all three of set,
+  # footing and objective, so no v5 file is reusable here.
+  data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v6
+  # Pretraining schedule, byte-inherited from v5 (lines 134-140).
+  n_steps: 2500
+  lr_start: 0.01
+  lr_end: 0.00001
+  lr_decay_start: 0.2
+  grad_clip: 1.0
+  seed: 42
+  loss_weighting: integration
+  # Explicit atoms, inherited from v5 (lines 141-152). Under `dfs_set` +
+  # `pool_atoms` this list is almost entirely redundant -- H, C, N, O, F are
+  # pool atoms and Li is one of the DFS inventory's eight -- and contributes
+  # exactly ONE system the two inventories do not supply: the Na atom. It is
+  # kept for that one row: Na2 is in the DFS molecular inventory AND in this
+  # campaign's training pool, and its atomization energy rests on a free-Na
+  # row that neither BH76 nor W4-11 provides. Measured composition at this
+  # setting: 30 DFS systems + 7 new pool atoms + Na = 38 systems on the PBE
+  # parent, 36 on the SCAN parent (whose DFS variant drops H2 and N2).
+  # NOTE: He is absent and must stay absent -- PySCF has no He in
+  # 6-311++G(3df,2pd) (BasisNotFoundError); every other element of the v6 set
+  # (Al B Be C Cl F H Li N Na O P S Si) was checked present at this basis.
+  atoms:
+    H: 1
+    Li: 1
+    C: 2
+    N: 3
+    O: 2
+    F: 1
+    Na: 1
+  # --- pretraining protocol (spec Sections 3.2, 6 and 7) -------------------
+  # This is the block v6 exists to turn on. Each knob is stated, never
+  # inherited, so the file is a complete statement of the protocol it runs.
+  #
+  # The SET (Section 7: "the DFS pretraining set in its entirety, plus every
+  # atom of the BH76 / W4-11 pools"). dfs_set adds the DFS inventory -- 8 free
+  # atoms + 22 G2/97 molecules at the GGA level, 20 molecules at the meta-GGA
+  # level, which drops H2 and N2; pool_atoms adds all 14 single-atom species of
+  # the merged BH76 / W4-11 pools at their production charges and spins (the 12
+  # neutral elements plus the F- and Cl- anions that are BH76 reactants). Both
+  # replace the historical four-atom default; the `atoms` list above extends it
+  # by Na.
+  dfs_set: true
+  pool_atoms: true
+  # The DENSITY the targets sit on. "auto" = each architecture's rung baseline
+  # (Section 1: "PBE for GGA-rung architectures, SCAN for meta-GGA
+  # architectures"), resolved through `ArchitectureConfig.is_meta_gga` -- the
+  # one rung predicate `inputs.seed_xc: auto`, the datagen stage's required-file
+  # derivation and the pretraining targets all read, so a meta-GGA architecture
+  # cannot be fitted against one parent while its SCF is seeded from the other.
+  # It splits this mixed-rung sweep across TWO data files, which is why the
+  # datagen wall below covers two reference-SCF passes over the set.
+  parent_density: auto
+  # The open-shell exchange FOOTING, the correction of defect D1/D2. Each spin
+  # channel's rows are posed at (2 rho_sigma, 4 sigma_sigma, features of the
+  # symmetric doubled density diag(P_sigma, P_sigma)) -- the Oliver-Perdew
+  # spin scaling (Phys. Rev. A 20, 397 (1979)) that the production UKS exchange
+  # actually evaluates. "total", the pre-protocol value every run through v5
+  # used, fitted spin-resolved targets against total-density inputs.
+  exchange_footing: spin_channel
+  # The synthetic (r_s, s, alpha) mesh's share of the total integration weight,
+  # kept as a REGULARIZER only (Section 6, deviation 1). 0.3 is the anchored
+  # default: `pretrain_data_gen.MESH_WEIGHT_FRACTION = 0.3` (line 986), the
+  # share whose efficacy was measured when the mesh shipped. Stated, not
+  # inherited.
+  mesh_fraction: 0.3
+  # =========================================================================
+  # THE OBJECTIVE -- PLACEHOLDER, EDIT BEFORE SUBMITTING.
+  #
+  # `energy_term_weight` weights the per-system energy term
+  # mean_s (E_xc^NN_s - E_xc^parent_s)^2, in inverse Hartree^2, beside the
+  # point-wise enhancement-factor residual. Section 7 binds its PRESENCE ("a
+  # per-system energy term in the loss beside the point-wise
+  # enhancement-factor term"); its VALUE is dimensionful and is measured, not
+  # derived. 0.0 below is the placeholder -- the pre-protocol objective, which
+  # is what defect D2 records as unable to deliver the parent -- and it is a
+  # legal load, so nothing downstream will catch it for you.
+  #
+  # Set it from the table `hpcjobs/probe_pretrain_energy_weight.py` writes.
+  # That script's recommendation rule, verbatim from `recommend()`:
+  #
+  #     take the SMALLEST swept weight for which EVERY architecture clears
+  #     BOTH halves of the Section 3.3 certificate with margin -- `max
+  #     |dE_xc|` over the ATOMS at or below `margin_fraction * tol_atom_mha`,
+  #     and `max |dAE|` over the molecules at or below `margin_fraction *
+  #     tol_ae_kcal` -- AND neither of that architecture's point-wise losses
+  #     has risen by more than `pointwise_factor` from its own weight-0 value.
+  #
+  # with margin_fraction = 0.5 and pointwise_factor = 3.0. The script prints
+  # the chosen weight on its `recommendation:` line; copy that number here.
+  # =========================================================================
+  energy_term_weight: 0.0
+  # VALIDATION and the stop criterion, at the spec Section 7 / Task 7 defaults
+  # (the "v6:" values the shipped templates carry beside their own
+  # pre-protocol settings, cluster/examples/grid_step7.yaml). A seeded 20% of
+  # the MULTI-NUCLEUS systems is withheld and scored every 50 steps; training
+  # stops after 10 validations with no improvement and keeps the best weights,
+  # replacing the DFS protocol's hand interruption (Section 6, deviation 3).
+  # n_steps 2500 / validate_every 50 = 50 checks, so patience 10 is far from
+  # the degenerate regime.
+  validation_fraction: 0.2
+  validation_seed: 0
+  validate_every: 50
+  patience: 10
+
+cluster:
+  partition: ""
+  # 48 h, NOT 24: v3 measured single-process train durations at this exact
+  # basis/grid/solver up to 42.14 h (deep_attn_3x16, subset 26; attention is
+  # 2.3-2.9x its non-attention twin), and v3 itself ran under a 48 h wall via
+  # the submit-time --time override -- a bare submission of a 24 h YAML would
+  # wall-kill the attention cells at large subsets. The corrected potential
+  # adds a feature-response derivative per SCF cycle, so the attention cells
+  # will not be faster than v3's. Peak measured RSS is 142.8 GB: submit to a
+  # ~256 GB partition (long-96core), never a 128 GB one. Inherited from v5
+  # (line 163); v6 adds no cheaper cell, only more of them.
+  time: "48:00:00"
+  cpus_per_task: 24
+  array_throttle: 4
+  eval_array_throttle: 4
+  max_concurrent_tasks: 8
+  max_array_size: 1000
+  device: cpu
+  # OOM auto-retry -- engaged now that CPU XLA/LLVM *compile* OOMs classify as
+  # "oom" (not "deterministic"); see HISTORY Phase 15. To make a compile-OOM'd
+  # spec auto-resubmit onto more memory, uncomment and set this to a
+  # LARGER-per-node-memory partition that EXISTS on the login instance you submit
+  # from (e.g. long-96core on milan1/2 ~256 GB, vs long-28core ~128 GB). Must be
+  # valid on the submitting instance or the retry sbatch is rejected. Leave unset
+  # if the biggest reachable node is already your submit --partition -- a
+  # same-partition retry cannot clear a deterministic compile OOM; the
+  # --xla_llvm_disable_expensive_passes trim in the train template is the
+  # no-bigger-node lever there.
+  # oom_retry_partition: long-96core
+  # jax-0.7.0 PARITY env (matches the local dev/test stack the meta-GGA code was
+  # tested on) -- a fresh, single-purpose conda-forge+pip env built from
+  # environment-cluster-parity.yml. NOT the old polluted xcquinox env (jax 0.4.35).
+  conda_env: /gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j070
+  conda_profile: /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+  mail_user: alec.wills@stonybrook.edu
+  mail_type: BEGIN,END,FAIL
+  account: ""
+  preflight_time: "12:00:00"
+  # Compile-smoke gate: the preflight compiles the heaviest attention cell once
+  # (n_steps=1) on its exclusive node before the 341-task array; a host-OOM
+  # there blocks the array via the afterok dep -- one cheap failure instead of
+  # hundreds. The same preflight also sweeps every swept architecture's
+  # certificate with no exemption, which is the second thing that fails cheap.
+  preflight_compile_smoke: true
+  # 4 channels now, one of them 25-cycle (the coldstart diagnostic
+  # runs all 25 cycles for every species): ~4x the 3-channel budget.
+  eval_time: "08:00:00"
+  # 12 h covers pretraining AND the fidelity certificate, which now runs on
+  # this node after the networks are written. Measured anchors: the
+  # certificate is ~39 systems (the pools' free atoms, the DFS pretraining
+  # molecules, H2O / N2 / CH4), each a reference SCF at the run's identity plus
+  # the network and parent XC evaluations -- 39 systems in 32 s at sto-3g /
+  # grid level 1, against a per-species precompute wall of 0.6 s (Li) to 5.2 s
+  # (CH4) at THIS identity and several times that for the set's largest
+  # molecules, so of order tens of minutes here. Pretraining itself is 2500
+  # full-batch steps whose per-step cost is milliseconds now that the loop is
+  # jitted once rather than per snapshot interval. The margin is the point:
+  # the train array is gated afterok on this job.
+  pretrain_time: "12:00:00"
+  # STATED here although v5 left it unset (v5 had 3 distinct architectures;
+  # v6 has 31). Unset means every distinct architecture pretrains
+  # concurrently, i.e. 31 whole exclusive nodes at once, well past the
+  # max_concurrent_tasks: 8 fair-use figure this file states. 4 matches the
+  # train array's throttle; the wall above is per task, so throttling costs
+  # queue time and nothing else.
+  pretrain_throttle: 4
+  # Datagen builds the pretrain-data file(s) and every later stage waits on it.
+  # v5 had no key here and inherited pretrain_time; v6's datagen is a different
+  # job. At this identity the measured per-species precompute wall is 0.7 s for
+  # H, 0.6 s Li, 1.1 s O, 1.4 s C, 2.0 s N, 3.4 s H2O (32136 grid points),
+  # 3.5 s N2 (26616) and 5.2 s CH4 (49408). The v6 set's largest molecules --
+  # C3H8 (11 nuclei), C4H6 (10), SiCH6 (8), AlCl3 (4 heavy nuclei at a 3df
+  # basis), Si2 -- carry several times those grids and basis sets, and
+  # parent_density: auto builds a SECOND file on SCAN densities, whose SCF is
+  # the slower of the two. Four hours is roughly an order of magnitude of
+  # margin on the one job the whole graph waits for.
+  datagen_time: "04:00:00"
+  # The 214-species held-out CCSD at 6-311++G(3df,2pd) (even DF) is slow for the
+  # big species; the job is skip-if-complete + resumable, so it grinds through
+  # across requeues. With the refs dirs shared and complete from v3-v5, this
+  # stage should reduce to a skip-if-current verification pass.
+  benchmark_refs_time: "24:00:00"
+
+domain_profile: dfs_step7
+
+on_precompute_failure: abort
+bh76_mode: reaction_energy
+ae_as_reactions: true
+use_polarized_correlation: true
+held_out_strict: true
+
+inline_eval: true
+eval_coldstart: true
+defer_eval: false
+
+# --- pretraining-fidelity certificate (spec Sections 3.3 and 7) ------------
+# ENFORCED at the program's binding tolerances. PASS requires
+#   max |dE_xc| over the free atoms          <= tol_atom = 1.0 mHa
+#   max |dAE|   over the atomization energies <= tol_AE   = 1.0 kcal/mol
+# measured through the production energy path on the parent's own
+# self-consistent density at this run's identity, plus the O1-O4 oracles.
+#
+# `override_reason` is null and MUST STAY null: at these tolerances none is
+# needed (a reason is required only above the 2.0 / 2.0 ceiling, or to set
+# `enforce: false`), and a reason written here would be copied into every
+# certificate this run writes. `enforce: true` means the pretrain task exits
+# non-zero on a FAIL and the train array's afterok dependency never releases.
+fidelity:
+  tol_AE: 1.0               # kcal/mol
+  tol_atom: 1.0             # mHa
+  override_reason: null
+  enforce: true

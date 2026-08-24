@@ -1,11 +1,21 @@
-"""Tests for the shipped example grid config ``cluster/examples/grid_step7.yaml``.
+"""Tests for the shipped example grid configs and the campaign-v6 submission.
 
-The example YAML is a copy-me template reproducing the step-7 40-spec sweep.
-These tests verify it (a) still parses with ``load_grid_config``, (b) expands
-to exactly 40 cells, (c) covers every config-dataclass field (so a future
-required field the example forgot is caught), (d) carries no real
-email/account, and (e) fails ``validate_grid_semantics`` cleanly because its
-placeholder paths do not exist.
+The example YAML ``cluster/examples/grid_step7.yaml`` is a copy-me template
+reproducing the step-7 40-spec sweep. These tests verify it (a) still parses
+with ``load_grid_config``, (b) expands to exactly 40 cells, (c) covers every
+config-dataclass field (so a future required field the example forgot is
+caught), (d) carries no real email/account, and (e) fails
+``validate_grid_semantics`` cleanly because its placeholder paths do not
+exist. The workflow-matrix template is held to the same protocol
+completeness.
+
+The final section pins the deployment configuration those templates are
+copied into: ``hpcjobs/configs/dfs_step7.dfs6311_grid3_v6.yaml``, the
+pretraining-fidelity program's campaign. Its properties are pinned rather
+than reviewed because each way it can go wrong -- an architecture added to
+the registry after it was written, a waiver carried over from a template, a
+loosened certificate tolerance, a pre-protocol pretraining footing -- loads
+without complaint and is invisible in a result.
 """
 import dataclasses
 import os
@@ -405,3 +415,190 @@ def test_the_templates_state_the_v6_value_beside_each_protocol_knob(path):
         stated = [ln for ln in block if ln.strip().startswith(f"{key}:")]
         assert len(stated) == 1, (path, key, stated)
         assert "# v6:" in stated[0], (path, key, stated[0])
+
+
+# ---------------------------------------------------------------------------
+# The campaign-v6 deployment configuration
+#
+# `hpcjobs/configs/dfs_step7.dfs6311_grid3_v6.yaml` is the submission the
+# pretraining-fidelity program exists to produce: every architecture in the
+# registry, the certified pretraining protocol, and the certificate enforced
+# at the binding tolerances. It is pinned here rather than left to review
+# because three of its properties are silent failures -- an architecture added
+# to the registry after the file was written, a waiver copied in from a
+# template, and a certificate tolerance loosened -- each of which loads
+# without complaint and none of which is visible in a result.
+# ---------------------------------------------------------------------------
+
+def _v6_config_path():
+    """Absolute path to the campaign-v6 configuration, or None.
+
+    ``hpcjobs/`` sits beside the package rather than inside it, so a source or
+    wheel checkout can be missing it entirely; an absent file is nothing to
+    pin, not a failure.
+    """
+    import xcquinox.alec.cluster as cluster_pkg
+    pkg_dir = os.path.dirname(os.path.abspath(cluster_pkg.__file__))
+    path = os.path.normpath(os.path.join(
+        pkg_dir, "..", "..", "..", "hpcjobs", "configs",
+        "dfs_step7.dfs6311_grid3_v6.yaml"))
+    return path if os.path.isfile(path) else None
+
+
+def _v6_config():
+    """The loaded v6 config, skipping when the deployment tree is absent."""
+    pytest.importorskip("yaml")
+    path = _v6_config_path()
+    if path is None:
+        pytest.skip("no hpcjobs/configs/dfs_step7.dfs6311_grid3_v6.yaml in "
+                    "this checkout")
+    return path, load_grid_config(path)
+
+
+def test_v6_loads():
+    """The deployment configuration parses through the harness loader.
+
+    A campaign YAML that does not load is discovered on the login node at
+    submission time, which is the wrong side of the change that broke it.
+    """
+    path, cfg = _v6_config()
+    assert isinstance(cfg, GridConfig), path
+
+
+def test_v6_runs_the_production_identity_and_needs_no_waiver():
+    """Grid level 3 with the calibrated orientation lock, and NO
+    irreproducible-degenerate waiver.
+
+    The two go together. Below grid level 3, or with the lock at zero, a
+    spatially degenerate free atom's pretraining rows are one arbitrary member
+    of its manifold and the data generator refuses to build them without a
+    written waiver; at grid level 3 with the lock on it refuses nothing, so a
+    waiver stated here would authorise a build this run never performs and
+    ``validate_grid_semantics`` rejects it outright. The shipped templates
+    carry the waiver because they run at grid level 1; a production copy must
+    have dropped it, and this asserts it did.
+    """
+    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
+    path, cfg = _v6_config()
+    raw = _raw_yaml(path)["inputs"]
+    assert int(raw["grid_level"]) == 3, path
+    assert float(raw["orientation_lock_strength"]) == DEFAULT_STRENGTH == 3e-5
+    assert cfg.inputs.grid_level == 3
+    assert cfg.inputs.orientation_lock_strength == DEFAULT_STRENGTH
+    assert "allow_irreproducible_degenerate" not in raw, (
+        "the v6 campaign runs at grid level 3 with the lock on, where the "
+        "data generator refuses nothing; a stated waiver grants a permission "
+        "the run never exercises and is refused at submit")
+    assert "irreproducible_degenerate_reason" not in raw, path
+    assert cfg.inputs.allow_irreproducible_degenerate is False
+
+
+def test_v6_enforces_the_certificate_at_the_binding_tolerances():
+    """tol_AE = 1.0 kcal/mol, tol_atom = 1.0 mHa, enforced, no override.
+
+    These are the program's binding decision (SPEC_pretrain_fidelity_program
+    Section 7). ``enforce: false`` or a tolerance above 2.0 would each require
+    a written ``override_reason`` that is copied into every certificate the
+    run writes; a run carrying one can never become a quantitative result,
+    because validate_run, merge_v4_arms and the figure suite refuse it. The
+    values are asserted from the text as well as the parse, so a tolerance
+    silently inherited from a dataclass default is not mistaken for a stated
+    decision.
+    """
+    path, cfg = _v6_config()
+    raw = _raw_yaml(path)
+    assert raw.get("fidelity") is not None, (
+        f"{path} must state a 'fidelity' block")
+    assert raw["fidelity"]["tol_AE"] == 1.0
+    assert raw["fidelity"]["tol_atom"] == 1.0
+    assert raw["fidelity"]["enforce"] is True
+    assert raw["fidelity"]["override_reason"] is None
+    assert cfg.fidelity.tol_AE == 1.0
+    assert cfg.fidelity.tol_atom == 1.0
+    assert cfg.fidelity.enforce is True
+    assert cfg.fidelity.override_reason is None
+
+
+def test_v6_sweeps_every_registry_architecture():
+    """The arch axis IS ``sorted(ARCHITECTURES)``, name for name.
+
+    v6 is defined as "every architecture resubmitted" (spec Section 3.5), so
+    the axis is compared against the registry rather than against a
+    transcribed list: an architecture added to ``xcquinox.alec.ARCHITECTURES``
+    after this file was written turns this test red, which is the only signal
+    that the campaign no longer covers what it claims to. Equality is asserted
+    in both directions -- a name on the axis that the registry does not carry
+    fails ``validate_grid_semantics`` on the login node, but only after the
+    figure layer has been told to expect it.
+    """
+    from xcquinox.alec import ARCHITECTURES
+    path, cfg = _v6_config()
+    registry = sorted(ARCHITECTURES)
+    axis = list(cfg.sweep.arch)
+    assert sorted(set(axis)) == registry, (
+        f"{os.path.basename(path)} sweeps {len(set(axis))} architectures; the "
+        f"registry carries {len(registry)}. Missing: "
+        f"{sorted(set(registry) - set(axis))}; unknown: "
+        f"{sorted(set(axis) - set(registry))}")
+    assert len(axis) == len(set(axis)), (
+        f"{path}: the arch axis carries a duplicate name; expand_grid would "
+        f"drop it with a warning: {axis}")
+    # The expansion the SLURM array indexes is the product of the canonical
+    # axes, so the cell count is the campaign's size on record.
+    cells = expand_grid(cfg)
+    assert len(cells) == len(registry) * len(set(cfg.sweep.subset_size))
+    assert sorted({c.arch for c in cells}) == registry
+
+
+def test_v6_pretrains_on_the_corrected_footing_against_the_rung_parent():
+    """``exchange_footing: spin_channel`` and ``parent_density: auto``.
+
+    The footing is the correction of the defect the program was opened on:
+    the production UKS exchange evaluates each spin channel at the doubled
+    density diag(P_sigma, P_sigma), and rows posed on the total density fit a
+    network to inputs its deployment never sees. ``auto`` gives each
+    architecture its rung's parent -- PBE for a GGA-rung one, SCAN for a
+    meta-GGA one -- through the same predicate ``inputs.seed_xc: auto``
+    resolves the SCF seed with, so a meta-GGA architecture cannot be fitted
+    against one functional while its SCF is seeded from the other. Both are
+    read from the text as well as the parse: each is a value the loader also
+    supplies as a default, and the default is the pre-protocol one.
+    """
+    path, cfg = _v6_config()
+    raw = _raw_yaml(path)["pretrain"]
+    assert raw["exchange_footing"] == "spin_channel", path
+    assert raw["parent_density"] == "auto", path
+    assert cfg.pretrain.exchange_footing == "spin_channel"
+    assert cfg.pretrain.parent_density == "auto"
+    # The set the two switches select is the one Section 7 binds.
+    assert raw["dfs_set"] is True and raw["pool_atoms"] is True, path
+    assert cfg.pretrain.dfs_set is True
+    assert cfg.pretrain.pool_atoms is True
+
+
+def test_v6_mixed_rung_sweep_derives_both_parent_data_files():
+    """``parent_density: auto`` over this sweep requires TWO data files.
+
+    The sweep mixes GGA-rung and meta-GGA-rung architectures, and the two
+    parents' self-consistent densities are different densities rather than two
+    views of one, so the datagen stage must derive a file per parent. This
+    pins the derivation the pretrain worker later opens its file through.
+    """
+    from xcquinox.alec.cluster._datagen import _required_data_specs
+    path, cfg = _v6_config()
+    specs = _required_data_specs(cfg)
+    parents = sorted({ref for _pol, ref in specs})
+    assert parents == ["pbe", "scan"], (path, specs)
+    # Polarized correlation is a run-level flag, so one polarization.
+    assert sorted({pol for pol, _ref in specs}) == [True], (path, specs)
+
+
+def test_v6_carries_the_stony_brook_job_mail():
+    """Every rendered script mails submission, completion and failure.
+
+    The directives are rendered from these two fields, so pinning them here
+    pins them on all five stage scripts.
+    """
+    path, cfg = _v6_config()
+    assert cfg.cluster.mail_user == "alec.wills@stonybrook.edu", path
+    assert cfg.cluster.mail_type == "BEGIN,END,FAIL", path
