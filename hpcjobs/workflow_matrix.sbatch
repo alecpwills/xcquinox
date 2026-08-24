@@ -134,7 +134,9 @@
 #                     number to set each stage's BLAS thread cap.
 #   MATRIX_TIMEOUT_S  per-stage wall-clock cap in seconds (default 1800; the
 #                     wall bound is derived from it).
-#   MATRIX_NO_ORACLES 1 skips the oracle stage (the bound is then 10 stages).
+#   MATRIX_NO_ORACLES 1/true/yes/on skips the oracle stage (the bound is then
+#                     10 stages); 0/false/no/off runs it. Any other value is
+#                     refused rather than read as one of the two.
 #   MATRIX_WORK_ROOT  work root (default /gpfs/scratch/awills/workflow_matrix/
 #                     <UTC stamp>_<job id>). MUST be outside the repository
 #                     (refused here, as `main` refuses it) and MUST NOT be
@@ -181,26 +183,74 @@ SCRIPT_PATH="${BASH_SOURCE[0]}"
 LEDGER="${REPO}/notebooks/checkpoints_step7/alpha_on/subset_index_log.json"
 REPO_REFS="${REPO}/notebooks/checkpoints_step7/external_refs"
 
-# The contract this job drives, read back from the checkout that will run it.
-# The stage list is what the wall bound counts, MAX_SHARDS is what the knob
-# validation admits, and timeout_bound=1 is the parser refusing a non-positive
-# --timeout-s with its usage code rather than reporting every stage as killed.
+# The contract this job drives, read back from the checkout that will run it,
+# in five fields -- the five interfaces of the matrix module this SCRIPT
+# depends on:
+#   stages         what the wall bound counts;
+#   shards         MAX_SHARDS, what the knob validation admits;
+#   timeout_bound  the parser refusing a non-positive --timeout-s with its
+#                  usage code (2) rather than reporting every stage as killed;
+#   shards_bound   the parser refusing an out-of-range --shards with the same
+#                  code rather than raising, which exits 1 -- the code
+#                  reserved for a defect the matrix FOUND;
+#   oracle         the oracle module the last stage of every architecture
+#                  collects, present in the tree this job will run from.
 # A checkout that answers anything else is not the tree this script was
 # written against.
+#
+# WHAT IT DETECTS is a PARTIAL sync -- these two hpcjobs files pushed over an
+# older package -- and not staleness in general: a checkout one commit behind
+# can answer all five fields and still drive stage modules whose contracts
+# have moved. The remedy is the whole-package push,
+#   rsync -av xcquinox hpcjobs "$swpath":<repo>/
+# and this probe is only what turns the damaging case -- a matrix that looks
+# like it is running -- into an exit 3 at second zero.
+#
+# The probe never starts the matrix: run_matrix is replaced BEFORE main is
+# called, so the refusal to run one rests on this code and not on the probe
+# work root happening to be unwritable, and any outcome that is not a
+# SystemExit is read as "that bound is not there" rather than reported as a
+# dead environment. main writes a progress line on its way into run_matrix, so
+# both streams are captured while it is called and only the contract line
+# reaches stdout. Every field is READ off the module, so each is read with a
+# default: a package too old to carry one at all reports that field as wrong,
+# which is what it is, rather than raising and being reported as a dead
+# environment in its turn.
 CONTRACT_PROBE='
-import contextlib, io, sys
+import contextlib, io, os, sys
 from xcquinox.alec.cluster import workflow_matrix as wm
-code = None
-try:
-    with contextlib.redirect_stderr(io.StringIO()):
-        wm.main(["--work-root", "/nonexistent-contract-probe",
-                 "--timeout-s", "0"])
-except SystemExit as exc:
-    code = exc.code
-sys.stdout.write("MATRIX_CONTRACT stages=%s shards=%d timeout_bound=%d\n"
-                 % (",".join(wm.STAGE_ORDER), wm.MAX_SHARDS, int(code == 2)))
+
+
+def _never(*args, **kwargs):
+    raise AssertionError("the contract probe never starts the matrix")
+
+
+wm.run_matrix = _never
+SINK = io.StringIO()
+
+
+def _refusal_code(argv):
+    try:
+        with contextlib.redirect_stdout(SINK), contextlib.redirect_stderr(SINK):
+            wm.main(argv)
+    except SystemExit as exc:
+        return exc.code
+    except BaseException:
+        return None
+    return None
+
+
+ROOT = ["--work-root", "/dev/null/contract-probe"]
+sys.stdout.write(
+    "MATRIX_CONTRACT stages=%s shards=%d timeout_bound=%d shards_bound=%d"
+    " oracle=%d\n"
+    % (",".join(getattr(wm, "STAGE_ORDER", ())),
+       getattr(wm, "MAX_SHARDS", 0),
+       _refusal_code(ROOT + ["--timeout-s", "0"]) == 2,
+       _refusal_code(ROOT + ["--shards", "0"]) == 2,
+       os.path.isfile(getattr(wm, "ORACLE_TEST_TARGET", ""))))
 '
-MATRIX_CONTRACT_EXPECTED="MATRIX_CONTRACT stages=submit,datagen,pretrain,certificate,preflight,train[0],train[1],eval[0],eval[1],validate_run shards=4 timeout_bound=1"
+MATRIX_CONTRACT_EXPECTED="MATRIX_CONTRACT stages=submit,datagen,pretrain,certificate,preflight,train[0],train[1],eval[0],eval[1],validate_run shards=4 timeout_bound=1 shards_bound=1 oracle=1"
 
 fatal() {
     echo "[matrix] FATAL: $*"
@@ -244,11 +294,16 @@ walltime_seconds() {
 # script refuses it in one line.
 # test_the_reference_precheck_is_the_matrix_predicate pins the two against
 # each other, shape by shape.
+# The CR strip is the module's: Path.read_text translates CRLF on the way in,
+# so a manifest whose line endings were rewritten records the same names
+# there, while `read -r` keeps the CR and would look for a file whose name
+# ends in one.
 stage_manifest_is_complete() {
     local root="$1" first=1 rel found=0
     [ -f "${root}/_stage_complete" ] || return 1
     while IFS= read -r rel || [ -n "$rel" ]; do
         if [ "$first" = 1 ]; then first=0; continue; fi
+        rel="${rel%$'\r'}"
         [ -n "$rel" ] || continue
         [ -f "${root}/${rel}" ] || return 1
         found=1
@@ -260,12 +315,36 @@ stage_manifest_is_complete() {
 # reference directory: a COMPLETE staging manifest, or the per-species .npz
 # entries the staging copies. An empty or wrong directory passes every path
 # check and surfaces at the first reference read, deep inside a stage.
+# The species half is `any(refs.glob("*.npz"))`, and the glob is matched
+# exactly: dotglob because Path.glob matches a leading dot and bash does not;
+# nullglob so an unmatched pattern is no argument rather than itself; and a
+# MATCH is the criterion rather than `-e`, because glob does not stat what it
+# matches and would count a species link whose target has not arrived yet.
+# The shell options are set in a subshell, so they are this predicate's only.
 refs_carry_references() {
     stage_manifest_is_complete "$1" && return 0
-    for npz in "$1"/*.npz; do
-        [ -e "$npz" ] && return 0
+    (
+        shopt -s dotglob nullglob
+        set -- "$1"/*.npz
+        [ "$#" -gt 0 ]
+    )
+}
+
+# An absolute, physically resolved path for something that need NOT exist:
+# the deepest existing ancestor is resolved with `pwd -P` and the remainder
+# appended. `cd "$p" && pwd -P` alone requires the directory to be there,
+# which would mean creating the work root before it could be judged.
+resolve_abs() {
+    local path="$1" tail=""
+    case "$path" in
+        /*) : ;;
+        *) path="${PWD}/${path}" ;;
+    esac
+    while [ ! -d "$path" ]; do
+        tail="/$(basename "$path")${tail}"
+        path="$(dirname "$path")"
     done
-    return 1
+    printf '%s%s' "$(cd "$path" && pwd -P)" "$tail"
 }
 
 # The installed registry, one name per line. `|| [ -n "$name" ]` keeps a final
@@ -287,8 +366,6 @@ registry_has() {
     done
     return 1
 }
-
-mkdir -p "$WORK_ROOT" || fatal "cannot create work root ${WORK_ROOT}"
 
 T_START="$(date +%s)"
 echo "[matrix] ==================================================="
@@ -318,6 +395,32 @@ is_uint "$BATCH" \
 [ "$BATCH" -lt "$BATCHES" ] \
     || fatal "MATRIX_BATCH=${BATCH} is outside MATRIX_BATCHES=${BATCHES} (0-based)"
 [ -n "$ARCHS" ] || fatal "MATRIX_ARCHS is empty; unset it for the whole registry"
+# The oracle switch is a flag, not a number, so it is validated against the
+# spellings it accepts rather than left to compare equal to 1: read as "run
+# them", a mistyped value silently bounds the job at eleven timed stages
+# instead of ten and runs 31 stages nobody asked for. Normalised to 0/1 here,
+# which is what the bound and the command line below read.
+case "$NO_ORACLES" in
+    1|[tT][rR][uU][eE]|[yY][eE][sS]|[oO][nN]) NO_ORACLES=1 ;;
+    0|[fF][aA][lL][sS][eE]|[nN][oO]|[oO][fF][fF]) NO_ORACLES=0 ;;
+    *) fatal "MATRIX_NO_ORACLES must be one of 1/true/yes/on (skip the oracle stage) or 0/false/no/off (run it), got '${NO_ORACLES}'" ;;
+esac
+
+# --- the work root, judged BEFORE it is created -----------------------------
+# `main` refuses a work root inside the repository -- the stages write run
+# directories, a copy of the reference cache and pretrain data, and the
+# reference copy receives a run log from every preflight. Refused here so it
+# reads as a job that could not start rather than as a matrix that found a
+# defect, and refused before `mkdir`: this script's own invariant is that
+# nothing it does writes into the checkout, and a refusal that leaves an empty
+# directory in the tree has already broken it.
+REPO_ABS="$(cd "$REPO" && pwd -P)" || fatal "cannot cd ${REPO}"
+WORK_ABS="$(resolve_abs "$WORK_ROOT")"
+case "$WORK_ABS" in
+  "$REPO_ABS"|"$REPO_ABS"/*)
+    fatal "work root ${WORK_ABS} is inside the repository ${REPO_ABS}" ;;
+esac
+mkdir -p "$WORK_ROOT" || fatal "cannot create work root ${WORK_ROOT}"
 
 # --- conda activation (verified by effect, not by return code) --------------
 if [ -r "$CONDA_PROFILE" ]; then
@@ -337,18 +440,6 @@ esac
 
 cd "$REPO" || fatal "cannot cd ${REPO}"
 export PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}"
-
-# `main` refuses a work root inside the repository -- the stages write run
-# directories, a copy of the reference cache and pretrain data, and the
-# reference copy receives a run log from every preflight. Refused here so it
-# reads as a job that could not start rather than as a matrix that found a
-# defect.
-REPO_ABS="$(pwd -P)"
-WORK_ABS="$(cd "$WORK_ROOT" && pwd -P)" || fatal "cannot enter ${WORK_ROOT}"
-case "$WORK_ABS" in
-  "$REPO_ABS"|"$REPO_ABS"/*)
-    fatal "work root ${WORK_ABS} is inside the repository ${REPO_ABS}" ;;
-esac
 
 # --- the checkout's own contract (import probe and partial-sync guard) ------
 MATRIX_CONTRACT="$(python -c "$CONTRACT_PROBE")" \
@@ -446,6 +537,11 @@ else
     NAMED=()
     IFS=',' read -r -a RAW_NAMES <<< "$ARCHS"
     for name in ${RAW_NAMES[@]+"${RAW_NAMES[@]}"}; do
+        # `_resolve_archs` strips every token, so 'a3, a4' -- the natural way
+        # to type a list -- is a list the matrix accepts. Compared raw it was
+        # refused here naming ' a4', an offender that reads as correct.
+        name="${name#"${name%%[![:space:]]*}"}"
+        name="${name%"${name##*[![:space:]]}"}"
         [ -n "$name" ] || continue
         if ! registry_has "$name"; then
             echo "[matrix] the installed registry (${N_ARCHS} names) is:"
@@ -462,6 +558,9 @@ else
     N_SELECTED="${#NAMED[@]}"
     [ "$N_SELECTED" -gt 0 ] \
         || fatal "MATRIX_ARCHS names no architecture; unset it for the whole registry"
+    # Rebuilt from the trimmed tokens, so the flag the matrix is given and the
+    # line this log prints are the same canonical list.
+    ARCHS="$(IFS=','; printf '%s' "${NAMED[*]}")"
     echo "[matrix] MATRIX_ARCHS names the architectures; batching not applied."
 fi
 echo "[matrix] running: ${ARCHS}"

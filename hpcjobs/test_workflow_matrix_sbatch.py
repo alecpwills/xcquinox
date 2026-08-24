@@ -82,6 +82,27 @@ def _contract_probe() -> str:
     return match.group(1)
 
 
+def _header_text() -> str:
+    """The header block: everything above the first executable line.
+
+    The push line the handover carries appears twice in the script -- once as
+    prose here and once in the guard's echo -- so a file-wide search for it is
+    satisfied by either. The header is the copy an operator reads before
+    submitting, and it is pinned on its own.
+    """
+    text = _sbatch_text()
+    marker = "\nset -uo pipefail\n"
+    assert marker in text, "no `set -uo pipefail` to close the header on"
+    return text[:text.index(marker)]
+
+
+def _contract_field(name: str, contract: str | None = None) -> str:
+    """One field of a `MATRIX_CONTRACT` line (the script's own by default)."""
+    match = re.search(rf"\b{name}=(\S+)", contract or _expected_contract())
+    assert match is not None, f"no {name}= field in the contract"
+    return match.group(1)
+
+
 def _long_request(hours) -> dict:
     """The environment SLURM gives a job whose wall is ``hours``.
 
@@ -603,16 +624,28 @@ def test_a_repository_cache_holding_no_references_is_refused(tmp_path):
     assert argv is None
 
 
-def test_a_work_root_inside_the_repository_is_refused(tmp_path):
+@pytest.mark.parametrize("relpath", [("scratch_root",),
+                                     ("scratch", "root", "deeper")])
+def test_a_work_root_inside_the_repository_is_refused(tmp_path, relpath):
     """`main` refuses it too, but as a traceback and exit 1 -- the code a
-    non-clean matrix returns."""
-    inside = tmp_path / "repo" / "scratch_root"
+    non-clean matrix returns.
+
+    Judged BEFORE it is created: the script's own invariant is that nothing it
+    does writes into the checkout, and a refusal that leaves a directory
+    behind has already broken it. The deeper path is the case a bare
+    ``mkdir -p`` would leave two levels of empty directory in the tree.
+    """
+    inside = tmp_path / "repo"
+    for part in relpath:
+        inside = inside / part
     proc, argv, _ = _run_script(
         tmp_path, extra_env={"MATRIX_BATCHES": "1",
                              "MATRIX_WORK_ROOT": str(inside)})
     assert proc.returncode == 3, proc.stdout
     assert "inside the repository" in proc.stdout
     assert argv is None
+    assert not (tmp_path / "repo" / relpath[0]).exists(), \
+        "the refused work root was created before it was refused"
 
 
 @pytest.mark.parametrize("knobs", [
@@ -657,10 +690,13 @@ def test_the_contract_the_script_requires_is_what_the_module_reports(matrix):
 
     Executed: the script's probe is run against the real checkout and its line
     compared with the script's expectation, so neither can drift from the
-    other. The three fields are the three interfaces the job depends on -- the
+    other. The five fields are the five interfaces the job depends on -- the
     stage list the wall bound counts, the shard ceiling the knob validation
-    admits, and the parser refusing a non-positive ``--timeout-s`` with its
-    usage code rather than reporting every stage as killed.
+    admits, the parser refusing a non-positive ``--timeout-s`` and an
+    out-of-range ``--shards`` with its usage code rather than reporting every
+    stage as killed or raising with the code reserved for a defect the matrix
+    FOUND, and the oracle module the last stage of every architecture
+    collects.
     """
     expected = _expected_contract()
     assert expected, "the script states no MATRIX_CONTRACT_EXPECTED"
@@ -677,6 +713,11 @@ def test_the_contract_the_script_requires_is_what_the_module_reports(matrix):
     assert f"stages={','.join(matrix['stage_order'])}" in expected
     assert f"shards={matrix['max_shards']}" in expected
     assert "timeout_bound=1" in expected
+    assert "shards_bound=1" in expected
+    assert "oracle=1" in expected
+    # The oracle field is the module the oracle stage collects, not a path
+    # restated here: ORACLE_TEST_TARGET is what that stage passes to pytest.
+    assert "ORACLE_TEST_TARGET" in _contract_probe()
 
 
 def test_a_checkout_whose_contract_moved_is_refused_with_the_package_push(
@@ -721,12 +762,290 @@ def test_a_checkout_that_cannot_be_imported_is_refused_as_an_environment(
     assert "repo import failed" in proc.stdout
 
 
+#: A stand-in checkout for the contract probe. The probe is executed
+#: VERBATIM, as the script runs it; only the module it imports is the test's,
+#: which is how a checkout that has LOST one of the contract's refusals is
+#: exercised without one. ``run_matrix`` records that it was entered and then
+#: raises what the real one raises against an unwritable work root, so both
+#: halves of the failure are visible: the matrix started, and the probe died.
+_PROBE_HARNESS = r"""
+import sys
+import types
+
+(probe_path, behaviour, sentinel, oracle_target, stages, max_shards,
+ writable, drop) = sys.argv[1:9]
+
+for name in ("xcquinox", "xcquinox.alec", "xcquinox.alec.cluster"):
+    package = types.ModuleType(name)
+    package.__path__ = []
+    sys.modules[name] = package
+
+wm = types.ModuleType("xcquinox.alec.cluster.workflow_matrix")
+wm.STAGE_ORDER = tuple(stages.split(","))
+wm.MAX_SHARDS = int(max_shards)
+wm.ORACLE_TEST_TARGET = oracle_target
+
+
+def _run_matrix(*args, **kwargs):
+    with open(sentinel, "w") as fh:
+        fh.write("the matrix was started\n")
+    if writable != "1":
+        raise PermissionError(13, "Permission denied", "/probe-work-root")
+    return []
+
+
+def _main(argv=None, **kwargs):
+    argv = list(argv or [])
+
+    def _flag(flag, default):
+        return int(argv[argv.index(flag) + 1]) if flag in argv else default
+
+    if behaviour == "raises":
+        raise RuntimeError("this checkout raises before it refuses anything")
+    if behaviour != "no_timeout_refusal" and _flag("--timeout-s", 1800) <= 0:
+        raise SystemExit(2)
+    if behaviour != "no_shards_refusal" and not 1 <= _flag("--shards", 1) <= 4:
+        raise SystemExit(2)
+    # The progress line the real main prints on its way into run_matrix.
+    print("[workflow-matrix] 31 architectures, 4 shard(s), work root /x")
+    return wm.run_matrix(argv)
+
+
+wm.run_matrix = _run_matrix
+wm.main = _main
+if drop != "none":
+    delattr(wm, drop)
+sys.modules["xcquinox.alec.cluster.workflow_matrix"] = wm
+sys.modules["xcquinox.alec.cluster"].workflow_matrix = wm
+
+with open(probe_path) as fh:
+    source = fh.read()
+exec(compile(source, "<contract probe>", "exec"), {"__name__": "__main__"})
+"""
+
+
+def _probe_contract(root, *, behaviour="refuses", oracle=True, writable=False,
+                    stages=None, drop="none"):
+    """Run the script's contract probe against a stand-in checkout.
+
+    ``behaviour`` is what that checkout's ``main`` does: ``refuses`` (the
+    contract this job drives), ``no_timeout_refusal`` or ``no_shards_refusal``
+    (one refusal simply deleted, the way one is lost), or ``raises``. ``drop``
+    names an interface the stand-in does not carry at all, which is what a
+    package old enough predates. Returns the completed process and the
+    sentinel path the stand-in ``run_matrix`` writes if it is ever entered.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    harness = root / "harness.py"
+    harness.write_text(_PROBE_HARNESS)
+    probe = root / "contract_probe.py"
+    probe.write_text(_contract_probe())
+    sentinel = root / "the_matrix_was_started"
+    target = root / "test_spin_scaling_oracles.py"
+    if oracle:
+        target.write_text("# a stand-in for the oracle module\n")
+    argv = [sys.executable, str(harness), str(probe), behaviour,
+            str(sentinel), str(target),
+            stages or _contract_field("stages"),
+            _contract_field("shards"), "1" if writable else "0", drop]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=300,
+                          cwd=str(root))
+    return proc, sentinel
+
+
+@pytest.mark.parametrize("writable", [False, True])
+def test_a_checkout_that_lost_the_timeout_refusal_reports_it(tmp_path,
+                                                             writable):
+    """Finding: the probe fell through the parser into ``run_matrix``.
+
+    ``timeout_bound`` exists for exactly one condition -- the parser no longer
+    refusing a non-positive ``--timeout-s`` -- and the natural way for that to
+    be lost is deletion, which leaves ``main`` running on into the matrix. The
+    probe therefore refuses ``run_matrix`` outright and reads any outcome that
+    is not a ``SystemExit`` as "the bound is not there", so the field reports
+    the condition on a box where the probe work root is writable (a container
+    run as root: the old probe would have started a real 31-architecture
+    matrix) and on one where it is not (the old probe died there, and the
+    script reported a partial sync as a broken environment).
+    """
+    proc, sentinel = _probe_contract(tmp_path / "lost_timeout",
+                                     behaviour="no_timeout_refusal",
+                                     writable=writable)
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert not sentinel.exists(), "the contract probe started the matrix"
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 1, proc.stdout
+    assert lines[0].startswith("MATRIX_CONTRACT ")
+    assert "timeout_bound=0" in lines[0]
+    # main's own progress line must not end up inside the contract.
+    assert "[workflow-matrix]" not in proc.stdout
+
+
+def test_a_lost_refusal_is_reported_as_a_partial_sync_not_an_environment(
+        tmp_path):
+    """The measured contract of such a checkout, put to the script.
+
+    The operator has to be sent to the push that fixes it, not to conda and
+    the module search path: the guard's whole purpose is to name the partial
+    sync at second zero.
+    """
+    proc, _sentinel = _probe_contract(tmp_path / "lost_timeout",
+                                      behaviour="no_timeout_refusal")
+    contract = proc.stdout.strip()
+    assert "timeout_bound=0" in contract
+    run, argv, _work = _run_script(tmp_path / "job",
+                                   extra_env={"STUB_CONTRACT": contract})
+    assert run.returncode == 3, run.stdout
+    assert argv is None, "the matrix must not be launched against a lost bound"
+    assert contract in run.stdout
+    assert _expected_contract() in run.stdout
+    assert "rsync -av xcquinox hpcjobs" in run.stdout
+    assert "partial sync" in run.stdout
+    assert "repo import failed" not in run.stdout
+
+
+def test_a_probe_that_raises_reports_a_missing_bound_not_an_environment(
+        tmp_path):
+    """A checkout whose ``main`` raises before it refuses anything.
+
+    The probe is the import probe as well, so an exception raised INSIDE
+    ``main`` had to be told apart from one raised on import: the first is a
+    contract that is not there, the second is an environment that is not
+    activated.
+    """
+    proc, sentinel = _probe_contract(tmp_path / "raises", behaviour="raises")
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert not sentinel.exists()
+    line = proc.stdout.strip()
+    assert "timeout_bound=0" in line
+    assert "shards_bound=0" in line
+    run, argv, _work = _run_script(tmp_path / "job",
+                                   extra_env={"STUB_CONTRACT": line})
+    assert run.returncode == 3, run.stdout
+    assert argv is None
+    assert "partial sync" in run.stdout
+    assert "repo import failed" not in run.stdout
+
+
+def test_the_probe_reproduces_the_scripts_expectation_on_a_pristine_checkout(
+        tmp_path):
+    """The stand-in that answers every field the way the contract requires
+    produces the script's expectation byte for byte, so the fields the tests
+    above knock out are knocked out of a line that otherwise matches."""
+    proc, sentinel = _probe_contract(tmp_path / "pristine")
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert not sentinel.exists()
+    assert proc.stdout.strip() == _expected_contract()
+
+
+def test_a_checkout_that_lost_the_shard_bound_is_refused(tmp_path):
+    """The second refusal in the contract, and the one that moved last.
+
+    ``--shards`` outside 1..MAX_SHARDS reached ``run_matrix`` and raised, which
+    exits 1 -- the code reserved for a defect the matrix FOUND. A checkout
+    still doing that is one the knob validation here cannot rely on, and it is
+    a content marker recent enough to tell a one-commit-stale package from
+    this one.
+    """
+    proc, sentinel = _probe_contract(tmp_path / "lost_shards",
+                                     behaviour="no_shards_refusal")
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert not sentinel.exists()
+    line = proc.stdout.strip()
+    assert "shards_bound=0" in line
+    assert "timeout_bound=1" in line
+    run, argv, _work = _run_script(tmp_path / "job",
+                                   extra_env={"STUB_CONTRACT": line})
+    assert run.returncode == 3, run.stdout
+    assert argv is None
+    assert "partial sync" in run.stdout
+
+
+def test_a_checkout_without_the_oracle_module_is_refused_at_second_zero(
+        tmp_path):
+    """The case the push finding named explicitly.
+
+    A checkout carrying ``workflow_matrix.py`` but not the oracle module runs
+    every stage of every architecture and then fails the last one, 31 times,
+    for one missing file. The contract carries the module's presence, so the
+    job refuses before the first stage -- and it refuses whether or not THIS
+    submission runs the oracle stage, because the module travels with the
+    package push either way.
+    """
+    proc, _sentinel = _probe_contract(tmp_path / "no_oracle", oracle=False)
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    line = proc.stdout.strip()
+    assert "oracle=0" in line
+    for knobs in ({}, {"MATRIX_NO_ORACLES": "1"}):
+        run, argv, _work = _run_script(
+            tmp_path / f"job{len(knobs)}",
+            extra_env={"STUB_CONTRACT": line, **knobs})
+        assert run.returncode == 3, run.stdout
+        assert argv is None
+        assert "partial sync" in run.stdout
+        assert "rsync -av xcquinox hpcjobs" in run.stdout
+
+
+@pytest.mark.parametrize("attribute", ["STAGE_ORDER", "MAX_SHARDS",
+                                       "ORACLE_TEST_TARGET"])
+def test_a_package_that_predates_a_contract_field_is_still_a_partial_sync(
+        tmp_path, attribute):
+    """A checkout too old to carry one of the interfaces at all.
+
+    Every field is READ off the module, so an absent one would raise inside
+    the probe and be reported as a dead environment -- the same misdirection
+    the probe was fixed for, reintroduced by the reading. Absent is reported
+    as the field being wrong, which is what it is.
+    """
+    proc, sentinel = _probe_contract(tmp_path / "old", drop=attribute)
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert not sentinel.exists()
+    line = proc.stdout.strip()
+    assert line.startswith("MATRIX_CONTRACT ")
+    assert line != _expected_contract()
+    run, argv, _work = _run_script(tmp_path / "job",
+                                   extra_env={"STUB_CONTRACT": line})
+    assert run.returncode == 3, run.stdout
+    assert argv is None
+    assert "partial sync" in run.stdout
+    assert "repo import failed" not in run.stdout
+
+
+def test_the_contract_states_what_it_does_and_does_not_detect():
+    """The guard's scope, beside the guard.
+
+    It compares the three interfaces this SCRIPT drives, so it catches a
+    checkout carrying these two hpcjobs files over an older package; it does
+    not detect staleness in general, and the whole-package push is what
+    actually keeps the tree together. A reader who takes it for the latter
+    trusts it for something it cannot do.
+    """
+    text = _sbatch_text()
+    start = text.index("CONTRACT_PROBE=")
+    comment = text[:start]
+    comment = comment[comment.rindex("\n\n"):]
+    assert "PARTIAL sync" in comment
+    assert "not staleness in general" in comment
+    assert "rsync -av xcquinox hpcjobs" in comment
+
+
 def test_the_header_states_the_whole_package_push(matrix):
     """The push line in the header is the one the handover carries: the
-    package and hpcjobs, in the repository-relative form."""
-    t = _sbatch_text()
-    assert "rsync -av xcquinox hpcjobs" in t
-    assert '"$swpath":' in t
+    package and hpcjobs, in the repository-relative form.
+
+    Anchored to the HEADER, not to the file: the same phrase sits in the
+    guard's echo (pinned by
+    ``test_a_checkout_whose_contract_moved_is_refused_with_the_package_push``),
+    so a file-wide search is satisfied by the echo alone and the header could
+    revert to the two-file form unnoticed.
+    """
+    header = _header_text()
+    assert "rsync -av xcquinox hpcjobs" in header
+    assert '"$swpath":' in header
+    # The two-file form is the one this replaced: it syncs the job script over
+    # a package the job then drives.
+    assert "rsync -av hpcjobs/workflow_matrix.sbatch" not in header
 
 
 # --------------------------------------------------------------------------- #
@@ -756,11 +1075,31 @@ def test_a_repeated_architecture_name_is_refused(tmp_path):
     assert "more than once" in proc.stdout
 
 
-def test_an_architecture_list_of_separators_only_is_refused(tmp_path):
-    proc, argv, _ = _run_script(tmp_path, extra_env={"MATRIX_ARCHS": ",,"})
+@pytest.mark.parametrize("spec", [",,", ",", " ", " , "])
+def test_an_architecture_list_of_separators_only_is_refused(tmp_path, spec):
+    """Whitespace is a separator here as it is in ``_resolve_archs``, so a
+    list of nothing but separators is refused with the message that names the
+    way out, not with one naming a blank architecture."""
+    proc, argv, _ = _run_script(tmp_path, extra_env={"MATRIX_ARCHS": spec})
     assert proc.returncode == 3, proc.stdout
     assert argv is None
     assert "names no architecture" in proc.stdout
+
+
+@pytest.mark.parametrize("spec", ["a3, a4", " a3 , a4 ", "a3,\ta4",
+                                  "a3 ,a4"])
+def test_whitespace_around_a_separator_is_trimmed_from_the_list(tmp_path,
+                                                                spec):
+    """The matrix accepts a list typed with spaces after the commas --
+    ``_resolve_archs`` strips every token -- so the job must not refuse one.
+
+    It did, naming ``' a4'`` as an unregistered architecture: an offender that
+    reads as correct, on the natural way to type a list.
+    """
+    proc, argv, _ = _run_script(tmp_path, extra_env={"MATRIX_ARCHS": spec})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _flag_value(argv, "--archs") == "a3,a4"
+    assert "running: a3,a4" in proc.stdout
 
 
 def test_a_registered_name_list_reaches_the_matrix(tmp_path):
@@ -836,6 +1175,45 @@ def test_the_request_is_read_from_slurms_own_end_time_when_it_is_set(tmp_path):
     assert "exceeds the wall request" in proc.stdout
 
 
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "True", "yes", "on"])
+def test_the_oracle_switch_reads_the_named_true_spellings(tmp_path, value):
+    """Every other knob refuses a value it does not understand; this one read
+    anything but ``1`` as "run the oracles", silently."""
+    proc, argv, _ = _run_script(tmp_path,
+                                extra_env={"MATRIX_NO_ORACLES": value},
+                                archs=_FULL_REGISTRY)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "--no-oracles" in argv
+    assert "x 10 timed stages x 1800 s" in proc.stdout
+
+
+@pytest.mark.parametrize("value", ["0", "false", "FALSE", "no", "off", ""])
+def test_the_oracle_switch_reads_the_named_false_spellings(tmp_path, value):
+    """An empty value is the knob unset, which is the default: run them."""
+    proc, argv, _ = _run_script(tmp_path,
+                                extra_env={"MATRIX_NO_ORACLES": value},
+                                archs=_FULL_REGISTRY)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "--no-oracles" not in argv
+    assert "x 11 timed stages x 1800 s" in proc.stdout
+
+
+@pytest.mark.parametrize("value", ["2", "maybe", "y", "n", "true!", " 1",
+                                   "01"])
+def test_a_mistyped_oracle_switch_is_refused_naming_the_spellings(tmp_path,
+                                                                  value):
+    """``MATRIX_NO_ORACLES=yes`` used to run the oracles and bound the job at
+    eleven stages instead of ten. The direction was safe; the silence was
+    not, and it was the one knob out of line with the block above it."""
+    proc, argv, _ = _run_script(tmp_path,
+                                extra_env={"MATRIX_NO_ORACLES": value},
+                                archs=_FULL_REGISTRY)
+    assert proc.returncode == 3, proc.stdout
+    assert argv is None
+    assert "MATRIX_NO_ORACLES" in proc.stdout
+    assert value in proc.stdout
+
+
 def test_dropping_the_oracles_drops_a_stage_from_the_bound(tmp_path):
     """The oracle selection is one of the timed subprocesses; without it the
     bound is the ten stages of STAGE_ORDER."""
@@ -871,7 +1249,8 @@ print(json.dumps(out))
 _REFS_SHAPES = ("absent", "empty", "npz_only", "complete_manifest",
                 "manifest_missing_file", "manifest_lists_nothing",
                 "empty_manifest", "manifest_missing_file_with_npz",
-                "nested_manifest", "directory_named_npz")
+                "nested_manifest", "directory_named_npz",
+                "hidden_npz_only", "crlf_manifest", "broken_symlink_npz")
 
 
 def _build_refs_shape(root, shape, marker):
@@ -901,6 +1280,20 @@ def _build_refs_shape(root, shape, marker):
         (root / marker).write_text("source: test\n_intermediates/H2O_scf.dat\n")
     elif shape == "directory_named_npz":
         (root / "H2O.npz").mkdir()
+    elif shape == "hidden_npz_only":
+        # ``Path.glob`` matches a leading dot; bash pathname expansion does
+        # not, unless dotglob is set.
+        (root / ".H2O.npz").write_bytes(b"")
+    elif shape == "crlf_manifest":
+        # A manifest copied through a tool that rewrote its line endings.
+        # ``read_text`` translates CRLF on the way in; ``read -r`` keeps the
+        # CR, and the recorded name then names a file that is not there.
+        (root / "N2.dat").write_text("x")
+        (root / marker).write_bytes(b"source: test\r\nN2.dat\r\n")
+    elif shape == "broken_symlink_npz":
+        # ``Path.glob`` does not stat what it matches, so a dangling species
+        # link is a reference as far as the module is concerned.
+        (root / "H2O.npz").symlink_to(root / "not_copied_yet.npz")
     else:  # pragma: no cover - the parametrisation is closed
         raise AssertionError(shape)
     return root
@@ -912,7 +1305,11 @@ def test_the_reference_precheck_is_the_matrix_predicate(tmp_path, matrix):
     The precheck exists to turn a reference directory the matrix would refuse
     -- deep inside a stage, once per architecture -- into one line in this
     log. It is worth that only while the two agree, so the two are run against
-    the same ten shapes and compared.
+    the same thirteen shapes and compared. The last three are the shapes on
+    which a comma-splitting, ``-e``-testing shell predicate was the stricter
+    of the two: a hidden species file, a manifest with CRLF line endings, and
+    a dangling species symlink, each accepted by ``staged_refs_dir`` and each
+    a spurious exit 3 here.
     """
     marker = matrix["stage_marker"]
     assert f"/{marker}" in _sbatch_text(), "the script names another marker"
@@ -1013,6 +1410,68 @@ def test_the_partition_cap_is_stated_or_marked_for_verification():
     assert "long-40core" in t
     assert "sinfo" in t
     assert "SEAWULF_RUNBOOK.md" in t
+
+
+#: What the oracle stage returns and how it is classified, measured against a
+#: stand-in checkout rather than restated. The collection target is one FILE,
+#: so a checkout that does not carry the oracle module makes pytest exit with
+#: its usage code (a target it cannot find), not with the no-tests-collected
+#: code an empty target gives.
+_ORACLE_PROBE = r"""
+import json, subprocess, sys
+from pathlib import Path
+from xcquinox.alec.cluster import workflow_matrix as wm
+
+out = {"module": wm.ORACLE_MODULE, "target": wm.ORACLE_TEST_TARGET,
+       "no_tests_rc": wm.ORACLE_NO_TESTS_RC}
+for name, install in (("absent", False), ("present_empty", True)):
+    checkout = Path(sys.argv[1]) / name
+    target = checkout / wm.ORACLE_TEST_TARGET
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if install:
+        target.write_text("# a module carrying no oracle\n")
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", str(target), "-k", "deep", "-q",
+         "-p", "no:randomly", "-p", "no:cacheprovider"],
+        cwd=str(checkout), capture_output=True, text=True)
+    note = wm._oracle_failure_note(proc.returncode, target, "deep")
+    out[name] = {"rc": proc.returncode,
+                 "note": list(note) if note is not None else None}
+print(json.dumps(out))
+"""
+
+
+def test_a_missing_oracle_module_is_classified_by_its_absence(tmp_path):
+    """The two oracle outcomes a checkout can produce, and what each is called.
+
+    With the collection target changed from the tests DIRECTORY to the oracle
+    MODULE, an absent module is a pytest usage error (exit 4) rather than a
+    session that collected nothing (exit 5); the two are different conditions
+    and are reported as such. The classification is the file's absence, not
+    the code, so a checkout missing the module is named even if pytest ever
+    returns something else for it.
+    """
+    env = dict(os.environ)
+    env.update({"JAX_PLATFORMS": "cpu", "OMP_NUM_THREADS": "2",
+                "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2"})
+    proc = subprocess.run(
+        [sys.executable, "-c", _ORACLE_PROBE, str(tmp_path)],
+        cwd=str(_REPO), env=env, capture_output=True, text=True, timeout=900)
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    data = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    absent, present = data["absent"], data["present_empty"]
+    assert absent["rc"] == 4, "a target pytest cannot find is a usage error"
+    assert absent["rc"] != data["no_tests_rc"]
+    assert present["rc"] == data["no_tests_rc"] == 5
+
+    summary, detail = absent["note"]
+    assert summary.startswith("no oracle module")
+    assert data["module"] in summary
+    assert "not installed" in detail
+    summary, detail = present["note"]
+    assert summary.startswith("no oracle collected")
+    assert "collected no test" in detail
 
 
 # --------------------------------------------------------------------------- #
