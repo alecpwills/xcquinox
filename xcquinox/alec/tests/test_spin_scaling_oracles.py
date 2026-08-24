@@ -13,7 +13,12 @@ libxc's spin-polarized evaluation on open-shell atoms. Any discrepancy is a
 defect in the assembly rather than in a fit, because there is no fit left. The
 parent is the one each architecture pretrains to (PBE for the GGA rungs, SCAN
 for the meta-GGA rung), evaluated with that architecture's own descriptor
-blocks in place.
+blocks in place. The exchange comparison is posed at the kinetic-energy
+density the channel block's indicator encodes, so the 1e-10 Ha it holds is a
+statement about the assembly: against libxc at PySCF's own per-spin tau the
+meta-GGA rung differs by up to 6.3e-10 Ha (O atom), all of it on the
+descriptor's ``_ALPHA_MAX`` ceiling in the density tail, which carries 1.7e-4
+of the electron density there.
 
 O2 is the central-difference check of the assembled UKS Fock pair against the
 assembled energy on H, Li, N and O with every descriptor active; the probe
@@ -117,11 +122,22 @@ def _spin_quantities(md, s):
     return rho, grad, np.sum(grad * grad, axis=1)
 
 
-def _pyscf_tau(md, symbol, spin, s):
+def _pyscf_tau(md, s):
     """Kinetic-energy density of one spin channel from PySCF's own
     ``eval_rho`` on the record's AO derivatives: an implementation of tau
-    independent of ``metagga.compute_tau_from_dm``."""
-    mol = gto.M(atom=f"{symbol} 0 0 0", basis="def2-svp", spin=spin, verbose=0)
+    independent of ``metagga.compute_tau_from_dm``.
+
+    The Mole is built from the record's own ``mol_metadata``. PySCF does not
+    consult it in the MGGA branch of ``eval_rho`` -- Moles of nao 1, 2, 5, 6,
+    9, 14 and 31 (sto-3g, 6-31G and def2-tzvp on each of the four atoms)
+    return tau bit-identical to the record's own def2-svp Mole on both
+    channels, max|dtau| = 0.0 with no exception raised -- so a fixed basis
+    here is inert rather than wrong at the identity this module runs. Reading
+    it off the record is what keeps it inert for a record at another basis.
+    """
+    meta = md["mol_metadata"]
+    mol = gto.M(atom=meta["atom"], basis=meta["basis"],
+                charge=meta["charge"], spin=meta["spin"], verbose=0)
     ao = np.asarray(md["ao_grid_deriv"])
     dm = np.asarray(md["dm_pbe"])[s]
     return dft.numint.eval_rho(mol, ao, dm, xctype="MGGA", with_lapl=False)[4]
@@ -189,7 +205,7 @@ class _Ingredients:
     def true_tau(self, s):
         """tau_sigma from PySCF's own ``eval_rho`` on the record's density
         matrix: the ingredient itself, independent of every block."""
-        return _pyscf_tau(self.md, self.symbol, self.spin, s)
+        return _pyscf_tau(self.md, s)
 
 
 def _ingredients(arch_name, symbol, spin):
@@ -291,9 +307,12 @@ def _assert_block_tau_is_the_channel_tau(ing):
     at alpha = 0 exactly -- that is oracle O4), as are unresolved tail points
     (rho_sigma <= 1e-8).
 
-    Bound: measured worst 1.24e-15 relative (1.8e-12 absolute on tau of order
-    4.1e3, O atom) over the five meta-GGA architectures x {H, Li, N, O}; 1e-13
-    clears it by 80x. An undoubled rho, sigma or tau in the block fails by
+    Bound: the reference SCF differs at round-off between runs, so this is
+    quoted over draws rather than from one. Measured 1.06e-15 to 1.48e-15
+    relative (worst 2.7e-12 absolute, on a tau of order 4.05e3, O atom) over
+    the five meta-GGA architectures x {H, Li, N, O} x twelve draws, 420
+    channel comparisons; 1e-13 clears the worst draw by 67x. An undoubled
+    rho, sigma or tau in the block fails by
     O(1): reading alpha(rho_s, sigma_ss, tau_s) and inverting at the doubled
     arguments returns ``tau_W + 2^{2/3} (tau_s - tau_W)``, i.e. 0.59 of the
     channel's own (tau - tau_W) too much.
@@ -350,6 +369,17 @@ def test_o1_exchange_path_equals_libxc_spin_polarized_parent(
     rounding of one libxc row against the other; 1e-10 Ha is the program's
     stated tolerance for O1 (Section 3.1) and sits three orders above the
     floor.
+
+    What that bound covers is the ASSEMBLY, and it is not the number a reader
+    gets by evaluating libxc independently: at PySCF's own per-spin tau, the
+    meta-GGA rung differs from this path by 6.86e-11 Ha (N) and 5.30e-10 to
+    6.25e-10 Ha (O), which is ABOVE the 1e-10 Ha bound above. All of it sits
+    on the points where the block's indicator is on ``_ALPHA_MAX`` -- the
+    clipped indicator is what the network reads, so the clipped functional is
+    the model, and the descriptor's ceiling is deliberately held out of the
+    assembly comparison. That whole-grid statement and its attribution are
+    measured by
+    :func:`test_o1_exchange_at_the_true_tau_is_the_indicator_ceiling`.
     """
     ing = _ingredients(arch_name, symbol, spin)
     x_functional, _c = _parent_of(arch_name)
@@ -358,6 +388,80 @@ def test_o1_exchange_path_equals_libxc_spin_polarized_parent(
     got = ing.split_energy(_parent_model(ing, x_functional=x_functional))
     ref = _libxc_x_reference(ing, x_functional)
     assert abs(got - ref) < 1e-10, (arch_name, symbol, got, ref, ing.n_dropped)
+
+
+@pytest.mark.parametrize("symbol,spin", _ATOMS, ids=_ATOM_IDS)
+def test_o1_exchange_at_the_true_tau_is_the_indicator_ceiling(symbol, spin):
+    """The whole-grid form of the exchange statement: against libxc at
+    PySCF's own per-spin tau, the residual of the UKS exchange path is the
+    ``_ALPHA_MAX`` ceiling of the iso-orbital indicator and nothing else.
+
+    The oracle above inverts the channel block's own indicator column to build
+    its reference, which holds the descriptor's ceiling out of the comparison
+    deliberately -- the network reads the clipped indicator, so the clipped
+    functional is the model, and what that oracle is about is the assembly.
+    The statement a reader can check against libxc without adopting the
+    block's tau is this one, and it is a different number. Both are recorded
+    so neither is mistaken for the other.
+
+    Measured on the SCAN parent at def2-svp / grid level 1 over twenty-two
+    draws of the reference SCF: 4.43e-14 to 4.44e-14 Ha (H) and 0.0 to
+    6.7e-16 Ha (Li), neither carrying one point on the ceiling -- H's two
+    columns sit at the smoothing floor of 5e-6 (one orbital in alpha, an
+    empty beta channel) and Li's alpha column tops out at 6.24; 6.862e-11 Ha
+    (N, whose alpha column is on the ceiling at 510 of 4608 points carrying
+    1.52e-5 of the electron density, while its beta column tops out at 5.10)
+    and 5.30e-10 to 6.25e-10 Ha (O, both channels on the ceiling, 594 to 602
+    of 4504 points, 1.53e-4 to 1.70e-4 of the density). The five meta-GGA
+    descriptor sets of the registry, each on its own record, span 5.62e-10 to
+    5.96e-10 Ha on O, inside the same range; the worst of all is 6.25e-10 Ha,
+    against which 1e-8 Ha leaves 16x. The mass bound of 1e-3 leaves 5.9x on
+    the worst draw: it is there to hold the clip to the TAIL, not to be
+    tight.
+
+    Attribution: with the ceiling points removed from BOTH sides the residual
+    falls to the rounding of one libxc row against the other -- 0.0 to
+    1.8e-15 Ha on N and O, and on H, which carries no ceiling point at all,
+    the whole 4.44e-14 Ha, which is that floor itself; 1e-12 leaves 22x. The
+    ceiling's occupancy is pinned per species, so raising or lowering
+    ``_ALPHA_MAX`` fails here and names the constant rather than silently
+    moving a documented number.
+    """
+    from xcquinox.alec.metagga import _ALPHA_MAX
+    descriptors = (MetaGGAAlphaDescriptor(),)
+    md = _precompute(symbol, spin, descriptors)
+    ing = _Ingredients(md, descriptors)
+    ing.alpha_column, ing.descriptors = 0, descriptors
+    parent = _parent_model(ing, x_functional="MGGA_X_SCAN")
+    rows = (mgga_rho_row(ing.rho_a, ing.nabla_a, ing.true_tau(0)),
+            mgga_rho_row(ing.rho_b, ing.nabla_b, ing.true_tau(1)))
+    eps_true = np.asarray(dft.libxc.eval_xc("MGGA_X_SCAN", rows, spin=1,
+                                            deriv=0)[0])
+    residual = abs(ing.split_energy(parent) - ing.integrate(eps_true))
+    assert residual < 1e-8, (symbol, residual)
+
+    ceiling = ((np.asarray(ing.f_a)[:, 0] >= _ALPHA_MAX)
+               | (np.asarray(ing.f_b)[:, 0] >= _ALPHA_MAX))
+    # N and O reach the ceiling in their density tails; H and Li do not come
+    # near it at this identity (5e-6 and 6.24 as the largest column values).
+    populated = symbol in ("N", "O")
+    assert bool(ceiling.any()) is populated, (
+        symbol, int(ceiling.sum()), _ALPHA_MAX,
+        "the ceiling's occupancy moved; the residual below is measured at "
+        "_ALPHA_MAX = 100 and has to be re-measured at any other value")
+    rho_tot = ing.rho_a + ing.rho_b
+    mass = float(np.sum(ing.w * rho_tot * ceiling)
+                 / np.sum(ing.w * rho_tot))
+    # 1.70e-4 (O) is the worst measured; 1e-3 leaves 5.9x, and the point of
+    # the bound is that the ceiling stays a tail effect.
+    assert mass < 1e-3, (symbol, mass, int(ceiling.sum()))
+
+    ing.w = ing.w * ~ceiling
+    off_ceiling = abs(ing.split_energy(parent) - ing.integrate(eps_true))
+    assert off_ceiling < 1e-12, (symbol, residual, off_ceiling,
+                                 int(ceiling.sum()))
+    if populated:
+        assert residual > 1e-12, (symbol, residual, int(ceiling.sum()))
 
 
 @pytest.mark.parametrize("symbol,spin", _ATOMS, ids=_ATOM_IDS)
@@ -399,13 +503,26 @@ def test_o1_polarized_correlation_tracks_libxc_within_the_zeta_clip(
     phi(zeta) carries (1 - zeta)^{2/3}, so a clip of 1e-6 moves E_c by
     1.2e-4 of itself, 7.10e-7 Ha on E_c = -6.006e-3 Ha -- the
     (1 - zeta)^{4/3} estimate in the oneshot comment understates it by 70x),
-    6.92e-11 Ha for SCAN on N and 6.24e-11 on O (the _ALPHA_MAX clip of the
+    6.92e-11 Ha for SCAN on N and 6.23e-11 on O (the _ALPHA_MAX clip of the
     total block in the density tail, absent from the per-spin PySCF tau of
-    the reference), and 0.0 to 5.6e-17 elsewhere. The bound of 1e-6 is the
-    program's; it refuses the zeta = 0 evaluation on the same records by
-    6.21e-3 to 2.99e-2 Ha. For a meta-GGA parent the adapter splits the total tau in proportion
-    to the spin densities, which is exact because the SCAN correlation reads
-    only the total tau, the total gradient invariant and zeta.
+    the reference), and 0.0 to 5.6e-17 elsewhere.
+
+    The 7.1e-7 Ha figure is IDENTITY-SPECIFIC: it is measured on the H atom
+    at def2-svp / grid level 1 with the PBE parent, where it is 1.182e-4 of
+    E_c = -6.0066614638e-03 Ha. The shift is a fixed FRACTION of |E_c| at
+    fixed polarization, so another fully polarized species, or the same one
+    at a larger basis, raises it in proportion; 1e-6 clears this identity by
+    1.4x AND NO MORE, and has to be re-measured rather than carried over if
+    O1 is run at another basis or grid. The SCAN figure on H is not a
+    fraction of its own E_c -- SCAN correlation vanishes on a one-electron
+    density, E_c = -1.03e-11 Ha there -- so 7.3e-8 Ha is the clip's whole
+    contribution rather than a perturbation of a finite value.
+
+    The bound of 1e-6 is the program's; it refuses the zeta = 0 evaluation
+    on the same records by 6.21e-3 to 2.99e-2 Ha. For a meta-GGA parent the
+    adapter splits the total tau in proportion to the spin densities, which
+    is exact because the SCAN correlation reads only the total tau, the total
+    gradient invariant and zeta.
     """
     ing = _ingredients(arch_name, symbol, spin)
     _x, c_functional = _parent_of(arch_name)
@@ -433,21 +550,30 @@ def test_o1_per_channel_ingredients_are_the_libxc_spin_polarized_ingredients(
     ``eval_rho`` rather than from the library's contraction.
 
     The indicator amplifies the rounding of tau - tau_W by tau / tau_unif,
-    which grows without bound into the density tail (up to 9.0e7 on Li's
+    which grows without bound into the density tail (up to 9.04e7 on Li's
     beta channel at grid level 1), so the comparison is posed pointwise
-    relative to that amplification: measured worst gap 2.1e-16 (H) to
-    1.1e-15 (Li, beta) over the whole grid against a bound of 1e-11; on the
-    resolved region rho_sigma > 1e-8 the raw gap is 6.1e-11 and 1.05e-10 (O,
-    beta) in two independent reference solutions, against a bound of 1e-9
-    that clears the worse draw by 9.5x. The two tau implementations agree to
-    1.8e-12 absolute (O, on a tau of 4.05e3 at the nucleus).
+    relative to that amplification. Both gaps are draw-dependent -- the
+    reference SCF differs at round-off between runs -- and are quoted over
+    thirty draws rather than from one. Scaled by the amplification, the worst
+    gap of a draw runs 7.8e-16 to 1.18e-15 (O, either channel) against a
+    bound of 1e-11, which clears the worst draw by 8.5e3x. On the resolved
+    region rho_sigma > 1e-8 the raw gap runs 4.6e-11 to 1.12e-10, on O's beta
+    channel in every draw, against a bound of 1e-9 that the worst draw clears
+    by 8.9x -- LESS THAN 10x, the thinnest margin in O1 after the zeta bound
+    and the one to watch for cross-machine flakiness. The same quantity read
+    1.68e-10 (6.0x) in an independent solution before the indicator's lower
+    bound was smoothed, and the maximum sits where the smoothing is inert
+    (alpha_raw = 9.88 at that point against a width of 1e-5, so the smooth
+    positive part's slope there is 1 to twelve digits), so 6x is the margin
+    to plan against. The two tau implementations agree to 2.7e-12 absolute
+    (O, on a tau of 4.05e3 at the nucleus).
     """
     from xcquinox.alec.metagga import compute_alpha, _RHO_FLOOR
     descriptors = (MetaGGAAlphaDescriptor(),)
     md = _precompute(symbol, spin, descriptors)
     for s, suffix in ((0, "_a"), (1, "_b")):
         rho_s, _grad, sigma_ss = _spin_quantities(md, s)
-        tau_s = _pyscf_tau(md, symbol, spin, s)
+        tau_s = _pyscf_tau(md, s)
         expect = np.asarray(compute_alpha(jnp.asarray(2.0 * rho_s),
                                           jnp.asarray(4.0 * sigma_ss),
                                           jnp.asarray(2.0 * tau_s)))
