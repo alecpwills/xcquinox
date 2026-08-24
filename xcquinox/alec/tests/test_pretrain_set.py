@@ -296,6 +296,54 @@ def test_resolve_parent_density_passes_an_explicit_choice_through():
         pdg.resolve_parent_density(arch, "blyp")
 
 
+def test_resolve_parent_density_refuses_an_architecture_NAME():
+    """A name string is refused, not answered.
+
+    The rung predicate ``ArchitectureConfig.is_meta_gga`` is duck-typed on
+    purpose -- it reads ``descriptors`` off whatever it is handed, so an
+    architecture-like object resolves too -- and a ``str`` has no
+    ``descriptors``. Before the guard, the name of a meta-GGA architecture
+    under ``"auto"`` therefore returned ``"pbe"``: the SILENT wrong answer,
+    since that rung's parent is SCAN. The sibling
+    ``fidelity.resolve_parent`` takes exactly the opposite argument kind and
+    resolves the same name correctly, so the two are one transposition apart
+    with no error in between.
+
+    Every shipped caller passes an object, so nothing in the run path changes;
+    what changes is that a future one that does not is told which argument it
+    got wrong instead of pretraining a meta-GGA network against PBE.
+    """
+    with pytest.raises(TypeError) as excinfo:
+        pdg.resolve_parent_density("deep_mgga_3x16", "auto")
+    message = str(excinfo.value)
+    # The type is named, since the value alone reads like a valid argument.
+    assert "str" in message, message
+    # ... and the caller is pointed at the function that DOES take a name.
+    assert "resolve_parent" in message, message
+    # The refusal is on the argument, not on the parent-density knob: an
+    # explicit choice does not need the rung and must be refused too, or a
+    # name would pass silently through the "pbe"/"scan" branch.
+    for choice in ("pbe", "scan", "auto"):
+        with pytest.raises(TypeError):
+            pdg.resolve_parent_density("deep_mgga_3x16", choice)
+    for bad in (None, 3, ["deep_3x16"], object()):
+        with pytest.raises(TypeError):
+            pdg.resolve_parent_density(bad, "auto")
+
+
+def test_resolve_parent_density_still_accepts_an_architecture_LIKE_object():
+    """The guard tests for the attribute the predicate reads, not for the
+    class, so a test double or an ad hoc architecture still resolves -- which
+    is the property ``is_meta_gga``'s static-method form exists to give."""
+    import types
+    gga = types.SimpleNamespace(descriptors=())
+    mgga = types.SimpleNamespace(
+        descriptors=(types.SimpleNamespace(name="metagga"),))
+    assert pdg.resolve_parent_density(gga, "auto") == "pbe"
+    assert pdg.resolve_parent_density(mgga, "auto") == "scan"
+    assert pdg.resolve_parent_density(mgga, "pbe") == "pbe"
+
+
 def test_resolve_parent_density_auto_is_the_rung_baseline():
     """"auto" must agree with rungs.seed_xc_for_arch under its production
     "mgga_scan" policy for EVERY registered architecture: the pretraining parent

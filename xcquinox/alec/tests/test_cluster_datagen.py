@@ -21,6 +21,20 @@ def _ns(**kw):
     return types.SimpleNamespace(**kw)
 
 
+def _arch(**kw):
+    """An architecture-LIKE double, carrying the attribute the rung is read
+    from.
+
+    ``resolve_parent_density`` resolves the pretraining parent through
+    ``ArchitectureConfig.is_meta_gga``, which reads ``descriptors``; a double
+    without it is not an architecture and is refused by type rather than
+    answered with the GGA-rung parent. Empty means the GGA rung, which is what
+    these polarization fixtures intend.
+    """
+    kw.setdefault("descriptors", ())
+    return types.SimpleNamespace(**kw)
+
+
 def _cfg(archs, polarized, *, basis="def2-svp", grid=2, df=False, aux=None,
          data_dir="/data/pt", lock=0.0):
     return _ns(
@@ -54,7 +68,7 @@ def test_required_flags_mixed(monkeypatch):
     # Synthetic per-arch polarization with the run-level flag OFF: the worker
     # must request BOTH the unpolarized and the polarized file.
     monkeypatch.setattr(_datagen, "get_architecture",
-                        lambda name: _ns(use_polarized_correlation=(name == "pol")))
+                        lambda name: _arch(use_polarized_correlation=(name == "pol")))
     cfg = _cfg(["plain", "pol"], False)
     assert _datagen._required_polarized_flags(cfg) == [False, True]
 
@@ -111,7 +125,7 @@ def test_main_density_fit_tzvpd(monkeypatch, tmp_path):
 
 def test_main_mixed_generates_both_files(monkeypatch, tmp_path):
     monkeypatch.setattr(_datagen, "get_architecture",
-                        lambda name: _ns(use_polarized_correlation=(name == "pol")))
+                        lambda name: _arch(use_polarized_correlation=(name == "pol")))
     cfg = _cfg(["plain", "pol"], False, data_dir="/d/m")
     rc, calls = _run_main(monkeypatch, tmp_path, cfg)
     assert rc == 0
