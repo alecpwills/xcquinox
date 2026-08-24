@@ -669,6 +669,58 @@ def test_pretrain_reports_the_certificate_that_reached_disk(run_dir,
     assert "pretrain SUCCEEDED" not in out
 
 
+def _serve_after_the_first_read(monkeypatch, document):
+    """Serve ``document`` to every certificate READ after the first.
+
+    The list returned collects one entry per read, so a caller can state how
+    many parses its decision rested on. The first read is passed through to
+    the file on disk and writes always are, so the seam still lands the
+    certificate it wrote; only a LATER read sees the rewrite.
+    """
+    import builtins
+    import io as _io
+    real_open = builtins.open
+    reads: list = []
+
+    def fake_open(file, *args, **kwargs):
+        path = str(file)
+        mode = kwargs.get("mode", args[0] if args else "r")
+        if path.endswith("fidelity_certificate.json") and "r" in mode:
+            reads.append(path)
+            if len(reads) > 1:
+                return _io.StringIO(json.dumps(document))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    return reads
+
+
+def test_pretrain_gates_on_the_document_it_reports(run_dir, monkeypatch,
+                                                   capsys):
+    """The line, the verdict acted on and the exit code come from ONE parse.
+
+    Reading the file for the summary and letting the gate open it again lets
+    a certificate rewritten between the opens produce a report that states
+    two documents at once: the numbers of the file as it was beside the
+    verdict of the file as it became -- 'certificate FAILED ... / gate: PASS
+    / SUCCEEDED' for a run whose recorded verdict is FAIL. Here every read
+    after the first would find a PASS.
+    """
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    _stub_certificate_seam(monkeypatch, _fail_payload())
+    reads = _serve_after_the_first_read(monkeypatch, _pass_payload())
+    rc = pt.main([run_dir, "1"])
+    monkeypatch.undo()
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert len(reads) == 1, reads
+    assert "fidelity certificate FAILED" in out
+    assert "13.7" in out and "25.7" in out
+    # The rewritten document's verdict reaches neither the gate nor the log.
+    assert "fidelity certificate PASS" not in out
+    assert "pretrain SUCCEEDED" not in out
+
+
 def test_pretrain_does_not_certify_when_the_checkpoint_is_missing(
         run_dir, monkeypatch):
     """A worker that wrote no checkpoint fails at the existing guard; the

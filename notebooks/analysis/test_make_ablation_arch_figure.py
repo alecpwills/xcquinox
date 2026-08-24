@@ -6115,6 +6115,131 @@ def test_provenance_footer_is_unchanged_when_every_certificate_passes(
                                "max_dAE_kcalmol": got["max_dAE_kcalmol"]})
 
 
+def test_fidelity_summary_counts_the_certificates_it_could_not_read(tmp_path):
+    """"Worst of N arch" shrinks silently when a certificate does not parse.
+
+    A truncated file, a document that is not a JSON object and an absent
+    certificate enter neither the bound nor the count of architectures
+    stating no numbers, so a two-architecture run whose second certificate is
+    truncated renders a footer indistinguishable from a clean
+    one-architecture run. The footer states how many it could not read.
+    """
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep_notransform"
+     / "fidelity_certificate.json").write_text("{truncated")
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").unlink()
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
+    assert got["n_archs"] == 1
+    assert got["n_archs_without_numbers"] == 0
+    assert got["n_archs_unreadable"] == 2
+    footer = fig.provenance_footer(
+        {"bh76": 8.0, "w411": 12.0, "combined": 10.0}, None, got)
+    assert "worst of 1 arch" in footer
+    assert "2 with no readable certificate" in footer
+
+
+def test_fidelity_summary_counts_an_empty_certificate_as_unreadable(tmp_path):
+    """An empty JSON object parses and states nothing -- neither numbers nor
+    a verdict -- so it is disclosed with the ones that did not parse rather
+    than dropped."""
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").write_text(
+        json.dumps({}))
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
+    assert got["n_archs"] == 2
+    assert got["n_archs_unreadable"] == 1
+
+
+def test_provenance_footer_is_silent_about_readable_certificates(tmp_path):
+    """The disclosure is additive: a run whose certificates all parse draws
+    the footer it drew before the count existed."""
+    run = _make_run_dir(tmp_path)
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
+    assert got["n_archs_unreadable"] == 0
+    baseline = {"bh76": 8.0, "w411": 12.0, "combined": 10.0}
+    assert "readable certificate" not in fig.provenance_footer(
+        baseline, None, got)
+
+
+def test_coverage_note_states_why_each_arch_is_uncertified(tmp_path):
+    """The one line a reader sees names the state, not only the name.
+
+    MISSING is a certificate to run, FAIL is physics to fix, waived FAIL is a
+    workflow-verification run that was never a result and UNREADABLE is a
+    file to look at; a list of bare names states none of them, and the same
+    rationale is already applied to the suite refusal.
+    """
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").unlink()
+    (run / "pretrain" / "deep_notransform"
+     / "fidelity_certificate.json").write_text("{truncated")
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "deep_attn", "enforced": False,
+                    "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                   "override_reason": "workflow matrix"},
+                    "summary": {"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7}}))
+    note = fig.coverage_note(run)
+    assert "UNCERTIFIED (no PASS fidelity certificate)" in note
+    assert "deep (MISSING)" in note
+    assert "deep_notransform (UNREADABLE)" in note
+    assert "deep_attn (waived FAIL)" in note
+
+
+def test_fidelity_summary_keeps_a_bound_no_certificate_states_alone(tmp_path):
+    """Two half-numbered certificates bound both axes between them.
+
+    Each states one of the two numbers, so no certificate is counted in
+    "worst of N arch" -- but both numbers are measured, and a bound that was
+    disclosed may not be dropped by bookkeeping. The clause states which
+    number each certificate is missing.
+    """
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "PASS", "arch": "deep",
+                    "summary": {"max_atom_mHa": 44.0,
+                                "max_dAE_kcalmol": None}}))
+    (run / "pretrain" / "deep_notransform"
+     / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "PASS", "arch": "deep_notransform",
+                    "summary": {"max_atom_mHa": None,
+                                "max_dAE_kcalmol": 25.7}}))
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").unlink()
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
+    assert got is not None
+    assert got["n_archs"] == 0
+    assert got["n_archs_without_numbers"] == 2
+    assert got["max_atom_mHa"] == pytest.approx(44.0)
+    assert got["max_dAE_kcalmol"] == pytest.approx(25.7)
+    assert got["half_numbered"] == ["deep (no max_dAE_kcalmol)",
+                                    "deep_notransform (no max_atom_mHa)"]
+    footer = fig.provenance_footer(
+        {"bh76": 8.0, "w411": 12.0, "combined": 10.0}, None, got)
+    assert "44.00 mHa" in footer and "25.70 kcal/mol" in footer
+    assert "deep (no max_dAE_kcalmol)" in footer
+    assert "deep_notransform (no max_atom_mHa)" in footer
+
+
+def test_a_half_numbered_certificate_is_named_beside_a_full_one(tmp_path):
+    """The count of certificates stating neither number and the list of the
+    ones stating exactly one are separate statements: "stating no numbers"
+    describes neither of them wrongly."""
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "PASS", "arch": "deep_attn",
+                    "summary": {"max_atom_mHa": 44.0,
+                                "max_dAE_kcalmol": None}}))
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
+    assert got["n_archs"] == 2
+    assert got["n_archs_without_numbers"] == 1
+    assert got["half_numbered"] == ["deep_attn (no max_dAE_kcalmol)"]
+    footer = fig.provenance_footer(
+        {"bh76": 8.0, "w411": 12.0, "combined": 10.0}, None, got)
+    assert "stating no numbers" not in footer
+    assert "1 stating one number only" in footer
+    assert "deep_attn (no max_dAE_kcalmol)" in footer
+
+
 def test_arch_coverage_states_why_each_arch_is_uncertified(tmp_path):
     """MISSING, FAIL, waived FAIL and UNREADABLE call for four different
     actions -- a certificate to run, physics to fix, a run that was never a

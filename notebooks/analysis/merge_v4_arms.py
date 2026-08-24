@@ -125,18 +125,44 @@ def _validate_arm_seed_policy(run: Path, arch_names) -> None:
                 "grouped figures")
 
 
+def _certificate_status_label(status: str, payload) -> str:
+    """The status a refusal should print, naming a waiver as one.
+
+    A FAIL that records ``enforced: false`` was released on its own node by
+    ``fidelity.gate_certificate`` -- the workflow-verification matrix, whose
+    short pretraining cannot meet the tolerance. It is refused here like any
+    other FAIL, but a reader who sees only "FAIL" cannot tell a run that was
+    never meant to certify from an architecture whose physics did not. The
+    same four labels are printed by
+    ``make_ablation_arch_figure._certificate_status_label``, so one run
+    carries one vocabulary across both record layers.
+    """
+    if (status == "FAIL" and isinstance(payload, dict)
+            and payload.get("enforced") is False):
+        return "waived FAIL"
+    return status
+
+
 def _arm_certificate_statuses(run: Path, arch_names) -> dict:
-    """``{arch: (status, reason, certificate_path)}`` for the arm's REGISTRY
-    architectures, sorted by name.
+    """``{arch: (status, reason, certificate_path, payload)}`` for the arm's
+    REGISTRY architectures, sorted by name.
 
     Architectures the registry does not know (test fixtures, legacy display
     names) carry no certificate expectation and are absent from the mapping,
     matching :func:`_validate_arm_seed_policy`. ``arch_names`` may be any
     iterable of names, including a ``{arch: [spec index, ...]}`` mapping,
     which iterates over its architectures.
+
+    The classification and the document travel together, from ONE parse: a
+    caller that classifies through one read and re-opens the file for the
+    records it re-checks judges one document and reports another, and a
+    certificate rewritten between the two opens then refuses -- or admits --
+    an arm over a file that never existed as a whole. ``payload`` is the
+    parsed object, or ``None`` when the file is absent or is not one.
     """
     from xcquinox.alec.cluster.fidelity import (certificate_path,
-                                                certificate_status)
+                                                read_certificate_status_in)
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
     from xcquinox.alec.config import get_architecture
     statuses = {}
     for arch in arch_names:
@@ -146,13 +172,15 @@ def _arm_certificate_statuses(run: Path, arch_names) -> dict:
             get_architecture(arch)
         except KeyError:
             continue
-        status, reason = certificate_status(str(run), arch)
-        statuses[arch] = (status, reason, certificate_path(str(run), arch))
+        status, reason, payload = read_certificate_status_in(
+            pretrain_checkpoint_dir(str(run), arch))
+        statuses[arch] = (status, reason, certificate_path(str(run), arch),
+                          payload)
     return dict(sorted(statuses.items()))
 
 
 def _validate_arm_fidelity_certificates(run: Path, arch_names,
-                                        arm: str | None = None) -> None:
+                                        arm: str | None = None) -> dict:
     """Refuse an arm whose REGISTRY architectures lack a PASS certificate.
 
     The per-architecture physics certificate
@@ -164,7 +192,7 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
     predate the certificate hold none, and are refused on the same rule: the
     absence of a measurement is not a measurement that passed.
 
-    This is a RECORD layer: it requires PASS from ``certificate_status`` and
+    This is a RECORD layer: it requires PASS from the certificate and
     ignores the certificate's ``enforced`` field, which releases the ON-NODE
     gates of a workflow-verification run only (``fidelity.gate_certificate``).
     No waiver is accepted here, so no status other than PASS can reach a built
@@ -202,18 +230,23 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
 
     ``arch_names`` may be a ``{arch: [spec index, ...]}`` mapping, in which
     case a refusal names the spec directories the architecture owns.
+
+    Every check reads the certificate the classification came from -- one
+    parse per architecture -- and the statuses validated are RETURNED, so the
+    view records the statuses this guard acted on rather than re-reading the
+    files to record them.
     """
-    from xcquinox.alec.cluster.fidelity import (VERDICT_PASS, read_certificate,
-                                                resolve_parent, run_identity)
+    from xcquinox.alec.cluster.fidelity import (VERDICT_PASS, resolve_parent,
+                                                run_identity)
     from xcquinox.alec.cluster.grid_config import (load_grid_config,
                                                    pretrain_checkpoint_dir)
     from xcquinox.alec.cluster.materialize import _sha256_file
     statuses = _arm_certificate_statuses(run, arch_names)
     if not statuses:
-        return
+        return statuses
     label = f"{arm or run.parent.parent.name} {run.name}"
     spec_indices = arch_names if isinstance(arch_names, Mapping) else {}
-    for arch, (status, reason, path) in statuses.items():
+    for arch, (status, reason, path, payload) in statuses.items():
         if status == VERDICT_PASS:
             continue
         owned = sorted(spec_indices.get(arch) or [])
@@ -221,7 +254,8 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
                  if owned else "")
         raise SystemExit(
             f"[merge] REFUSING {label}: arch {arch}{where} has no PASS "
-            f"pretraining-fidelity certificate -- {status} at {path} "
+            f"pretraining-fidelity certificate -- "
+            f"{_certificate_status_label(status, payload)} at {path} "
             f"({reason}) -- an uncertified arm cannot enter the grouped "
             "figures")
     try:
@@ -236,9 +270,12 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
             f"[merge] REFUSING {label}: the pretraining-fidelity certificate "
             f"for arch {arch} at {path} {detail}")
 
-    for arch, (_status, _reason, path) in statuses.items():
+    for arch, (_status, _reason, path, read_payload) in statuses.items():
         pretrain_dir = pretrain_checkpoint_dir(str(run), arch)
-        payload = read_certificate(pretrain_dir) or {}
+        # The document the PASS above was read from, not a fresh open of the
+        # same path: the verdict acted on and the records re-checked have to
+        # describe one file.
+        payload = read_payload or {}
         named = payload.get("arch")
         if named is not None and named != arch:
             refuse(arch, path,
@@ -292,6 +329,7 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
                    f"was measured at a different run identity than the arm "
                    f"itself ({shown}) -- its energies do not describe this "
                    "arm's SCF")
+    return statuses
 
 
 def _remove_path(path: Path) -> None:
@@ -337,8 +375,7 @@ def _carry_arm_certificates(run: Path, view_dir: Path, arch_names,
     the numbers and checkpoint digests the figure layer reads are that arm's.
     """
     from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
-                                                certificate_status_in,
-                                                read_certificate)
+                                                read_certificate_status_in)
     from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
     if not arch_names:
         return
@@ -346,7 +383,9 @@ def _carry_arm_certificates(run: Path, view_dir: Path, arch_names,
     pt_out.mkdir(exist_ok=True)
     for arch in sorted(arch_names):
         src = Path(pretrain_checkpoint_dir(str(run), arch))
-        status, reason = certificate_status_in(str(src))
+        # One parse per certificate here too: the precondition that releases
+        # the link and the identity compared below are the same document.
+        status, reason, payload = read_certificate_status_in(str(src))
         if status != VERDICT_PASS:
             raise SystemExit(
                 f"[merge] REFUSING {arm} {run.name}: the pretrain directory "
@@ -363,7 +402,8 @@ def _carry_arm_certificates(run: Path, view_dir: Path, arch_names,
         incumbent = dst.resolve()
         if incumbent == src.resolve():
             continue
-        inc_status, inc_reason = certificate_status_in(str(incumbent))
+        inc_status, inc_reason, inc_payload = read_certificate_status_in(
+            str(incumbent))
         if inc_status != status:
             raise SystemExit(
                 f"[merge] REFUSING {arm} {run.name}: arch {arch} is carried "
@@ -371,8 +411,8 @@ def _carry_arm_certificates(run: Path, view_dir: Path, arch_names,
                 f"({incumbent}: {inc_status}; {src}: {status} -- "
                 f"{inc_reason}) -- the view has one pretrain slot per arch, "
                 "so one arm's specs would be read against the other's record")
-        inc_identity = (read_certificate(str(incumbent)) or {}).get("identity")
-        new_identity = (read_certificate(str(src)) or {}).get("identity")
+        inc_identity = (inc_payload or {}).get("identity")
+        new_identity = (payload or {}).get("identity")
         if (isinstance(inc_identity, dict) and isinstance(new_identity, dict)
                 and inc_identity != new_identity):
             keys = sorted(set(inc_identity) | set(new_identity))
@@ -510,9 +550,10 @@ def _build_view_into(results_root: Path, view_dir: Path) -> dict:
             arch_specs.setdefault(
                 (entry_rec.get("cell") or {}).get("arch"), []).append(entry_idx)
         _validate_arm_seed_policy(run, arch_specs)
-        _validate_arm_fidelity_certificates(run, arch_specs, arm=base)
-        cert_status = {a: st for a, (st, _reason, _path)
-                       in _arm_certificate_statuses(run, arch_specs).items()}
+        cert_status = {
+            a: st for a, (st, _reason, _path, _payload)
+            in _validate_arm_fidelity_certificates(
+                run, arch_specs, arm=base).items()}
         fidelity_by_arm[base] = cert_status
         _carry_arm_certificates(run, view_dir, cert_status, base)
         for sd in spec_dirs:

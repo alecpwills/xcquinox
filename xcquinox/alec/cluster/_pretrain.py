@@ -47,12 +47,13 @@ For one architecture index it:
     sto-3g / grid level 1, against a measured per-species precompute wall of
     0.6 s (Li) to 5.2 s (CH4) at 6-311++G(3df,2pd) / grid level 3 and several
     times that for the set's largest molecules. The verdict is then read back
-    off the written certificate through ``fidelity.gate_certificate`` -- the
-    same predicate the train task and the preflight apply -- so this job's
-    exit code and their decisions come from one statement and one
-    implementation of the release rule. The summary line the job logs is
-    formatted from that same written certificate, so the numbers on record
-    and the verdict acted on describe one document. A run configured with
+    off the written certificate and put through
+    ``fidelity.gate_certificate_from_read`` -- the release rule the train task
+    and the preflight apply through ``gate_certificate`` -- so this job's exit
+    code and their decisions come from one statement and one implementation of
+    the rule. The summary line the job logs is formatted from that same read,
+    so the numbers on record and the verdict acted on describe one document
+    even if the file is rewritten while the job finishes. A run configured with
     ``fidelity.enforce: false`` AND a non-empty ``override_reason`` records
     the verdict and continues.
 
@@ -412,15 +413,19 @@ def main(argv=None) -> int:
     # gate on, so this job's exit code is decided by exactly the statement
     # they will read, by one implementation of the release rule -- and the
     # summary line quotes the same document, so the log cannot state numbers
-    # from one payload beside a verdict from another. Two consequences: a
-    # waiver needs here what gate_certificate requires everywhere -- a
-    # recorded enforced=false AND a non-empty prose override_reason, which the
-    # config loader does not impose, since main never calls
+    # from one payload beside a verdict from another. The release rule is
+    # applied to THAT read rather than to the path: a gate that opens the file
+    # again lets a certificate rewritten between the two opens be reported as
+    # one document and acted on as the next, which reads 'certificate FAILED
+    # ... / gate: PASS / SUCCEEDED' for a run whose recorded verdict is FAIL.
+    # Two consequences: a waiver needs here what the gate requires everywhere
+    # -- a recorded enforced=false AND a non-empty prose override_reason,
+    # which the config loader does not impose, since main never calls
     # validate_grid_semantics and a fidelity block may carry enforce=false
     # with no reason; and a payload that never reached disk stops the stage
     # here rather than leaving the later stages to refuse a run whose pretrain
     # job is recorded as successful.
-    status, _status_reason, on_disk = fidelity.read_certificate_status_in(
+    status, status_reason, on_disk = fidelity.read_certificate_status_in(
         pretrain_checkpoint_dir(run_dir, arch_name))
     summary = (on_disk or {}).get("summary")
     if not isinstance(summary, dict):
@@ -431,7 +436,8 @@ def main(argv=None) -> int:
             f"({summary.get('n_atoms')} atom(s), "
             f"{summary.get('n_atomizations')} atomization(s)) in "
             f"{_fmt_secs(time.time() - t_cert)}")
-    allowed, gate_message = fidelity.gate_certificate(run_dir, arch_name)
+    allowed, gate_message = fidelity.gate_certificate_from_read(
+        status, status_reason, on_disk)
     label = {fidelity.VERDICT_PASS: "PASSED",
              fidelity.VERDICT_FAIL: "FAILED"}.get(status, status)
     _log(arch_name, f"fidelity certificate {label}: {line}")

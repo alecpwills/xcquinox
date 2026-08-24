@@ -303,16 +303,41 @@ def gate_certificate(run_dir: str, arch: str) -> tuple[bool, str]:
     The record layers do NOT call this. ``validate_run``, ``merge_v4_arms``
     and the figure loaders require PASS through :func:`certificate_status`, so
     a non-enforcing run can never enter the record.
+
+    The document is parsed ONCE, through :func:`gate_certificate_from_read`.
     """
-    pretrain_dir = pretrain_checkpoint_dir(run_dir, arch)
-    status, reason = certificate_status_in(pretrain_dir)
+    return gate_certificate_from_read(
+        *read_certificate_status_in(pretrain_checkpoint_dir(run_dir, arch)))
+
+
+def gate_certificate_from_read(status: str, reason: str,
+                               payload: dict | None) -> tuple[bool, str]:
+    """:func:`gate_certificate`'s rule applied to ONE already-read document.
+
+    The three questions a waiver release turns on -- what the verdict is,
+    whether enforcement is recorded as off, and what reason is recorded --
+    are answered from a single :func:`read_certificate_status_in`. Asking the
+    file each of them separately lets a certificate rewritten between the
+    opens assemble a release out of three documents: a FAIL verdict from the
+    first, ``enforced: false`` from the second and a reason from the third,
+    where none of the three states all of it and none would be released on
+    its own. Measured on that sequence, such a gate releases.
+
+    A caller that also REPORTS the certificate takes the same triple, so the
+    numbers it prints and the decision it acts on describe one file
+    (``cluster._pretrain``).
+    """
     if status == VERDICT_PASS:
         return True, reason
     if status != VERDICT_FAIL:
         return False, reason
-    if certificate_enforced_in(pretrain_dir):
+    # A FAIL classification implies a parsed JSON object, so the payload is
+    # the document the status was read from. The default is enforcement ON:
+    # a waiver is the JSON literal false and nothing else, matching
+    # certificate_enforced_in, which applies the same rule to its own read.
+    payload = payload or {}
+    if payload.get("enforced", True) is not False:
         return False, reason
-    payload = read_certificate(pretrain_dir) or {}
     tolerances = payload.get("tolerances")
     if not isinstance(tolerances, dict):
         tolerances = {}

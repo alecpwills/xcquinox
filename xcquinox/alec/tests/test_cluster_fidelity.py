@@ -11,6 +11,7 @@ exact parent functional (PBE, SCAN through libxc) presented behind the model
 interface on O, H and H2O, so the whole path is shown to be an identity when the
 network is its parent and to report a known per-electron offset exactly.
 """
+import itertools
 import json
 import math
 import os
@@ -529,6 +530,114 @@ def test_gate_never_allows_an_unreadable_certificate(tmp_path):
     (d / fid.CERTIFICATE_FILENAME).write_text("{truncated")
     allowed, _message = fid.gate_certificate(str(tmp_path), "deep_3x16")
     assert allowed is False
+
+
+# ---------------------------------------------------------------------------
+# One document per decision
+# ---------------------------------------------------------------------------
+
+def _serve_documents(monkeypatch, path, documents):
+    """Serve ``documents`` to successive READ opens of ``path``.
+
+    The list returned collects one entry per read served, so a caller can
+    state how many parses a decision rested on. Writes and every other path
+    are passed through; once the list is exhausted its last entry repeats, so
+    a caller that reads more often than the sequence is long is handed a
+    complete document rather than an empty file.
+    """
+    import builtins
+    import io
+    real_open = builtins.open
+    served: list = []
+
+    def fake_open(file, *args, **kwargs):
+        mode = kwargs.get("mode", args[0] if args else "r")
+        if str(file) == str(path) and "r" in mode:
+            doc = documents[min(len(served), len(documents) - 1)]
+            served.append(doc)
+            return io.StringIO(doc if isinstance(doc, str)
+                               else json.dumps(doc))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    return served
+
+
+# Three FAIL documents, each refused on its own: D1 records no waiver, D2
+# records one that states no reason, D3 states a reason beside enforcement
+# that is ON. A gate that classifies one document and reads the waiver off
+# another releases on D1 -> D2 -> D3, which is a release granted to a
+# certificate that never existed.
+_D1 = {"verdict": "FAIL",
+       "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7}}
+_D2 = {"verdict": "FAIL", "enforced": False}
+_D3 = {"verdict": "FAIL", "enforced": True,
+       "tolerances": {"override_reason": "workflow matrix"}}
+
+
+def test_the_gate_reads_the_certificate_once(tmp_path, monkeypatch):
+    """One parse per gate decision, on the deepest path there is.
+
+    The waiver path is the one that classifies, then asks whether enforcement
+    is on, then reads the reason -- three chances for three documents to
+    contribute to one release. The release and the message it states must
+    come from a single document.
+    """
+    d = _write_certificate(str(tmp_path), "deep_3x16", verdict="FAIL",
+                           enforced=False,
+                           tolerances={"override_reason": "workflow matrix"},
+                           summary={"max_atom_mHa": 13.7,
+                                    "max_dAE_kcalmol": 25.7})
+    with open(os.path.join(d, fid.CERTIFICATE_FILENAME)) as f:
+        document = f.read()
+    served = _serve_documents(monkeypatch,
+                              os.path.join(d, fid.CERTIFICATE_FILENAME),
+                              [document])
+    allowed, message = fid.gate_certificate(str(tmp_path), "deep_3x16")
+    monkeypatch.undo()
+    assert allowed is True, message
+    assert "workflow matrix" in message
+    assert len(served) == 1, served
+
+
+def test_no_document_sequence_releases_the_gate(tmp_path, monkeypatch):
+    """A release corresponds to a document, not to a sequence of them.
+
+    Each of the three documents below is refused on its own. Serving them to
+    successive opens of the same path -- the state a certificate rewritten
+    while the gate runs presents -- must not assemble a release out of the
+    waiver of one, the reason of another and the verdict of a third.
+    """
+    d = _write_certificate(str(tmp_path), "deep_3x16", verdict="FAIL")
+    path = os.path.join(d, fid.CERTIFICATE_FILENAME)
+    for doc in (_D1, _D2, _D3):
+        _serve_documents(monkeypatch, path, [doc])
+        allowed, _message = fid.gate_certificate(str(tmp_path), "deep_3x16")
+        monkeypatch.undo()
+        assert allowed is False, doc
+    for order in itertools.permutations((_D1, _D2, _D3)):
+        served = _serve_documents(monkeypatch, path, list(order))
+        allowed, message = fid.gate_certificate(str(tmp_path), "deep_3x16")
+        monkeypatch.undo()
+        assert allowed is False, (order, message)
+        assert len(served) == 1, (order, served)
+
+
+def test_the_gate_rule_applied_to_an_already_read_document(tmp_path):
+    """The release rule, exposed for a caller that has already read the file.
+
+    The worker reports the numbers off the certificate and gates on the same
+    document; it takes the rule rather than the path so that its line and its
+    exit code cannot describe two files.
+    """
+    d = _write_certificate(str(tmp_path), "deep_3x16", verdict="FAIL",
+                           enforced=False,
+                           tolerances={"override_reason": "workflow matrix"},
+                           summary={"max_atom_mHa": 13.7,
+                                    "max_dAE_kcalmol": 25.7})
+    read = fid.read_certificate_status_in(d)
+    assert fid.gate_certificate_from_read(*read) == fid.gate_certificate(
+        str(tmp_path), "deep_3x16")
 
 
 # ---------------------------------------------------------------------------

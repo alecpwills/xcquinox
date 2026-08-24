@@ -546,8 +546,116 @@ def test_merge_refuses_an_unenforced_failure(tmp_path):
     assert allowed is True
     with pytest.raises(SystemExit, match="fidelity") as exc:
         mv.build_view(tmp_path, tmp_path / "merged")
-    assert "has no PASS pretraining-fidelity certificate -- FAIL" in str(
-        exc.value)
+    # Named as the waiver it is, in the figure layer's vocabulary: a run that
+    # was never meant to certify is a different thing from an architecture
+    # whose physics did not, and "FAIL" alone states neither.
+    assert "has no PASS pretraining-fidelity certificate -- waived FAIL" in \
+        str(exc.value)
+
+
+def test_the_waived_label_matches_the_figure_layers(tmp_path):
+    """One vocabulary for the four states across the two record layers.
+
+    ``make_ablation_arch_figure`` names MISSING, UNREADABLE, FAIL and waived
+    FAIL; a reader who meets the same run in a merge refusal and on a figure
+    footer must not be told two different things about it.
+    """
+    import json
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import make_ablation_arch_figure as _fig
+    waived = {"verdict": "FAIL", "arch": "deep_3x16", "enforced": False,
+              "tolerances": {"override_reason": "workflow verification"},
+              "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7}}
+    for status, payload in (("MISSING", None),
+                            ("UNREADABLE", {"arch": "deep_3x16"}),
+                            ("FAIL", {"verdict": "FAIL"}),
+                            ("FAIL", waived)):
+        assert (mv._certificate_status_label(status, payload)
+                == _fig._certificate_status_label(status, payload))
+    assert mv._certificate_status_label("FAIL", waived) == "waived FAIL"
+    assert json.loads(json.dumps(waived))["enforced"] is False
+
+
+# --------------------------------------------------------------------------- #
+# One document per decision
+# --------------------------------------------------------------------------- #
+def _serve_after_the_first_read(monkeypatch, document):
+    """Serve ``document`` to every certificate READ after the first.
+
+    The list returned collects one entry per read, so a caller can state how
+    many parses its decision rested on; writes and every other path are
+    passed through.
+    """
+    import builtins
+    import io as _io
+    import json
+    real_open = builtins.open
+    reads: list = []
+
+    def fake_open(file, *args, **kwargs):
+        path = str(file)
+        mode = kwargs.get("mode", args[0] if args else "r")
+        if path.endswith("fidelity_certificate.json") and "r" in mode:
+            reads.append(path)
+            if len(reads) > 1:
+                return _io.StringIO(json.dumps(document))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    return reads
+
+
+def test_each_arm_certificate_is_read_once(tmp_path, monkeypatch):
+    """One parse per certificate, so no refusal can mix two documents.
+
+    The guard classified the file and then opened it again for the records it
+    re-checks, so a certificate rewritten between the two opens was judged on
+    one document and reported on another.
+    """
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", certified=True)
+    run = tmp_path / "dfs6311_grid3_v5" / "runs" / "run_20260810T193206Z"
+    reads = _serve_after_the_first_read(monkeypatch, {"verdict": "PASS"})
+    mv._validate_arm_fidelity_certificates(run, {"deep_3x16": [0]}, arm="v5")
+    monkeypatch.undo()
+    assert len(reads) == 1, reads
+
+
+def test_a_second_document_cannot_refuse_a_certified_arm(tmp_path,
+                                                         monkeypatch):
+    """A refusal describes the document that was classified, or no document.
+
+    Here the certificate on disk is a self-consistent PASS and every read
+    after the first would find one naming another architecture. A guard that
+    classifies one parse and re-reads for the record checks refuses the arm
+    over a file that never existed as a whole.
+    """
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", certified=True)
+    run = tmp_path / "dfs6311_grid3_v5" / "runs" / "run_20260810T193206Z"
+    foreign = {"verdict": "PASS", "arch": "somebody_elses_arch",
+               "parent": "scan",
+               "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2}}
+    reads = _serve_after_the_first_read(monkeypatch, foreign)
+    mv._validate_arm_fidelity_certificates(run, {"deep_3x16": [0]}, arm="v5")
+    monkeypatch.undo()
+    assert len(reads) == 1, reads
+
+
+def test_the_guard_returns_the_statuses_it_validated(tmp_path):
+    """The status recorded per spec is the one the guard acted on.
+
+    Reading the certificates a second time to record them would let the view
+    state a status the validation never saw.
+    """
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", certified=True)
+    run = tmp_path / "dfs6311_grid3_v5" / "runs" / "run_20260810T193206Z"
+    statuses = mv._validate_arm_fidelity_certificates(
+        run, {"deep_3x16": [0]}, arm="v5")
+    assert {a: st for a, (st, *_rest) in statuses.items()} == {
+        "deep_3x16": "PASS"}
 
 
 def test_merge_refuses_an_unreadable_certificate(tmp_path):

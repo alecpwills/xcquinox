@@ -641,12 +641,13 @@ def fidelity_summary(run_dir: Path,
                      archs=None) -> Optional[Dict[str, Any]]:
     """Worst per-architecture certificate numbers over ``archs``, or ``None``.
 
-    ``{"n_archs", "n_archs_without_numbers", "not_pass", "max_atom_mHa",
-    "max_dAE_kcalmol"}`` -- the largest free-atom E_xc offset (mHa) and the
-    largest atomization-energy offset (kcal/mol) any architecture of the run
-    carries. ``archs=None`` reads every architecture in the run's manifest
-    grid. ``None`` when no architecture has a readable certificate, which
-    keeps the provenance footer of every pre-gate figure byte-identical.
+    ``{"n_archs", "n_archs_without_numbers", "n_archs_unreadable",
+    "half_numbered", "not_pass", "max_atom_mHa", "max_dAE_kcalmol"}`` -- the
+    largest free-atom E_xc offset (mHa) and the largest atomization-energy
+    offset (kcal/mol) any architecture of the run carries. ``archs=None``
+    reads every architecture in the run's manifest grid. ``None`` unless
+    BOTH numbers are stated somewhere in the run, which keeps the provenance
+    footer of every pre-gate figure byte-identical.
 
     ``n_archs`` counts the architectures a figure may say it is bounding: the
     ones whose certificate states BOTH numbers. One that states neither (a
@@ -655,7 +656,18 @@ def fidelity_summary(run_dir: Path,
     into "worst of N arch" that no number describes; those are reported apart
     as ``n_archs_without_numbers``. A number an uncounted certificate does
     state still enters its own maximum -- a disclosed bound may never be
-    lowered by bookkeeping.
+    lowered by bookkeeping, which is also why the summary survives a run
+    where no single certificate states both: two half-numbered ones bound
+    both axes between them, and ``half_numbered`` names which number each is
+    missing.
+
+    ``n_archs_unreadable`` counts the registry architectures whose
+    certificate could not be read as a document at all -- absent, truncated,
+    not a JSON object, or an empty one. They state no numbers and no verdict,
+    so they enter neither the maxima nor ``not_pass``, and without the count
+    a run whose second certificate is truncated renders the footer of a clean
+    one-architecture run. A name the registry does not know carries no
+    certificate expectation and is not counted (``_arch_certificate_status``).
 
     ``not_pass`` names, as ``arch (STATUS)``, every certificate read here whose
     verdict is not PASS. Their numbers are in the maxima like any other, and a
@@ -664,6 +676,7 @@ def fidelity_summary(run_dir: Path,
     the run was admitted under.
     """
     try:
+        from xcquinox.alec.config import get_architecture
         from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
                                                     read_certificate_status_in)
         from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
@@ -673,12 +686,18 @@ def fidelity_summary(run_dir: Path,
         cells = ccp._read_manifest_cells(run_dir)
         archs = sorted({c.get("arch") for c in cells.values() if c.get("arch")})
     atom_devs, ae_devs = [], []
-    n = n_without = 0
+    n = n_without = n_unreadable = 0
     not_pass: List[str] = []
+    half_numbered: List[str] = []
     for arch in archs:
         status, _reason, cert = read_certificate_status_in(
             pretrain_checkpoint_dir(str(run_dir), arch))
         if not cert:
+            try:
+                get_architecture(arch)
+            except KeyError:
+                continue      # no certificate expectation for this name
+            n_unreadable += 1
             continue
         summary = cert.get("summary") or {}
         atom, ae = summary.get("max_atom_mHa"), summary.get("max_dAE_kcalmol")
@@ -690,12 +709,20 @@ def fidelity_summary(run_dir: Path,
             n += 1
         else:
             n_without += 1
+            if _is_num(atom) or _is_num(ae):
+                # Which number is missing decides which axis this certificate
+                # bounds, so the name alone would not say what is disclosed.
+                missing = ("max_dAE_kcalmol" if _is_num(atom)
+                           else "max_atom_mHa")
+                half_numbered.append(f"{arch} (no {missing})")
         if status != VERDICT_PASS:
             label = _certificate_status_label(status, cert)
             not_pass.append(f"{arch} ({label})")
-    if not n or not atom_devs or not ae_devs:
+    if not atom_devs or not ae_devs:
         return None
     return {"n_archs": n, "n_archs_without_numbers": n_without,
+            "n_archs_unreadable": n_unreadable,
+            "half_numbered": half_numbered,
             "not_pass": not_pass, "max_atom_mHa": max(atom_devs),
             "max_dAE_kcalmol": max(ae_devs)}
 
@@ -788,8 +815,18 @@ def coverage_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
         parts.append(f"Trained but no held-out eval: "
                      f"{', '.join(trained_no_holdout)}.")
     if cov.get("uncertified"):
+        # Named with the status, as the suite refusal and merge_v4_arms name
+        # it: MISSING is a certificate to run, FAIL is physics to fix, waived
+        # FAIL is a workflow-verification run that was never a result and
+        # UNREADABLE is a file to look at. The four call for four different
+        # actions, and this line is the only one of the three a figure
+        # carries, so a list of bare names states none of them to the one
+        # reader who sees it.
+        status_of = cov.get("uncertified_status") or {}
+        named = ", ".join(f"{a} ({status_of[a]})" if a in status_of else a
+                          for a in cov["uncertified"])
         parts.append("UNCERTIFIED (no PASS fidelity certificate): "
-                     f"{', '.join(cov['uncertified'])}.")
+                     f"{named}.")
     return "  ".join(parts)
 
 
@@ -1126,11 +1163,14 @@ def provenance_footer(baseline: Dict[str, float],
     states how close the pretrained networks are to their parent functional.
     ``None`` -> the string is byte-identical to the pre-certificate footer.
     Architectures whose certificate states no numbers are counted apart from
-    the "worst of N arch" they are not in, and any contributing certificate
-    that is not PASS is named with its verdict: the same two numbers mean
-    "this run was admitted under these bounds" or "this is how far it missed
-    by", and the footer must not print the second as though it were the
-    first."""
+    the "worst of N arch" they are not in, those stating exactly one are
+    named with the number they are missing, the ones whose certificate could
+    not be read at all are counted, and any contributing certificate that is
+    not PASS is named with its verdict: the same two numbers mean "this run
+    was admitted under these bounds" or "this is how far it missed by", and
+    the footer must not print the second as though it were the first. Every
+    one of those clauses is omitted when its count is zero, so an all-PASS,
+    fully numbered run draws the footer it drew before they existed."""
     s = (_PROVENANCE_BASE + " PBE (full pool):"
          f" BH76 {_fmt_mae(baseline.get('bh76'))}"
          f" / W4-11 {_fmt_mae(baseline.get('w411'))}"
@@ -1145,10 +1185,26 @@ def provenance_footer(baseline: Dict[str, float],
               f"{_pool_cov_bracket(scan_baseline)}.")
     if fidelity:
         without = int(fidelity.get("n_archs_without_numbers") or 0)
+        half = list(fidelity.get("half_numbered") or ())
+        unreadable = int(fidelity.get("n_archs_unreadable") or 0)
+        # The certificates stating NEITHER number and the ones stating
+        # exactly one are separate statements: "stating no numbers" is untrue
+        # of a certificate that states one of them, and which one it states
+        # decides which axis it bounds.
+        none_stated = max(without - len(half), 0)
+        extras = ""
+        if none_stated:
+            extras += f", {none_stated} stating no numbers"
+        if half:
+            extras += f", {len(half)} stating one number only"
+        if unreadable:
+            extras += f", {unreadable} with no readable certificate"
         s += (f" Pretraining fidelity (worst of {fidelity['n_archs']} arch"
-              + (f", {without} stating no numbers" if without else "") + "):"
+              + extras + "):"
               f" |dE_xc| atom <= {fidelity['max_atom_mHa']:.2f} mHa"
               f" / |dAE| <= {fidelity['max_dAE_kcalmol']:.2f} kcal/mol")
+        if half:
+            s += " -- one number only: " + ", ".join(half)
         not_pass = fidelity.get("not_pass") or ()
         if not_pass:
             s += (" -- NOT PASS, so these are missed-by offsets and not "
