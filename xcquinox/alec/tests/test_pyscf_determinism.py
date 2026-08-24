@@ -289,18 +289,22 @@ def test_run_scf_with_cache_records_the_pins_and_keeps_an_older_cache(
                              grid_level=1)
     assert rec["reference_xc_blksize"] == REFERENCE_XC_BLKSIZE
     assert rec["reference_blas_threads"] == int(lib.num_threads())
+    assert rec["reference_eri_path"] == "incore"
     path = tmp_path / "_intermediates" / _intermediate_cache_name(
         "H2", grid_level=1, basis="sto-3g", density_fit=False, kind="scf")
     with np.load(path, allow_pickle=False) as z:
         assert int(z["reference_xc_blksize"]) == REFERENCE_XC_BLKSIZE
+        assert str(z["reference_eri_path"]) == "incore"
         older = {k: z[k] for k in z.files
                  if k not in ("reference_xc_blksize",
-                              "reference_blas_threads")}
+                              "reference_blas_threads",
+                              "reference_eri_path")}
     np.savez_compressed(path, **older)
     hit = run_scf_with_cache(entry, atoms, cache_dir=tmp_path, basis="sto-3g",
                              grid_level=1)
     assert hit["reference_xc_blksize"] is None
     assert hit["reference_blas_threads"] is None
+    assert hit["reference_eri_path"] is None
     assert np.array_equal(hit["dm"], rec["dm"])
     assert hit["e_tot"] == rec["e_tot"]
 
@@ -484,14 +488,65 @@ def test_eri_pin_is_idempotent_and_refuses_a_second_path():
     assert mf._is_mem_enough() is True
 
 
-def test_eri_pin_leaves_a_density_fitted_object_alone():
-    _, mf = _h2o_rks(build_grid=False)
-    df = mf.density_fit()
-    assert pin_eri_path(df) == "df"
-    assert not hasattr(df, "_xcquinox_eri_path")
+def test_unpinned_df_aux_loop_follows_max_memory(monkeypatch):
+    """The seam on the density-fitted path: df_jk.get_jk sizes its aux
+    blocks from dfobj.max_memory - lib.current_memory(), so the number of
+    Cholesky-vector blocks the J and K sums run over follows the memory
+    the process has left."""
+    from pyscf import df as pyscf_df
     mol = gto.M(atom=_H2O_ATOM, basis="def2-svp", verbose=0)
-    assert pin_eri_path(scf.RHF(mol).density_fit()) == "df"
-    assert pin_eri_path(scf.RHF(mol)) == "incore"
+    mf = scf.RHF(mol).density_fit()
+    mf.kernel()
+    dm = mf.make_rdm1()
+    calls = []
+    real_loop = pyscf_df.df.DF.loop
+
+    def counting(self, blksize=None):
+        calls.append(blksize)
+        yield from real_loop(self, blksize)
+
+    monkeypatch.setattr(pyscf_df.df.DF, "loop", counting)
+    mf.with_df.max_memory = 1e6
+    calls.clear()
+    mf.get_jk(mol, dm, with_j=True, with_k=True)
+    generous = list(calls)
+    mf.with_df.max_memory = 1          # below the process's resident memory
+    calls.clear()
+    mf.get_jk(mol, dm, with_j=True, with_k=True)
+    starved = list(calls)
+    assert generous and generous[0] == 240
+    assert starved and starved[0] == 4  # pyscf's floor, as for the XC loop
+
+
+def test_eri_pin_on_a_density_fitted_object_pins_the_aux_loops(monkeypatch):
+    """pin_eri_path on a DF object holds the aux loops at the fixed
+    blockdim whatever the process's memory, records the decision, and is
+    idempotent."""
+    from pyscf import df as pyscf_df
+    from xcquinox.alec.pyscf_determinism import REFERENCE_DF_AUX_BLOCKDIM
+    mol = gto.M(atom=_H2O_ATOM, basis="def2-svp", verbose=0)
+    mf = scf.RHF(mol).density_fit()
+    assert pin_eri_path(mf) == "df-aux240"
+    assert mf._xcquinox_eri_path == "df-aux240"
+    assert mf.with_df.blockdim == REFERENCE_DF_AUX_BLOCKDIM == 240
+    # The sentinel makes the memory-derived bound moot: min(blockdim, huge).
+    assert mf.with_df.max_memory >= 1e9
+    assert pin_eri_path(mf) == "df-aux240"     # idempotent
+    calls = []
+    real_loop = pyscf_df.df.DF.loop
+
+    def counting(self, blksize=None):
+        calls.append(blksize)
+        yield from real_loop(self, blksize)
+
+    monkeypatch.setattr(pyscf_df.df.DF, "loop", counting)
+    mf.kernel()
+    dm = mf.make_rdm1()
+    calls.clear()
+    mf.get_jk(mol, dm, with_j=True, with_k=True)
+    assert calls and set(calls) == {240}
+    mol2 = gto.M(atom=_H2O_ATOM, basis="def2-svp", verbose=0)
+    assert pin_eri_path(scf.RHF(mol2)) == "incore"
 
 
 def test_eri_pin_reaches_the_second_order_wrapper():
@@ -508,7 +563,94 @@ def test_pin_reference_scf_reports_the_eri_path():
     assert pin_reference_scf(mf).eri_path == "incore"
     mol = gto.M(atom=_H2O_ATOM, basis="def2-svp", verbose=0)
     assert pin_reference_scf(scf.UHF(mol)).eri_path == "incore"
-    assert pin_reference_scf(scf.UHF(mol).density_fit()).eri_path == "df"
+    assert pin_reference_scf(scf.UHF(mol).density_fit()).eri_path == "df-aux240"
+
+
+def test_build_hf_meanfield_is_pinned():
+    """The HF-for-CCSD object leaves _build_hf_meanfield with its integral
+    path pinned (plain: incore held against a zero memory budget; DF: the
+    aux loops at the fixed blockdim)."""
+    from xcquinox.alec import external_refs as ext
+    mol = gto.M(atom=_H2O_ATOM, basis="def2-svp", verbose=0)
+    mf = ext._build_hf_meanfield(mol, False)
+    assert mf._xcquinox_eri_path == "incore"
+    mf.max_memory = 0
+    assert mf._is_mem_enough() is True
+    mf_df = ext._build_hf_meanfield(mol, False, density_fit=True,
+                                    basis="def2-svp")
+    assert mf_df._xcquinox_eri_path == "df-aux240"
+    assert mf_df.with_df.max_memory >= 1e9
+
+
+def test_escalation_builder_objects_carry_the_pins(tmp_path, monkeypatch):
+    """The fresh mean-fields run_scf_with_cache builds when the first
+    attempt does not converge carry both pins. The first attempt is capped
+    at one cycle so the escalation path runs; the tier runner is replaced
+    by a recorder that checks the builder's object and then converges one
+    itself."""
+    import pyscf.dft
+    from ase import Atoms
+    from xcquinox.alec import external_refs as ext
+    real_rks = pyscf.dft.RKS
+
+    def one_cycle_rks(mol_, *args, **kwargs):
+        m = real_rks(mol_, *args, **kwargs)
+        m.max_cycle = 1
+        return m
+
+    monkeypatch.setattr(pyscf.dft, "RKS", one_cycle_rks)
+    builder_pins = []
+
+    def recording_tiers(base_builder, *, dm0=None, is_uks=False,
+                        locked_hcore=None):
+        fresh = base_builder()
+        builder_pins.append((pinned_xc_block_size(fresh),
+                             getattr(fresh, "_xcquinox_eri_path", None)))
+        final = base_builder()
+        final.max_cycle = 100
+        final.kernel(dm0=dm0)
+        return final
+
+    monkeypatch.setattr(ext, "_converge_scf_tiered", recording_tiers)
+    entry = ext.SpeciesEntry(name="H2", charge=0, spin=0, source="test")
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    rec = ext.run_scf_with_cache(entry, atoms, cache_dir=tmp_path,
+                                 basis="sto-3g", grid_level=1)
+    assert builder_pins == [(REFERENCE_XC_BLKSIZE, "incore")]
+    assert rec["reference_xc_blksize"] == REFERENCE_XC_BLKSIZE
+    assert rec["reference_eri_path"] == "incore"
+
+
+def test_pinned_eri_predicate_refuses_a_reset_to_a_different_system():
+    """The integral-path decision is a function of nao at pin time;
+    mf.reset to a molecule of a different size must fail loudly at the
+    next use of the predicate, not keep the stale answer."""
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    mf = dft.RKS(mol)
+    assert pin_eri_path(mf) == "incore"
+    assert mf._is_mem_enough() is True
+    mf.reset(mol)                       # same system: still answers
+    assert mf._is_mem_enough() is True
+    other = gto.M(atom=_H2O_ATOM, basis="def2-svp", verbose=0)
+    mf.reset(other)
+    with pytest.raises(RuntimeError, match="pinned for nao=2"):
+        mf._is_mem_enough()
+
+
+def test_pinned_mean_field_deepcopies_but_does_not_pickle():
+    """The pins are instance-level closures: copy.deepcopy and mf.copy()
+    preserve them; pickle is refused by Python (documented limitation --
+    no reference path pickles a mean-field)."""
+    import copy
+    import pickle
+    _, mf = _h2o_rks(build_grid=False)
+    pin_xc_block_size(mf)
+    pin_eri_path(mf)
+    clone = copy.deepcopy(mf)
+    assert pinned_xc_block_size(clone) == REFERENCE_XC_BLKSIZE
+    assert clone._xcquinox_eri_path == "incore"
+    with pytest.raises(Exception):
+        pickle.dumps(mf)
 
 
 def test_precompute_records_the_eri_path():
@@ -580,3 +722,82 @@ def test_oep_baseline_mean_field_carries_both_pins(monkeypatch):
     # with, as the Wu-Yang identity requires at the baseline potential.
     assert np.allclose(dm_r, dm, atol=1e-6)
     assert np.allclose(dm_u[0] + dm_u[1], dm, atol=1e-6)
+
+
+_DF_CHILD = textwrap.dedent("""
+    import hashlib, json, sys, tempfile
+    import numpy as np
+    hold = np.ones(int(float(sys.argv[1]) * 2 ** 30 / 8)) if float(sys.argv[1]) else None
+    from ase import Atoms
+    from pyscf import df as pyscf_df
+    from pyscf import gto, lib
+    aux_calls = []
+    real_loop = pyscf_df.df.DF.loop
+    def counting(self, blksize=None):
+        aux_calls.append(blksize)
+        yield from real_loop(self, blksize)
+    pyscf_df.df.DF.loop = counting
+    from xcquinox.alec import external_refs as ext
+    def digest(x):
+        return hashlib.sha1(np.ascontiguousarray(np.asarray(x, dtype=np.float64)).tobytes()).hexdigest()
+    atom = ("C 0 0 0; H 0.6276 0.6276 0.6276; H -0.6276 -0.6276 0.6276; "
+            "H -0.6276 0.6276 -0.6276; H 0.6276 -0.6276 -0.6276")
+    basis = "6-311++G(3df,2pd)"
+    entry = ext.SpeciesEntry(name="CH4", charge=0, spin=0, source="test")
+    atoms = Atoms("CH4", positions=[[0, 0, 0], [0.6276, 0.6276, 0.6276],
+                                    [-0.6276, -0.6276, 0.6276],
+                                    [-0.6276, 0.6276, -0.6276],
+                                    [0.6276, -0.6276, -0.6276]])
+    tmp = tempfile.mkdtemp(prefix="d29_df_")
+    rec = ext.run_scf_with_cache(entry, atoms, cache_dir=tmp, basis=basis,
+                                 grid_level=3, density_fit=True)
+    mol = gto.M(atom=atom, basis=basis, verbose=0)
+    aux_calls.clear()
+    mf_hf = ext._prepare_converged_hf(mol, dm0=np.asarray(rec["dm"]),
+                                      is_uks=False, density_fit=True,
+                                      basis=basis)
+    out = {"rss_mb": lib.current_memory()[0],
+           "dm": digest(rec["dm"]), "e_tot": float(rec["e_tot"]).hex(),
+           "eri_path": rec["reference_eri_path"],
+           "hf_dm": digest(mf_hf.make_rdm1()),
+           "hf_e_tot": float(mf_hf.e_tot).hex(),
+           "aux_blksizes": sorted(set(a for a in aux_calls if a is not None)),
+           "naux": int(mf_hf.with_df.get_naoaux())}
+    print("RESULT " + json.dumps(out))
+""")
+
+
+def _run_df_child(hold_gib):
+    env = dict(os.environ)
+    env.update({
+        "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1", "JAX_PLATFORMS": "cpu", "JAX_ENABLE_X64": "1",
+        "PYSCF_MAX_MEMORY": "2000",
+    })
+    proc = subprocess.run([sys.executable, "-c", _DF_CHILD, str(hold_gib)],
+                          env=env, capture_output=True, text=True,
+                          timeout=900)
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    line = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
+    assert line, proc.stdout[-2000:] + proc.stderr[-2000:]
+    return json.loads(line[-1][len("RESULT "):])
+
+
+def test_df_reference_is_bitwise_identical_across_memory_histories():
+    """CH4 at the production basis is the smallest case whose fitted-tensor
+    loop exceeds one block (naux 288 against blockdim 240), so the DF
+    Coulomb and exchange summation ORDER is exercised, not just one block:
+    a clean process and one holding 2 GiB above pyscf's ceiling must agree
+    bit for bit on the DF-PBE record and the DF Hartree-Fock determinant,
+    with the aux loops held at the pinned blockdim in both."""
+    clean = _run_df_child(0.0)
+    heavy = _run_df_child(2.0)
+    assert heavy["rss_mb"] > 2000 > clean["rss_mb"]
+    for child in (clean, heavy):
+        assert child["eri_path"] == "df-aux240"
+        assert child["naux"] == 288
+        # The pinned aux loops ran, at 240 vectors per block (two blocks) --
+        # an unpinned starved process runs them at pyscf's floor of 4.
+        assert child["aux_blksizes"] == [240]
+    for key in ("dm", "e_tot", "hf_dm", "hf_e_tot"):
+        assert clean[key] == heavy[key], key

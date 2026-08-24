@@ -126,12 +126,11 @@ def _build_hf_meanfield(mol, is_uks: bool, *, density_fit: bool = False,
         from xcquinox.alec.df_jk import default_auxbasis
         mf = mf.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
     # No grid quadrature to pin on a Hartree-Fock object; the incore/direct
-    # choice of its two-electron integrals is pinned to the system size
-    # (pyscf_determinism). A density-fitted object is left as pyscf builds
-    # it: its exchange loop is sized from process memory too, which moved
-    # the HF density of the O atom (def2-svp, DF) by 4.2e-15 and the CCSD
-    # density on it by 4.8e-15 between a clean process and one above the
-    # memory ceiling, far below the CCSD convergence floor.
+    # choice of its two-electron integrals is pinned to the system size,
+    # and a density-fitted object's Coulomb/exchange auxiliary loops are
+    # held at the fixed blockdim (pyscf_determinism; unpinned they are
+    # sized from process memory, which moved this HF density by 4.2e-15
+    # and the CCSD density on it by 4.8e-15 between memory histories).
     pin_reference_scf(mf)
     return mf
 
@@ -1517,8 +1516,10 @@ class RunLog:
     stage of the workflow matrix finalizes four shards against the same
     reference directory): every write is an atomic replace, the partial
     file is removed with ``missing_ok`` (a sibling may have removed it
-    first: 73 of 200 barrier-synchronized four-shard trials raised
-    FileNotFoundError from the earlier is_file-then-unlink pair), the
+    first: 52 to 79 of 200 barrier-synchronized four-shard trials raised
+    FileNotFoundError from the earlier is_file-then-unlink pair, the count
+    load-dependent across three measured runs, while every trial lost a
+    sibling's log to the shared same-second name), the
     final name is unique per finalizing instance so no shard's log is
     overwritten by a sibling finalizing in the same second, and a repeated
     ``finalize`` on one instance returns the log it already wrote.
@@ -1680,7 +1681,8 @@ def precompute_all(
     for spec in bar:
         bar.set_postfix(name=spec.name, charge=spec.charge, spin=spec.spin)
         npz_path = cache_dir / f"{spec.name}.npz"
-        if _npz_is_complete(npz_path):
+        if _npz_is_complete(npz_path, basis=basis,
+                            orientation_lock_strength=orientation_lock_strength):
             log.record_result(
                 name=spec.name, charge=spec.charge, spin=spec.spin,
                 status="SKIPPED_CACHED", wall_clock_s=0.0, error_msg=None,
@@ -1732,13 +1734,41 @@ def precompute_all(
         )
 
 
-def _npz_is_complete(npz_path) -> bool:
-    """True if the npz exists and carries every key the loss expects."""
+def _npz_is_complete(npz_path, *, basis: str | None = None,
+                     orientation_lock_strength: float | None = None) -> bool:
+    """True if the npz exists, carries every key the loss expects, and --
+    when the caller states an identity -- was generated for it.
+
+    The final reference file is name-keyed (no basis or lock tag in the
+    filename), so completeness alone would let ``precompute_all`` skip a
+    file generated at ANY lock or basis: an unlocked reference would be
+    served to a locked run, defeating the training-reference lock (the
+    degenerate-radical OH/CH/NO density fix), and a cross-basis file would
+    be reused silently. ``basis`` (when given) must equal the recorded
+    ``basis_used``; a legacy file that records none is trusted.
+    ``orientation_lock_strength`` (when given) must match the recorded
+    value under the ``%g`` comparison the other lock guards use; a legacy
+    file that records none reads as 0.0, so it stays a hit for an unlocked
+    run and a miss for a locked one, in either direction. The same rule as
+    ``run_oep_cascade``'s per-species cache check.
+    """
     import numpy as np
     if not npz_path.is_file():
         return False
     try:
         with np.load(npz_path, allow_pickle=False) as z:
-            return _REQUIRED_NPZ_KEYS.issubset(set(z.files))
+            if not _REQUIRED_NPZ_KEYS.issubset(set(z.files)):
+                return False
+            if (basis is not None and "basis_used" in z.files
+                    and str(z["basis_used"]) != str(basis)):
+                return False
+            if orientation_lock_strength is not None:
+                recorded = (float(z["orientation_lock_strength"])
+                            if "orientation_lock_strength" in z.files
+                            else 0.0)
+                requested = float(orientation_lock_strength)
+                if f"{recorded:g}" != f"{requested:g}":
+                    return False
+            return True
     except (OSError, ValueError):
         return False

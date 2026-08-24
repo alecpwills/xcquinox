@@ -17,6 +17,17 @@ reference SCF followed the memory history of the process that ran it.
    0.95 * max_memory``, and otherwise builds J and K from screened
    integrals, incrementally over the DIIS iterates; the two paths differ at
    round-off.
+3. The Cholesky-vector loops of a density-fitted object.
+   ``pyscf.df.df_jk.get_jk`` sizes its Coulomb and exchange auxiliary
+   blocks from ``dfobj.max_memory - lib.current_memory()``
+   (``max(4, int(min(blockdim, mem * .3e6 / 8 / nao**2)))`` for J), so the
+   number of fitted-tensor blocks the J and K sums run over follows live
+   memory once naux exceeds one block. The def2-svp fitting bases stay
+   under one block (O: naux 49, H2O: 113, against blockdim 240), so the
+   dependence cannot bind there; at the production basis it does (CH4:
+   naux 288, two blocks at normal headroom; C5H8: 888, four blocks, or 222
+   blocks of 4 once the process passes the ceiling), and every production
+   campaign runs density fitting.
 
 Measured on the O atom (def2-svp, grid level 3, orientation lock on, one
 thread): a clean process integrates the 11904-point grid in one block with
@@ -43,8 +54,23 @@ object's ``__dict__`` and therefore share the same integrator.
 :func:`pin_eri_path` replaces ``mf._is_mem_enough`` on the instance by the
 fixed rule of :func:`eri_path_for_nao` (the same tensor estimate against
 :data:`REFERENCE_ERI_INCORE_MB`), so the integral path is a function of the
-system alone. :func:`pin_reference_scf` applies both and reports them with
-the thread count.
+system alone; the pinned predicate also refuses, loudly, to answer for a
+molecule of a different size than it was pinned for (``mf.reset`` to
+another system must re-pin a fresh object, not inherit a stale decision).
+On a density-fitted object it instead holds ``with_df.blockdim`` at
+:data:`REFERENCE_DF_AUX_BLOCKDIM` (240, PySCF's own default) and
+``with_df.max_memory`` at a sentinel, so the auxiliary loops run at the
+blockdim whatever the live memory, and the fitted tensor is built in
+memory in one pass (``naux * nao (nao + 1) / 2 * 8`` bytes: 14 MB for CH4,
+354 MB for C5H8 at the production basis, the largest pool species) with a
+chunking that no longer follows live memory either; the decision is
+stamped as ``"df-aux240"``. :func:`pin_reference_scf` applies the
+applicable pins and reports them with the thread count.
+
+A pinned object is no longer picklable: the pins are instance-level
+closures, so ``pickle.dumps`` fails loudly rather than silently shedding
+them (``copy.deepcopy`` and ``mf.copy()`` preserve the pins; no reference
+path pickles a mean-field).
 
 Block-size bound. One block holds ``comp * blksize * nao`` doubles of AO
 values (``comp`` = 1 for values, 4 with the gradient the GGA and meta-GGA
@@ -60,17 +86,25 @@ system is one block -- the pruned level-3 grid of the O atom at def2-svp
 has 11904 points, the level-1 grid of H2O 9304 -- so its summation order is
 the one a clean process already had (the closed-shell fixture of the
 spin-scaling oracles was recorded that way); H2O at def2-svp / level 3
-(30632 points) takes 3 blocks. At the production identity the pruned
-level-3 grids run from 26616 points (N2, 3 blocks) through 49408 (CH4, 4
-blocks) to 131584 (C5H8, 11 blocks), where PySCF's own loop, given the
-memory, takes 1 to 2 blocks of up to 67200 points. Measured wall of the
-reference SCF (fifteen repeats, medians, four threads): unchanged on the O
-atom at def2-svp / grid 3 (one block either way, 0.059 s to 0.058 s);
-0.131 s to 0.145 s on H2O at def2-svp / grid 3 (three blocks against one;
-the fastest repeats equal at 0.122 s, the cost is per-block call overhead
-on a 24-function system); faster at the production identity, 0.357 s to
-0.339 s on H2O and 0.564 s to 0.460 s on CH4, where the smaller blocks fit
-the caches better than PySCF's whole-grid block.
+(30632 points) takes 3 blocks. The one-block statement is a def2-svp
+statement: at the production basis, 6-311++G(3df,2pd), even a bare atom
+exceeds one block (the O atom's pruned level-3 grid is 13504 points, two
+blocks), so every production reference -- the atoms included -- shifts
+once, at the 1e-13 level, when the pin first lands, and is held fixed
+thereafter; the v6 campaign regenerates every production reference under
+the pin. The other pruned level-3 production grids run from 26616 points
+(N2, 3 blocks) through 49408 (CH4, 4 blocks) to 131584 (C5H8, 11 blocks),
+where PySCF's own loop, given the memory, takes 1 to 2 blocks of up to
+67200 points. Measured wall of the reference SCF (31 alternated repeats,
+medians, four threads; the pruning pass runs on the UNPRUNED grid, so the
+O atom's 14088 unpruned points split 12544 + 1544 under the pin where the
+post-pruning SCF loop is one block either way): 0.055 s to 0.056 s on the
+O atom at def2-svp / grid 3, with an independent measurement on a loaded
+box reaching +15 percent on the fastest repeats; 0.127 s to 0.134 s on
+H2O at def2-svp / grid 3 (three blocks against one, per-block call
+overhead on a 24-function system); faster at the production identity,
+0.342 s to 0.291 s on H2O and 0.555 s to 0.474 s on CH4, where the
+smaller blocks fit the caches better than PySCF's whole-grid block.
 
 What the pins do not fix. PySCF's threaded reductions are not associative:
 at more than one OpenMP thread the reference SCF is not bit-reproducible
@@ -82,12 +116,11 @@ thread count is the caller's (the cluster job scripts export
 ``OMP_NUM_THREADS``), and every record carries the count it was produced at
 (``reference_blas_threads``) beside the block size
 (``reference_xc_blksize``) and the integral path (``reference_eri_path``)
-so a mismatch is visible. The exchange loop of a density-fitted
-Hartree-Fock object (the HF-for-CCSD with ``density_fit``) is sized from
-process memory as well and is left as PySCF builds it: it moved the HF
-density of the O atom by 4.2e-15 and the CCSD density on it by 4.8e-15
-between a clean process and one above the ceiling, below any consumer's
-tolerance and far below the CCSD convergence floor.
+so a mismatch is visible. (Before the auxiliary loops were pinned, the
+density-fitted exchange loop's memory dependence moved the HF density of
+the O atom by 4.2e-15 and the CCSD density on it by 4.8e-15 between a
+clean process and one above the ceiling -- the scale that keeps the
+stamps out of the CCSD cache identity below.)
 
 Cache identities. None of the stamps enters a cache identity: not the
 reference cache of :mod:`external_refs` (a CCSD reference is hours per
@@ -107,6 +140,7 @@ from pyscf.dft.gen_grid import BLKSIZE
 
 __all__ = [
     "BLKSIZE",
+    "REFERENCE_DF_AUX_BLOCKDIM",
     "REFERENCE_ERI_INCORE_MB",
     "REFERENCE_XC_BLKSIZE",
     "ReferencePins",
@@ -153,6 +187,19 @@ REFERENCE_ERI_INCORE_MB: float = 2000.0
 
 #: Attribute the ERI pin leaves on the mean-field.
 _ERI_PIN_ATTR = "_xcquinox_eri_path"
+
+#: Cholesky-vector (auxiliary-function) block of a density-fitted reference
+#: object's J/K loops: PySCF's own default blockdim
+#: (``__config__.df_df_DF_blockdim``, 240), enforced explicitly so the
+#: stamp names the value that ran.
+REFERENCE_DF_AUX_BLOCKDIM: int = 240
+
+#: Sentinel ceiling (MB) held on a density-fitted reference object so the
+#: memory-derived bound of its auxiliary loops never undercuts the blockdim
+#: and its fitted-tensor build is in-memory and single-pass. Not a resource
+#: request: what is allocated is bounded by the blockdim buffers and the
+#: fitted tensor itself (module docstring).
+_DF_PINNED_MAX_MEMORY_MB: float = 1e9
 
 
 class ReferencePins(NamedTuple):
@@ -261,16 +308,37 @@ def pin_eri_path(mf, incore_budget_mb: float = REFERENCE_ERI_INCORE_MB) -> str:
     paths agree to round-off and differ at the 1e-13 level, and the choice
     follows the process's memory history. The predicate is replaced on the
     instance by the fixed rule of :func:`eri_path_for_nao`, so the choice
-    is a function of the system alone. A density-fitted object builds J
-    and K from its fitted tensor and never consults the predicate; it is
-    left alone and reported as "df".
+    is a function of the system alone; because the decision is derived
+    from the molecule at pin time, the pinned predicate refuses (loudly,
+    ``RuntimeError``) to answer after ``mf.reset`` to a molecule of a
+    different size -- re-pin a fresh object instead. A density-fitted
+    object builds J and K from its fitted tensor and never consults the
+    predicate; there the auxiliary loops are pinned instead:
+    ``with_df.blockdim`` is held at :data:`REFERENCE_DF_AUX_BLOCKDIM` and
+    ``with_df.max_memory`` at a sentinel, so the Coulomb and exchange
+    sums run over fixed 240-vector blocks and the fitted-tensor build is
+    in-memory and single-pass whatever the live memory; recorded as
+    ``"df-aux240"``. (``with_df.reset`` restores neither, but no reference
+    path resets a mean-field; the non-DF branch's guard is the loud
+    tripwire for that class of misuse.)
 
     Returns the path applied. The second-order and density-fitting
     wrappers copy the object's ``__dict__``, so they share the pin.
     """
-    if getattr(mf, "with_df", None) is not None:
-        return "df"
+    with_df = getattr(mf, "with_df", None)
     already = getattr(mf, _ERI_PIN_ATTR, None)
+    if with_df is not None:
+        path = f"df-aux{REFERENCE_DF_AUX_BLOCKDIM}"
+        if already is not None:
+            if already != path:
+                raise ValueError(
+                    f"this mean-field's integral path is already pinned to "
+                    f"{already!r}; refusing to re-pin it to {path!r}")
+            return path
+        with_df.blockdim = REFERENCE_DF_AUX_BLOCKDIM
+        with_df.max_memory = _DF_PINNED_MAX_MEMORY_MB
+        setattr(mf, _ERI_PIN_ATTR, path)
+        return path
     path = eri_path_for_nao(mf.mol.nao, incore_budget_mb)
     if already is not None:
         if already != path:
@@ -279,7 +347,19 @@ def pin_eri_path(mf, incore_budget_mb: float = REFERENCE_ERI_INCORE_MB) -> str:
                 f"{already!r}; refusing to re-pin it to {path!r}")
         return path
     incore = path == "incore"
-    mf._is_mem_enough = lambda: incore
+    nao_at_pin = int(mf.mol.nao)
+
+    def _pinned_is_mem_enough():
+        if int(mf.mol.nao) != nao_at_pin:
+            raise RuntimeError(
+                f"the integral path of this mean-field was pinned for "
+                f"nao={nao_at_pin} but its molecule now has "
+                f"nao={int(mf.mol.nao)} (reset to a different system?); "
+                "build and pin a fresh mean-field instead of reusing this "
+                "one")
+        return incore
+
+    mf._is_mem_enough = _pinned_is_mem_enough
     setattr(mf, _ERI_PIN_ATTR, path)
     return path
 

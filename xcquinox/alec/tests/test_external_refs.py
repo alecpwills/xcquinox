@@ -559,6 +559,92 @@ def test_run_log_finalize_is_safe_beside_sibling_shards(tmp_path):
             path.unlink()
 
 
+def test_npz_is_complete_checks_lock_and_basis_currency(tmp_path):
+    """The final reference npz is name-keyed (no basis or lock tag in the
+    filename), so completeness alone would let precompute_all serve a file
+    generated at ANY lock or basis. With a stated identity the check must
+    MISS on a lock mismatch (in both directions) and on a basis mismatch
+    when the file records one; a legacy file missing the lock key reads as
+    0.0 (a hit for an unlocked run only), and one missing basis_used is
+    trusted at any basis -- the run_oep_cascade cache rule."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        _REQUIRED_NPZ_KEYS, _npz_is_complete)
+    path = tmp_path / "X.npz"
+
+    def write(**extra):
+        payload = {k: np.zeros(1) for k in _REQUIRED_NPZ_KEYS}
+        payload.update(extra)
+        np.savez_compressed(path, **payload)
+
+    write(basis_used=np.array("def2-svp"),
+          orientation_lock_strength=np.array(3e-5))
+    assert _npz_is_complete(path, basis="def2-svp",
+                            orientation_lock_strength=3e-5)
+    # A locked reference must not serve an unlocked run either.
+    assert not _npz_is_complete(path, basis="def2-svp",
+                                orientation_lock_strength=0.0)
+    assert not _npz_is_complete(path, basis="def2-tzvp",
+                                orientation_lock_strength=3e-5)
+    # Legacy: no lock key reads as 0.0.
+    write(basis_used=np.array("def2-svp"))
+    assert _npz_is_complete(path, basis="def2-svp",
+                            orientation_lock_strength=0.0)
+    assert not _npz_is_complete(path, basis="def2-svp",
+                                orientation_lock_strength=3e-5)
+    # Legacy: a file recording no basis is trusted at any requested basis.
+    write()
+    assert _npz_is_complete(path, basis="def2-tzvp",
+                            orientation_lock_strength=0.0)
+    # Stating no identity preserves the key-presence contract.
+    assert _npz_is_complete(path)
+    # Completeness still gates however well the identity matches.
+    np.savez_compressed(path, rho_ref_grid=np.zeros(1),
+                        basis_used=np.array("def2-svp"),
+                        orientation_lock_strength=np.array(3e-5))
+    assert not _npz_is_complete(path, basis="def2-svp",
+                                orientation_lock_strength=3e-5)
+    assert not _npz_is_complete(tmp_path / "absent.npz", basis="def2-svp",
+                                orientation_lock_strength=0.0)
+
+
+def test_precompute_all_does_not_serve_an_unlocked_reference_to_a_locked_run(
+        tmp_path, monkeypatch):
+    """precompute_all's skip decision must miss on a lock mismatch: a
+    complete file generated without the lock is regenerated, not skipped,
+    when the run requests one -- while the same file stays a skip for an
+    unlocked run (the legacy-cache contract)."""
+    import json
+    import numpy as np
+    from xcquinox.alec import external_refs as ext
+    payload = {k: np.zeros(1) for k in ext._REQUIRED_NPZ_KEYS}
+    np.savez_compressed(tmp_path / "H2.npz", **payload)
+    species = [ext.SpeciesEntry("H2", 0, 0, "dfs_ae")]
+
+    class _RegenerationReached(Exception):
+        """Raised where the generation path starts (resolve_geometry, the
+        first call after the skip decision): reaching it IS the miss."""
+
+    def _tripwire(spec):
+        raise _RegenerationReached()
+
+    monkeypatch.setattr(ext, "resolve_geometry", _tripwire)
+
+    def _last_statuses():
+        logs = sorted(tmp_path.glob("_run_log_*.json"))
+        return [r["status"]
+                for r in json.loads(logs[-1].read_text())["results"]]
+
+    with pytest.raises(RuntimeError, match="failed for 1 species"):
+        ext.precompute_all(species, cache_dir=tmp_path, basis="def2-svp",
+                           grid_level=1, run_preflight=False,
+                           orientation_lock_strength=3e-5)
+    assert _last_statuses() == ["FAIL"]
+    ext.precompute_all(species, cache_dir=tmp_path, basis="def2-svp",
+                       grid_level=1, run_preflight=False)
+    assert _last_statuses() == ["SKIPPED_CACHED"]
+
+
 def test_precompute_all_skips_cached_species(tmp_path):
     """precompute_all skips species whose npz already has all required keys."""
     from xcquinox.alec.external_refs import (
