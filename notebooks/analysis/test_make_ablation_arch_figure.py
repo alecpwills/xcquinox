@@ -6240,6 +6240,132 @@ def test_a_half_numbered_certificate_is_named_beside_a_full_one(tmp_path):
     assert "deep_attn (no max_dAE_kcalmol)" in footer
 
 
+_ARCHS = ["deep", "deep_notransform", "deep_attn"]
+_BASELINE = {"bh76": 8.0, "w411": 12.0, "combined": 10.0}
+
+
+def _post_gate_copy(run: Path) -> Path:
+    """``run`` again under a POST-gate stamp.
+
+    What a run with nothing readable must disclose depends on whether it could
+    have carried a certificate at all, which the run id states.
+    """
+    import shutil
+    out = run.parent / "run_20260901T000000Z"
+    shutil.copytree(run, out)
+    return out
+
+
+def test_a_run_with_no_readable_certificate_still_discloses(tmp_path):
+    """A run whose certificates ALL failed to parse drew a clean footer.
+
+    The summary is None when no number is stated anywhere, so three truncated
+    certificates rendered the provenance line of a fully certified run --
+    strictly less disclosure than the one-readable case, which prints how many
+    could not be read. The bound clause is dropped with the numbers; the
+    counts are the statement.
+    """
+    run = _post_gate_copy(_make_run_dir(tmp_path))
+    for arch in _ARCHS:
+        (run / "pretrain" / arch
+         / "fidelity_certificate.json").write_text("{truncated")
+    got = fig.fidelity_summary(run, _ARCHS)
+    assert got is not None
+    assert got["n_archs"] == 0
+    assert got["n_archs_unreadable"] == 3
+    assert got["max_atom_mHa"] is None
+    assert got["max_dAE_kcalmol"] is None
+    footer = fig.provenance_footer(_BASELINE, None, got)
+    assert "Pretraining fidelity" in footer
+    # The clause only: the baseline sentence ahead of it carries its own units.
+    clause = footer.split("Pretraining fidelity", 1)[1]
+    assert "3 with no readable certificate" in clause
+    assert "worst of" not in clause
+    assert "mHa" not in clause and "kcal/mol" not in clause
+
+
+def test_a_pre_gate_run_draws_no_fidelity_clause(tmp_path):
+    """The pre-certificate provenance footer stays byte-identical.
+
+    A run that predates the gate carries no certificate by construction, and
+    its figures disclose that through the run-id stamp
+    (``_FIDELITY_DISCLOSURE``) rather than through the provenance line;
+    counting its absent certificates would rewrite every pre-gate footer. The
+    same directory under a post-gate stamp states the count.
+    """
+    run = _make_run_dir(tmp_path)
+    assert fig._run_predates_fidelity_gate(run.name) is True
+    for arch in _ARCHS:
+        (run / "pretrain" / arch / "fidelity_certificate.json").unlink()
+    assert fig.fidelity_summary(run, _ARCHS) is None
+    assert fig.provenance_footer(_BASELINE, None,
+                                 fig.fidelity_summary(run, _ARCHS)) == \
+        fig.provenance_footer(_BASELINE)
+    post = _post_gate_copy(run)
+    assert fig._run_predates_fidelity_gate(post.name) is False
+    got = fig.fidelity_summary(post, _ARCHS)
+    assert got is not None
+    assert got["n_archs_unreadable"] == 3
+    assert "3 with no readable certificate" in fig.provenance_footer(
+        _BASELINE, None, got)
+
+
+def test_the_footer_omits_a_worst_of_zero_arch_clause(tmp_path):
+    """"Worst of 0 arch" counts nothing and reads as a defect.
+
+    Two half-numbered certificates bound both axes between them, so no
+    certificate is counted while both numbers are disclosed. The clause that
+    counts architectures is dropped when it counts none; the bound, the
+    counts of what could not be read and the names stay.
+    """
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "PASS", "arch": "deep",
+                    "summary": {"max_atom_mHa": 44.0,
+                                "max_dAE_kcalmol": None}}))
+    (run / "pretrain" / "deep_notransform"
+     / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "PASS", "arch": "deep_notransform",
+                    "summary": {"max_atom_mHa": None,
+                                "max_dAE_kcalmol": 25.7}}))
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").unlink()
+    got = fig.fidelity_summary(run, _ARCHS)
+    assert got["n_archs"] == 0
+    footer = fig.provenance_footer(_BASELINE, None, got)
+    assert "worst of" not in footer
+    assert "0 arch" not in footer
+    assert "2 stating one number only" in footer
+    assert "1 with no readable certificate" in footer
+    assert "44.00 mHa" in footer and "25.70 kcal/mol" in footer
+    assert "deep (no max_dAE_kcalmol)" in footer
+
+
+def test_fidelity_summary_ignores_a_name_the_registry_does_not_know(tmp_path):
+    """A foreign directory cannot move the bound the footer discloses.
+
+    The certificate is located by DIRECTORY, so any name under ``pretrain/``
+    carrying a readable file entered the maxima -- measured, a PASS stating
+    99.0 / 88.0 under an unregistered name replaced the run's own 0.31 / 0.62.
+    The pool is scoped to the registry, which is what ``arch_coverage``
+    applies through ``uncertified_statuses``: a name the registry does not
+    know carries no certificate expectation, so it is neither counted nor
+    read.
+    """
+    run = _make_run_dir(tmp_path)
+    pd = run / "pretrain" / "legacy_display_name"
+    pd.mkdir(parents=True)
+    (pd / "fidelity_certificate.json").write_text(json.dumps(
+        {"verdict": "PASS", "arch": "legacy_display_name",
+         "summary": {"max_atom_mHa": 99.0, "max_dAE_kcalmol": 88.0}}))
+    got = fig.fidelity_summary(run, _ARCHS + ["legacy_display_name"])
+    assert got["n_archs"] == 3
+    assert got["n_archs_unreadable"] == 0
+    assert got["not_pass"] == []
+    assert got["max_atom_mHa"] == pytest.approx(0.31)
+    assert got["max_dAE_kcalmol"] == pytest.approx(0.62)
+    assert "99.00" not in fig.provenance_footer(_BASELINE, None, got)
+
+
 def test_arch_coverage_states_why_each_arch_is_uncertified(tmp_path):
     """MISSING, FAIL, waived FAIL and UNREADABLE call for four different
     actions -- a certificate to run, physics to fix, a run that was never a

@@ -11,6 +11,7 @@ so the whole file runs in seconds.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import keyword
 import os
@@ -915,6 +916,109 @@ def test_run_arch_records_no_verdict_when_the_certificate_is_absent(tmp_path):
     assert result["certificate_verdict"] is None
 
 
+# ---------------------------------------------------------------------------
+# One document per certificate record
+# ---------------------------------------------------------------------------
+
+def _serve_documents(monkeypatch, path, documents):
+    """Serve ``documents`` to successive READ opens of ``path``.
+
+    The list returned collects one entry per read served, so a caller can
+    state how many parses a record rested on. Writes and every other path are
+    passed through; once the list is exhausted its last entry repeats, so a
+    caller that reads more often than the sequence is long is handed a
+    complete document rather than an empty file.
+    """
+    import builtins
+    import io
+    real_open = builtins.open
+    served: list = []
+
+    def fake_open(file, *args, **kwargs):
+        mode = kwargs.get("mode", args[0] if args else "r")
+        if str(file) == str(path) and "r" in mode:
+            doc = documents[min(len(served), len(documents) - 1)]
+            served.append(doc)
+            return io.StringIO(doc if isinstance(doc, str)
+                               else json.dumps(doc))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    return served
+
+
+# Three FAIL documents, each refused by the gate on its own and each producing
+# a DIFFERENT record: D1 records no waiver, D2 records one that states no
+# reason, D3 states a reason beside enforcement that is ON. A record that asked
+# the file each question separately took the verdict from the first, the gate's
+# decision from the second and the waiver from the third.
+_MD1 = {"verdict": "FAIL",
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7}}
+_MD2 = {"verdict": "FAIL", "enforced": False}
+_MD3 = {"verdict": "FAIL", "enforced": True,
+        "tolerances": {"override_reason": "workflow matrix"}}
+
+
+def _certificate_run_dir(tmp_path, arch="deep"):
+    """A run directory holding one real certificate for ``arch``."""
+    run_dir = tmp_path / "runs" / "run_20260821T000000Z"
+    pretrain = Path(wm.pretrain_checkpoint_dir(str(run_dir), arch))
+    pretrain.mkdir(parents=True)
+    path = pretrain / "fidelity_certificate.json"
+    path.write_text(json.dumps(_MD1))
+    return run_dir, path
+
+
+def test_the_certificate_record_describes_one_document(tmp_path, monkeypatch):
+    """The report's record corresponds to a document, not to a sequence.
+
+    The verdict, the waiver and the gate's decision were each read from the
+    file separately, so a certificate rewritten between the opens assembled a
+    record out of three documents. Three documents that are each refused on
+    their own, and each produce a different record, must reproduce the record
+    of the FIRST -- on one read -- in every order they are served in.
+    """
+    run_dir, path = _certificate_run_dir(tmp_path)
+    documents = (_MD1, _MD2, _MD3)
+    alone = []
+    for doc in documents:
+        served = _serve_documents(monkeypatch, path, [doc])
+        record = wm._certificate_record(run_dir, "deep")
+        monkeypatch.undo()
+        assert len(served) == 1, (doc, served)
+        alone.append(record)
+    assert len({json.dumps(r, sort_keys=True) for r in alone}) == 3, alone
+    for order in itertools.permutations(range(len(documents))):
+        served = _serve_documents(monkeypatch, path,
+                                  [documents[i] for i in order])
+        record = wm._certificate_record(run_dir, "deep")
+        monkeypatch.undo()
+        assert len(served) == 1, (order, served)
+        assert record == alone[order[0]], (order, record)
+
+
+def test_no_document_sequence_records_a_waiver_beside_a_refusal(
+        tmp_path, monkeypatch):
+    """A COMPLETE waiver beside a gate that refused describes no certificate.
+
+    ``enforced: false`` together with a recorded ``override_reason`` is what
+    releases the gate, so the pair can never sit beside ``gate_released``
+    False. Measured on the sequence D3 -> D1 -> D2, it did: the reason came
+    from the document read for the verdict, the refusal from the document the
+    gate read, and the waiver from a third.
+    """
+    run_dir, path = _certificate_run_dir(tmp_path)
+    for order in itertools.permutations((_MD1, _MD2, _MD3)):
+        served = _serve_documents(monkeypatch, path, list(order))
+        record = wm._certificate_record(run_dir, "deep")
+        monkeypatch.undo()
+        assert len(served) == 1, (order, served)
+        complete_waiver = (record["enforced"] is False
+                           and bool(record["override_reason"]))
+        assert not (complete_waiver and not record["gate_released"]), (
+            order, record)
+
+
 def test_run_arch_writes_one_log_per_stage(tmp_path):
     result, _fake = _run_arch(tmp_path)
     for stage in result["stages"]:
@@ -1185,10 +1289,12 @@ def test_run_arch_reports_no_channel_when_the_eval_stages_never_ran(tmp_path):
 
 
 def test_run_arch_names_the_absent_oracle_module(tmp_path):
-    """The oracle module is spec 3.1's, and this runner does not own it. When
-    it is not installed the selector matches nothing and pytest exits 5
-    (``ExitCode.NO_TESTS_COLLECTED``); the stage must report that by name
-    rather than as an anonymous non-zero exit, and never as a pass."""
+    """The oracle module is spec 3.1's, and this runner does not own it. An
+    EMPTY target -- the module installed but no node id matching the selector
+    -- exits 5 (``ExitCode.NO_TESTS_COLLECTED``); an ABSENT module cannot be
+    collected at all and exits pytest's USAGE code 4. The stage must report
+    either by name rather than as an anonymous non-zero exit, and never as a
+    pass."""
     assert pytest.ExitCode.NO_TESTS_COLLECTED == wm.ORACLE_NO_TESTS_RC
     run_dir = tmp_path / "deep" / "runs" / "run_20260821T000000Z"
     fake = FakeRunner(run_dir, rc_by_stage={"oracles": wm.ORACLE_NO_TESTS_RC},

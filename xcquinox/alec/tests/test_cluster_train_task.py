@@ -7,6 +7,8 @@ per-test in a tmp directory. The four classification outcomes, the throttled
 progress emission, the zero-JSON-progress (import-crash) path, and the
 SIGTERM handler are all exercised.
 """
+import io
+import itertools
 import json
 import os
 import signal
@@ -650,6 +652,107 @@ def test_precompute_failed_species_marker_still_wins(run_dir, monkeypatch):
     assert tt.main([run_dir, "0"]) == 0
     assert _read_failure(run_dir, 0)["classification"] == \
         "precompute_failed_species"
+
+
+# ---------------------------------------------------------------------------
+# One document per refusal record
+# ---------------------------------------------------------------------------
+
+def _serve_documents(monkeypatch, path, documents):
+    """Serve ``documents`` to successive READ opens of ``path``.
+
+    The list returned collects one entry per read served, so a caller can
+    state how many parses a record rested on. Writes and every other path are
+    passed through; once the list is exhausted its last entry repeats, so a
+    caller that reads more often than the sequence is long is handed a
+    complete document rather than an empty file.
+    """
+    import builtins
+    real_open = builtins.open
+    served: list = []
+
+    def fake_open(file, *args, **kwargs):
+        mode = kwargs.get("mode", args[0] if args else "r")
+        if str(file) == str(path) and "r" in mode:
+            doc = documents[min(len(served), len(documents) - 1)]
+            served.append(doc)
+            return io.StringIO(doc if isinstance(doc, str)
+                               else json.dumps(doc))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    return served
+
+
+# Three documents, each refused on its own and each producing a DIFFERENT
+# refusal record: a FAIL stating numbers, a file that does not parse, and one
+# recording an unrecognised verdict. The last two are both UNREADABLE and are
+# told apart by the reason the record quotes.
+_R1 = {"verdict": "FAIL",
+       "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7}}
+_R2 = "{truncated"
+_R3 = {"verdict": "nope"}
+_R_PASS = {"verdict": "PASS",
+           "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2}}
+
+
+def _refusal_record(run_dir, monkeypatch, documents):
+    """``(rc, failure record, documents served)`` for one ``main`` call."""
+    path = os.path.join(run_dir, "pretrain", "deep_3x16",
+                        "fidelity_certificate.json")
+    served = _serve_documents(monkeypatch, path, list(documents))
+    monkeypatch.setattr(tt, "_run_worker", lambda s, d: (0, "ok"))
+    try:
+        rc = tt.main([run_dir, "0"])
+    finally:
+        monkeypatch.undo()
+    return rc, _read_failure(run_dir, 0), served
+
+
+def test_the_refusal_record_describes_one_certificate(run_dir, monkeypatch):
+    """A refusal record corresponds to a document, not to a sequence of them.
+
+    The gate decided on one parse and the classification was taken from a
+    second, so a certificate rewritten between the two opens assembled the
+    record out of both files: the verdict and the excerpt of the document the
+    gate read beside the status of the document the classifier read. Three
+    documents, each refused on its own and each producing a different record,
+    must reproduce the record of the FIRST -- on one read -- in every order
+    they are served in.
+    """
+    documents = (_R1, _R2, _R3)
+    alone = []
+    for doc in documents:
+        rc, record, served = _refusal_record(run_dir, monkeypatch, [doc])
+        assert rc == 3
+        assert len(served) == 1, (doc, served)
+        alone.append(record)
+    assert len({json.dumps(r, sort_keys=True) for r in alone}) == 3, alone
+    for order in itertools.permutations(range(len(documents))):
+        rc, record, served = _refusal_record(
+            run_dir, monkeypatch, [documents[i] for i in order])
+        assert rc == 3
+        assert len(served) == 1, (order, served)
+        assert record == alone[order[0]], (order, record)
+
+
+def test_a_certificate_rewritten_to_pass_cannot_relabel_the_refusal(
+        run_dir, monkeypatch):
+    """The status the record states is the one the refusal was decided on.
+
+    With a FAIL read by the gate and a PASS served to every later read, the
+    record stated ``certificate_status: "PASS"`` under the absent-certificate
+    classification with an excerpt naming the FAIL -- a record no single
+    document produces, and one that reads as a passing certificate refused
+    for being missing.
+    """
+    rc, record, served = _refusal_record(run_dir, monkeypatch,
+                                         [_R1, _R_PASS])
+    assert rc == 3
+    assert len(served) == 1, served
+    assert record["classification"] == "fidelity_certificate_failed"
+    assert record["certificate_status"] == "FAIL"
+    assert "13.7" in record["log_excerpt"]
 
 
 def test_read_cell_arch_resolves_the_index(run_dir):

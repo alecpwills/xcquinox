@@ -500,12 +500,12 @@ def main(argv=None) -> int:
     # Section 2), larger than every effect the training is meant to measure.
     # Neither classification is in ``__main__._RETRYABLE``, so ``resubmit``
     # treats both as deterministic -- a blind retry cannot make an absent or
-    # failed certificate pass. ``gate_certificate`` (not ``certificate_status``)
-    # is the predicate here: a run configured with ``fidelity.enforce: false``
-    # records the FAIL and is allowed through, because the workflow-verification
-    # matrix must reach the train stage with a short pretrain that cannot meet
-    # the tolerance. Such a run is still refused by ``validate_run``,
-    # ``merge_v4_arms`` and the figure suite.
+    # failed certificate pass. ``gate_certificate_from_read`` (not the record
+    # layer's ``certificate_status``) is the predicate here: a run configured
+    # with ``fidelity.enforce: false`` records the FAIL and is allowed through,
+    # because the workflow-verification matrix must reach the train stage with
+    # a short pretrain that cannot meet the tolerance. Such a run is still
+    # refused by ``validate_run``, ``merge_v4_arms`` and the figure suite.
     #
     # Imported inside main deliberately, matching this module's body, which
     # carries only the standard library. It buys no process weight: running
@@ -516,8 +516,9 @@ def main(argv=None) -> int:
     # parent process orchestrates a worker SUBPROCESS and reaches for library
     # code only where it uses it.
     from xcquinox.alec.cluster.fidelity import (
-        CERTIFICATE_FILENAME, VERDICT_FAIL, certificate_status,
-        gate_certificate)
+        CERTIFICATE_FILENAME, VERDICT_FAIL, gate_certificate_from_read,
+        read_certificate_status_in)
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
     arch = _read_cell_arch(run_dir, idx)
     if arch is None:
         excerpt = (
@@ -532,7 +533,16 @@ def main(argv=None) -> int:
             "log_excerpt": excerpt,
         })
         return 3
-    allowed, message = gate_certificate(run_dir, arch)
+    # ONE parse feeds the release, the classification, the status the record
+    # states and the excerpt it quotes. Gating on one read and classifying on
+    # a second let a certificate rewritten between the two opens assemble a
+    # record out of both documents -- measured, a FAIL read by the gate beside
+    # a PASS read by the classifier wrote ``certificate_status: "PASS"`` under
+    # ``classification: fidelity_certificate_missing`` with an excerpt naming
+    # the FAIL, which no single document produces.
+    status, reason, payload = read_certificate_status_in(
+        pretrain_checkpoint_dir(run_dir, arch))
+    allowed, message = gate_certificate_from_read(status, reason, payload)
     if not allowed:
         # The classification vocabulary has two values, so everything that is
         # not a literal FAIL joins the absent case: MISSING and UNREADABLE
@@ -540,7 +550,6 @@ def main(argv=None) -> int:
         # the state is carried into the log line and the failure record, so a
         # certificate that states nothing is not reported in the language of a
         # deleted one.
-        status, _reason = certificate_status(run_dir, arch)
         classification = ("fidelity_certificate_failed"
                           if status == VERDICT_FAIL
                           else "fidelity_certificate_missing")

@@ -36,10 +36,9 @@ from pathlib import Path
 
 from xcquinox.alec.cluster.fidelity import (
     CERTIFICATE_FILENAME as _CERTIFICATE_FILENAME,
-    certificate_enforced_in as _certificate_enforced_in,
     certificate_path as _certificate_path,
-    gate_certificate as _gate_certificate,
-    read_certificate as _read_certificate,
+    gate_certificate_from_read as _gate_certificate_from_read,
+    read_certificate_status_in as _read_certificate_status_in,
 )
 from xcquinox.alec.cluster.grid_config import (
     normalize_cluster_walltimes, pretrain_checkpoint_dir,
@@ -773,10 +772,20 @@ def _certificate_record(run_dir, arch) -> dict:
     """What the certificate stage left behind, as the report carries it.
 
     The verdict, the waiver the certificate records and whether the ON-NODE
-    gates will release the run are all read through ``cluster/fidelity``'s own
-    predicates (``read_certificate``, ``certificate_enforced_in``,
-    ``gate_certificate``), so the matrix reports what ``_preflight`` and
-    ``_train_task`` will act on rather than a second reading of the same file.
+    gates will release the run all come from ONE parse -- the module's
+    ``read_certificate_status_in`` feeding its ``gate_certificate_from_read``
+    -- so the matrix reports what ``_preflight`` and ``_train_task`` will act
+    on rather than a second reading of the same file.
+
+    Asking the file the verdict, the waiver and the gate's decision separately
+    let a certificate rewritten between the opens assemble a record out of
+    three documents. Measured on the sequence (FAIL with a reason and
+    enforcement ON) -> (bare FAIL) -> (FAIL waived with no reason): the record
+    stated a COMPLETE waiver, ``enforced: false`` beside a recorded
+    ``override_reason``, next to a gate that refused. No certificate can be in
+    that state -- the first states the reason with enforcement on, the third
+    states the waiver with no reason -- so a reader of the report was handed an
+    explanation belonging to no file.
 
     At this identity a FAIL verdict is the EXPECTED outcome -- 50 pretraining
     steps on two atoms cannot reproduce the parent functional to
@@ -793,16 +802,18 @@ def _certificate_record(run_dir, arch) -> dict:
                 "gate_message": ("no run directory; the certificate stage did "
                                  "not run")}
     pretrain_dir = pretrain_checkpoint_dir(str(run_dir), arch)
-    payload = _read_certificate(pretrain_dir)
-    if not isinstance(payload, dict):
-        payload = None
+    status, reason, payload = _read_certificate_status_in(pretrain_dir)
+    allowed, message = _gate_certificate_from_read(status, reason, payload)
     tolerances = payload.get("tolerances") if payload else None
-    allowed, message = _gate_certificate(str(run_dir), arch)
     return {
         "present": payload is not None,
         "path": _certificate_path(str(run_dir), arch),
         "verdict": payload.get("verdict") if payload else None,
-        "enforced": (_certificate_enforced_in(pretrain_dir) if payload
+        # The waiver is the JSON literal false and nothing else -- the rule
+        # ``fidelity.certificate_enforced_in`` applies to its own read. A
+        # truthiness test would report ``enforced: null``, the value a writer
+        # that left the field unpopulated emits, as a waiver.
+        "enforced": (payload.get("enforced", True) is not False if payload
                      else None),
         "override_reason": (tolerances.get("override_reason")
                             if isinstance(tolerances, dict) else None),
@@ -1025,12 +1036,14 @@ def _oracle_failure_note(rc, module_path, selector):
     """Name what a non-zero oracle exit means, or None to keep pytest's own
     summary line.
 
-    The oracle module is spec 3.1's and this runner does not own it. Absent, it
-    collects nothing and pytest exits :data:`ORACLE_NO_TESTS_RC`; reported as a
-    bare non-zero code that is indistinguishable from a failing oracle, and
-    reported as anything but a failure it would certify an architecture no
-    oracle was ever run against. Both cases are therefore named, in a form
-    short enough for the report's table, with the full sentence in the log.
+    The oracle module is spec 3.1's and this runner does not own it. Absent,
+    the target cannot be collected and pytest exits with its USAGE code (4,
+    measured), not :data:`ORACLE_NO_TESTS_RC`, which is what an EMPTY target
+    gives; reported as a bare non-zero code that is indistinguishable from a
+    failing oracle, and reported as anything but a failure it would certify an
+    architecture no oracle was ever run against. Both cases are therefore
+    named, in a form short enough for the report's table, with the full
+    sentence in the log.
     """
     if not Path(module_path).is_file():
         return (f"no oracle module: {ORACLE_MODULE}.py is not installed",
