@@ -1345,6 +1345,13 @@ def test_reference_xc_moves_the_per_spin_block_of_an_open_shell_record():
     The exact leg below is the load-bearing one either way: it pins the block
     to alpha of the doubled density diag(P_a, P_a) built from the record's own
     density matrix, which no orientation can satisfy accidentally.
+
+    Both records are built under the orientation lock: OH is orbitally
+    degenerate, and the unlocked SCAN reference walked its full 150 cycles
+    without reaching 1e-9 in two independent runs under concurrent machine
+    load (thread-order noise moves the degenerate component the SCF chases);
+    the lock selects one component deterministically, which is its purpose,
+    and the locked reference converges in every run.
     """
     import numpy as np
     import jax.numpy as jnp
@@ -1357,8 +1364,10 @@ def test_reference_xc_moves_the_per_spin_block_of_an_open_shell_record():
     clear_precompute_cache()
     spec = _oh_spec()
     pbe = precompute_fixed_density_data(spec, required_keys=req,
-                                        descriptors=desc, reference_xc="pbe")
+                                        descriptors=desc, reference_xc="pbe",
+                                        orientation_lock_strength=3.0e-5)
     scan = precompute_fixed_density_data(spec, required_keys=req,
+                                         orientation_lock_strength=3.0e-5,
                                          descriptors=desc, reference_xc="scan")
     a_pbe = np.asarray(pbe["metagga_features_a"])
     a_scan = np.asarray(scan["metagga_features_a"])
