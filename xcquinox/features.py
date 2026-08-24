@@ -196,8 +196,19 @@ def compute_dm_features_array(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarray:
     feature. This changes the network input width for any architecture carrying
     the dm_statistics descriptor and therefore invalidates checkpoints trained
     on the 3-feature layout (the deep_dm / deep_combined families under
-    notebooks/checkpoints_v3b). No architecture in the dfs6311 sweep uses it --
-    verified against all 88 live spec files.
+    notebooks/checkpoints_v3b).
+
+    Seven architectures of the dfs6311 grid-3 v6 sweep carry the descriptor and
+    reach this function: deep_dm, deep_dm_3x16 and deep_dm_attn at
+    n_extra_features 2, and deep_combined, deep_combined_3x16,
+    deep_combined_attn and deep_combined_attn_3x16 at 4 (2 here plus 2 cusp).
+    The v3-v5 campaigns swept none of them, which is what the wording this
+    replaces recorded; v6 sweeps every registry architecture, so the exclusion
+    no longer holds. There is no checkpoint consequence -- v6 pretrains fresh
+    at the 2-feature layout -- but the SIZE-CONSISTENCY caveat on
+    :class:`xcquinox.alec.descriptors.DMStatisticsDescriptor` applies to every
+    one of the seven: these are molecule-level scalars tiled to every grid
+    point, so a distant fragment shifts the XC energy density here.
 
     :param dm: Density matrix in AO basis
     :type dm: jnp.ndarray

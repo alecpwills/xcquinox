@@ -144,7 +144,26 @@ MARGIN_FRACTION = 0.5
 #: has replaced the objective rather than constrained it.
 POINTWISE_FACTOR = 3.0
 
+#: The architectures the weight is measured on. These are the SIX largest
+#: pre-certificate atomization-energy offsets on record
+#: (SPEC_pretrain_fidelity_program.md Section 2, worst of the H2O / N2 / CH4
+#: triple in kcal/mol): deep_rung35_attn_3x16 56.1, deep_mgga_3x16 55.9,
+#: deep_rung35ms_3x16 42.8, deep_rung35_3x16 29.1, deep_cusp_3x16 25.7,
+#: deep_3x16 4.2. The seventh architecture the table measured,
+#: deep_attn_3x16, is the smallest of them (4.1) and carries no descriptor
+#: deep_3x16 does not.
+#:
+#: The set is the worst offenders and not a sample because the campaign's
+#: train array depends ``afterok`` on the pretrain ARRAY: one architecture
+#: whose certificate fails blocks all 341 cells, not its own eleven. A weight
+#: chosen on the small-offset architectures alone would be extrapolated onto
+#: precisely the ones that decide whether anything runs. Six also spans one
+#: member of every descriptor family the campaign carries -- none, cusp,
+#: rung-3.5, rung-3.5 with attention, rung-3.5 multishell, meta-GGA -- and
+#: still needs only the two parent-density files, since both additions are
+#: PBE-parent.
 DEFAULT_ARCHS = ("deep_3x16", "deep_cusp_3x16", "deep_rung35_3x16",
+                 "deep_rung35_attn_3x16", "deep_rung35ms_3x16",
                  "deep_mgga_3x16")
 DEFAULT_WEIGHTS = (0.0, 0.1, 1.0, 10.0, 100.0)
 DEFAULT_BASIS = "def2-svp"
@@ -424,7 +443,7 @@ def recommend(rows, *, tol_atom_mha=TOL_ATOM_MHA, tol_ae_kcal=TOL_AE_KCAL,
     exactly what the cap exists to reject.
 
     "Every architecture" is every architecture THIS TABLE HOLDS, which is not
-    the sweep's four defaults when the run was batched over architectures
+    the sweep's six defaults when the run was batched over architectures
     (``--archs`` per submission, accumulating through ``--resume``). A verdict
     read off a half-finished batch would otherwise claim "every architecture"
     of a set it never measured, so the returned dict names what it read
@@ -541,15 +560,27 @@ def recommend(rows, *, tol_atom_mha=TOL_ATOM_MHA, tol_ae_kcal=TOL_AE_KCAL,
             f"{pointwise_factor:g}x its weight-0 value")
 
     def _coverage_text():
-        """The architecture set the verdict is entitled to speak for."""
+        """The architecture set the verdict is entitled to speak for.
+
+        The RELATION to the default set is stated, not assumed. ``--archs``
+        is free, so a table can hold architectures the default set does not
+        (measured with ``deep_attn_3x16``, which is in the registry and not in
+        the default six), and calling such a table "a SUBSET" of the defaults
+        is false while the coverage warning it carries is still true.
+        """
         if not archs:
             return "no architecture"
         text = (f"the {len(archs)} architecture"
                 + ("" if len(archs) == 1 else "s")
                 + f" measured in this table ({', '.join(archs)})")
         if unmeasured_default:
-            text += (f" -- a SUBSET of the sweep's default set: "
-                     f"{', '.join(unmeasured_default)} NOT measured")
+            outside = [a for a in archs if a not in set(DEFAULT_ARCHS)]
+            text += (" -- a SUBSET of the sweep's default set: "
+                     if not outside else
+                     " -- which does NOT COVER the sweep's default set: ")
+            text += f"{', '.join(unmeasured_default)} NOT measured"
+            if outside:
+                text += f", and {', '.join(outside)} not in that set"
         return text
 
     def _verdict(weight, cleared, reason):
@@ -703,19 +734,29 @@ def _energy_keys(arch):
 
 
 def _check_rung_consistency(name, arch):
-    """Refuse an architecture whose two readings of "meta-GGA rung" disagree.
+    """Duck-typed backstop against a flag / descriptor disagreement.
 
-    The library reads that question in two places and not the same way:
-    ``pretrain_data_gen.resolve_parent_density`` takes the ``meta_gga`` flag OR
-    a ``"metagga"`` descriptor, while ``pretrain.run_pretrain`` selects the
-    enhancement-factor targets and the per-system parent-energy keys from the
-    FLAG alone. An architecture carrying the descriptor without the flag
-    therefore pretrains on the SCAN self-consistent density against PBE
-    targets, and the energy error this probe reports would be measured against
-    the wrong parent. No architecture in the registry is in that state, so the
-    refusal costs nothing today; it is here because an architecture assembled
-    outside ``ArchitectureConfig.from_spec`` can be, and a sweep is not the
-    place to discover it.
+    The library now settles the meta-GGA rung once, at construction:
+    ``ArchitectureConfig.__post_init__`` refuses an architecture whose
+    ``meta_gga`` flag and ``"metagga"`` descriptor disagree, and both readers
+    that used to ask the question their own way -- ``resolve_parent_density``
+    for the parent density and ``run_pretrain`` for the enhancement-factor
+    targets and per-system parent-energy keys -- go through the one predicate
+    ``ArchitectureConfig.is_meta_gga``. The state this refuses can therefore
+    no longer be built through the registry or ``from_spec``, and the check is
+    unreachable for every architecture the sweep resolves by name.
+
+    It is kept because the predicate is deliberately duck-typed: it answers
+    from ``descriptors`` on any object, so an architecture-LIKE object
+    assembled outside ``ArchitectureConfig`` -- a test double, a hand-built
+    namespace -- passes through the same code paths with no construction-time
+    check behind it. Such an object carrying the descriptor without the flag
+    would be pretrained on the SCAN self-consistent density against PBE
+    targets (measured at 24.0 mHa per system off its parent -- the re-measured
+    per-system max |dE_x|, 23.995 mHa -- when the two readers disagreed), and
+    the energy error this probe reports would be measured against the wrong
+    parent. A node-day sweep is not the place to discover that, so the state
+    is refused here rather than assumed absent.
     """
     descriptor_names = {getattr(d, "name", None)
                         for d in getattr(arch, "descriptors", ())}
@@ -726,13 +767,15 @@ def _check_rung_consistency(name, arch):
             f"probe_pretrain_energy_weight: architecture {name!r} carries "
             f"meta_gga={flag} with"
             + (" a" if descriptor else "out a")
-            + " 'metagga' descriptor. The parent density is resolved from the "
-              "flag OR the descriptor (pretrain_data_gen."
-              "resolve_parent_density) while the pretraining targets and the "
-              "per-system parent energies are selected from the flag alone "
-              "(pretrain.run_pretrain), so this architecture would be fitted "
-              "to one parent's targets on the other parent's density. Give it "
-              "both or neither.")
+            + " 'metagga' descriptor. ArchitectureConfig refuses that pairing "
+              "at construction, so this object was assembled outside it. The "
+              "rung is read from the DESCRIPTOR by the one predicate both the "
+              "parent density (pretrain_data_gen.resolve_parent_density) and "
+              "the enhancement-factor targets and per-system parent energies "
+              "(pretrain.run_pretrain) go through, while the FLAG "
+              "independently switches the UEG gate and the Lieb-Oxford "
+              "ceiling -- so the two halves of this architecture would be "
+              "trained on different rungs. Give it both or neither.")
 
 
 def _geometry_elements(geometry):

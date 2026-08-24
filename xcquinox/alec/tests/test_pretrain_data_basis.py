@@ -61,6 +61,7 @@ def test_manifest_round_trips_density_fit_flag(tmp_path):
     with open(pdg._pretrain_manifest_path(p)) as f:
         meta = json.load(f)
     assert meta == {"basis": "def2-tzvp", "grid_level": 2, "density_fit": True,
+                    "alpha_definition": str(pdg._ALPHA_DEFINITION),
                     "auxbasis": "def2-universal-jkfit",
                     "atoms": [[s, sp] for s, sp in pdg.DEFAULT_PRETRAIN_ATOMS],
                     # The pretraining-protocol identity: the system list (None
@@ -102,7 +103,8 @@ def test_legacy_manifest_without_auxbasis_stays_current(tmp_path):
     # Such a file was also built without the orientation lock, so its identity
     # is asked for at lock 0.0 (the production default would regenerate it).
     with open(pdg._pretrain_manifest_path(p), "w") as f:
-        json.dump({"basis": "def2-svp", "grid_level": 1, "density_fit": False}, f)
+        json.dump({"basis": "def2-svp", "grid_level": 1, "density_fit": False,
+                   "alpha_definition": str(pdg._ALPHA_DEFINITION)}, f)
     assert pdg.pretrain_data_is_current(
         p, basis="def2-svp", grid_level=1,
         orientation_lock_strength=0.0) is True

@@ -2817,10 +2817,18 @@ def test_validate_accepts_a_production_identity_without_the_waiver():
 
 
 def test_every_shipped_configuration_states_a_waiver_its_identity_needs():
-    """The refusal against the files it must not fire on: the fifteen
-    pre-2026-08 campaigns (grid level 1 or 2, unlocked) and both templates
-    (grid level 1) all need the waiver they state, and the six grid-3
-    campaigns state none."""
+    """The refusal against the files it must not fire on: the eight
+    pre-2026-08 campaigns (grid level 1 or 2, unlocked) and the ``step7.yaml``
+    template (grid level 1) all need the waiver they state, and the seven
+    grid-3 campaigns (v3, v4, v4gga, v4mgga2, v5, v5mgga2, v6) state none.
+
+    The two bounds are the TRACKED counts. ``hpcjobs/.gitignore`` excludes
+    ``configs/*.local.yaml``, every one of which is waived, so a bound written
+    against whatever ``*.yaml`` happens to be on disk is red in a fresh clone,
+    a git worktree and the cluster checkout -- the three places the campaign is
+    actually submitted from. The glob still covers the untracked copies where
+    they exist: each is checked against the refusal, only the counts are
+    tracked-only."""
     import glob
     import pathlib
     import warnings as _warnings
@@ -2841,8 +2849,8 @@ def test_every_shipped_configuration_states_a_waiver_its_identity_needs():
             waived.append(os.path.basename(path))
         else:
             plain.append(os.path.basename(path))
-    assert len(waived) >= 15, waived
-    assert len(plain) >= 6, plain
+    assert len(waived) >= 9, waived
+    assert len(plain) >= 7, plain
 
 
 def test_a_retired_key_warning_names_the_file(tmp_path):

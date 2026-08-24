@@ -448,19 +448,30 @@ def test_run_pretrain_and_the_writer_share_the_naming_function(monkeypatch):
     spelling of the name in either place is a divergence waiting for the first
     non-PBE parent. Agreement on the PBE default cannot tell a delegation from
     a second copy of the same strings, so the naming function is redirected
-    and the loader's helper must follow it."""
+    and the loader's helper must follow it.
+
+    The double carries ``descriptors`` as well as the polarization flag: the
+    name is built from the parent, ``resolve_parent_density`` reads the rung
+    off the descriptor list, and it refuses an argument that has none rather
+    than answering the GGA-rung parent for an object whose rung it cannot
+    read. An empty list is the GGA rung, which is the parent this test's
+    expected names carry."""
     import types
     from xcquinox.alec.pretrain import _pretrain_data_filename
+
+    def _arch(flag):
+        return types.SimpleNamespace(use_polarized_correlation=flag,
+                                     descriptors=())
+
     for flag in (False, True):
-        arch = types.SimpleNamespace(use_polarized_correlation=flag)
-        assert _pretrain_data_filename(arch) == pdg.pretrain_data_filename(flag)
+        assert _pretrain_data_filename(_arch(flag)) == \
+            pdg.pretrain_data_filename(flag)
     monkeypatch.setattr(
         pdg, "pretrain_data_filename",
         lambda polarized, reference_xc="pbe":
         f"redirected_{int(bool(polarized))}_{reference_xc}.npz")
     for flag in (False, True):
-        arch = types.SimpleNamespace(use_polarized_correlation=flag)
-        assert _pretrain_data_filename(arch) == \
+        assert _pretrain_data_filename(_arch(flag)) == \
             f"redirected_{int(flag)}_pbe.npz"
 
 

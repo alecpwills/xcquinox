@@ -466,25 +466,85 @@ def test_v6_loads():
 
 
 def test_v6_runs_the_production_identity_and_needs_no_waiver():
-    """Grid level 3 with the calibrated orientation lock, and NO
+    """The production identity -- basis, grid level, Coulomb backend and the
+    calibrated orientation lock -- the SCF seed that goes with it, and NO
     irreproducible-degenerate waiver.
 
-    The two go together. Below grid level 3, or with the lock at zero, a
-    spatially degenerate free atom's pretraining rows are one arbitrary member
-    of its manifold and the data generator refuses to build them without a
-    written waiver; at grid level 3 with the lock on it refuses nothing, so a
-    waiver stated here would authorise a build this run never performs and
-    ``validate_grid_semantics`` rejects it outright. The shipped templates
-    carry the waiver because they run at grid level 1; a production copy must
-    have dropped it, and this asserts it did.
+    ``fidelity.run_identity`` records five fields on every certificate the run
+    writes and ``validate_run`` refuses a certificate whose identity differs
+    from the configuration's, so all five are asserted here rather than the
+    two that carry the waiver argument. Basis and density fitting are the
+    silent half: v6 shares its reference caches, its subset ledger and its
+    comparison lineage with v3-v5, and a changed basis or Coulomb backend
+    re-identifies all of them while still loading, submitting and running.
+    ``auxbasis`` is asserted absent, which is what makes the certificate's
+    ``null`` the run's own resolved value rather than a transcription.
+
+    The waiver and the grid level go together. Below grid level 3, or with the
+    lock at zero, a spatially degenerate free atom's pretraining rows are one
+    arbitrary member of its manifold and the data generator refuses to build
+    them without a written waiver; at grid level 3 with the lock on it refuses
+    nothing, so a waiver stated here would authorise a build this run never
+    performs and ``validate_grid_semantics`` rejects it outright. The shipped
+    templates carry the waiver because they run at grid level 1; a production
+    copy must have dropped it, and this asserts it did.
+
+    ``seed_xc: auto`` is the rung-seeding contract v5 introduced and v6
+    inherits: the SCF seed is derived per architecture through
+    ``rungs.seed_xc_for_arch`` -- SCAN for the five meta-GGA-rung
+    architectures of this sweep, PBE for the other 26 -- which is the SAME
+    predicate ``pretrain.parent_density: auto`` resolves the pretraining
+    parent with. The literal ``pbe`` is not a harmless spelling of it: it
+    seeds every architecture's SCF from PBE while the meta-GGA five are
+    pretrained against, and certified against, SCAN, which is exactly the
+    decoupling the sibling pin's docstring claims cannot happen.
+
+    Every field is read from the YAML TEXT as well as from the parse. Three of
+    them are values the loader also supplies as a default, and each default is
+    the pre-protocol one -- ``density_fit`` False, ``seed_xc`` "pbe",
+    ``auxbasis`` None -- so a value silently inherited from a dataclass would
+    otherwise read here as a stated decision.
     """
     from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
     path, cfg = _v6_config()
     raw = _raw_yaml(path)["inputs"]
+    # The five fields fidelity.run_identity records, in its own order.
+    assert str(raw["basis"]) == "6-311++G(3df,2pd)", path
+    assert cfg.inputs.basis == "6-311++G(3df,2pd)"
     assert int(raw["grid_level"]) == 3, path
-    assert float(raw["orientation_lock_strength"]) == DEFAULT_STRENGTH == 3e-5
     assert cfg.inputs.grid_level == 3
+    assert raw["density_fit"] is True, path
+    assert cfg.inputs.density_fit is True
+    assert "auxbasis" not in raw, (
+        f"{path}: auxbasis is deliberately unset -- auto-selected from the "
+        "orbital basis, and recorded on the certificate as null; naming one "
+        "here changes the Coulomb backend the shared caches were built with")
+    assert cfg.inputs.auxbasis is None
+    assert float(raw["orientation_lock_strength"]) == DEFAULT_STRENGTH == 3e-5
     assert cfg.inputs.orientation_lock_strength == DEFAULT_STRENGTH
+    # The identity the certificate carries IS the one above, field for field.
+    from xcquinox.alec.cluster.fidelity import run_identity
+    assert run_identity(cfg) == {
+        "basis": "6-311++G(3df,2pd)",
+        "grid_level": 3,
+        "density_fit": True,
+        "auxbasis": None,
+        "orientation_lock_strength": 3e-5,
+    }, path
+    # The SCF seed is the rung baseline, per architecture, not one functional
+    # for the whole sweep.
+    assert raw["seed_xc"] == "auto", (
+        f"{path}: seed_xc must be 'auto' -- the per-architecture rung "
+        "baseline rungs.seed_xc_for_arch resolves, which is the predicate "
+        "pretrain.parent_density: auto uses for the pretraining parent. A "
+        "literal seeds every architecture from one functional while the "
+        "meta-GGA rung is certified against the other")
+    assert cfg.inputs.seed_xc == "auto"
+    # ... and "auto" is not a synonym for either literal over this sweep: it
+    # resolves to BOTH, so neither spelling could stand in for it.
+    from xcquinox.alec.cluster.spec_builder import resolve_seed_xc
+    seeds = {resolve_seed_xc(cfg.inputs, name) for name in cfg.sweep.arch}
+    assert seeds == {"pbe", "scan"}, (path, sorted(seeds))
     assert "allow_irreproducible_degenerate" not in raw, (
         "the v6 campaign runs at grid level 3 with the lock on, where the "
         "data generator refuses nothing; a stated waiver grants a permission "

@@ -71,6 +71,7 @@ def _args(*extra):
 def test_production_defaults_are_the_swept_identity():
     a = _args()
     assert a.archs == ("deep_3x16", "deep_cusp_3x16", "deep_rung35_3x16",
+                       "deep_rung35_attn_3x16", "deep_rung35ms_3x16",
                        "deep_mgga_3x16")
     assert a.weights == (0.0, 0.1, 1.0, 10.0, 100.0)
     assert a.n_steps == 1000
@@ -91,6 +92,86 @@ def test_production_defaults_are_the_swept_identity():
     # use_polarized_correlation: true, so the weight is measured on the
     # objective it will be applied to rather than on the registry default.
     assert a.polarized is True
+
+
+#: Worst-case atomization-energy offset from the parent, in kcal/mol, of every
+#: architecture SPEC_pretrain_fidelity_program.md Section 2 measured: the
+#: largest magnitude of its H2O / N2 / CH4 triple. These are the offsets the
+#: certificate exists to close, so they are what decides which architectures a
+#: weight has to be measured on.
+_SECTION_2_WORST_OFFSET_KCAL = {
+    "deep_3x16": 4.2,                  # -2.5 / -4.2 / -2.4
+    "deep_attn_3x16": 4.1,             # -2.3 / -4.1 / -3.1
+    "deep_cusp_3x16": 25.7,            # -13.2 / -4.2 / -25.7
+    "deep_rung35_3x16": 29.1,          # -13.5 / -3.5 / -29.1
+    "deep_rung35_attn_3x16": 56.1,     # -29.5 / -20.4 / -56.1
+    "deep_rung35ms_3x16": 42.8,        # -22.0 / -30.9 / -42.8
+    "deep_mgga_3x16": 55.9,            # -30.5 / -55.9 / -20.8
+}
+
+
+def test_the_default_set_holds_the_largest_recorded_parent_offsets():
+    """The default set is the six worst offenders on record, not a sample.
+
+    The certificate gate is "every architecture clears both halves", and the
+    train array depends ``afterok`` on the pretrain ARRAY, so a single
+    architecture whose certificate fails blocks all 341 cells of campaign v6
+    rather than its own eleven. A weight chosen on architectures whose
+    pre-certificate offsets were small is then extrapolated onto the ones that
+    decide whether anything runs at all.
+
+    Ranked by worst-case offset, Section 2's table puts
+    ``deep_rung35_attn_3x16`` (56.1 kcal/mol) and ``deep_rung35ms_3x16``
+    (42.8) first and third; both were outside the four-architecture default.
+    The set is now the six largest, which is every architecture the table
+    measured except ``deep_attn_3x16`` -- the smallest offset of the seven
+    (4.1), and a descriptor-free network whose family ``deep_3x16`` already
+    represents. The six also span one member of every descriptor family the
+    campaign carries: none, cusp, rung-3.5, rung-3.5 with attention,
+    rung-3.5 multishell, and meta-GGA.
+    """
+    defaults = set(pw.DEFAULT_ARCHS)
+    assert len(pw.DEFAULT_ARCHS) == len(defaults) == 6
+    ranked = sorted(_SECTION_2_WORST_OFFSET_KCAL,
+                    key=lambda n: -_SECTION_2_WORST_OFFSET_KCAL[n])
+    assert defaults == set(ranked[:6]), sorted(defaults ^ set(ranked[:6]))
+    # The two the four-architecture set omitted, named so a future narrowing
+    # of the default has to delete this line rather than drift past it.
+    assert {"deep_rung35_attn_3x16", "deep_rung35ms_3x16"} <= defaults
+    # No architecture inside the set is smaller than the one left out.
+    excluded = set(_SECTION_2_WORST_OFFSET_KCAL) - defaults
+    assert excluded == {"deep_attn_3x16"}
+    assert min(_SECTION_2_WORST_OFFSET_KCAL[n] for n in defaults) > \
+        max(_SECTION_2_WORST_OFFSET_KCAL[n] for n in excluded)
+
+
+def test_every_default_architecture_is_in_the_registry():
+    """A default the registry does not carry fails at the first cell, hours
+    into a reservation, with the data files already built."""
+    from xcquinox.alec.config import ARCHITECTURES
+    for name in pw.DEFAULT_ARCHS:
+        assert name in ARCHITECTURES, name
+
+
+def test_the_default_set_needs_both_parent_densities_and_only_those():
+    """Six architectures, still two data files.
+
+    The sweep generates one pretraining data file per distinct
+    (polarization, parent) pair and reuses it across cells, so the datagen
+    hour in the wall derivation is a property of the PARENT set, not of the
+    architecture count. Both added architectures are rung-3.5 and PBE-parent,
+    so the set still resolves to exactly {pbe, scan} and the derivation's
+    one-hour data allowance is unchanged.
+    """
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.pretrain_data_gen import resolve_parent_density
+    parents = {resolve_parent_density(get_architecture(n), "auto")
+               for n in pw.DEFAULT_ARCHS}
+    assert parents == {"pbe", "scan"}
+    assert resolve_parent_density(
+        get_architecture("deep_rung35_attn_3x16"), "auto") == "pbe"
+    assert resolve_parent_density(
+        get_architecture("deep_rung35ms_3x16"), "auto") == "pbe"
 
 
 def test_polarization_is_a_flag_and_defaults_to_the_production_value():
@@ -430,6 +511,50 @@ def test_the_fallback_verdict_names_its_coverage_too():
     assert "deep_3x16" in out["reason"] and "SUBSET" in out["reason"]
 
 
+def test_a_table_outside_the_default_set_is_not_called_a_subset_of_it():
+    """``--archs`` is free, so a table need not be a subset of the defaults.
+
+    ``deep_attn_3x16`` is in the registry and is the one architecture Section
+    2 measured that the default six leave out, so a sweep of it alone is
+    DISJOINT from the default set. The coverage warning still stands -- none
+    of the six was measured -- but calling that table "a SUBSET of the sweep's
+    default set" states a set relation that is false, in the same sentence
+    that a reader consults to decide whether a weight may be adopted.
+    """
+    assert "deep_attn_3x16" not in pw.DEFAULT_ARCHS
+    out = pw.recommend([_row("deep_attn_3x16", 0.0, 9.0),
+                        _row("deep_attn_3x16", 1.0, 0.2)])
+    assert out["cleared"] is True
+    assert out["covers_default_archs"] is False
+    assert sorted(out["archs_unmeasured_default"]) == sorted(pw.DEFAULT_ARCHS)
+    reason = out["reason"]
+    assert "SUBSET" not in reason, reason
+    assert "does NOT COVER the sweep's default set" in reason, reason
+    # The architecture that is outside the default set is named as such,
+    # rather than left to be inferred from a list of what is missing.
+    assert "deep_attn_3x16 not in that set" in reason, reason
+    for name in pw.DEFAULT_ARCHS:
+        assert name in reason, name
+    # A table that IS a subset keeps the stronger, true word.
+    subset = pw.recommend([_row("deep_3x16", 0.0, 9.0),
+                           _row("deep_3x16", 1.0, 0.2)])
+    assert "SUBSET" in subset["reason"]
+    assert "does NOT COVER" not in subset["reason"]
+    # A mixed table -- one default plus one outsider -- is not a subset either.
+    mixed = pw.recommend([_row("deep_3x16", 0.0, 9.0),
+                          _row("deep_3x16", 1.0, 0.2),
+                          _row("deep_attn_3x16", 0.0, 9.0),
+                          _row("deep_attn_3x16", 1.0, 0.2)])
+    assert "SUBSET" not in mixed["reason"], mixed["reason"]
+    assert "does NOT COVER" in mixed["reason"], mixed["reason"]
+    # Only the outsider is named as outside; the default that WAS measured is
+    # not swept into that clause.
+    assert "and deep_attn_3x16 not in that set" in mixed["reason"]
+    assert "deep_3x16 not in that set" not in mixed["reason"].replace(
+        "deep_attn_3x16 not in that set", "")
+    assert "deep_3x16" not in mixed["archs_unmeasured_default"]
+
+
 def test_the_tolerance_and_margin_are_configurable():
     rows = [_row("a", 0.0, 9.0), _row("a", 1.0, 1.5)]
     assert pw.recommend(rows)["cleared"] is False
@@ -636,9 +761,14 @@ class _FakeArch:
 
 
 def test_an_architecture_whose_rung_readings_disagree_is_refused():
-    """resolve_parent_density reads the flag OR the 'metagga' descriptor while
-    run_pretrain selects targets and parent energies from the flag alone, so
-    the two must agree before a cell is spent on the architecture."""
+    """The backstop fires on an architecture-LIKE object.
+
+    ``ArchitectureConfig`` refuses a flag / descriptor disagreement at
+    construction, so this state is unreachable through the registry; the
+    predicate the readers share is duck-typed, though, so an object assembled
+    outside that class carries no such guarantee and reaches the same code
+    paths. ``_FakeArch`` is exactly such an object, which is what makes this
+    check reachable at all."""
     pw._check_rung_consistency("gga", _FakeArch(False, ()))
     pw._check_rung_consistency("mgga", _FakeArch(True, ("metagga",)))
     for arch in (_FakeArch(False, ("metagga",)), _FakeArch(True, ("cusp",))):
@@ -646,6 +776,22 @@ def test_an_architecture_whose_rung_readings_disagree_is_refused():
             pw._check_rung_consistency("mixed", arch)
         assert "resolve_parent_density" in str(excinfo.value)
         assert "run_pretrain" in str(excinfo.value)
+
+
+def test_the_library_refuses_the_disagreement_before_the_probe_can_see_it():
+    """The reason the check above is a backstop rather than the guard.
+
+    A registry architecture cannot be in the refused state: the class refuses
+    the pairing in ``__post_init__``, in both directions, so the probe's own
+    check is unreachable for anything built by name or by ``from_spec``.
+    """
+    from xcquinox.alec.config import ArchitectureConfig, FeatureSpec
+    with pytest.raises(ValueError, match="disagrees with its descriptor list"):
+        ArchitectureConfig(name="probe_rung_mismatch", depth=3, nodes=16,
+                           descriptors=(FeatureSpec(name="metagga"),))
+    with pytest.raises(ValueError, match="disagrees with its descriptor list"):
+        ArchitectureConfig(name="probe_rung_mismatch", depth=3, nodes=16,
+                           meta_gga=True)
 
 
 def test_every_registered_architecture_passes_the_rung_check():
@@ -908,14 +1054,15 @@ def test_a_batched_sweep_accumulates_into_one_table(tmp_path, monkeypatch):
     assert payload["archs_requested"] == ["deep_cusp_3x16"]
     assert "archs" not in payload["identity"]
     assert "archs_requested" not in payload["identity"]
-    # And the verdict says what it covers: two of the four defaults are still
+    # And the verdict says what it covers: four of the six defaults are still
     # unmeasured, so the exit-0 line is not a statement about the whole set.
     recommendation = payload["recommendation"]
     assert recommendation["archs_measured"] == ["deep_3x16",
                                                 "deep_cusp_3x16"]
     assert recommendation["covers_default_archs"] is False
     assert sorted(recommendation["archs_unmeasured_default"]) == [
-        "deep_mgga_3x16", "deep_rung35_3x16"]
+        "deep_mgga_3x16", "deep_rung35_3x16", "deep_rung35_attn_3x16",
+        "deep_rung35ms_3x16"]
     assert "SUBSET" in recommendation["reason"]
 
 
@@ -1049,6 +1196,16 @@ def test_mail_directives_present():
     assert "#SBATCH --mail-type=BEGIN,END,FAIL" in t
 
 
+def test_the_header_names_the_architectures_the_default_run_measures():
+    """The WHAT block is the only statement of the swept set a reader of the
+    job's mail ever sees, so it has to hold every name ``DEFAULT_ARCHS`` does
+    -- an architecture added to the default set and not to the header would be
+    measured silently, and one removed would be claimed without being run."""
+    t = _sbatch_text()
+    for name in pw.DEFAULT_ARCHS:
+        assert name in t, name
+
+
 def test_house_shell_idiom():
     t = _sbatch_text()
     assert "set -uo pipefail" in t
@@ -1073,13 +1230,24 @@ def test_the_wall_matches_its_derivation():
     The per-step law measured on the path the job runs (least squares
     -1.36 ms + 0.4356 us/row over four row counts; 0.5218 us/row in a second
     session, which is the slope the header carries) over the production
-    sweep's 2.41e6 rows puts twenty cells at 7.0 h and the estimate at 8.0 h
-    with the data generation; twice that is 16.0 h. The row count itself is
-    the part that has to be checked and not only quoted: the exchange block
-    spans two channels per OPEN shell and one per closed one, so it is
-    2 x 168344 + 981512 pruned points and not twice the whole set's. The
-    short-* queues cap at 4 h, so the request and the partition also have to
-    agree on a long queue.
+    sweep's 2.41e6 rows puts THIRTY cells -- the six default architectures at
+    five weights -- at 10.5 h and the estimate at 11.5 h with the data
+    generation; twice that is 23.0 h, inside the 24 h request. The cell count
+    is read from ``DEFAULT_ARCHS`` and ``DEFAULT_WEIGHTS`` rather than
+    transcribed, so widening either axis again turns this red instead of
+    leaving a stale wall in the header.
+
+    The row count itself is the part that has to be checked and not only
+    quoted: the exchange block spans two channels per OPEN shell and one per
+    closed one, so it is 2 x 168344 + 981512 pruned points and not twice the
+    whole set's. The short-* queues cap at 4 h, so the request and the
+    partition also have to agree on a long queue.
+
+    The superseded pre-rework path (a fixed 648 ms recompile per optimizer
+    step, retired when the training loop moved in-module) is quoted for the
+    same thirty cells at 16.9 h, which fits the wall but at 1.4x rather than
+    2x -- so the header states the split as the remedy if that regression ever
+    returns, and the number is pinned here so the statement cannot go stale.
     """
     t = _sbatch_text()
     assert "#SBATCH --time=24:00:00" in t
@@ -1092,10 +1260,10 @@ def test_the_wall_matches_its_derivation():
             # the exchange BLOCK count and the measured floor survivals
             "1318200", "0.9775", "0.9743", "0.9663",
             # the rows and the wall they buy
-            "1.123e6", "1.285e6", "2.41e6", "1257 s", "7.0 h", "8.0 h",
-            "16.0 h",
-            # and the pre-rework path the same wall still covers
-            "648 ms", "23.2 h"):
+            "1.123e6", "1.285e6", "2.41e6", "1257 s", "10.5 h", "11.5 h",
+            "23.0 h",
+            # and the pre-rework path, which no longer fits at 2x
+            "648 ms", "16.9 h"):
         assert quoted in t, quoted
     # The arithmetic, not the strings alone. An exchange block per SPIN
     # CHANNEL of every system -- the reading this replaces -- would give
@@ -1106,9 +1274,23 @@ def test_the_wall_matches_its_derivation():
     assert abs(rows - 2.41e6) <= 0.01e6
     cell_seconds = 1000 * rows * 0.5218e-6
     assert abs(cell_seconds - 1257.0) < 15.0
-    assert abs(20 * cell_seconds / 3600.0 - 7.0) < 0.1
-    assert abs(20 * (cell_seconds + 0.6484 * 1000) / 3600.0 + 1.0
-               - 23.2 / 2.0) < 0.1
+    # The cell count IS the swept grid, not a number written down beside it.
+    n_cells = len(pw.DEFAULT_ARCHS) * len(pw.DEFAULT_WEIGHTS)
+    assert n_cells == 30
+    assert f"{n_cells} x " not in t          # the header spells it in words
+    assert "thirty cells" in t
+    assert f"({len(pw.DEFAULT_ARCHS)} architectures x " \
+           f"{len(pw.DEFAULT_WEIGHTS)} weights)" in t
+    assert abs(n_cells * cell_seconds / 3600.0 - 10.5) < 0.1
+    estimate_h = n_cells * cell_seconds / 3600.0 + 1.0   # + the data hour
+    assert abs(estimate_h - 11.5) < 0.1
+    assert 2.0 * estimate_h <= 24.0                      # the wall, at 2x
+    assert abs(2.0 * estimate_h - 23.0) < 0.2
+    # The pre-rework path: inside the wall, but no longer at twice the
+    # estimate, which is why the header now names the split instead.
+    pre_rework_h = n_cells * (cell_seconds + 0.6484 * 1000) / 3600.0 + 1.0
+    assert abs(pre_rework_h - 16.9) < 0.1
+    assert pre_rework_h < 24.0 < 2.0 * pre_rework_h
 
 
 def test_x64_is_on_and_the_platform_is_cpu():
@@ -1280,9 +1462,9 @@ def test_the_sweep_can_be_batched_over_architectures():
 
 def test_the_verdict_line_names_the_architectures_the_batch_measured():
     """Exit 0 mails "cleared"; a batched submission must not let that read as
-    a statement about the four defaults it did not measure."""
+    a statement about the six defaults it did not measure."""
     t = _sbatch_text()
-    assert "${ARCHS:-the four default architectures}" in t
+    assert "${ARCHS:-the six default architectures}" in t
     assert "a swept weight cleared both gates on every architecture." not in t
     assert "every architecture MEASURED" in t
 
@@ -1301,3 +1483,97 @@ def test_exit_code_two_is_documented_as_a_finding():
     assert "Not a crash" in t
     # And a wall-clock kill is recoverable rather than a loss: the log says so.
     assert "continues from the cells in" in t
+
+
+# --------------------------------------------------------------------------- #
+# Exit code 2 is two outcomes
+# --------------------------------------------------------------------------- #
+
+def _epilogue_case_block() -> str:
+    """The shipped ``case "$RC" in ... esac`` block, verbatim.
+
+    Extracted rather than paraphrased so what the test runs IS what the job
+    runs; a rewritten copy would pass while the script kept the old text.
+    """
+    t = _sbatch_text()
+    start = t.index('case "$RC" in')
+    end = t.index("\nesac", start) + len("\nesac")
+    return t[start:end]
+
+
+def _run_epilogue(rc, run_out_text, tmp_path, archs=""):
+    """Execute the shipped epilogue for one exit code and one captured run."""
+    run_out = tmp_path / "probe.last"
+    run_out.write_text(run_out_text)
+    script = (f'RC={rc}\nARCHS="{archs}"\nRUN_OUT="{run_out}"\n'
+              f'{_epilogue_case_block()}\n')
+    done = subprocess.run(["bash", "-c", script], capture_output=True,
+                          text=True)
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def test_argparse_refuses_a_dash_leading_architecture_list_with_code_two():
+    """The reachability the epilogue has to cover, measured on the real
+    parser rather than assumed.
+
+    ``EWSWEEP_ARCHS`` is the only token the job script takes from its caller,
+    and it is passed through as the value of ``--archs``. A value beginning
+    with ``-`` is read by argparse as an option, not as a value, and argparse
+    exits with its USAGE code -- 2, which is also the code the sweep returns
+    when it completes and no weight clears the gates. The marker the epilogue
+    keys on is argparse's own usage line, so it is pinned here against the
+    parser that emits it.
+    """
+    done = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--data-dir", "d", "--out", "o",
+         "--archs", "-deep_3x16"],
+        capture_output=True, text=True)
+    assert done.returncode == 2, (done.returncode, done.stderr)
+    text = done.stdout + done.stderr
+    assert "usage: probe_pretrain_energy_weight" in text, text
+    # The sweep's OWN refusals keep code 1, which the header documents
+    # separately -- the two must not be collapsed.
+    other = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--data-dir", "d", "--out", "o",
+         "--archs", "no_such_arch"],
+        capture_output=True, text=True)
+    assert other.returncode == 1, (other.returncode, other.stderr)
+
+
+def test_the_epilogue_tells_a_usage_refusal_from_the_sweeps_finding(tmp_path):
+    """Exit 2 is reported as what it was, on the shipped ``case`` block.
+
+    Without this, a mistyped ``EWSWEEP_ARCHS`` mails "COMPLETED, the gates NOT
+    cleared by any swept weight" for a job in which no cell ran -- a finding
+    about the pretraining objective, invented out of a shell typo.
+    """
+    usage = ("usage: probe_pretrain_energy_weight [-h] --data-dir DATA_DIR\n"
+             "probe_pretrain_energy_weight: error: unrecognized arguments\n")
+    refused = _run_epilogue(2, usage, tmp_path, archs="-deep_3x16")
+    assert "REFUSED" in refused, refused
+    assert "argparse rejected the command line" in refused, refused
+    assert "NOT a finding" in refused, refused
+    assert "EWSWEEP_ARCHS=-deep_3x16" in refused, refused
+    assert "the gates NOT cleared" not in refused, refused
+
+    verdict = ("[probe] cells: 30 requested, 0 already measured\n"
+               "recommendation: energy_term_weight = 0  [DOES NOT CLEAR]\n")
+    finding = _run_epilogue(2, verdict, tmp_path)
+    assert "COMPLETED, the gates NOT cleared" in finding, finding
+    assert "Not a crash" in finding, finding
+    assert "REFUSED" not in finding, finding
+
+
+def test_the_epilogue_reads_this_submissions_output_not_the_appended_log():
+    """``$LOG`` is opened with ``tee -a`` and accumulates across
+    resubmissions, so a usage line from an earlier submission would still be
+    in it. The classification therefore reads ``$RUN_OUT``, written fresh by
+    this submission, and the invocation has to feed it."""
+    t = _sbatch_text()
+    assert 'RUN_OUT="${RUN_ROOT}/probe_${SLURM_JOB_ID:-manual}.last"' in t
+    assert '2>&1 | tee -a "$LOG" | tee "$RUN_OUT"' in t
+    assert 'RC="${PIPESTATUS[0]}"' in t
+    assert 'grep -q "^usage: probe_pretrain_energy_weight" "$RUN_OUT"' in t
+    # And the header says 2 carries two meanings, rather than one.
+    assert "2 IS TWO OUTCOMES" in t

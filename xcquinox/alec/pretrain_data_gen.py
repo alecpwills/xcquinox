@@ -277,9 +277,29 @@ def resolve_parent_density(arch, parent_density):
     ``meta_gga`` flag OR a ``"metagga"`` descriptor, and in ``run_pretrain``
     as the flag alone, so an architecture carrying the descriptor without the
     flag resolved to the SCAN density here and was fitted to the PBE targets
-    there, 23.8 mHa per system off its parent. The two statements of the rung
-    must now agree at construction, so the question has one answer.
+    there, 24.0 mHa per system off its parent (the re-measured per-system max
+    |dE_x|, 23.995 mHa). The two statements of the rung must now agree at
+    construction, so the question has one answer.
+
+    ``arch`` must be the architecture OBJECT. The duck typing that lets an ad
+    hoc architecture resolve also means a plain ``str`` carries no
+    ``descriptors`` and reads as a GGA-rung architecture, so a NAME passed
+    here used to answer ``"pbe"`` for every architecture including the
+    meta-GGA rung -- silently, and only under ``"auto"``, which is the value
+    every production configuration sets. ``fidelity.resolve_parent`` is the
+    function that takes a name; the two are one transposition apart, so the
+    wrong argument kind is refused by type rather than answered.
     """
+    if not hasattr(arch, "descriptors"):
+        raise TypeError(
+            "resolve_parent_density: arch must be an architecture object "
+            f"exposing 'descriptors', got {type(arch).__name__} {arch!r}. "
+            "The rung is read from the descriptor list "
+            "(ArchitectureConfig.is_meta_gga), so a name resolves to the "
+            "GGA-rung parent whatever architecture it names. Pass "
+            "config.get_architecture(<name>), or call "
+            "fidelity.resolve_parent(<name>), which takes the name."
+        )
     if parent_density in ("pbe", "scan"):
         return parent_density
     if parent_density != "auto":
