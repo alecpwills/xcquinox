@@ -576,7 +576,7 @@ on AEs, the descriptor-free level) for every architecture; the probe runs in und
 per architecture (scratch/probe_pretrain_gga_rungs.py, scratch/mgga_spin_scaling_check/indep2.py).
 TRIGGER: the next pretraining of any descriptor-carrying architecture; the preflight gate.
 
-## 27. compute_alpha clip kink on one-electron spin channels (2026-08-21) -- CLOSED 2026-08-24 (<hash>)
+## 27. compute_alpha clip kink on one-electron spin channels (2026-08-21) -- CLOSED 2026-08-24 (8e75f59f8)
 
 **WHAT:** with the per-channel doubled-density footing, a one-electron spin channel (H alpha,
 Li beta) has tau = tau_W identically, so the iso-orbital indicator alpha is zero up to rounding
@@ -725,7 +725,7 @@ here: the rotation path removes the clip-boundary pathology that excluded N, but
 tail response still rules out any direction that leaves the cone of positive semidefinite
 matrices there, and no rotation-path measurement of N at the production identity has been taken.
 
-## 29. Reference SCF quadrature order depends on process memory (2026-08-23) -- CLOSED 2026-08-24 (<hash>)
+## 29. Reference SCF quadrature order depends on process memory (2026-08-23) -- CLOSED 2026-08-24 (880b13c91)
 
 **WHAT:** PySCF sizes the XC grid loop of the reference SCF from
 `mol.max_memory - lib.current_memory()`, so the block size, and with it the summation order of
