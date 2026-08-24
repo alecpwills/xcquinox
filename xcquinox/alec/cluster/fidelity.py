@@ -183,6 +183,50 @@ def read_certificate(pretrain_dir: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def read_certificate_status_in(
+        pretrain_dir: str) -> tuple[str, str, dict | None]:
+    """``(status, reason, payload)`` from a SINGLE read of the certificate.
+
+    :func:`certificate_status_in` and :func:`read_certificate` each open the
+    file themselves, so a caller that wants both the classification and the
+    numbers classifies one document and reads another. A certificate rewritten
+    between the two opens then produces a mixed statement -- a status taken
+    from the file as it was and numbers taken from the file as it became -- and
+    such a pair describes no document that ever existed. A caller that reports
+    and acts on the same certificate takes both from here.
+
+    ``payload`` is the parsed object, or ``None`` when the file is absent or is
+    not a JSON object, which is the rule :func:`read_certificate` applies.
+    """
+    path = certificate_path_in(pretrain_dir)
+    if not os.path.isfile(path):
+        return "MISSING", (
+            f"no {CERTIFICATE_FILENAME} in {pretrain_dir}: the architecture "
+            "was never checked against its parent functional"), None
+    try:
+        with open(path) as f:
+            payload = json.load(f)
+    except (OSError, ValueError) as exc:
+        return "UNREADABLE", (
+            f"{path} is not readable JSON ({type(exc).__name__}: {exc})"), None
+    if not isinstance(payload, dict):
+        return "UNREADABLE", f"{path} is not a JSON object", None
+    verdict = payload.get("verdict")
+    if verdict == VERDICT_PASS:
+        return VERDICT_PASS, "fidelity certificate PASS", payload
+    if verdict != VERDICT_FAIL:
+        return "UNREADABLE", (
+            f"{path} records verdict {verdict!r}, which is neither "
+            f"{VERDICT_PASS!r} nor {VERDICT_FAIL!r}: the file states no "
+            "outcome that can be acted on"), payload
+    summary = payload.get("summary") or {}
+    return VERDICT_FAIL, (
+        f"fidelity certificate verdict {verdict!r} at {path} "
+        f"(max_atom_mHa={summary.get('max_atom_mHa')}, "
+        f"max_dAE_kcalmol={summary.get('max_dAE_kcalmol')}, "
+        f"reasons={summary.get('failure_reasons')})"), payload
+
+
 def certificate_status_in(pretrain_dir: str) -> tuple[str, str]:
     """``(status, reason)`` for the certificate in ``pretrain_dir``.
 
@@ -197,34 +241,12 @@ def certificate_status_in(pretrain_dir: str) -> tuple[str, str]:
     FAIL, because FAIL is the one status a run can waive through
     ``enforced: false``: reading an unrecognised verdict as FAIL would let a
     truncated or schema-less file be waived through an on-node gate.
+
+    The classification is :func:`read_certificate_status_in`'s, so a caller
+    that needs the document too reads it once rather than twice.
     """
-    path = certificate_path_in(pretrain_dir)
-    if not os.path.isfile(path):
-        return "MISSING", (
-            f"no {CERTIFICATE_FILENAME} in {pretrain_dir}: the architecture "
-            "was never checked against its parent functional")
-    try:
-        with open(path) as f:
-            payload = json.load(f)
-    except (OSError, ValueError) as exc:
-        return "UNREADABLE", (
-            f"{path} is not readable JSON ({type(exc).__name__}: {exc})")
-    if not isinstance(payload, dict):
-        return "UNREADABLE", f"{path} is not a JSON object"
-    verdict = payload.get("verdict")
-    if verdict == VERDICT_PASS:
-        return VERDICT_PASS, "fidelity certificate PASS"
-    if verdict != VERDICT_FAIL:
-        return "UNREADABLE", (
-            f"{path} records verdict {verdict!r}, which is neither "
-            f"{VERDICT_PASS!r} nor {VERDICT_FAIL!r}: the file states no "
-            "outcome that can be acted on")
-    summary = payload.get("summary") or {}
-    return VERDICT_FAIL, (
-        f"fidelity certificate verdict {verdict!r} at {path} "
-        f"(max_atom_mHa={summary.get('max_atom_mHa')}, "
-        f"max_dAE_kcalmol={summary.get('max_dAE_kcalmol')}, "
-        f"reasons={summary.get('failure_reasons')})")
+    status, reason, _payload = read_certificate_status_in(pretrain_dir)
+    return status, reason
 
 
 def certificate_status(run_dir: str, arch: str) -> tuple[str, str]:

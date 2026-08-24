@@ -2808,6 +2808,70 @@ def test_env_escape_hatch_allows_an_uncertified_checkpoint(tmp_path,
     assert train_mod._build_model(spec) is not None
 
 
+@pytest.mark.parametrize("value", ["true", "TRUE", "yes", "0", "on", " 1"])
+def test_env_escape_hatch_refuses_a_spelling_it_does_not_read(tmp_path,
+                                                              monkeypatch,
+                                                              value):
+    """A set value that is not the one spelling is refused, never ignored.
+
+    The gate reads exactly ``1``. Ignoring anything else leaves the author who
+    wrote ``=true`` believing the gate is off while it is in force, and the
+    refusal they then get names the certificate rather than the variable that
+    did not do what they meant. The message names the spelling that works, and
+    a passing certificate does not excuse the misspelt intent -- the value is
+    refused before any certificate is read.
+    """
+    import equinox as eqx
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.networks import create_network_pair
+
+    monkeypatch.setenv(train_mod._ALLOW_UNCERTIFIED_ENV, value)
+    arch = _make_arch()
+    xnet, cnet = create_network_pair(arch, seed=0)
+    d = tmp_path / "pretrain_ckpt"
+    d.mkdir()
+    eqx.tree_serialise_leaves(str(d / "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(str(d / "cnet.eqx"), cnet)
+    with open(d / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": arch.name}, f)
+
+    spec = _make_training_spec(pretrain_checkpoint=str(d))
+    with pytest.raises(ValueError, match=train_mod._ALLOW_UNCERTIFIED_ENV):
+        train_mod._build_model(spec)
+    try:
+        train_mod._build_model(spec)
+    except ValueError as exc:
+        assert f"{train_mod._ALLOW_UNCERTIFIED_ENV}=1" in str(exc)
+        assert repr(value) in str(exc)
+
+
+def test_env_escape_hatch_is_inert_when_empty(tmp_path, monkeypatch):
+    """An empty value states nothing, so the gate simply holds.
+
+    An exported-but-empty variable is what a job script leaves behind when the
+    opt-out is edited out, and it must read as "the gate is on", not as a
+    misspelling to refuse.
+    """
+    import equinox as eqx
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.networks import create_network_pair
+
+    monkeypatch.setenv(train_mod._ALLOW_UNCERTIFIED_ENV, "")
+    arch = _make_arch()
+    xnet, cnet = create_network_pair(arch, seed=0)
+    d = tmp_path / "pretrain_ckpt"
+    d.mkdir()
+    eqx.tree_serialise_leaves(str(d / "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(str(d / "cnet.eqx"), cnet)
+
+    spec = _make_training_spec(pretrain_checkpoint=str(d))
+    with pytest.raises(ValueError, match="fidelity"):
+        train_mod._build_model(spec)
+    with open(d / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": arch.name}, f)
+    assert train_mod._build_model(spec) is not None
+
+
 def test_from_scratch_models_are_untouched_by_the_gate(monkeypatch):
     from xcquinox.alec import train as train_mod
     monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)

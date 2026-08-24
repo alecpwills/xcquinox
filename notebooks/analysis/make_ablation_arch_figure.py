@@ -566,64 +566,137 @@ def _spec_in_progress(spec_dir: Path) -> bool:
             or any(spec_dir.glob("resume_*.eqx")))
 
 
-def _arch_uncertified(run_dir: Path, arch: str) -> bool:
-    """True when ``arch`` has no PASS fidelity certificate under ``run_dir``.
+def _certificate_status_label(status: str, cert) -> str:
+    """The status a report should print, naming a waiver as one.
 
-    Registry architectures only: a name the registry does not know (legacy
-    display name, test fixture) carries no certificate expectation, matching
-    ``merge_v4_arms._validate_arm_fidelity_certificates``. This is a RECORD
-    layer: it requires PASS and ignores the certificate's ``enforced`` field,
-    which releases the on-node gates of a workflow-verification run only. A
-    merged view resolves the same ``<run_dir>/pretrain/<arch>`` layout because
-    ``merge_v4_arms.build_view`` links each arm's pretrain directory into it.
+    A FAIL that records ``enforced: false`` was released on its own node by
+    ``fidelity.gate_certificate`` -- the workflow-verification matrix, whose
+    short pretraining cannot meet the tolerance. It is refused here like any
+    other FAIL, but a reader who sees only "FAIL" cannot tell a run that was
+    never meant to certify from an architecture whose physics did not.
+    """
+    if (status == "FAIL" and isinstance(cert, dict)
+            and cert.get("enforced") is False):
+        return "waived FAIL"
+    return status
+
+
+def _arch_certificate_status(run_dir: Path, arch: str) -> Optional[str]:
+    """``arch``'s record-layer certificate status under ``run_dir``.
+
+    ``PASS``, ``FAIL``, ``waived FAIL``, ``MISSING`` or ``UNREADABLE``;
+    ``None`` when the architecture carries no certificate expectation -- a name
+    the registry does not know (legacy display name, test fixture), matching
+    ``merge_v4_arms._arm_certificate_statuses`` -- or when the package is not
+    importable, since the analysis layer also runs without it.
     """
     try:
         from xcquinox.alec.config import get_architecture
-        from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
-                                                    certificate_status)
+        from xcquinox.alec.cluster.fidelity import read_certificate_status_in
+        from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
     except ImportError:      # the analysis layer runs without the package
-        return False
+        return None
     try:
         get_architecture(arch)
     except KeyError:
-        return False
-    status, _reason = certificate_status(str(run_dir), arch)
-    return status != VERDICT_PASS
+        return None
+    status, _reason, cert = read_certificate_status_in(
+        pretrain_checkpoint_dir(str(run_dir), arch))
+    return _certificate_status_label(status, cert)
+
+
+def uncertified_statuses(run_dir: Path, archs) -> Dict[str, str]:
+    """``{arch: status}`` for the architectures of ``archs`` that are not PASS.
+
+    A certified architecture is absent from the mapping, as is one that
+    carries no certificate expectation (:func:`_arch_certificate_status`).
+    This is a RECORD layer: it requires PASS and does not accept the
+    certificate's ``enforced`` waiver, which releases the on-node gates of a
+    workflow-verification run only -- the waiver is named in the status
+    (``waived FAIL``) rather than acted on. A merged view resolves the same
+    ``<run_dir>/pretrain/<arch>`` layout because ``merge_v4_arms.build_view``
+    links each arm's pretrain directory into it.
+    """
+    try:
+        from xcquinox.alec.cluster.fidelity import VERDICT_PASS
+    except ImportError:      # the analysis layer runs without the package
+        return {}
+    out: Dict[str, str] = {}
+    for arch in sorted({a for a in archs if a}):
+        status = _arch_certificate_status(run_dir, arch)
+        if status is not None and status != VERDICT_PASS:
+            out[arch] = status
+    return out
+
+
+def _arch_uncertified(run_dir: Path, arch: str) -> bool:
+    """True when ``arch`` has no PASS fidelity certificate under ``run_dir``.
+
+    The predicate form of :func:`uncertified_statuses`, which states the rule.
+    """
+    return bool(uncertified_statuses(run_dir, [arch]))
 
 
 def fidelity_summary(run_dir: Path,
                      archs=None) -> Optional[Dict[str, Any]]:
     """Worst per-architecture certificate numbers over ``archs``, or ``None``.
 
-    ``{"n_archs", "max_atom_mHa", "max_dAE_kcalmol"}`` -- the largest free-atom
-    E_xc offset (mHa) and the largest atomization-energy offset (kcal/mol) any
-    certified architecture of the run carries. ``archs=None`` reads every
-    architecture in the run's manifest grid. ``None`` when no architecture has
-    a readable certificate, which keeps the provenance footer of every
-    pre-gate figure byte-identical.
+    ``{"n_archs", "n_archs_without_numbers", "not_pass", "max_atom_mHa",
+    "max_dAE_kcalmol"}`` -- the largest free-atom E_xc offset (mHa) and the
+    largest atomization-energy offset (kcal/mol) any architecture of the run
+    carries. ``archs=None`` reads every architecture in the run's manifest
+    grid. ``None`` when no architecture has a readable certificate, which
+    keeps the provenance footer of every pre-gate figure byte-identical.
+
+    ``n_archs`` counts the architectures a figure may say it is bounding: the
+    ones whose certificate states BOTH numbers. One that states neither (a
+    certificate whose measurements were nulled as non-finite, or one written
+    with no summary) bounds nothing, and counting it would put architectures
+    into "worst of N arch" that no number describes; those are reported apart
+    as ``n_archs_without_numbers``. A number an uncounted certificate does
+    state still enters its own maximum -- a disclosed bound may never be
+    lowered by bookkeeping.
+
+    ``not_pass`` names, as ``arch (STATUS)``, every certificate read here whose
+    verdict is not PASS. Their numbers are in the maxima like any other, and a
+    figure that draws them must say so: a FAIL certificate's worst offsets are
+    a measurement of how far the architecture is from its parent, not a bound
+    the run was admitted under.
     """
     try:
-        from xcquinox.alec.cluster.fidelity import read_certificate
+        from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
+                                                    read_certificate_status_in)
         from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
     except ImportError:
         return None
     if archs is None:
         cells = ccp._read_manifest_cells(run_dir)
         archs = sorted({c.get("arch") for c in cells.values() if c.get("arch")})
-    atom_devs, ae_devs, n = [], [], 0
+    atom_devs, ae_devs = [], []
+    n = n_without = 0
+    not_pass: List[str] = []
     for arch in archs:
-        cert = read_certificate(pretrain_checkpoint_dir(str(run_dir), arch))
+        status, _reason, cert = read_certificate_status_in(
+            pretrain_checkpoint_dir(str(run_dir), arch))
         if not cert:
             continue
-        n += 1
         summary = cert.get("summary") or {}
-        if _is_num(summary.get("max_atom_mHa")):
-            atom_devs.append(abs(float(summary["max_atom_mHa"])))
-        if _is_num(summary.get("max_dAE_kcalmol")):
-            ae_devs.append(abs(float(summary["max_dAE_kcalmol"])))
+        atom, ae = summary.get("max_atom_mHa"), summary.get("max_dAE_kcalmol")
+        if _is_num(atom):
+            atom_devs.append(abs(float(atom)))
+        if _is_num(ae):
+            ae_devs.append(abs(float(ae)))
+        if _is_num(atom) and _is_num(ae):
+            n += 1
+        else:
+            n_without += 1
+        if status != VERDICT_PASS:
+            label = _certificate_status_label(status, cert)
+            not_pass.append(f"{arch} ({label})")
     if not n or not atom_devs or not ae_devs:
         return None
-    return {"n_archs": n, "max_atom_mHa": max(atom_devs),
+    return {"n_archs": n, "n_archs_without_numbers": n_without,
+            "not_pass": not_pass, "max_atom_mHa": max(atom_devs),
             "max_dAE_kcalmol": max(ae_devs)}
 
 
@@ -651,7 +724,9 @@ def arch_coverage(run_dir: Path,
     insample: set = set()
     in_progress: set = set()
     grid_archs: set = {c.get("arch") for c in cells.values() if c.get("arch")}
-    uncertified: set = {a for a in grid_archs if _arch_uncertified(run_dir, a)}
+    uncertified_status: Dict[str, str] = uncertified_statuses(run_dir,
+                                                              grid_archs)
+    uncertified: set = set(uncertified_status)
     for idx, spec_dir in ccp._spec_dirs(run_dir):
         arch = cells.get(idx, {}).get("arch")
         if arch is None:
@@ -681,6 +756,12 @@ def arch_coverage(run_dir: Path,
         # reproduce their parent functional. Their held-out numbers are not
         # comparable with the parent baselines the figures draw.
         "uncertified": _ordered(uncertified),
+        # ... and WHY each is uncertified: MISSING (never certified), FAIL,
+        # waived FAIL (a workflow-verification run, released on its own node
+        # only) or UNREADABLE. A refusal that names only the architectures
+        # leaves the reader to open four files to learn which of those it is.
+        "uncertified_status": {a: uncertified_status[a]
+                               for a in _ordered(uncertified)},
     }
 
 
@@ -1043,7 +1124,13 @@ def provenance_footer(baseline: Dict[str, float],
     ``fidelity`` (from :func:`fidelity_summary`) appends the worst
     per-architecture pretraining-fidelity numbers of the run, so the figure
     states how close the pretrained networks are to their parent functional.
-    ``None`` -> the string is byte-identical to the pre-certificate footer."""
+    ``None`` -> the string is byte-identical to the pre-certificate footer.
+    Architectures whose certificate states no numbers are counted apart from
+    the "worst of N arch" they are not in, and any contributing certificate
+    that is not PASS is named with its verdict: the same two numbers mean
+    "this run was admitted under these bounds" or "this is how far it missed
+    by", and the footer must not print the second as though it were the
+    first."""
     s = (_PROVENANCE_BASE + " PBE (full pool):"
          f" BH76 {_fmt_mae(baseline.get('bh76'))}"
          f" / W4-11 {_fmt_mae(baseline.get('w411'))}"
@@ -1057,9 +1144,17 @@ def provenance_footer(baseline: Dict[str, float],
               f" / combined {_fmt_mae(scan_baseline.get('combined'))}"
               f"{_pool_cov_bracket(scan_baseline)}.")
     if fidelity:
-        s += (f" Pretraining fidelity (worst of {fidelity['n_archs']} arch):"
+        without = int(fidelity.get("n_archs_without_numbers") or 0)
+        s += (f" Pretraining fidelity (worst of {fidelity['n_archs']} arch"
+              + (f", {without} stating no numbers" if without else "") + "):"
               f" |dE_xc| atom <= {fidelity['max_atom_mHa']:.2f} mHa"
-              f" / |dAE| <= {fidelity['max_dAE_kcalmol']:.2f} kcal/mol.")
+              f" / |dAE| <= {fidelity['max_dAE_kcalmol']:.2f} kcal/mol")
+        not_pass = fidelity.get("not_pass") or ()
+        if not_pass:
+            s += (" -- NOT PASS, so these are missed-by offsets and not "
+                  "bounds this run was admitted under: "
+                  + ", ".join(not_pass))
+        s += "."
     return s
 
 
@@ -8286,9 +8381,17 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                     "regenerating, else they are dropped from the figures.")
             uncertified = cov["coverage"]["uncertified"]
             if uncertified:
+                # Named with the status, as merge_v4_arms names it: MISSING is
+                # a certificate to run, FAIL is physics to fix, waived FAIL is
+                # a workflow-verification run that was never a result, and
+                # UNREADABLE is a file to look at. The four call for different
+                # actions, and a list of bare names states none of them.
+                statuses = cov["coverage"].get("uncertified_status") or {}
+                named = ", ".join(f"{a} ({statuses.get(a, 'not PASS')})"
+                                  for a in uncertified)
                 raise ValueError(
                     f"{basis} {cov['run']} carries architectures with no PASS "
-                    f"pretraining-fidelity certificate {uncertified}; their "
+                    f"pretraining-fidelity certificate: {named}; their "
                     "pretrained networks were never shown to reproduce their "
                     "parent functional, so their held-out numbers cannot be "
                     "read against the parent baselines these figures draw. "

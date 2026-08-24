@@ -12,6 +12,7 @@ interface on O, H and H2O, so the whole path is shown to be an identity when the
 network is its parent and to report a known per-electron offset exactly.
 """
 import json
+import math
 import os
 import subprocess
 import sys
@@ -2121,6 +2122,66 @@ def test_certificate_with_a_nan_weight_checkpoint_fails_and_writes_strict_json(
     allowed, _message = fid.gate_certificate(run_dir, "deep_3x16")
     assert allowed is False
     _strict_json(fid.certificate_path(run_dir, "deep_3x16"))
+
+
+def test_certificate_fails_on_a_non_finite_atomization_offset(tmp_path):
+    """Every per-system measurement is finite and the FOLD still overflows.
+
+    The atomization offset is a difference of per-system offsets, so a set
+    whose members are each representable can still produce an infinite dAE:
+    the molecule at +1e308 mHa against two free atoms at -1e308 mHa each
+    overflows the binade in the doubled atom term, before the subtraction.
+    The per-record nulling cannot see such a value -- it is formed afterwards
+    -- so the fold carries its own finiteness check, and the offset is nulled
+    and named before it can enter a maximum, a tolerance comparison, or the
+    written file.
+    """
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": -1e308, "H2": 1e308}))
+    assert payload["verdict"] == "FAIL"
+    # Both per-system records are finite: the defect is in the fold alone.
+    for rec in payload["per_system"]:
+        assert "non_finite" not in rec, rec["name"]
+        assert math.isfinite(rec["dE_xc_mHa"]), rec["name"]
+    fold = {r["name"]: r for r in payload["per_atomization"]}
+    assert fold["H2"]["dAE_kcalmol"] is None
+    assert "not finite" in fold["H2"]["error"]
+    s = payload["summary"]
+    assert s["max_dAE_kcalmol"] is None
+    assert s["n_atomizations"] == 0
+    assert s["n_non_finite_systems"] == 1
+    reasons = s["failure_reasons"]
+    assert any("non-finite" in r and "H2" in r and "dAE_kcalmol" in r
+               for r in reasons), reasons
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "FAIL"
+    _strict_json(fid.certificate_path(run_dir, "deep_3x16"))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_the_certificate_writer_refuses_a_non_finite_payload(tmp_path, value):
+    """The writer is the last gate before the file, and it refuses.
+
+    ``json.dump``'s default serializer emits the bare tokens ``NaN`` /
+    ``Infinity``, which RFC 8259 does not define: a strict reader refuses the
+    whole certificate, and a lenient one round-trips a number no tolerance can
+    act on. Serializing with ``allow_nan=False`` first raises where a
+    non-finite value escaped the per-record nulling -- a defect in the
+    producer, not a verdict -- and leaves no file for a reader to act on.
+    """
+    path = str(tmp_path / fid.CERTIFICATE_FILENAME)
+    with pytest.raises(ValueError):
+        fid._write_certificate_payload(
+            {"verdict": "PASS", "summary": {"max_atom_mHa": value}}, path)
+    assert not os.path.exists(path)
+    # No temporary file is left behind either.
+    assert os.listdir(tmp_path) == []
+    # The same writer still writes a finite payload, strictly parseable.
+    fid._write_certificate_payload(
+        {"verdict": "PASS", "summary": {"max_atom_mHa": 0.1}}, path)
+    assert _strict_json(path)["summary"]["max_atom_mHa"] == 0.1
 
 
 # ---------------------------------------------------------------------------

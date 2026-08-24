@@ -311,6 +311,8 @@ def _train_step(model, opt_state, batch, loss_fn, optimizer):
 # train from a checkpoint that carries no PASS certificate (local probes,
 # unit tests, deliberate pre-certificate reproductions). Read from the
 # environment rather than the spec so it is visible in the job script.
+# "1" is the ONLY spelling that opts out; any other set value is refused
+# rather than ignored (see _require_fidelity_certificate).
 _ALLOW_UNCERTIFIED_ENV = "XCQUINOX_ALLOW_UNCERTIFIED"
 
 
@@ -342,8 +344,26 @@ def _require_fidelity_certificate(pretrain_checkpoint: str) -> None:
     ``<run_dir>/pretrain/<arch>`` layout, because that is the only layout
     whose certificate carries the run's own waiver record; any other layout
     is held to PASS.
+
+    The environment opt-out is spelled ``XCQUINOX_ALLOW_UNCERTIFIED=1`` and
+    nothing else. Any other set value raises: a gate that quietly ignored
+    ``true`` or ``yes`` would hold while its author believed it released, and
+    would then refuse the run in the certificate's words rather than in the
+    variable's. Unset and empty both leave the gate in force.
     """
-    if os.environ.get(_ALLOW_UNCERTIFIED_ENV) == "1":
+    allow = os.environ.get(_ALLOW_UNCERTIFIED_ENV)
+    if allow not in (None, "", "1"):
+        # A value the gate does not recognise is a stated intent it cannot
+        # honour, so it is refused rather than ignored: "true", "yes" or
+        # "TRUE" would otherwise leave the gate in force while the author
+        # believes it disabled, and the resulting refusal would name the
+        # certificate rather than the misspelt variable.
+        raise ValueError(
+            f"{_ALLOW_UNCERTIFIED_ENV}={allow!r} is not a value this gate "
+            f"reads. The opt-out is spelled {_ALLOW_UNCERTIFIED_ENV}=1 "
+            "exactly; unset or empty leaves the pretraining-fidelity gate in "
+            "force.")
+    if allow == "1":
         return
     from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
                                                 certificate_status_in,

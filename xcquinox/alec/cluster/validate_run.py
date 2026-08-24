@@ -71,9 +71,8 @@ from xcquinox.alec.cluster.grid_config import expand_grid, load_grid_config
 from xcquinox.alec.cluster.fidelity import (CERTIFICATE_FILENAME,
                                             CHECKPOINT_DIGEST_KEYS,
                                             VERDICT_PASS,
-                                            certificate_status_in,
-                                            read_certificate, resolve_parent,
-                                            run_identity)
+                                            read_certificate_status_in,
+                                            resolve_parent, run_identity)
 from xcquinox.alec.cluster.materialize import _sha256_file
 from xcquinox.alec.cluster._eval_one_spec import (_load_spec, _read_width,
                                                   _spec_path)
@@ -281,9 +280,16 @@ def validate_run(run_dir: str, config_path: str | None = None):
         # an object (``[]``, ``null``, a string, a number) and one the process
         # may not open are both UNREADABLE there, and neither may pass through
         # this loop producing no finding at all.
+        #
+        # ONE read: the status, the reason quoted in the report and the
+        # document every check below is made against all come from the same
+        # parse. Classifying the file and then re-opening it for its contents
+        # would let a certificate rewritten between the two opens produce a
+        # report that mixes them -- a reason taken from the file as it was
+        # beside a finding taken from the file as it became -- describing no
+        # document that ever existed on disk.
         pretrain_dir = os.path.join(run_dir, "pretrain", arch_name)
-        status, status_reason = certificate_status_in(pretrain_dir)
-        cert = read_certificate(pretrain_dir)
+        status, status_reason, cert = read_certificate_status_in(pretrain_dir)
         if status == "MISSING":
             failures.append(
                 f"pretrain/{arch_name}: no {CERTIFICATE_FILENAME} -- the "

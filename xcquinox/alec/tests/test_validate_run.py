@@ -515,6 +515,64 @@ def test_an_identity_field_the_run_does_not_state_is_reported(tmp_path,
     assert any("seed_xc" in f for f in failures), failures
 
 
+def test_an_identity_field_the_certificate_omits_is_reported(tmp_path,
+                                                            patched_cfg):
+    """The other half of the UNION: a key the certificate does not state.
+
+    ``auxbasis`` is ``None`` in this run's identity, so a comparison that reads
+    an absent key as ``None``, or that iterates only the keys the certificate
+    happens to carry, reads a certificate that never recorded the Coulomb
+    backend as agreeing about it. Absence is not a statement: the run's config
+    is the authority on what must have been measured, and the missing field is
+    reported as ``<absent>``.
+    """
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", identity={
+        "basis": _BASIS, "grid_level": 1, "density_fit": False,
+        "orientation_lock_strength": 0.0})
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("deep_3x16" in f and "auxbasis=<absent>" in f
+               and "None" in f for f in failures), failures
+
+
+def test_each_certificate_is_read_once(tmp_path, patched_cfg, monkeypatch):
+    """One parse per certificate, so no report can mix two documents.
+
+    Classifying the file and then re-opening it for its contents gives a
+    certificate rewritten between the two opens a report that states both: the
+    status of the file as it was, beside a finding about the file as it
+    became. Here the second read of each certificate would find a truncated
+    file, and a two-read validator emits 'not readable as a certificate
+    (fidelity certificate PASS)' -- a line contradicting itself about a run
+    whose certificates are intact.
+    """
+    import builtins
+    import io as _io
+    from xcquinox.alec.cluster.fidelity import CERTIFICATE_FILENAME
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    real_open = builtins.open
+    reads: dict = {}
+
+    def counting_open(file, *args, **kwargs):
+        path = str(file)
+        if path.endswith(CERTIFICATE_FILENAME):
+            reads[path] = reads.get(path, 0) + 1
+            if reads[path] > 1:
+                return _io.StringIO("{truncated")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    failures, _warnings, _n = vr.validate_run(run)
+    monkeypatch.undo()
+    assert len(reads) == 2, reads
+    assert set(reads.values()) == {1}, reads
+    assert not any("not readable as a certificate" in f and "PASS" in f
+                   for f in failures), failures
+    assert failures == [], failures
+
+
 def test_a_malformed_identity_value_is_a_mismatch_not_a_crash(tmp_path,
                                                               patched_cfg):
     """A non-numeric grid level is a disagreement, and the scan continues.

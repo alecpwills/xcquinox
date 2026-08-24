@@ -5989,6 +5989,8 @@ def test_fidelity_summary_reads_the_worst_certificate_numbers(tmp_path):
                                 "max_dAE_kcalmol": 0.85}}))
     got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
     assert got["n_archs"] == 3
+    assert got["n_archs_without_numbers"] == 0
+    assert got["not_pass"] == []
     assert got["max_atom_mHa"] == pytest.approx(0.9)
     assert got["max_dAE_kcalmol"] == pytest.approx(0.85)
 
@@ -6015,6 +6017,146 @@ def test_provenance_footer_carries_the_certificate_numbers():
     assert "7 arch" in s
     assert "0.42 mHa" in s
     assert "0.71 kcal/mol" in s
+
+
+def test_fidelity_summary_counts_only_the_certificates_that_state_numbers(
+        tmp_path):
+    """"Worst of N arch" names the architectures the two numbers bound.
+
+    A certificate whose measurements were all nulled as non-finite is readable
+    and states no numbers. Counting it puts an architecture into a bound that
+    no measurement describes, and the figure then claims to bound more of the
+    run than it does.
+    """
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "deep_attn",
+                    "summary": {"max_atom_mHa": None, "max_dAE_kcalmol": None,
+                                "n_non_finite_systems": 2}}))
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
+    assert got["n_archs"] == 2
+    assert got["n_archs_without_numbers"] == 1
+    assert got["max_atom_mHa"] == pytest.approx(0.31)
+    footer = fig.provenance_footer(
+        {"bh76": 8.0, "w411": 12.0, "combined": 10.0}, None, got)
+    assert "worst of 2 arch" in footer
+    assert "1 stating no numbers" in footer
+
+
+def test_fidelity_summary_counts_a_half_numbered_certificate_apart(tmp_path):
+    """One of the two numbers bounds one axis, not the architecture.
+
+    The number it does state still enters its own maximum: a bound the run is
+    disclosed under may not be lowered by bookkeeping.
+    """
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "deep_attn",
+                    "summary": {"max_atom_mHa": 44.0,
+                                "max_dAE_kcalmol": None}}))
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
+    assert got["n_archs"] == 2
+    assert got["n_archs_without_numbers"] == 1
+    assert got["max_atom_mHa"] == pytest.approx(44.0)
+    assert got["max_dAE_kcalmol"] == pytest.approx(0.62)
+
+
+def test_fidelity_summary_names_a_contributing_certificate_that_is_not_pass(
+        tmp_path):
+    """A FAIL certificate's numbers are a miss, not a bound, and say so.
+
+    The same pair of numbers reads as "the run was admitted under these" or as
+    "this is how far it missed by" depending only on the verdict, so a
+    provenance line that prints them without the verdict states the first when
+    the second is true.
+    """
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "deep",
+                    "summary": {"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7}}))
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform"])
+    assert got["not_pass"] == ["deep (FAIL)"]
+    assert got["max_atom_mHa"] == pytest.approx(13.7)
+    footer = fig.provenance_footer(
+        {"bh76": 8.0, "w411": 12.0, "combined": 10.0}, None, got)
+    assert "NOT PASS" in footer
+    assert "deep (FAIL)" in footer
+
+
+def test_fidelity_summary_names_a_waived_failure_as_a_waiver(tmp_path):
+    """`enforced: false` releases the on-node gates only; on a figure it is
+    still a FAIL, named as the waiver it is so a workflow-verification run is
+    not read as physics that did not certify."""
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "deep", "enforced": False,
+                    "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                   "override_reason": "workflow matrix"},
+                    "summary": {"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7}}))
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform"])
+    assert got["not_pass"] == ["deep (waived FAIL)"]
+
+
+def test_provenance_footer_is_unchanged_when_every_certificate_passes(
+        tmp_path):
+    """The added disclosures are additive: an all-PASS, all-numbered run draws
+    the footer it drew before they existed."""
+    run = _make_run_dir(tmp_path)
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
+    assert got["not_pass"] == []
+    assert got["n_archs_without_numbers"] == 0
+    baseline = {"bh76": 8.0, "w411": 12.0, "combined": 10.0}
+    assert fig.provenance_footer(baseline, None, got) == \
+        fig.provenance_footer(baseline, None,
+                              {"n_archs": got["n_archs"],
+                               "max_atom_mHa": got["max_atom_mHa"],
+                               "max_dAE_kcalmol": got["max_dAE_kcalmol"]})
+
+
+def test_arch_coverage_states_why_each_arch_is_uncertified(tmp_path):
+    """MISSING, FAIL, waived FAIL and UNREADABLE call for four different
+    actions -- a certificate to run, physics to fix, a run that was never a
+    result, and a file to look at."""
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").unlink()
+    (run / "pretrain" / "deep_notransform"
+     / "fidelity_certificate.json").write_text("{truncated")
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "deep_attn", "enforced": False,
+                    "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                   "override_reason": "workflow matrix"},
+                    "summary": {"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7}}))
+    cov = fig.arch_coverage(run)
+    assert cov["uncertified_status"] == {"deep": "MISSING",
+                                         "deep_notransform": "UNREADABLE",
+                                         "deep_attn": "waived FAIL"}
+    assert sorted(cov["uncertified"]) == sorted(cov["uncertified_status"])
+
+
+def test_build_bh76w411_suite_names_the_status_of_each_uncertified_arch(
+        tmp_path):
+    """The refusal states WHICH of the four states each architecture is in,
+    as the merge refusal does; a list of bare names states none of them."""
+    root, runs = _make_bh76w411_results(tmp_path)
+    run = runs["svp_grid2"]
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").unlink()
+    (run / "pretrain" / "deep_notransform"
+     / "fidelity_certificate.json").write_text("{truncated")
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "deep_attn", "enforced": False,
+                    "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                   "override_reason": "workflow matrix"},
+                    "summary": {"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7}}))
+    with pytest.raises(ValueError) as excinfo:
+        fig.build_bh76w411_suite(results_root=root, outroot=tmp_path / "f")
+    message = str(excinfo.value)
+    assert "deep (MISSING)" in message
+    assert "deep_notransform (UNREADABLE)" in message
+    assert "deep_attn (waived FAIL)" in message
 
 
 def test_build_bh76w411_suite_refuses_an_uncertified_run(tmp_path):

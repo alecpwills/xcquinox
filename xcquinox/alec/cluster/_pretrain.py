@@ -50,7 +50,9 @@ For one architecture index it:
     off the written certificate through ``fidelity.gate_certificate`` -- the
     same predicate the train task and the preflight apply -- so this job's
     exit code and their decisions come from one statement and one
-    implementation of the release rule. A run configured with
+    implementation of the release rule. The summary line the job logs is
+    formatted from that same written certificate, so the numbers on record
+    and the verdict acted on describe one document. A run configured with
     ``fidelity.enforce: false`` AND a non-empty ``override_reason`` records
     the verdict and continues.
 
@@ -404,7 +406,23 @@ def main(argv=None) -> int:
              f"after {_fmt_secs(time.time() - t_cert)}; there is no verdict to "
              "report")
         return 1
-    summary = certificate.get("summary")
+    # The verdict, the numbers reported and any waiver all come off the
+    # certificate FILE, through the shared predicate, rather than from the
+    # returned payload. That file is what the train task and the preflight
+    # gate on, so this job's exit code is decided by exactly the statement
+    # they will read, by one implementation of the release rule -- and the
+    # summary line quotes the same document, so the log cannot state numbers
+    # from one payload beside a verdict from another. Two consequences: a
+    # waiver needs here what gate_certificate requires everywhere -- a
+    # recorded enforced=false AND a non-empty prose override_reason, which the
+    # config loader does not impose, since main never calls
+    # validate_grid_semantics and a fidelity block may carry enforce=false
+    # with no reason; and a payload that never reached disk stops the stage
+    # here rather than leaving the later stages to refuse a run whose pretrain
+    # job is recorded as successful.
+    status, _status_reason, on_disk = fidelity.read_certificate_status_in(
+        pretrain_checkpoint_dir(run_dir, arch_name))
+    summary = (on_disk or {}).get("summary")
     if not isinstance(summary, dict):
         summary = {}
     line = (f"max_atom={summary.get('max_atom_mHa')} mHa, "
@@ -413,19 +431,6 @@ def main(argv=None) -> int:
             f"({summary.get('n_atoms')} atom(s), "
             f"{summary.get('n_atomizations')} atomization(s)) in "
             f"{_fmt_secs(time.time() - t_cert)}")
-    # The verdict and any waiver are read back off the certificate FILE
-    # through the shared predicate rather than re-derived from the returned
-    # payload. That file is what the train task and the preflight gate on, so
-    # this job's exit code is decided by exactly the statement they will read,
-    # by one implementation of the release rule. Two consequences: a waiver
-    # needs here what gate_certificate requires everywhere -- a recorded
-    # enforced=false AND a non-empty prose override_reason, which the config
-    # loader does not impose, since main never calls validate_grid_semantics
-    # and a fidelity block may carry enforce=false with no reason; and a
-    # payload that never reached disk stops the stage here rather than leaving
-    # the later stages to refuse a run whose pretrain job is recorded as
-    # successful.
-    status, _status_reason = fidelity.certificate_status(run_dir, arch_name)
     allowed, gate_message = fidelity.gate_certificate(run_dir, arch_name)
     label = {fidelity.VERDICT_PASS: "PASSED",
              fidelity.VERDICT_FAIL: "FAILED"}.get(status, status)

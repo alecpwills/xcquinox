@@ -636,6 +636,39 @@ def test_pretrain_logs_the_passing_summary(run_dir, monkeypatch, capsys):
         "pretrain SUCCEEDED")
 
 
+def test_pretrain_reports_the_certificate_that_reached_disk(run_dir,
+                                                            monkeypatch,
+                                                            capsys):
+    """The numbers in the log come from the FILE the gate acts on.
+
+    The certificate call both writes the file and returns the payload, so the
+    two agree in the ordinary case; they part company when the write did not
+    land what the call returned -- an interrupted or refused rewrite leaving an
+    older certificate in place. Reporting the returned payload while deciding
+    on the file would put one document's numbers beside the other's verdict in
+    the same line, and the numbers on record would not be the ones any later
+    stage reads.
+    """
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    on_disk = _fail_payload()
+
+    def seam(cfg, rd, arch):
+        d = os.path.join(rd, "pretrain", arch)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+            json.dump(on_disk, f)
+        return _pass_payload()
+
+    monkeypatch.setattr(pt, "_fidelity_certificate", seam)
+    assert pt.main([run_dir, "1"]) == 1
+    out = capsys.readouterr().out
+    assert "fidelity certificate FAILED" in out
+    assert "13.7" in out and "25.7" in out
+    # The returned payload's numbers appear nowhere: one document is quoted.
+    assert "0.12" not in out and "0.34" not in out
+    assert "pretrain SUCCEEDED" not in out
+
+
 def test_pretrain_does_not_certify_when_the_checkpoint_is_missing(
         run_dir, monkeypatch):
     """A worker that wrote no checkpoint fails at the existing guard; the
