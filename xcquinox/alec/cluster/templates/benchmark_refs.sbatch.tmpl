@@ -11,9 +11,18 @@ set -euo pipefail
 ${CONDA_ACTIVATION}
 
 # --- thread caps -----------------------------------------------------------
-export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
-export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
-export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+# The held-out reference build (SCF, CCSD, OEP per species) runs PySCF's
+# OpenMP pool and numpy's OpenBLAS pool at min(allocation, ${PYSCF_POOL_THREADS_MAX})
+# threads each (parallel.pyscf_pool_threads): sized to the allocation, the two
+# spin-waiting pools stall the small dense operations the build is made of --
+# measured at about ten minutes per molecule at 40 threads on a 40-core node
+# against 8 s at four (the curve is on parallel.PYSCF_POOL_THREADS_MAX).
+PYSCF_THREADS=$${SLURM_CPUS_PER_TASK:-${PYSCF_POOL_THREADS_MAX}}
+[ "$$PYSCF_THREADS" -le ${PYSCF_POOL_THREADS_MAX} ] || PYSCF_THREADS=${PYSCF_POOL_THREADS_MAX}
+export OMP_NUM_THREADS="$$PYSCF_THREADS"
+export MKL_NUM_THREADS="$$PYSCF_THREADS"
+export OPENBLAS_NUM_THREADS="$$PYSCF_THREADS"
+echo "[thread-caps] allocation=$${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$$PYSCF_THREADS"
 
 # --- hold-out benchmark reference densities (single job, resumable) ---------
 # CCSD + PBE densities for the full W4-11+BH76 pool (no OEP stage); every

@@ -372,14 +372,72 @@ def test_render_per_stage_allocation_independent(tmp_path):
 
 
 def test_render_thread_caps_present_every_template(tmp_path):
+    """The JAX-dominated array stages hand both pools the allocation; the
+    PySCF-heavy front stages (datagen, pretrain's certificate, preflight's
+    reference build, the held-out reference build) cap each pool at
+    ``parallel.PYSCF_POOL_THREADS_MAX`` -- at the allocation itself the two
+    spin-waiting pools stall a reference build (job 2134488: about ten minutes
+    per def2-svp molecule at 40 threads against 8 s at four)."""
+    from xcquinox.alec.parallel import PYSCF_POOL_THREADS_MAX
     cfg = _make_cfg(tmp_path)
-    for kind, kw in (("pretrain", {"array_max": 0}), ("preflight", {}),
-                     ("train", {"array_max": 39}),
+    for kind, kw in (("train", {"array_max": 39}),
                      ("eval", {"array_max": 39})):
         text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
         assert "export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
         assert "export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
         assert "export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
+        assert "PYSCF_THREADS" not in text, kind
+    d = _base_config_dict()
+    d["inputs"]["benchmark_refs_dir"] = "/shared/bench_refs"
+    p = tmp_path / "grid_bench.json"
+    p.write_text(json.dumps(d))
+    cfg_bench = load_grid_config(str(p))
+    for kind, kw, c in (("pretrain", {"array_max": 0}, cfg),
+                        ("preflight", {}, cfg), ("datagen", {}, cfg),
+                        ("benchmark_refs", {}, cfg_bench)):
+        text = render_sbatch(kind, c, str(tmp_path / "run"), **kw)
+        cap = PYSCF_POOL_THREADS_MAX
+        assert f"PYSCF_THREADS=${{SLURM_CPUS_PER_TASK:-{cap}}}" in text, kind
+        assert (f'[ "$PYSCF_THREADS" -le {cap} ] || PYSCF_THREADS={cap}'
+                in text), kind
+        for pool in ("OMP", "MKL", "OPENBLAS"):
+            assert f'export {pool}_NUM_THREADS="$PYSCF_THREADS"' in text, (
+                kind, pool)
+            assert f"export {pool}_NUM_THREADS=$SLURM_CPUS_PER_TASK" not in text
+        assert "$$" not in text, kind
+
+
+def _thread_cap_snippet(text):
+    """The rendered thread-cap lines, from the PYSCF_THREADS assignment through
+    the three exports, as one bash snippet."""
+    lines = text.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("PYSCF_THREADS="))
+    end = next(i for i, l in enumerate(lines)
+               if l.startswith("export OPENBLAS_NUM_THREADS="))
+    return "\n".join(lines[start:end + 1])
+
+
+def test_render_pyscf_pool_cap_evaluates_to_the_module_rule_under_bash(tmp_path):
+    """The shell form of the cap and ``parallel.pyscf_pool_threads`` are one
+    rule: bash is run on the rendered lines for allocations on both sides of
+    the cap, and with the SLURM variable unset (a manual run), and the three
+    pools it exports equal the module's number every time."""
+    import subprocess
+    from xcquinox.alec.parallel import PYSCF_POOL_THREADS_MAX, pyscf_pool_threads
+    cfg = _make_cfg(tmp_path)
+    snippet = _thread_cap_snippet(render_sbatch("preflight", cfg,
+                                                str(tmp_path / "run")))
+    probe = snippet + '\necho "$OMP_NUM_THREADS $MKL_NUM_THREADS $OPENBLAS_NUM_THREADS"'
+    for n in (1, 4, 8, 9, 24, 28, 40, 96):
+        out = subprocess.run(["bash", "-euo", "pipefail", "-c", probe],
+                             env={"PATH": os.environ.get("PATH", ""),
+                                  "SLURM_CPUS_PER_TASK": str(n)},
+                             capture_output=True, text=True, check=True)
+        assert out.stdout.split() == [str(pyscf_pool_threads(n))] * 3, (n, out.stdout)
+    out = subprocess.run(["bash", "-euo", "pipefail", "-c", probe],
+                         env={"PATH": os.environ.get("PATH", "")},
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.split() == [str(PYSCF_POOL_THREADS_MAX)] * 3, out.stdout
 
 
 def test_render_inline_thread_cap_scales_from_node_cores(tmp_path):

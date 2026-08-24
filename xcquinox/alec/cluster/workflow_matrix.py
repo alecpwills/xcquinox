@@ -44,6 +44,7 @@ from xcquinox.alec.cluster.grid_config import (
     normalize_cluster_walltimes, pretrain_checkpoint_dir,
 )
 from xcquinox.alec.config import ARCHITECTURES
+from xcquinox.alec.parallel import pyscf_pool_threads
 from xcquinox.alec.eval_holdout import (
     EVAL_METADATA_NAME as _EVAL_STAMP_NAME,
     SLICED_MARKER_NAME as _SLICE_MARKER_NAME,
@@ -619,6 +620,15 @@ def _base_env(threads):
     caps are pinned here rather than inherited. Any inherited species slice is
     dropped: only the eval stages get one, and only from :func:`stage_plan`.
 
+    ``threads`` is the stage's share of the allocation. The OpenMP and BLAS
+    pools that serve PySCF are set to ``parallel.pyscf_pool_threads(threads)``
+    rather than to the share itself: at the share, the two spin-waiting pools
+    stall the small dense operations a reference build is made of, and the
+    preflight of job 2134488 built its def2-svp references at about ten minutes
+    per molecule on a 40-core node at 40 threads against 8 s at four (the
+    measured curve is on :data:`xcquinox.alec.parallel.PYSCF_POOL_THREADS_MAX`).
+    XLA sizes the JAX pool itself, from the CPUs the process may run on.
+
     The certificate's enforcement is NOT configured here. It is the rendered
     config's ``fidelity`` block (``enforce: false`` with a non-empty
     ``override_reason``, ``grid_config.FidelityConfig``), which the certificate
@@ -629,8 +639,9 @@ def _base_env(threads):
     env["JAX_PLATFORMS"] = "cpu"
     env["JAX_ENABLE_X64"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
+    pool = pyscf_pool_threads(threads)
     for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
-        env[key] = str(threads)
+        env[key] = str(pool)
     env.pop(_HELDOUT_SLICE_ENV, None)
     return env
 

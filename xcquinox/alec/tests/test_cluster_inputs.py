@@ -13,6 +13,7 @@ import pytest
 from ase import Atoms
 
 from xcquinox.alec.cluster import inputs as inputs_mod
+from xcquinox.alec.external_refs import SpeciesEntry
 from xcquinox.alec.cluster.inputs import (
     prepare_inputs,
     StagedInputs,
@@ -169,7 +170,10 @@ def stub_refs(monkeypatch):
 
     def fake_build_species_union():
         calls["union"] += 1
-        return ["species-union-sentinel"]
+        # The canonical set: the pool's four species plus one (Q) no point
+        # names, so the run-scoped selection is observable.
+        return [SpeciesEntry(n, 0, 0, "dfs_ae")
+                for n in ("P0", "P1", "P2", "P3", "Q")]
 
     def fake_precompute_all(species, *, cache_dir, basis, grid_level,
                             density_fit=False, auxbasis=None,
@@ -231,11 +235,13 @@ def test_prepare_inputs_calls_precompute_all_for_external_refs(
 
     prepare_inputs(cfg)
 
-    # external refs ensured via build_species_union -> precompute_all
+    # external refs ensured via build_species_union -> precompute_all, for
+    # the canonical species the run's two cells name (P0, P1, P2): P3 is in
+    # the pool but in no cell, Q is canonical but in no point.
     assert stub_refs["union"] == 1
     assert stub_refs["precompute"] == 1
     kw = stub_refs["precompute_kwargs"]
-    assert kw["species"] == ["species-union-sentinel"]
+    assert [s.name for s in kw["species"]] == ["P0", "P1", "P2"]
     assert kw["cache_dir"] == cfg.inputs.external_refs_dir
     assert kw["basis"] == cfg.inputs.basis
     assert kw["grid_level"] == cfg.inputs.grid_level
@@ -266,7 +272,8 @@ def test_prepare_inputs_precompute_is_skip_if_cached_noop_friendly(
     cfg = _make_cfg(tmp_path)
     _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
 
-    monkeypatch.setattr(inputs_mod, "_build_species_union", lambda: ["u"])
+    monkeypatch.setattr(inputs_mod, "_build_species_union",
+                        lambda: [SpeciesEntry("P0", 0, 0, "dfs_ae")])
     # a precompute that does nothing, every ref already cached
     monkeypatch.setattr(
         inputs_mod, "_precompute_all",
@@ -348,6 +355,133 @@ def test_prepare_inputs_bh76w411_ledger_scoped_ccsd(tmp_path, monkeypatch):
     assert cap["keys"] == [("a", 0, 0), ("b", 0, 0), ("c", 0, 0), ("d", 0, 0)]
     assert cap["validate_overrides"] is False
     assert cap["run_preflight"] is False
+
+
+# ---------------------------------------------------------------------------
+# The reference build is scoped to the run's own cells
+# ---------------------------------------------------------------------------
+
+def test_prepare_inputs_scopes_dfs_references_to_the_runs_cells(
+    tmp_path, stub_pool, stub_refs
+):
+    """DFS domain: the build covers the canonical species the run's cells
+    name -- l2/2 names P0, P1 and l2/3 names P0, P1, P2 -- and nothing else:
+    P3 sits in the pool but in no cell, Q in the canonical set but in no
+    point. The staging reports what it built and the canonical size."""
+    cfg = _make_cfg(tmp_path)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+
+    staged = prepare_inputs(cfg)
+
+    built = [s.name for s in stub_refs["precompute_kwargs"]["species"]]
+    assert built == ["P0", "P1", "P2"]
+    assert all(s.source == "dfs_ae" for s in
+               stub_refs["precompute_kwargs"]["species"])
+    assert staged.reference_species == ("P0", "P1", "P2")
+    assert staged.canonical_species_count == 5
+    assert staged.cell_species_without_reference == ()
+
+
+def test_prepare_inputs_ignores_ledger_cells_outside_the_grid(
+    tmp_path, stub_pool, stub_refs
+):
+    """The notebook ledger carries every cell ever selected; an entry for a
+    subset size the run does not sweep (l2/4, naming P3) contributes no
+    species to this run's build."""
+    cfg = _make_cfg(tmp_path)
+    ledger = _make_ledger()
+    ledger["l2/4"] = {
+        "chosen_indices": [0, 1, 2, 3], "metric_value": 15.0,
+        "point_kinds": ["ae"] * 4, "point_names": ["P0", "P1", "P2", "P3"],
+        "tag": "bin04",
+    }
+    _write_ledger(cfg.inputs.subset_ledger_path, ledger)
+
+    staged = prepare_inputs(cfg)
+
+    assert [s.name for s in stub_refs["precompute_kwargs"]["species"]] == \
+        ["P0", "P1", "P2"]
+    assert staged.reference_species == ("P0", "P1", "P2")
+    assert staged.subset_ledger == ledger
+
+
+def test_prepare_inputs_reports_cell_species_outside_the_canonical_set(
+    tmp_path, stub_refs, monkeypatch
+):
+    """An AE point naming an atom the canonical set does not carry (N, 2S=3,
+    as the AE-as-reactions pool does): no reference is built for it -- the
+    canonical set is the only source of geometry and provenance for the DFS
+    build -- and the staging names it, so the preflight log states that the
+    species trains without a density target, as in every run before."""
+    from types import SimpleNamespace
+    pool = _make_pool()
+    n_atom = _named_atoms("N", "N", charge=0, spin=3)
+    pool[0] = TrainingPoint(kind="ae", name="P0",
+                            species=(_named_atoms("H", "P0"), n_atom),
+                            metadata={"ae_kcalmol": 100.0})
+    fake_domain = SimpleNamespace(pool_builder=lambda cfg: pool,
+                                  ccsd_species_from_ledger=False)
+    monkeypatch.setattr(inputs_mod, "_get_domain_profile",
+                        lambda name: fake_domain)
+    cfg = _make_cfg(tmp_path)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+
+    staged = prepare_inputs(cfg)
+
+    assert [s.name for s in stub_refs["precompute_kwargs"]["species"]] == \
+        ["P0", "P1", "P2"]
+    assert staged.cell_species_without_reference == (("N", 0, 3),)
+
+
+def test_prepare_inputs_external_domain_scopes_to_the_runs_cells(
+    tmp_path, monkeypatch
+):
+    """An external (ccsd_species_from_ledger) domain builds the species of the
+    run's cells with their own geometries; a ledger entry outside the grid
+    (l2/4 naming P3, whose species is e) adds nothing."""
+    from types import SimpleNamespace
+
+    def _pt(name, spnames):
+        sp = []
+        for n in spnames:
+            a = Atoms("He", positions=[(0.0, 0.0, 0.0)])
+            a.info.update(name=n, charge=0, spin=0)
+            sp.append(a)
+        return TrainingPoint(kind="bh76", name=name, species=tuple(sp),
+                             metadata={"e_rxn_ref": 1.0})
+
+    pool = [_pt("P0", ["a", "b"]), _pt("P1", ["b", "c"]), _pt("P2", ["c", "d"]),
+            _pt("P3", ["e"])]
+    fake_domain = SimpleNamespace(pool_builder=lambda cfg: pool,
+                                  ccsd_species_from_ledger=True)
+    monkeypatch.setattr(inputs_mod, "_get_domain_profile", lambda name: fake_domain)
+    cap = {}
+
+    def fake_precompute(species, *, cache_dir, basis, grid_level,
+                        density_fit=False, auxbasis=None, atoms_by_key=None,
+                        validate_overrides=True, run_preflight=True,
+                        orientation_lock_strength=0.0):
+        cap["names"] = sorted(s.name for s in species)
+        cap["keys"] = sorted(atoms_by_key)
+    monkeypatch.setattr(inputs_mod, "_precompute_all", fake_precompute)
+    monkeypatch.setattr(inputs_mod, "_ensure_pretrain_data", lambda *a, **k: None)
+
+    cfg = _make_cfg(tmp_path)
+    ledger = _make_ledger()
+    ledger["l2/4"] = {
+        "chosen_indices": [0, 1, 2, 3], "metric_value": 15.0,
+        "point_kinds": ["bh76"] * 4, "point_names": ["P0", "P1", "P2", "P3"],
+        "tag": "bin04",
+    }
+    _write_ledger(cfg.inputs.subset_ledger_path, ledger)
+
+    staged = prepare_inputs(cfg)
+
+    assert cap["names"] == ["a", "b", "c", "d"]
+    assert cap["keys"] == [("a", 0, 0), ("b", 0, 0), ("c", 0, 0), ("d", 0, 0)]
+    assert staged.reference_species == ("a", "b", "c", "d")
+    assert staged.canonical_species_count == 0
+    assert staged.cell_species_without_reference == ()
 
 
 def test_prepare_inputs_threads_density_fit_and_ensures_pretrain(

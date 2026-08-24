@@ -654,3 +654,14 @@ def test_grandchild_holding_pipe_does_not_stall_the_parent(tmp_path, monkeypatch
     assert results[0].status == "success"
     assert results[0].payload["status"] == "success"
     assert elapsed < 5.0, f"parent waited {elapsed:.1f}s on a held-open pipe"
+
+
+def test_pyscf_pool_threads_caps_each_pool_at_the_measured_knee():
+    """Each PySCF-serving pool is capped at PYSCF_POOL_THREADS_MAX, the
+    largest count within 1.5x of the measured optimum (4 threads: 7.5 s for
+    the C2H2 OEP at def2-svp; 8 threads: 11.1 s; 20 threads on a 20-core box:
+    over 97 s for either pool alone), and never below one thread."""
+    from xcquinox.alec.parallel import PYSCF_POOL_THREADS_MAX, pyscf_pool_threads
+    assert PYSCF_POOL_THREADS_MAX == 8
+    assert [pyscf_pool_threads(n) for n in (0, 1, 4, 8, 9, 24, 40, 96)] == \
+        [1, 1, 4, 8, 8, 8, 8, 8]

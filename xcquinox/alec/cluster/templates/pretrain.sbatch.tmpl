@@ -12,9 +12,19 @@ set -euo pipefail
 ${CONDA_ACTIVATION}
 
 # --- thread caps -----------------------------------------------------------
-export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
-export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
-export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+# The fidelity certificate's parent routes (one PySCF SCF per system) run
+# PySCF's OpenMP pool and numpy's OpenBLAS pool at min(allocation, ${PYSCF_POOL_THREADS_MAX})
+# threads each (parallel.pyscf_pool_threads): sized to the allocation, the two
+# spin-waiting pools stall a loop of small dense operations -- measured at
+# about ten minutes per molecule at 40 threads on a 40-core node against 8 s
+# at four for a reference build (the curve is on parallel.PYSCF_POOL_THREADS_MAX).
+# XLA sizes the pretraining's own pool from the CPUs the task may run on.
+PYSCF_THREADS=$${SLURM_CPUS_PER_TASK:-${PYSCF_POOL_THREADS_MAX}}
+[ "$$PYSCF_THREADS" -le ${PYSCF_POOL_THREADS_MAX} ] || PYSCF_THREADS=${PYSCF_POOL_THREADS_MAX}
+export OMP_NUM_THREADS="$$PYSCF_THREADS"
+export MKL_NUM_THREADS="$$PYSCF_THREADS"
+export OPENBLAS_NUM_THREADS="$$PYSCF_THREADS"
+echo "[thread-caps] allocation=$${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$$PYSCF_THREADS"
 
 # --- JAX/XLA CPU backend ---------------------------------------------------
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=$$SLURM_CPUS_PER_TASK --xla_force_host_platform_device_count=1"

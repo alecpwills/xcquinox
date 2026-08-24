@@ -113,6 +113,32 @@ def _ledger_scoped_species(points, subset_ledger):
     return species, atoms_by_key
 
 
+def _run_cells_ledger(cfg: GridConfig, subset_ledger: dict) -> dict:
+    """The ledger entries of THIS run's ``(metric, subset_size)`` cells.
+
+    :func:`_load_subset_ledger` has already required every one of them, so
+    the lookup cannot miss; what this drops is the entries the file carries
+    for cells outside the grid (the notebook ledger holds every cell ever
+    selected, whichever subset sizes a run sweeps)."""
+    return {_ledger_key(m, r): subset_ledger[_ledger_key(m, r)]
+            for m, r in _metric_size_pairs(cfg)}
+
+
+def _run_scoped_canonical_species(points, run_ledger):
+    """DFS domain: the canonical species (:func:`build_species_union`, with
+    their own geometry sources) that the run's cells name, in canonical order.
+
+    Returns ``(species, canonical_count, outside)``: the entries to build, the
+    size of the canonical set, and the sorted ``(name, charge, spin)`` keys the
+    cells name that the canonical set does not carry."""
+    scoped, _atoms = _ledger_scoped_species(points, run_ledger)
+    wanted = {(s.name, s.charge, s.spin) for s in scoped}
+    canonical = _build_species_union()
+    species = [s for s in canonical if (s.name, s.charge, s.spin) in wanted]
+    have = {(s.name, s.charge, s.spin) for s in species}
+    return species, len(canonical), sorted(wanted - have)
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -134,6 +160,17 @@ class StagedInputs:
 
     points: list
     subset_ledger: dict
+    #: Names of the species whose CCSD references this staging ensured, in
+    #: build order: the species the run's own cells name (empty when the
+    #: precompute was skipped).
+    reference_species: tuple = ()
+    #: Size of the canonical species set the DFS build selects from (0 for
+    #: an external pool, whose species come from the ledger alone).
+    canonical_species_count: int = 0
+    #: ``(name, charge, spin)`` keys the run's cells name that the canonical
+    #: set does not carry: no reference exists for them and none is built, so
+    #: they train without a density target, as in every run before.
+    cell_species_without_reference: tuple = ()
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +299,9 @@ def prepare_inputs(
       3. Ensure the per-species CCSD external references are staged under
          ``cfg.inputs.external_refs_dir`` via ``precompute_all``: skip-if-
          cached, so already-staged references are a no-op and missing ones
-         get computed.
+         get computed. The species are the ones the run's own cells name
+         (:func:`_run_cells_ledger`), and for the DFS domain they are taken
+         from the canonical set (:func:`_run_scoped_canonical_species`).
 
     Parameters
     ----------
@@ -299,15 +338,31 @@ def prepare_inputs(
     subset_ledger = _load_subset_ledger(cfg)
 
     # --- 3. ensure CCSD external references --------------------------------
-    # DFS domain: build_species_union assembles its own canonical species set
-    # (training + probe + HBPT). External pools (ccsd_species_from_ledger):
-    # restrict CCSD to the ledger's training-subset species and hand their
-    # geometries to precompute_all directly. Either way precompute_all is
-    # skip-if-cached / idempotent and raises RuntimeError with the failed-species
-    # list on failure.
+    # Scoped to THIS run: the species named by the training points of the
+    # run's own (metric, subset_size) cells, read off the ledger entries the
+    # grid requires -- the ledger file carries every cell ever selected. DFS
+    # domain: those species taken from the canonical set build_species_union
+    # assembles (training, probe and HBPT species), so a species outside that
+    # set -- an atom an AE reaction names that no reference was ever built
+    # for -- is reported and trains as before, without a density target,
+    # rather than acquiring one here. External pools (ccsd_species_from_ledger):
+    # the cells' species with their own geometries handed to precompute_all
+    # directly. Either way precompute_all is skip-if-cached / idempotent and
+    # raises RuntimeError with the failed-species list on failure.
+    #
+    # The canonical set holds 55 species. The 26-point DFS pool's cells name
+    # 30 of them at subset size 26 and 7 at subset sizes 1 and 2 (the workflow
+    # matrix); the rest are held-out probe species whose references the
+    # evaluation reads from benchmark_refs_dir. Building all 55 for every run
+    # put the longest OEP tails (O2S, H2O2, F2O) on the critical path of every
+    # preflight, for species no cell trains on.
+    run_ledger = _run_cells_ledger(cfg, subset_ledger)
+    reference_species: tuple = ()
+    canonical_count = 0
+    without_reference: tuple = ()
     if recompute_refs:
         if domain.ccsd_species_from_ledger:
-            species, atoms_by_key = _ledger_scoped_species(points, subset_ledger)
+            species, atoms_by_key = _ledger_scoped_species(points, run_ledger)
             _precompute_all(
                 species,
                 cache_dir=cfg.inputs.external_refs_dir,
@@ -321,7 +376,9 @@ def prepare_inputs(
                 run_preflight=False,
             )
         else:
-            species = _build_species_union()
+            species, canonical_count, outside = _run_scoped_canonical_species(
+                points, run_ledger)
+            without_reference = tuple(outside)
             _precompute_all(
                 species,
                 cache_dir=cfg.inputs.external_refs_dir,
@@ -335,6 +392,8 @@ def prepare_inputs(
                 # orientation-arbitrary and inject noise into the density loss.
                 orientation_lock_strength=cfg.inputs.orientation_lock_strength,
             )
+
+        reference_species = tuple(s.name for s in species)
 
         # --- 4. ensure pretrain data matches the configured basis -----------
         # The per-atom Fx/Fc pretrain targets are basis-dependent, so a basis
@@ -394,4 +453,7 @@ def prepare_inputs(
     if getattr(cfg.inputs, "val_refs_dir", None) and run_dir:
         _stage_validation_slice(cfg, run_dir)
 
-    return StagedInputs(points=points, subset_ledger=subset_ledger)
+    return StagedInputs(points=points, subset_ledger=subset_ledger,
+                        reference_species=reference_species,
+                        canonical_species_count=canonical_count,
+                        cell_species_without_reference=without_reference)

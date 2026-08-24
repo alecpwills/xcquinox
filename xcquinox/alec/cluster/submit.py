@@ -46,6 +46,7 @@ import os
 
 from xcquinox.alec.cluster.grid_config import expand_grid, _canon_axis
 from xcquinox.alec.cluster import job_tracking
+from xcquinox.alec.parallel import PYSCF_POOL_THREADS_MAX
 
 
 # Wall-clock grace window (seconds) between SLURM's pre-timeout SIGTERM and the
@@ -266,6 +267,7 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         "ALLOC_LINES": alloc_lines,
         "MEM_LINE": mem_line,
         "CPUS_PER_TASK": cpus,
+        "PYSCF_POOL_THREADS_MAX": PYSCF_POOL_THREADS_MAX,
         "RUN_DIR": run_dir,
         "CONDA_ACTIVATION": _conda_activation_block(
             cl.conda_profile, cl.conda_env

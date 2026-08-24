@@ -314,6 +314,38 @@ def _thread_env(threads: int) -> dict[str, str]:
     }
 
 
+# The thread budget of each pool that serves PySCF -- its own OpenMP pool
+# (integrals, numint) and numpy's OpenBLAS pthreads pool -- in a process whose
+# PySCF work is a loop of small dense operations: a reference build (SCF, CCSD,
+# then an OEP inversion whose L-BFGS-B outer loop runs an inner SCF per
+# iteration; nao is 38 for C2H2 at def2-svp), the fidelity certificate's parent
+# routes, the per-atom SCF loop of the pretraining data. Both pools spin-wait
+# between operations, so sized to the core count either one alone makes such a
+# loop crawl and the two together stall it. Measured on a 20-core workstation,
+# C2H2 at def2-svp / grid level 1, (OpenMP threads, BLAS threads) -> SCF, CCSD,
+# OEP wall:
+#   (1, 1)    0.3 s   0.4 s   10.9 s
+#   (4, 4)    0.2 s   0.4 s    7.5 s   <- the optimum
+#   (8, 8)    0.9 s   0.9 s   11.1 s
+#   (10, 10)  1.1 s   1.7 s   14.4 s
+#   (1, 20)   0.9 s   2.3 s   60.1 s
+#   (20, 1)   5.3 s  18.1 s   > 97 s  (killed at 120 s)
+#   (20, 20)  6.0 s  18.0 s   > 216 s (killed at 240 s)
+# and on a 40-core cluster node at (40, 40) the same build ran at about ten
+# minutes per molecule (workflow-matrix job 2134488, preflight stage). The cap
+# is the largest count within 1.5x of the measured optimum; a larger basis
+# gains parallel CCSD(T) from it without approaching the core count of any node
+# in use (28, 40 and 96).
+PYSCF_POOL_THREADS_MAX = 8
+
+
+def pyscf_pool_threads(allocation: int) -> int:
+    """Threads for each of the two PySCF-serving pools of a process holding
+    ``allocation`` CPUs: ``min(allocation, PYSCF_POOL_THREADS_MAX)``, never
+    below 1. The measurements are on :data:`PYSCF_POOL_THREADS_MAX`."""
+    return max(1, min(int(allocation), PYSCF_POOL_THREADS_MAX))
+
+
 def detect_available_cpus() -> int:
     """Queue-agnostic count of CPUs THIS process may actually use.
 

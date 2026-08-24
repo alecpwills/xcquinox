@@ -26,6 +26,8 @@ import os
 import sys
 from string import Template
 
+from xcquinox.alec.parallel import PYSCF_POOL_THREADS_MAX
+
 import pytest
 
 from xcquinox.alec.cluster import _pretrain as pt
@@ -396,6 +398,7 @@ def test_pretrain_template_renders_with_no_leftover_placeholders():
         "MAIL_USER_LINE": "",
         "MAIL_TYPE_LINE": "",
         "ACCOUNT_LINE": "",
+        "PYSCF_POOL_THREADS_MAX": PYSCF_POOL_THREADS_MAX,
     }
     rendered = Template(text).substitute(mapping)
     # No leftover harness placeholder name survives. ``string.Template`` turns
@@ -411,7 +414,11 @@ def test_pretrain_template_renders_with_no_leftover_placeholders():
     assert "logs/pretrain_%A_%a.out" in rendered
     # SLURM's own ${SLURM_ARRAY_TASK_ID} survives string.Template ($$ -> $).
     assert "${SLURM_ARRAY_TASK_ID}" in rendered
-    assert "$SLURM_CPUS_PER_TASK" in rendered
+    # The PySCF-serving pools are capped from the allocation
+    # (parallel.pyscf_pool_threads), the shell default standing in for a
+    # manual run outside SLURM.
+    assert f"PYSCF_THREADS=${{SLURM_CPUS_PER_TASK:-{PYSCF_POOL_THREADS_MAX}}}" in rendered
+    assert 'export OMP_NUM_THREADS="$PYSCF_THREADS"' in rendered
 
 
 def test_pretrain_template_is_valid_string_template():

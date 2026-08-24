@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from xcquinox.alec.cluster import workflow_matrix as wm
+from xcquinox.alec.parallel import pyscf_pool_threads
 from xcquinox.alec.config import ARCHITECTURES
 
 
@@ -1535,13 +1536,16 @@ def test_run_matrix_gives_each_shard_its_own_pretrain_data_dir(tmp_path,
 
 def test_run_matrix_sizes_the_stage_threads_from_the_allocation(
         tmp_path, shared_refs, monkeypatch):
-    """The per-stage BLAS budget is the ALLOCATION divided by the shards.
+    """The per-stage budget is the ALLOCATION divided by the shards, and the
+    two PySCF-serving pools get ``parallel.pyscf_pool_threads`` of it.
 
     ``os.cpu_count()`` reports the MACHINE: on an SMT node it is twice the
     cores, and on a shared queue it is the whole box rather than the slice
     this job holds, so shards sized from it oversubscribe every stage and the
     stages then contend for the same cores. SLURM states what the job may use
-    in ``SLURM_CPUS_PER_TASK``.
+    in ``SLURM_CPUS_PER_TASK``. 40 CPUs over 4 shards is a 10-CPU share, and
+    the pools are capped below it (8): at the share itself the spin-waiting
+    OpenMP and OpenBLAS pools stall a reference build (job 2134488).
     """
     monkeypatch.setenv("SLURM_CPUS_PER_TASK", "40")
     fake = MatrixFakeRunner()
@@ -1552,7 +1556,8 @@ def test_run_matrix_sizes_the_stage_threads_from_the_allocation(
     for argv, env in fake.calls:
         for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
                     "OPENBLAS_NUM_THREADS"):
-            assert env[key] == "10", (key, env[key], argv)
+            assert env[key] == str(pyscf_pool_threads(10)) == "8", (
+                key, env[key], argv)
 
 
 @pytest.mark.parametrize("value", ["", "0", "not-a-number"])
@@ -2918,3 +2923,14 @@ def test_artefact_record_keeps_the_historical_name_at_the_pbe_parent(tmp_path):
     assert art["pretrain_data"]["path"] == str(
         data_dir / "pretrain_data_polarized.npz")
     assert art["pretrain_data"]["exists"] is False
+
+
+def test_base_env_caps_the_pyscf_pools_below_a_large_share():
+    """A single-architecture matrix hands its one shard the whole node (40
+    CPUs); the OpenMP and BLAS pools are still capped by
+    ``parallel.pyscf_pool_threads`` -- the preflight of job 2134488 built its
+    def2-svp references at about ten minutes per molecule at 40 threads."""
+    for share, expected in ((40, "8"), (10, "8"), (8, "8"), (4, "4"), (1, "1")):
+        env = wm._base_env(share)
+        for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            assert env[key] == expected, (share, key, env[key])

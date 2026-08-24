@@ -616,6 +616,22 @@ def main(argv=None) -> int:
         _log(f"ERROR: input staging failed: {exc}")
         return 1
     _log(f"inputs staged: {len(staged.points)} training points in the pool")
+    refs = tuple(getattr(staged, "reference_species", ()) or ())
+    if refs:
+        canonical = int(getattr(staged, "canonical_species_count", 0) or 0)
+        scope = f" of the {canonical} canonical" if canonical else ""
+        _log(
+            f"CCSD references ensured for the {len(refs)}{scope} species the "
+            f"run's cells name: {', '.join(refs)}"
+        )
+    outside = tuple(getattr(staged, "cell_species_without_reference", ()) or ())
+    if outside:
+        named = ", ".join(f"{n} (charge {c:+d}, 2S {sp})" for n, c, sp in outside)
+        _log(
+            f"{len(outside)} species the run's cells name carry no reference "
+            f"in the canonical set and train without a density target, as in "
+            f"every run before: {named}"
+        )
 
     # Provenance copy of the consumed (read-only) subset ledger.
     _write_ledger_provenance(run_dir, staged.subset_ledger)
