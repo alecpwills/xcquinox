@@ -1007,8 +1007,9 @@ All run with `OMP_NUM_THREADS=2 JAX_PLATFORMS=cpu` under
   from the union are exactly the exclusion list of Section 3.5.
 - **C12** `check_group_diff.py` / `check_group_diff.log` -- each group file flattened to
   leaf keys and compared against the whole-registry file: `v6g1_size`, `v6g2_families`,
-  `v6g3_dm` and `v6g4_ablations` differ in 5 of 115 leaves, `v6g2_families_mgga` in 3 of 113.
+  `v6g3_dm` and `v6g4_ablations` differ in 6 of 115 leaves, `v6g2_families_mgga` in 3 of 113.
   The three common differences are `sweep.arch`, `inputs.output_root` and
-  `pretrain.data_dir`; the two extra ones, present on the four GGA groups only, are
+  `pretrain.data_dir`; the three extra ones, present on the four GGA groups only, are
   `cluster.oom_retry_partition` and `cluster.timeout_retry_partition`, both set to
-  `long-96core` where the whole-registry file and the meta-GGA group leave them unset.
+  `long-96core` where the whole-registry file and the meta-GGA group leave them unset, and
+  `cluster.time`, the 40-core class's recorded 48 h wall against the reference's 72 h.
