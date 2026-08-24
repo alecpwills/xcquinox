@@ -179,8 +179,24 @@ cluster:
   # serial, or an int to cap.
   eval_workers: null
   # Pretrain runs once per distinct architecture, up front; pretrain_throttle
-  # unset means all distinct architectures pretrain concurrently.
+  # unset means all distinct architectures pretrain concurrently. The pretrain
+  # task ALSO runs the per-architecture fidelity certificate on the same node
+  # after training the networks -- a reference SCF at the run's identity plus
+  # the network and parent XC evaluations for each of ~40 systems (the pools'
+  # free atoms, the DFS pretraining molecules and H2O / N2 / CH4) -- so this
+  # wall must cover pretraining plus that sweep.
   pretrain_time: "08:00:00"
+  # Datagen builds the pretrain-data file(s) and every later stage waits on it.
+  # At the production identity (6-311++G(3df,2pd), grid level 3) the measured
+  # per-species precompute wall is 0.7 s for H, 0.6 s Li, 1.1 s O, 1.4 s C,
+  # 2.0 s N, 3.4 s H2O (32136 grid points), 3.5 s N2 (26616) and 5.2 s CH4
+  # (49408). The v6 set's largest molecules -- C3H8 (11 nuclei), C4H6 (10),
+  # SiCH6 (8), AlCl3 (4 heavy nuclei at a 3df basis), Si2 -- carry several
+  # times those grids and basis sets, and parent_density: auto builds a second
+  # file on SCAN densities, whose SCF is the slower of the two. Four hours is
+  # roughly an order of magnitude of margin on the one job the whole graph
+  # waits for.
+  datagen_time: "04:00:00"
 
 # --- domain profile: physics tables (atom energies, kcal/Ha, extractors) ---
 # ``dfs_step7`` is the only profile registered in cluster/domain.py.

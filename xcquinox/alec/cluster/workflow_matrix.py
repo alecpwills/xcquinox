@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 from xcquinox.alec.cluster.fidelity import (
@@ -644,16 +645,23 @@ def _spec_dir(run_dir, idx, width):
     return Path(run_dir) / "checkpoints" / f"spec_{idx:0{width}d}"
 
 
-def _polarized_data(grid_path, arch) -> bool:
-    """Whether datagen writes the POLARIZED pretraining file for this run.
+def _required_data_files(grid_path, arch):
+    """The ``(polarized, reference_xc)`` pretraining files this arm needs.
 
-    Mirrors ``cluster/_datagen._required_polarized_flags``: a run-level
+    Delegates to ``cluster/_datagen._required_data_specs``, the derivation the
+    datagen stage itself runs, so the artefact record expects the file datagen
+    will actually write -- the parent-density suffix included. A run-level
     ``use_polarized_correlation`` forces the polarized file for every
-    architecture, and otherwise the architecture's own flag decides. Read out
-    of the rendered YAML rather than through ``load_grid_config`` because one
-    boolean is wanted and an unreadable config is not a fatal condition here --
-    the artefact record then simply names the unpolarized file, and the stage
-    logs carry the real failure.
+    architecture and otherwise the architecture's own flag decides; the parent
+    is ``pretrain.parent_density``, which under ``auto`` is the architecture's
+    rung baseline, so a meta-GGA-rung arm expects the SCAN-density file.
+
+    The rendered YAML is read raw rather than through ``load_grid_config``
+    because an unreadable or incomplete config is not a fatal condition here:
+    the record then falls back to the architecture's own polarization at the
+    default parent, and the stage logs carry the real failure. One arm sweeps
+    ONE architecture (``write_matrix_yaml`` sets ``sweep.arch = [arch]``), so
+    the list holds exactly one pair.
     """
     import yaml
 
@@ -661,14 +669,34 @@ def _polarized_data(grid_path, arch) -> bool:
         raw = yaml.safe_load(Path(grid_path).read_text())
     except (OSError, yaml.YAMLError):
         raw = None
-    run_level = bool(isinstance(raw, dict)
-                     and raw.get("use_polarized_correlation", False))
-    return run_level or bool(getattr(ARCHITECTURES[arch],
-                                     "use_polarized_correlation", False))
+    if not isinstance(raw, dict):
+        raw = {}
+    pretrain = raw.get("pretrain")
+    parent = (pretrain.get("parent_density", "pbe")
+              if isinstance(pretrain, dict) else "pbe")
+    cfg = types.SimpleNamespace(
+        sweep=types.SimpleNamespace(arch=[arch]),
+        use_polarized_correlation=bool(
+            raw.get("use_polarized_correlation", False)),
+        pretrain=types.SimpleNamespace(parent_density=parent))
+    from xcquinox.alec.cluster._datagen import _required_data_specs
+    try:
+        return _required_data_specs(cfg)
+    except (KeyError, ValueError):
+        # An unregistered architecture or a parent value the resolver refuses:
+        # same non-fatal footing as an unreadable config.
+        return [(bool(getattr(ARCHITECTURES[arch],
+                              "use_polarized_correlation", False)), "pbe")]
 
 
-def _artefact_paths(run_dir, arch, data_dir, polarized=False):
-    """Every artefact the stage sequence is expected to leave behind."""
+def _artefact_paths(run_dir, arch, data_dir, data_specs=None):
+    """Every artefact the stage sequence is expected to leave behind.
+
+    ``data_specs`` is :func:`_required_data_files`' list of
+    ``(polarized, reference_xc)`` pairs; one arm sweeps one architecture, so it
+    normally holds a single pair and the record keeps the single
+    ``pretrain_data`` label.
+    """
     from xcquinox.alec.pretrain_data_gen import pretrain_data_filename
 
     run = Path(run_dir)
@@ -682,15 +710,25 @@ def _artefact_paths(run_dir, arch, data_dir, polarized=False):
         "script_preflight": scripts / "preflight.sbatch",
         "script_train": scripts / "train_array.sbatch",
         "script_eval": scripts / "eval_array.sbatch",
-        # The generator's own naming function, so the two cannot drift; the
-        # datagen stage calls it with the default (PBE) reference density.
-        "pretrain_data": Path(data_dir) / pretrain_data_filename(polarized),
+    }
+    # The generator's own naming function, so the record and the datagen stage
+    # cannot drift; the pair comes from the datagen stage's own derivation, so
+    # a non-PBE parent expects the suffixed file rather than the historical
+    # name. A second pair would be a mixed-rung sweep, which one arm is not,
+    # and is labelled by filename rather than silently overwriting the first.
+    specs = list(data_specs) if data_specs else [(False, "pbe")]
+    for polarized, reference_xc in specs:
+        filename = pretrain_data_filename(polarized, reference_xc)
+        label = ("pretrain_data" if len(specs) == 1
+                 else f"pretrain_data[{filename}]")
+        labels[label] = Path(data_dir) / filename
+    labels.update({
         "pretrain_xnet": pre / "xnet.eqx",
         "pretrain_cnet": pre / "cnet.eqx",
         "pretrain_metadata": pre / "pretrain_metadata.json",
         "certificate": pre / _CERTIFICATE_FILENAME,
         "manifest": run / "manifest.json",
-    }
+    })
     for idx in _SPEC_INDICES:
         ckpt = _spec_dir(run, idx, width)
         labels[f"spec[{idx}]"] = run / "specs" / f"spec_{idx:0{width}d}.spec"
@@ -1106,7 +1144,7 @@ def run_arch(arch, work_root, *, runner=subprocess.run,
     evaluated = all(rc_by_stage.get(f"eval[{idx}]") == 0
                     for idx in _SPEC_INDICES)
     artefacts = (_artefact_paths(run_dir, arch, data_dir,
-                                 _polarized_data(grid_path, arch))
+                                 _required_data_files(grid_path, arch))
                  if run_dir else {})
     return {
         "arch": arch,

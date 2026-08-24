@@ -1052,7 +1052,8 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
                              systems=None, reference_xc="pbe",
                              exchange_footing="total",
                              mesh_fraction=MESH_WEIGHT_FRACTION,
-                             orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH):
+                             orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
+                             allow_coarse_degenerate=False):
     """Record the identity a pretrain ``.npz`` was built at.
 
     Written as a sidecar so the ``.npz`` array payload stays byte-identical to
@@ -1078,6 +1079,15 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
       at (:data:`PRETRAIN_ORIENTATION_LOCK_STRENGTH`). A degenerate open
       shell's rows are a different component of its manifold under a
       different lock, and an unlocked build is not reproducible at all.
+    - ``allow_coarse_degenerate``: True iff the file carries a spatially
+      degenerate free atom's rows below
+      :data:`COARSE_DEGENERATE_MIN_GRID_LEVEL`, where they are one arbitrary
+      member of the term's manifold rather than a reproducible quantity
+      (:func:`_check_coarse_degenerate`). Recorded so a reader can see it;
+      deliberately NOT part of the currency comparison, because the values it
+      describes are the ones the other keys already identify, and
+      :func:`ensure_pretrain_data` refuses that identity outright rather than
+      serving such a file to a caller that did not ask for it.
     - ``x64``: whether JAX computed in double precision when the file was
       written (the generator refuses to write a single-precision column, so a
       file it wrote carries ``True``; recorded so a file from another writer
@@ -1101,6 +1111,7 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
             "reference_xc": str(reference_xc),
             "exchange_footing": str(exchange_footing),
             "orientation_lock_strength": float(orientation_lock_strength),
+            "allow_coarse_degenerate": bool(allow_coarse_degenerate),
             "x64": bool(jax.config.jax_enable_x64),
             "mesh": {"rs": list(MESH_RS), "s": list(MESH_S),
                      "alpha": list(MESH_ALPHA),
@@ -1256,7 +1267,8 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
                          dfs_set=False, pool_atoms=False, reference_xc="pbe",
                          exchange_footing="total",
                          mesh_fraction=MESH_WEIGHT_FRACTION,
-                         orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH):
+                         orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
+                         allow_coarse_degenerate=False):
     """Skip-if-current driver for staged pretrain data.
 
     Returns the canonical ``.npz`` path, (re)generating it ONLY when the file
@@ -1267,12 +1279,18 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
     never be built from different lists. ``atoms`` of ``None`` is the
     historical four-atom default unless ``dfs_set`` / ``pool_atoms`` supply
     the set (:func:`resolve_pretrain_systems`).
+
+    The coarse-degenerate refusal is applied to the requested IDENTITY, before
+    the currency check: a file already on disk at an identity the generator
+    would refuse to produce must not be served either.
     """
     _check_generator_arguments(reference_xc, exchange_footing, mesh_fraction)
     eff_aux = _effective_auxbasis(basis, density_fit, auxbasis)
     systems = resolve_pretrain_systems(atoms=atoms, dfs_set=dfs_set,
                                        pool_atoms=pool_atoms,
                                        reference_xc=reference_xc)
+    _check_coarse_degenerate(systems, basis, grid_level,
+                             allow_coarse_degenerate)
     out_path = os.path.join(data_dir,
                             pretrain_data_filename(polarized, reference_xc))
     if pretrain_data_is_current(out_path, basis=basis, grid_level=grid_level,
@@ -1289,7 +1307,8 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
         cusp_log_transform=cusp_log_transform, progress=progress,
         reference_xc=reference_xc, exchange_footing=exchange_footing,
         mesh_fraction=mesh_fraction,
-        orientation_lock_strength=orientation_lock_strength)
+        orientation_lock_strength=orientation_lock_strength,
+        allow_coarse_degenerate=allow_coarse_degenerate)
 
 
 # --------------------------------------------------------------------------- #
@@ -1509,6 +1528,82 @@ def load_pretrain_data_npz(npz_path):
     return arrays
 
 
+#: Grid level below which a spatially degenerate free atom's rows are not
+#: reproducible between processes. Measured on the locked O atom: at the
+#: generator's own DEFAULT_GRID_LEVEL of 1 two independent processes differ by
+#: 3e-3 in rho, 0.64 in the iso-orbital indicator and 3.7e-6 Ha in the stored
+#: exchange energy, while at level 3 the same comparison reproduces to 3e-11
+#: relative. The lock fixes WHICH member of the P-term manifold the SCF
+#: converges to; it cannot make a quadrature that coarse resolve it.
+COARSE_DEGENERATE_MIN_GRID_LEVEL = 3
+
+
+def _coarse_degenerate_systems(systems, basis, grid_level):
+    """The names of systems whose rows this grid level cannot reproduce.
+
+    A free atom with an open p shell of 1, 2, 4 or 5 electrons is a P term
+    whose SCF can converge to any orientation of its hole
+    (:func:`cluster.fidelity.is_degenerate_atom`, the one implementation of
+    that rule; imported lazily because this module is imported by the harness
+    parser paths that must not pull in the certificate). Half-filled, closed
+    and s-shell atoms are spherical and excluded, as is every molecule.
+
+    Empty above :data:`COARSE_DEGENERATE_MIN_GRID_LEVEL`, where the quadrature
+    resolves the term and the rows reproduce.
+    """
+    if int(grid_level) >= COARSE_DEGENERATE_MIN_GRID_LEVEL:
+        return ()
+    from xcquinox.alec.cluster.fidelity import is_degenerate_atom
+    flagged = []
+    for system in systems:
+        try:
+            degenerate = is_degenerate_atom(
+                _mol_spec_for(system, basis, grid_level))
+        except ValueError:
+            # Beyond argon: the degeneracy rule does not cover the shell, so
+            # this guard makes no claim about it.
+            continue
+        if degenerate:
+            flagged.append(system.name)
+    return tuple(flagged)
+
+
+def _check_coarse_degenerate(systems, basis, grid_level,
+                             allow_coarse_degenerate):
+    """Refuse an unreproducible identity; return whether one was permitted.
+
+    The manifest records an identity, and a file whose degenerate-atom rows
+    are one arbitrary member of a manifold does not have the identity it
+    claims. The generation is therefore refused unless the caller says
+    explicitly that it wants the coarse build anyway -- the reference recorder
+    and the unit tests that deliberately run at level 1, which is why the flag
+    exists rather than a hard floor.
+
+    Returns True only when the permission was actually EXERCISED (a flagged
+    system at a coarse level), which is what the manifest records: a
+    production file at grid level 3 records False whether or not the caller
+    passed the flag.
+    """
+    flagged = _coarse_degenerate_systems(systems, basis, grid_level)
+    if not flagged:
+        return False
+    if not allow_coarse_degenerate:
+        raise ValueError(
+            f"pretraining system(s) {', '.join(flagged)} are spatially "
+            f"degenerate free atoms and grid level {int(grid_level)} is below "
+            f"{COARSE_DEGENERATE_MIN_GRID_LEVEL}, where their rows are not "
+            "reproducible between processes (measured on locked O: 3e-3 in "
+            "rho, 0.64 in the iso-orbital indicator and 3.7e-6 Ha in the "
+            "stored exchange energy, against 3e-11 relative at level 3), so "
+            "the manifest would record an identity the file does not have. "
+            "Use grid_level >= "
+            f"{COARSE_DEGENERATE_MIN_GRID_LEVEL}, or pass "
+            "allow_coarse_degenerate=True to build the coarse file "
+            "deliberately."
+        )
+    return True
+
+
 def _check_generator_arguments(reference_xc, exchange_footing, mesh_fraction):
     """Refuse a bad parent, footing or mesh share before any SCF is paid for."""
     if reference_xc not in ("pbe", "scan"):
@@ -1658,7 +1753,8 @@ def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
                                exchange_footing="total",
                                mesh_fraction=MESH_WEIGHT_FRACTION,
                                systems=None,
-                               orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH):
+                               orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
+                               allow_coarse_degenerate=False):
     """Generate the pretrain-data ``.npz`` in ``out_dir`` and return its path.
 
     ``polarized=True`` writes the zeta-carrying file; ``reference_xc="scan"``
@@ -1701,6 +1797,13 @@ def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
 
     A sidecar ``<npz>.manifest.json`` records the identity the data was built
     at so :func:`pretrain_data_is_current` can force a regeneration.
+
+    A spatially degenerate free atom below
+    :data:`COARSE_DEGENERATE_MIN_GRID_LEVEL` is refused
+    (:func:`_check_coarse_degenerate`): its rows there are one arbitrary
+    member of the term's manifold rather than the reproducible quantity the
+    manifest claims. ``allow_coarse_degenerate=True`` builds it anyway and the
+    manifest records that it did.
     """
     from xcquinox.alec.data import clear_precompute_cache
     _check_generator_arguments(reference_xc, exchange_footing, mesh_fraction)
@@ -1714,6 +1817,12 @@ def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
             "the pretraining set is empty: pass atoms=..., or turn on "
             "dfs_set / pool_atoms."
         )
+    # Before any SCF is paid for: a spatially degenerate free atom below
+    # COARSE_DEGENERATE_MIN_GRID_LEVEL is refused unless the caller asked for
+    # the coarse build outright, and the permission is recorded in the
+    # manifest when it was exercised.
+    coarse_degenerate = _check_coarse_degenerate(
+        systems, basis, grid_level, allow_coarse_degenerate)
     per_system = []
     for _i, system in enumerate(systems, 1):
         if progress:
@@ -1766,5 +1875,6 @@ def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
         atoms=tuple((s.name, s.spin) for s in systems), systems=systems,
         reference_xc=reference_xc, exchange_footing=exchange_footing,
         mesh_fraction=mesh_fraction,
-        orientation_lock_strength=orientation_lock_strength)
+        orientation_lock_strength=orientation_lock_strength,
+        allow_coarse_degenerate=coarse_degenerate)
     return out_path

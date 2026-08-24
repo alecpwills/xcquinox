@@ -707,8 +707,11 @@ def test_ensure_resolves_the_set_once(monkeypatch, tmp_path):
         return p
 
     monkeypatch.setattr(pdg, "generate_pretrain_data_npz", _fake_generate)
+    # The pool set carries eight spatially degenerate atoms and this test runs
+    # at grid level 0 deliberately (the generator is faked; no SCF is paid),
+    # so the coarse-grid refusal is waived here.
     pdg.ensure_pretrain_data(str(tmp_path), basis="sto-3g", grid_level=0,
-                             pool_atoms=True)
+                             pool_atoms=True, allow_coarse_degenerate=True)
     assert len(seen) == 1
     assert len(seen[0]) == 14
 
@@ -724,8 +727,11 @@ def test_ensure_uses_the_reference_specific_filename(monkeypatch, tmp_path):
         return p
 
     monkeypatch.setattr(pdg, "generate_pretrain_data_npz", _fake_generate)
+    # Default set (O is degenerate) at grid level 0 deliberately: the test is
+    # about the FILENAME, and the generator is faked.
     pdg.ensure_pretrain_data(str(tmp_path), basis="sto-3g", grid_level=0,
-                             reference_xc="scan", polarized=True)
+                             reference_xc="scan", polarized=True,
+                             allow_coarse_degenerate=True)
     assert os.path.basename(paths[0]) == "pretrain_data_polarized_scan.npz"
 
 
@@ -803,3 +809,69 @@ def test_ensure_is_idempotent_at_the_new_identity(tmp_path):
     assert os.path.getmtime(p2) == mtime
     layout = pdg.pretrain_npz_layout(set(pdg.load_pretrain_data_npz(p2)))
     assert layout["exchange_footing"] == "spin_channel"
+
+
+# ---------------------------------------------------------------------------
+# The coarse-grid refusal for a spatially degenerate atom
+# ---------------------------------------------------------------------------
+
+def _fake_all_columns(monkeypatch):
+    """Every system yields a complete column set, so these tests exercise the
+    guard without paying an SCF."""
+    return _install_fake(monkeypatch, lambda system, **kw: _fake_columns())
+
+
+def test_generator_refuses_a_degenerate_atom_below_grid_level_3(tmp_path):
+    """At the generator's own default grid level the locked O rows are NOT
+    reproducible between processes -- rho spreads by 3e-3, the iso-orbital
+    indicator by 0.64 and the stored E_x by 3.7e-6 Ha, against 3e-11 relative
+    at grid level 3 -- while the manifest records an identity the file
+    therefore does not have. The generation is refused rather than written."""
+    with pytest.raises(ValueError, match="grid level") as excinfo:
+        pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("O", 2),),
+                                       basis="sto-3g", grid_level=1)
+    assert "O" in str(excinfo.value)
+    assert not os.listdir(tmp_path)
+
+
+def test_ensure_refuses_the_coarse_degenerate_identity(tmp_path):
+    """The identity is refused, not only the generation: a file already on
+    disk at that identity would otherwise be served to a caller the generator
+    itself would have refused."""
+    with pytest.raises(ValueError, match="grid level"):
+        pdg.ensure_pretrain_data(str(tmp_path), atoms=(("O", 2),),
+                                 basis="sto-3g", grid_level=1)
+
+
+def test_generator_accepts_a_coarse_degenerate_atom_when_asked(monkeypatch,
+                                                               tmp_path):
+    """The escape hatch is explicit and recorded: a file built through it
+    carries the flag, so a reader can see that its degenerate-atom rows are
+    one arbitrary member of the manifold."""
+    _fake_all_columns(monkeypatch)
+    # Deliberately coarse: this test is about the flag, not about the rows.
+    path = pdg.generate_pretrain_data_npz(
+        str(tmp_path), atoms=(("O", 2),), basis="sto-3g", grid_level=1,
+        allow_coarse_degenerate=True)
+    meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
+    assert meta["allow_coarse_degenerate"] is True
+
+
+def test_a_spherical_atom_is_unaffected_by_the_coarse_grid_rule(monkeypatch,
+                                                                tmp_path):
+    """N is a half-filled p shell, spherically symmetric, so its rows do not
+    depend on an orientation the SCF happened to reach."""
+    _fake_all_columns(monkeypatch)
+    path = pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("N", 3),),
+                                          basis="sto-3g", grid_level=1)
+    meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
+    assert meta["allow_coarse_degenerate"] is False
+
+
+def test_a_degenerate_atom_at_grid_level_3_is_not_refused(monkeypatch,
+                                                          tmp_path):
+    _fake_all_columns(monkeypatch)
+    path = pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("O", 2),),
+                                          basis="sto-3g", grid_level=3)
+    meta = json.loads(open(pdg._pretrain_manifest_path(path)).read())
+    assert meta["allow_coarse_degenerate"] is False

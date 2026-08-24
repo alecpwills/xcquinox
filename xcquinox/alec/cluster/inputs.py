@@ -368,6 +368,11 @@ def prepare_inputs(
                 density_fit=cfg.inputs.density_fit,
                 auxbasis=cfg.inputs.auxbasis,
                 polarized=_polarized,
+                # Part of the identity for the reason the datagen stage states
+                # it: the generator's default lock (3e-5) is not the harness
+                # default (0.0), so a run that leaves the lock off would be
+                # served the locked file.
+                orientation_lock_strength=cfg.inputs.orientation_lock_strength,
                 **_call,
             )
 

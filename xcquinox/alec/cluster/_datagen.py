@@ -29,7 +29,11 @@ The remaining pretraining-protocol knobs (``dfs_set``, ``pool_atoms``,
 ``exchange_footing``, ``mesh_fraction``, ``atoms``) change the file's CONTENT
 rather than its name and reach the generator as keywords; each is part of the
 data manifest's identity, so a changed knob regenerates the file instead of
-being served a stale one. Only a knob that DIFFERS from the generator's default
+being served a stale one. So does the run's ``inputs.orientation_lock_strength``,
+which is always stated: the generator's own default lock (3e-5) is not the
+harness default (0.0), and a degenerate atom's rows are a different component
+of its manifold under a different lock, so a run that did not state its lock
+would be served a file built for another Hamiltonian. Only a knob that DIFFERS from the generator's default
 is passed, so a configuration written before the protocol change reaches the
 generator with exactly the keyword set it always did and its existing file
 stays current.
@@ -251,8 +255,9 @@ def main(argv=None) -> int:
     _log(
         f"archs={list(cfg.sweep.arch)} -> required: {required} | "
         f"basis={cfg.inputs.basis} grid_level={cfg.inputs.grid_level} "
-        f"density_fit={cfg.inputs.density_fit} data_dir={data_dir} | "
-        f"protocol={extra}"
+        f"density_fit={cfg.inputs.density_fit} "
+        f"orientation_lock_strength={cfg.inputs.orientation_lock_strength} "
+        f"data_dir={data_dir} | protocol={extra}"
     )
     try:
         for polarized, reference_xc in specs:
@@ -273,6 +278,14 @@ def main(argv=None) -> int:
                 auxbasis=cfg.inputs.auxbasis,
                 polarized=polarized,
                 descriptors=True,
+                # The lock the parent density is computed at is part of the
+                # data's identity: a degenerate atom's rows are a different
+                # component of its manifold under a different lock, and the
+                # generator's own default (3e-5) is not the harness default
+                # (inputs.orientation_lock_strength, 0.0). Stating the run's
+                # value is what asks the currency check at the run's own
+                # Hamiltonian instead of at the generator's.
+                orientation_lock_strength=cfg.inputs.orientation_lock_strength,
                 **call,
             )
             _log(f"ensured pretrain data (polarized={polarized}, "

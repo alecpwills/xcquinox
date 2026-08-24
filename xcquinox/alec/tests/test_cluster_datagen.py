@@ -19,12 +19,13 @@ def _ns(**kw):
 
 
 def _cfg(archs, polarized, *, basis="def2-svp", grid=2, df=False, aux=None,
-         data_dir="/data/pt"):
+         data_dir="/data/pt", lock=0.0):
     return _ns(
         sweep=_ns(arch=list(archs)),
         use_polarized_correlation=polarized,
         pretrain=_ns(data_dir=data_dir),
-        inputs=_ns(basis=basis, grid_level=grid, density_fit=df, auxbasis=aux),
+        inputs=_ns(basis=basis, grid_level=grid, density_fit=df, auxbasis=aux,
+                   orientation_lock_strength=lock),
     )
 
 
@@ -86,7 +87,10 @@ def test_main_polarized_svp_covers_all_archs(monkeypatch, tmp_path):
     data_dir, kw = calls[0]
     assert data_dir == "/d/svp"
     assert kw == {"basis": "def2-svp", "grid_level": 2, "density_fit": False,
-                  "auxbasis": None, "polarized": True, "descriptors": True}
+                  "auxbasis": None, "polarized": True, "descriptors": True,
+                  # The run's own orientation lock is part of the data's
+                  # identity and is always stated (see the lock tests below).
+                  "orientation_lock_strength": 0.0}
 
 
 def test_main_density_fit_tzvpd(monkeypatch, tmp_path):
@@ -235,7 +239,7 @@ def test_main_binds_the_generator_seam_when_unbound(monkeypatch):
 # Pretraining-protocol plumbing
 # ---------------------------------------------------------------------------
 
-def _cfg2(archs, polarized, **pretrain_kw):
+def _cfg2(archs, polarized, *, lock=0.0, **pretrain_kw):
     pt = dict(data_dir="/d/pt", atoms=(), dfs_set=False, pool_atoms=False,
               parent_density="pbe", exchange_footing="total",
               mesh_fraction=0.3)
@@ -245,7 +249,7 @@ def _cfg2(archs, polarized, **pretrain_kw):
         use_polarized_correlation=polarized,
         pretrain=_ns(**pt),
         inputs=_ns(basis="def2-svp", grid_level=3, density_fit=False,
-                   auxbasis=None),
+                   auxbasis=None, orientation_lock_strength=lock),
     )
 
 
@@ -283,15 +287,17 @@ def test_main_threads_every_protocol_knob(monkeypatch, tmp_path):
 
 def test_main_default_call_is_unchanged(monkeypatch, tmp_path):
     """A YAML written before the protocol change must reach the generator with
-    exactly the keyword set it always did, so its data file is not
-    regenerated."""
+    exactly the keyword set it always did -- plus the run's own orientation
+    lock, which the manifest keys on and the call had been omitting -- so
+    nothing but a lock change can regenerate its data file."""
     cfg = _cfg(["deep", "deep_attn"], True, basis="def2-svp", grid=2,
                df=False, data_dir="/d/svp")
     rc, calls = _run_main(monkeypatch, tmp_path, cfg)
     assert rc == 0
     assert calls[0][1] == {"basis": "def2-svp", "grid_level": 2,
                            "density_fit": False, "auxbasis": None,
-                           "polarized": True, "descriptors": True}
+                           "polarized": True, "descriptors": True,
+                           "orientation_lock_strength": 0.0}
 
 
 def test_main_names_an_unconverged_reference_scf_and_exits_nonzero(
@@ -341,3 +347,30 @@ def test_main_logs_the_protocol_knobs_it_generates_with(monkeypatch, tmp_path):
     assert "'exchange_footing': 'spin_channel'" in text
     assert "'mesh_fraction': 0.25" in text
     assert "pretrain_data_polarized.npz" in text
+
+
+def test_main_asks_the_currency_check_at_the_runs_own_lock(monkeypatch,
+                                                           tmp_path):
+    """A degenerate atom's rows are a different component of its manifold
+    under a different orientation lock, and the manifest keys on the lock. A
+    run at a lock other than the generator's own 3e-5 must therefore state it,
+    or the currency check declares the 3e-5 file current and the run trains on
+    rows from another Hamiltonian."""
+    cfg = _cfg2(["deep_3x16"], True, lock=1e-4)
+    rc, calls = _run_main(monkeypatch, tmp_path, cfg)
+    assert rc == 0
+    assert calls[0][1]["orientation_lock_strength"] == 1e-4
+
+
+def test_main_logs_the_lock_it_generates_at(monkeypatch, tmp_path):
+    cfg = _cfg2(["deep_3x16"], True, lock=1e-4)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "resolved_config.yaml").write_text("dummy: 1\n")
+    monkeypatch.setattr(_datagen, "load_grid_config", lambda p: cfg)
+    monkeypatch.setattr(_datagen, "_ensure_pretrain_data",
+                        lambda data_dir, **kw: f"{data_dir}/x.npz")
+    printed = []
+    monkeypatch.setattr(_datagen, "_log", printed.append)
+    assert _datagen.main([str(run_dir)]) == 0
+    assert "orientation_lock_strength=0.0001" in "\n".join(printed)

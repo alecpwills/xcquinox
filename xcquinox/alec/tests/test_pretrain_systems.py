@@ -665,19 +665,44 @@ def test_system_energy_targets_close_on_pyscfs_total_energy():
 # Orientation lock: the pretraining density is the training density
 # ---------------------------------------------------------------------------
 
+def _deployment_config_paths():
+    """Every shipped deployment configuration, or an empty list.
+
+    ``hpcjobs/`` sits beside the package rather than inside it, so a source
+    or wheel checkout can be missing it entirely; an absent directory is
+    nothing to cross-check, not a failure.
+    """
+    import glob
+    root = os.path.join(os.path.dirname(os.path.abspath(pdg.__file__)), "..",
+                        "..", "hpcjobs", "configs")
+    if not os.path.isdir(root):
+        return []
+    return sorted(glob.glob(os.path.join(root, "*.yaml")))
+
+
+def test_deployment_config_paths_is_empty_without_the_directory(monkeypatch,
+                                                                tmp_path):
+    """A checkout without ``hpcjobs/`` yields no paths, so the cross-check
+    above skips instead of asserting on an empty glob."""
+    monkeypatch.setattr(pdg, "__file__", str(tmp_path / "pretrain_data_gen.py"))
+    assert _deployment_config_paths() == []
+
+
 def test_pretraining_lock_is_the_training_lock():
     """The generator's lock strength is ``orientation_lock.DEFAULT_STRENGTH``
     and the value every production configuration that sets one trains at, so
     the degenerate radicals' pretraining rows sit on the component the
     training SCF and the fidelity certificate see."""
-    import glob
     import yaml
     from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
     assert pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH == DEFAULT_STRENGTH == 3e-5
-    root = os.path.join(os.path.dirname(os.path.abspath(pdg.__file__)), "..",
-                        "..", "hpcjobs", "configs")
+    paths = _deployment_config_paths()
+    if not paths:
+        pytest.skip("no hpcjobs/configs in this checkout; the constant above "
+                    "is still pinned, there is simply no deployed "
+                    "configuration to cross-check it against")
     seen = []
-    for path in sorted(glob.glob(os.path.join(root, "*.yaml"))):
+    for path in paths:
         with open(path) as f:
             cfg = yaml.safe_load(f) or {}
         value = (cfg.get("inputs") or {}).get("orientation_lock_strength")

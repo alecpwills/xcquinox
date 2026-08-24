@@ -67,6 +67,10 @@ def test_manifest_round_trips_density_fit_flag(tmp_path):
                     # when the writer was handed atoms only), the parent
                     # functional, the exchange footing, the orientation lock
                     # the parent density was computed at, and the precision.
+                    # A degenerate atom's rows below grid level 3 are one
+                    # arbitrary member of its manifold; the writer records
+                    # whether that was permitted.
+                    "allow_coarse_degenerate": False,
                     "systems": None, "reference_xc": "pbe",
                     "exchange_footing": "total",
                     "orientation_lock_strength":
@@ -127,15 +131,19 @@ def test_ensure_regenerates_only_when_stale(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pdg, "generate_pretrain_data_npz", fake_generate)
 
+    # The default set carries O, and this test runs at grid level 1
+    # deliberately (it is about the currency check, and the generator is
+    # faked), so the coarse-grid refusal is waived throughout.
+    coarse = dict(allow_coarse_degenerate=True)
     # first call: file absent -> generates
     pdg.ensure_pretrain_data(str(tmp_path), basis="def2-svp", grid_level=1,
-                             polarized=False)
+                             polarized=False, **coarse)
     # second call, same basis -> current -> NO regen
     pdg.ensure_pretrain_data(str(tmp_path), basis="def2-svp", grid_level=1,
-                             polarized=False)
+                             polarized=False, **coarse)
     # third call, new basis -> stale -> regen
     pdg.ensure_pretrain_data(str(tmp_path), basis="def2-tzvp", grid_level=1,
-                             polarized=False)
+                             polarized=False, **coarse)
     assert calls == ["def2-svp", "def2-tzvp"]
 
 
@@ -206,19 +214,23 @@ def test_manifest_records_and_compares_atoms(tmp_path, monkeypatch):
     # The generator builds every system through _system_columns (the atom
     # wrapper is a named entry point for callers, not the generator's seam).
     monkeypatch.setattr(pdg, "_system_columns", fake_cols)
-    default_path = pdg.ensure_pretrain_data(str(tmp_path))
+    # The default set carries O and the default grid level is 1, so every
+    # ensure below waives the coarse-grid refusal deliberately: this test is
+    # about the ATOM SET in the manifest and the column builder is faked.
+    coarse = dict(allow_coarse_degenerate=True)
+    default_path = pdg.ensure_pretrain_data(str(tmp_path), **coarse)
     assert calls == [s for s, _ in pdg.DEFAULT_PRETRAIN_ATOMS]
     meta = json.loads(open(default_path + ".manifest.json").read())
     assert meta["atoms"] == [[s, sp] for s, sp in pdg.DEFAULT_PRETRAIN_ATOMS]
 
     # same atoms -> current, no regen
     calls.clear()
-    pdg.ensure_pretrain_data(str(tmp_path))
+    pdg.ensure_pretrain_data(str(tmp_path), **coarse)
     assert calls == []
 
     # extended atom set -> stale -> regen with the new set
     full = pdg.DEFAULT_PRETRAIN_ATOMS + (("Na", 1), ("Li", 1))
-    pdg.ensure_pretrain_data(str(tmp_path), atoms=full)
+    pdg.ensure_pretrain_data(str(tmp_path), atoms=full, **coarse)
     assert calls == [s for s, _ in full]
 
     # legacy manifest without 'atoms' key (and without the system list that

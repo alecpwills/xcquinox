@@ -2258,3 +2258,62 @@ def test_main_reads_the_public_exit_predicate(tmp_path, shared_refs,
                  runner=MatrixFakeRunner())
     assert rc == 7
     assert seen and seen[-1] == ["deep"]
+
+
+# ---------------------------------------------------------------------------
+# The expected pretrain-data artefact follows the run's parent density
+# ---------------------------------------------------------------------------
+
+def _grid_yaml(tmp_path, **raw):
+    path = tmp_path / "grid.yaml"
+    import yaml
+    path.write_text(yaml.safe_dump(raw))
+    return path
+
+
+def test_required_data_files_follows_the_parent_density(tmp_path):
+    """Under ``parent_density: auto`` a meta-GGA-rung architecture pretrains on
+    the SCAN-density file and a GGA-rung one on the PBE-density file; the
+    artefact record has to expect the file datagen will actually write."""
+    grid = _grid_yaml(tmp_path, use_polarized_correlation=True,
+                      pretrain={"parent_density": "auto"})
+    assert wm._required_data_files(str(grid), "deep_mgga_3x16") == [
+        (True, "scan")]
+    assert wm._required_data_files(str(grid), "deep_3x16") == [(True, "pbe")]
+
+
+def test_required_data_files_defaults_to_the_pbe_parent(tmp_path):
+    grid = _grid_yaml(tmp_path, use_polarized_correlation=False)
+    assert wm._required_data_files(str(grid), "deep_mgga_3x16") == [
+        (False, "pbe")]
+
+
+def test_required_data_files_survives_an_unreadable_config(tmp_path):
+    """An unreadable config is not fatal here -- the record falls back to the
+    architecture's own polarization at the default parent and the stage logs
+    carry the real failure."""
+    grid = tmp_path / "grid.yaml"
+    grid.write_text("{[not: yaml\n")
+    assert wm._required_data_files(str(grid), "deep") == [(False, "pbe")]
+    assert wm._required_data_files(str(tmp_path / "absent.yaml"),
+                                   "deep") == [(False, "pbe")]
+
+
+def test_artefact_record_names_the_scan_density_file(tmp_path):
+    grid = _grid_yaml(tmp_path, use_polarized_correlation=True,
+                      pretrain={"parent_density": "auto"})
+    data_dir = tmp_path / "pretrain_data"
+    art = wm._artefact_paths(
+        str(tmp_path / "run"), "deep_mgga_3x16", str(data_dir),
+        wm._required_data_files(str(grid), "deep_mgga_3x16"))
+    assert art["pretrain_data"]["path"] == str(
+        data_dir / "pretrain_data_polarized_scan.npz")
+
+
+def test_artefact_record_keeps_the_historical_name_at_the_pbe_parent(tmp_path):
+    data_dir = tmp_path / "pretrain_data"
+    art = wm._artefact_paths(str(tmp_path / "run"), "deep", str(data_dir),
+                             [(True, "pbe")])
+    assert art["pretrain_data"]["path"] == str(
+        data_dir / "pretrain_data_polarized.npz")
+    assert art["pretrain_data"]["exists"] is False

@@ -283,3 +283,11 @@ def test_example_sets_every_pretraining_protocol_field():
     cfg = load_grid_config(_example_path())
     assert cfg.pretrain.dfs_set is False
     assert cfg.pretrain.parent_density == "pbe"
+
+
+def test_example_gives_datagen_a_wall_of_its_own():
+    """Datagen builds the pretrain-data file(s) and every later stage waits on
+    it, so it gets its own wall rather than inheriting the pretrain tier."""
+    pytest.importorskip("yaml")
+    cfg = load_grid_config(_example_path())
+    assert cfg.cluster.datagen_time == "04:00:00"

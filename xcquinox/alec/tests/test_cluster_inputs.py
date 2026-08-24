@@ -569,3 +569,87 @@ def test_prepare_inputs_skips_val_slice_when_not_configured(
             cfg.inputs, val_refs_dir=str(tmp_path / "val_refs")))
     prepare_inputs(cfg2)
     assert stub_val_slice["precompute"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Pretrain-data staging: every required file, at the run's own identity
+# ---------------------------------------------------------------------------
+
+def _pretrain_calls(monkeypatch):
+    """Capture EVERY ``_ensure_pretrain_data`` call, not just the last."""
+    calls = []
+    monkeypatch.setattr(
+        inputs_mod, "_ensure_pretrain_data",
+        lambda data_dir, **kw: calls.append((data_dir, kw)))
+    return calls
+
+
+def _protocol_cfg(tmp_path, **pretrain_kw):
+    """A two-architecture, mixed-rung config carrying protocol knobs."""
+    import dataclasses
+    cfg = _make_cfg(tmp_path, use_polarized_correlation=True)
+    pretrain = dataclasses.replace(cfg.pretrain, **pretrain_kw)
+    return dataclasses.replace(
+        cfg,
+        sweep=dataclasses.replace(
+            cfg.sweep, arch=("deep_3x16", "deep_mgga_3x16")),
+        pretrain=pretrain)
+
+
+def test_prepare_inputs_ensures_every_required_file_with_the_protocol_keywords(
+        tmp_path, stub_pool, stub_refs, monkeypatch):
+    """Under ``parent_density: auto`` a mixed-rung sweep needs the PBE-density
+    and the SCAN-density file; the preflight must ensure BOTH, each carrying
+    the protocol keywords, or a run whose datagen was skipped trains on one of
+    them built at the wrong identity."""
+    cfg = _protocol_cfg(tmp_path, parent_density="auto", dfs_set=True,
+                        pool_atoms=True, exchange_footing="spin_channel",
+                        mesh_fraction=0.25)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+    calls = _pretrain_calls(monkeypatch)
+
+    prepare_inputs(cfg)
+
+    assert [kw["reference_xc"] for _d, kw in calls] == ["pbe", "scan"]
+    for _data_dir, kw in calls:
+        assert kw["polarized"] is True
+        assert kw["dfs_set"] is True
+        assert kw["pool_atoms"] is True
+        assert kw["exchange_footing"] == "spin_channel"
+        assert kw["mesh_fraction"] == 0.25
+        assert kw["basis"] == cfg.inputs.basis
+        assert kw["grid_level"] == cfg.inputs.grid_level
+
+
+def test_prepare_inputs_asks_the_currency_check_at_the_runs_own_lock(
+        tmp_path, stub_pool, stub_refs, monkeypatch):
+    """The orientation lock is part of the data's identity: a degenerate atom's
+    rows are a different component of its manifold under a different lock. A
+    run at a lock other than the generator's own must not be served the file
+    built at 3e-5, so the lock reaches the currency check."""
+    import dataclasses
+    cfg = _protocol_cfg(tmp_path)
+    cfg = dataclasses.replace(
+        cfg, inputs=dataclasses.replace(cfg.inputs,
+                                        orientation_lock_strength=1e-4))
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+    calls = _pretrain_calls(monkeypatch)
+
+    prepare_inputs(cfg)
+
+    assert len(calls) == 1
+    assert calls[0][1]["orientation_lock_strength"] == 1e-4
+
+
+def test_prepare_inputs_states_an_unlocked_run_rather_than_defaulting(
+        tmp_path, stub_pool, stub_refs, monkeypatch):
+    """``inputs.orientation_lock_strength`` defaults to 0.0 (no lock) while the
+    generator's own default is 3e-5, so the value has to be stated: leaving it
+    out would serve a locked file to an unlocked run."""
+    cfg = _protocol_cfg(tmp_path)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+    calls = _pretrain_calls(monkeypatch)
+
+    prepare_inputs(cfg)
+
+    assert calls[0][1]["orientation_lock_strength"] == 0.0
