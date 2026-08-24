@@ -288,6 +288,67 @@ def test_run_pretrain_refuses_a_file_built_on_the_wrong_parent_density(
         run_pretrain(spec)
 
 
+def test_pretrain_data_filename_follows_the_resolved_parent():
+    """The file a run opens carries the parent's suffix: a meta-GGA architecture
+    under the rung baseline ("auto") resolves to SCAN and therefore to the
+    ``_scan`` file the datagen stage writes for it; a GGA architecture keeps
+    the PBE name; an explicit parent wins over the rung."""
+    from xcquinox.alec.pretrain import _pretrain_data_filename
+    gga = ArchitectureConfig.from_spec("t_name_gga", 2, 8)
+    mgga = ArchitectureConfig.from_spec("t_name_mgga", 2, 8,
+                                        descriptors=["metagga"], meta_gga=True)
+    assert _pretrain_data_filename(gga) == "pretrain_data.npz"
+    assert _pretrain_data_filename(gga, "auto") == "pretrain_data.npz"
+    assert _pretrain_data_filename(mgga, "auto") == "pretrain_data_scan.npz"
+    assert _pretrain_data_filename(mgga, "scan") == "pretrain_data_scan.npz"
+    assert _pretrain_data_filename(mgga, "pbe") == "pretrain_data.npz"
+    assert _pretrain_data_filename(gga, "scan") == "pretrain_data_scan.npz"
+
+
+@pytest.fixture(scope="module")
+def tiny_scan_dir(tmp_path_factory):
+    d = tmp_path_factory.mktemp("energy_term_scan")
+    pdg.generate_pretrain_data_npz(
+        str(d), atoms=_TINY, basis="sto-3g", grid_level=0, polarized=False,
+        descriptors=True, exchange_footing="spin_channel", reference_xc="scan")
+    return str(d)
+
+
+def test_run_pretrain_opens_the_scan_file_for_a_meta_gga_parent(
+        tiny_scan_dir, tmp_path):
+    """A meta-GGA run under the rung baseline pretrains on the SCAN-density
+    file: the run opens ``pretrain_data_scan.npz`` (the only file in the
+    directory) and records the SCAN parent. Before the parent was resolved
+    ahead of the file name, the run opened the PBE name and failed for every
+    non-PBE parent, the configuration every meta-GGA campaign uses."""
+    assert sorted(os.listdir(tiny_scan_dir)) == [
+        "pretrain_data_scan.manifest.json", "pretrain_data_scan.npz"] or \
+        os.path.isfile(os.path.join(tiny_scan_dir, "pretrain_data_scan.npz"))
+    arch = ArchitectureConfig.from_spec("t_mgga_scan_file", 2, 8,
+                                        descriptors=["metagga"], meta_gga=True)
+    spec = PretrainSpec(arch=arch, data_dir=tiny_scan_dir,
+                        checkpoint_dir=str(tmp_path / "ck_scan"), n_steps=2,
+                        seed=0, parent_density="auto")
+    md = run_pretrain(spec)
+    assert md["reference_xc"] == "scan"
+
+
+def test_run_pretrain_names_the_missing_scan_file(tiny_dir, tmp_path):
+    """With only the PBE-density file present, a meta-GGA run is refused with
+    a message naming the parent it resolves to and the file it needs."""
+    arch = ArchitectureConfig.from_spec("t_mgga_missing", 2, 8,
+                                        descriptors=["metagga"], meta_gga=True)
+    spec = PretrainSpec(arch=arch, data_dir=tiny_dir,
+                        checkpoint_dir=str(tmp_path / "ck_m"), n_steps=2,
+                        seed=0, parent_density="scan")
+    with pytest.raises(ValueError) as excinfo:
+        run_pretrain(spec)
+    text = str(excinfo.value)
+    assert "'scan' parent density" in text
+    assert "pretrain_data_scan.npz" in text
+    assert "only the PBE-density file" in text
+
+
 # ---------------------------------------------------------------------------
 # The block the run actually read, and libxc's own enhancement factors
 # ---------------------------------------------------------------------------

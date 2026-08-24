@@ -693,20 +693,26 @@ def _build_optimizer(
 # run_pretrain
 # ---------------------------------------------------------------------------
 
-def _pretrain_data_filename(arch) -> str:
-    """Pretrain-data filename for an architecture.
+def _pretrain_data_filename(arch, parent_density="pbe") -> str:
+    """Pretrain-data filename for an architecture and its parent density.
 
     A spin-polarization-aware arch uses the zeta-aware
     ``pretrain_data_polarized.npz`` (carrying a per-grid-point ``zeta_all``
-    column); the default unpolarized arch uses ``pretrain_data.npz``. The name
-    itself comes from ``pretrain_data_gen.pretrain_data_filename``, the single
-    naming function the generator and the datagen stage write through, so the
-    two ends of the hand-off cannot drift; its parent-density qualifier stays
-    at the PBE default until ``run_pretrain`` resolves its parent. Pure so it
-    can be unit-tested without touching disk."""
-    from xcquinox.alec.pretrain_data_gen import pretrain_data_filename
+    column); the default unpolarized arch uses ``pretrain_data.npz``; a parent
+    other than PBE carries the parent's suffix (``_scan``), because that file is
+    built on a different self-consistent density. The name itself comes from
+    ``pretrain_data_gen.pretrain_data_filename``, the single naming function
+    the generator and the datagen stage write through, so the two ends of the
+    hand-off cannot drift, and the parent qualifier is the one
+    ``resolve_parent_density`` gives the architecture (``"auto"`` is the rung
+    baseline), so a meta-GGA run opens the SCAN-density file the datagen stage
+    wrote for it rather than the PBE name. Pure so it can be unit-tested
+    without touching disk."""
+    from xcquinox.alec.pretrain_data_gen import (
+        pretrain_data_filename, resolve_parent_density)
     return pretrain_data_filename(
-        bool(getattr(arch, "use_polarized_correlation", False)))
+        bool(getattr(arch, "use_polarized_correlation", False)),
+        reference_xc=resolve_parent_density(arch, parent_density))
 
 
 def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -> dict:
@@ -750,8 +756,26 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # an unpolarized run uses ``pretrain_data.npz``. Selected purely from the arch
     # flag, so the cluster picks the right file automatically.
     polarized = bool(getattr(spec.arch, "use_polarized_correlation", False))
-    npz_path = os.path.join(spec.data_dir, _pretrain_data_filename(spec.arch))
+    # The parent density is resolved BEFORE the file is named: a meta-GGA
+    # architecture under the rung baseline pretrains on the SCAN-density file,
+    # which carries the parent's suffix, and naming the PBE file first would
+    # open the wrong density (or nothing) for every non-PBE parent.
+    from xcquinox.alec.pretrain_data_gen import resolve_parent_density
+    parent_density = getattr(spec, "parent_density", "pbe")
+    want_reference = resolve_parent_density(spec.arch, parent_density)
+    npz_path = os.path.join(
+        spec.data_dir, _pretrain_data_filename(spec.arch, parent_density))
     pkl_path = os.path.join(spec.data_dir, "pretrain_data.pkl")
+    if want_reference != "pbe" and not os.path.isfile(npz_path):
+        pbe_path = os.path.join(spec.data_dir, _pretrain_data_filename(spec.arch))
+        raise ValueError(
+            f"run_pretrain: architecture {spec.arch.name!r} resolves to the "
+            f"{want_reference!r} parent density, but {npz_path!r} does not exist"
+            + (f" (only the PBE-density file {pbe_path!r} does)"
+               if os.path.isfile(pbe_path) else "")
+            + f". Generate the {want_reference} file with "
+            "pretrain_data_gen.ensure_pretrain_data(..., reference_xc="
+            f"{want_reference!r}) or set pretrain.parent_density explicitly.")
 
     if os.path.isfile(npz_path):
         raw = np.load(npz_path)
@@ -765,7 +789,8 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # silent zeta=0 fallback that would defeat the purpose).
         raise FileNotFoundError(
             f"run_pretrain: spin-polarized run expects "
-            f"{_pretrain_data_filename(spec.arch)!r} in data_dir={spec.data_dir!r} "
+            f"{_pretrain_data_filename(spec.arch, parent_density)!r} in "
+            f"data_dir={spec.data_dir!r} "
             f"(it carries the zeta_all column). Generate it with `python "
             f"scripts/generate_polarized_pretrain_data.py --out-dir {spec.data_dir!r}`."
         )
@@ -787,10 +812,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # The parent whose SELF-CONSISTENT density this architecture must pretrain
     # on. A meta-GGA network fit on a PBE density is fit to a density its SCF
     # never sees.
-    from xcquinox.alec.pretrain_data_gen import (
-        read_pretrain_manifest, resolve_parent_density)
-    want_reference = resolve_parent_density(
-        spec.arch, getattr(spec, "parent_density", "pbe"))
+    from xcquinox.alec.pretrain_data_gen import read_pretrain_manifest
     _manifest = read_pretrain_manifest(npz_path)
     file_reference = str((_manifest or {}).get("reference_xc", "pbe"))
     if _manifest is not None and file_reference != want_reference:
