@@ -76,10 +76,20 @@ _RHO_GRAD_CUTOFF: float = 1e-6
 #       below 1e-8 there. 1e-5 exceeds both by >= 1e3, so the derivative of the
 #       smoothed indicator is a deterministic function of the density on that
 #       region. Between the network's tail mask (2 rho_sigma = 1e-10) and 1e-8
-#       the residue reaches 1.6e-7 (def2-svp), 1.8e-6 (def2-tzvp) and 3.7e-8
-#       (production), and below the mask 5.5e-2 (Li, production, rho ~ 1e-12);
-#       no width could dominate the deep tail, and none needs to: those points
-#       carry no integrand mass and the energy does not read them.
+#       the residue is larger and DRAW-DEPENDENT. On the block footing the
+#       descriptor stores, the worst on-domain case -- Li's beta channel at
+#       def2-tzvp / grid 2 -- spans 1.30e-6 to 3.72e-6 over four independent
+#       reference solutions (initial guesses minao / 1e / atom, conv_tol 1e-9
+#       against 1e-12), with this library's own precompute at 3.42e-6, against
+#       1.6e-7 (def2-svp) and 3.7e-8 (production). The width exceeds the worst
+#       on-domain residue everywhere, but by 2.7x to 7.7x across that spread,
+#       NOT by the decade a single draw suggests; the binding constraint on the
+#       width is not this margin anyway but the tail response of
+#       DEFERRED_WORK.md entry 30, which is 4e-3 -- 400 widths -- on the shell
+#       it peaks on, at any width. Below the mask the residue reaches 5.5e-2
+#       (Li, production, rho ~ 1e-12); no width could dominate the deep tail,
+#       and none needs to: those points carry no integrand mass and the energy
+#       does not read them.
 #   (b) the SCAN exchange energy of the H atom -- the system whose density is one
 #       orbital everywhere, so the smoothed indicator sits at its floor
 #       _ALPHA_SMOOTHING_WIDTH / 2 on every point -- evaluated through the
@@ -188,10 +198,13 @@ def compute_alpha(rho, sigma, tau) -> jnp.ndarray:
         manual UKS loop's occupancy-keyed gate on the indicator response, which
         the clip had made necessary, is retired. What the smoothing does NOT
         change is the indicator's response amplification in the density tail,
-        d alpha / dP ~ n^{-5/3}: on Li's beta channel at def2-svp the outermost
-        radial shell (rho_sigma = 1.0e-9, 898 points) carries a response of
-        2.9e-3 Ha per point in one Fock element with d alpha_raw / dP ~ 4e10
-        there, so a 1e-14 change of the density matrix still moves that
+        which is PEAKED ON A SHELL and is not a power law in the density: on
+        Li's beta channel at def2-svp, max |d alpha_raw / dP| reads 8.0e4 above
+        2 rho_beta = 1e-4, 2.2e6 on 1e-6 to 1e-4, 1.3e8 on 1e-8 to 1e-6,
+        4.1e11 on 1e-9 to 1e-8 and 1.2e1 below 1e-9 -- a log-log slope of -0.43
+        against 2 rho, not -5/3. The peak shell (rho_sigma = 1.0e-9, 898
+        points) carries a response of 2.9e-3 Ha per point in one Fock element,
+        so a 1e-14 change of the density matrix still moves that
         channel's virtual-virtual Fock block by 0.4 Ha through the smoothed
         derivative (a continuous function with a Lipschitz constant of that
         size), and a finite-difference probe along a direction that reaches
@@ -206,7 +219,12 @@ def compute_alpha(rho, sigma, tau) -> jnp.ndarray:
         point with 2 rho_sigma > 1e-8 (H and Li; def2-svp / grid 1, def2-tzvp
         / grid 2 and 6-311++G(3df,2pd) / grid 3), and its response to a 1e-14
         relative change of the density matrix is below 1e-8 there, so 1e-5
-        exceeds both by three orders; (b) the largest change of E_x^SCAN the
+        exceeds both by three orders; on the band between the network's tail
+        mask (2 rho_sigma = 1e-10) and 1e-8, which the energy also reads, the
+        residue is draw-dependent and the worst on-domain case (Li's beta
+        channel, def2-tzvp / grid 2) spans 1.30e-6 to 3.72e-6 over four
+        reference solutions, so the width's margin there is 2.7x to 7.7x and
+        not a decade; (b) the largest change of E_x^SCAN the
         smoothing induces through the library's own path against libxc at the
         true kinetic-energy density is +1.17e-7 Ha (the H atom, one orbital
         everywhere; identical at the three identities) and +3.1e-7 Ha on Li's

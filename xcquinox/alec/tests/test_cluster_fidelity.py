@@ -1671,19 +1671,26 @@ def test_certificate_is_exact_when_the_model_is_the_parent_functional(
     reduce the same density, on the same points and weights, through the same
     libxc, the one in JAX and the other in numpy.
 
-    Measured at sto-3g / grid 1. PBE: 3.6e-15 Ha (O), 0.0 Ha (H2O, bitwise).
-    SCAN: 2.0e-10 Ha (O), 1.6e-9 Ha (H2O) -- the meta-GGA interface carries
-    the clamped alpha, not tau, and the 572 (O) / 627 (H2O) tail points
-    clamped at alpha = 100 carry 1.5e-4 / 5.6e-4 electrons whose tau the
-    double cannot recover; both bounds sit more than five orders inside
-    tol_atom. The per-spin meta-GGA blocks are on trial here as much as the
-    energy path: a wrong doubled-channel alpha would move the O atom by mHa.
+    Measured at sto-3g / grid 1. PBE: 3.6e-15 Ha (O) and 7.1e-15 Ha (H2O),
+    a few ulps of an E_xc of order 8 Ha. SCAN: 2.4e-9 Ha (O), 3.4e-10 Ha
+    (H2O) -- the meta-GGA interface carries the smoothed, clamped alpha, not
+    tau, so the 572 (O) / 627 (H2O) tail points clamped at alpha = 100 carry
+    1.5e-4 / 5.6e-4 electrons whose tau the double cannot recover, and the
+    indicator's own smoothing floor (metagga._ALPHA_SMOOTHING_WIDTH / 2,
+    which the certificate's inversion does not undo) enters its tau at the
+    1e-9-Ha level. The SCAN figures replace a superseded record of 2.0e-10
+    (O) and 1.6e-9 Ha (H2O) taken under the hard clip; the O atom moved 12x,
+    so the 1e-8 bound now clears it by 4.2x rather than 50x -- the tightest
+    margin in this test, and what a further move of the indicator's floor
+    would trip. Both figures stay more than five orders inside tol_atom. The
+    per-spin meta-GGA blocks are on trial here as much as the energy path: a
+    wrong doubled-channel alpha would move the O atom by mHa.
 
     The H atom is pinned separately: the production path clips zeta to
     1 - 1e-6 (oneshot._ZETA_BOUNDARY_EPS) where the parent sees zeta = 1
     exactly, and the one-electron atom's correlation is not zero
     (self-correlation), so the double carries the zeta-derivative of
-    rho eps_c across that clip -- 8.0e-7 Ha for PBE and 7.7e-8 Ha for SCAN,
+    rho eps_c across that clip -- 8.0e-7 Ha for PBE and 4.4e-8 Ha for SCAN,
     more than two orders inside tol_atom."""
     bound_heavy, bound_h = _PARENT_AS_MODEL_BOUNDS[parent]
     payload, by_name = _certify_with_parent_as_model(tmp_path, monkeypatch,

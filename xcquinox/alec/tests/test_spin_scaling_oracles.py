@@ -623,10 +623,11 @@ def test_o2_fock_pair_is_the_derivative_of_the_energy_on_the_open_shell_atoms(
     """Oracle O2: central-difference check of the assembled UKS Fock matrices
     against the assembled energy on H, Li, N and O with every descriptor
     active, in the production configuration (polarized correlation, live
-    per-channel feature blocks, the solver's one-electron gate). The probe
-    and its bound live in ``test_solv01_split_xc``
-    (``_assert_uks_fd_consistency``): a one-electron channel is displaced
-    along its own rank-one manifold, the others linearly; def2-svp, grid
+    per-channel feature blocks, no gate on the indicator's response). The
+    probe and its bound live in ``test_solv01_split_xc``
+    (``_assert_uks_fd_consistency``): every populated channel is rotated
+    along its own aufbau manifold (``_uks_fd_path``), so rank, idempotency
+    and positive semidefiniteness hold at every step; def2-svp, grid
     level 2.
 
     Measured through this very helper over the 124 cases with the rotation
@@ -637,8 +638,19 @@ def test_o2_fock_pair_is_the_derivative_of_the_energy_on_the_open_shell_atoms(
     residual is stated against the net derivative, which a rotation of the
     reference fixed point keeps small on Li and N). The indicator enters no
     mask: its lower bound is the smooth positive part of
-    ``metagga.compute_alpha`` and the rotation path stays on the physical
-    manifold (DEFERRED_WORK.md entries 27 and 30).
+    ``metagga.compute_alpha`` and the rotation path keeps the probe off the
+    rank-one boundary of a one-electron channel, which is what a linear
+    displacement of such a channel runs into -- and not the boundary of the
+    positive semidefinite cone, which Li's alpha channel leaves on its own
+    while still reproducing dE/dP to 1.2e-10 (DEFERRED_WORK.md entries 27
+    and 30).
+
+    Scope of this probe: the raw indicator is stationary along every
+    rank-preserving rotation of a one-orbital block, so the H cells are
+    BLIND to the indicator's response -- H's column moves by 1.2e-9 (alpha
+    block) and 1.9e-9 (total block) at a 1e-6 step, both of its blocks being
+    one orbital. H's off-manifold coverage is the unrestricted-direction
+    test in ``test_spin_scaling_solver_manual``.
     """
     atom, spin, composition = _UKS_FD_SPECIES[species]
     model = _live_model(arch_name)

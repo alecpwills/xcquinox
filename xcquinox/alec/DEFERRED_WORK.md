@@ -626,13 +626,21 @@ traces) and 1.7e-10 (potential squares) on the five with one; a second fixture
 is kept with those deltas as its tolerance. The pretraining alpha column of the default set
 moves by 5.0e-6 on 4144 of 13086 rows (one-orbital rows: 1200 of 1200 rows of the H atom in the
 recorded sto-3g fixture, from 0.0 to 5.0e-6) and the mesh's alpha = 0 nodes by 5.0e-6; every
-other column is bit-identical. The definition of the indicator is now part of the
-pretraining-data manifest identity (`metagga.ALPHA_DEFINITION`), so a file written under the
-hard clip is stale. The certificate's parent-as-model control (sto-3g / grid 1, measured through the
-certificate itself) reads PBE +1.8e-15 Ha (O), +1.8e-15 (H2O) and +8.0e-7 (H, the recorded zeta
+other column is bit-identical. The re-recorded pretraining reference also ADDS nine keys that
+the superseded on-disk file predated -- `e_c_parent_scan_sys`, `e_c_parent_sys`, `e_lda_c_all`,
+`e_lda_x_all`, `e_x_parent_scan_sys`, `e_x_parent_sys`, `mesh_weight_fraction`, `system_all`,
+`system_natoms`, all nine already emitted by the generator and now compared bitwise instead of
+not at all -- so the closure is the commit pair 8e75f59f8 + 97c0ba76d taken as ONE change: the
+first alone leaves `test_pretrain_schema.py` at 3 failed, 69 passed. The definition of the
+indicator is now part of the pretraining-data manifest identity
+(`metagga.ALPHA_DEFINITION`), so a file written under the hard clip is stale. The
+certificate's parent-as-model control (sto-3g / grid 1, measured through the certificate
+itself) reads PBE +3.6e-15 Ha (O), -7.1e-15 (H2O) -- a few ulps of an E_xc of order 8 Ha, and
+draw-dependent at that size -- and +8.0e-7 (H, the recorded zeta
 clip, unchanged) and SCAN +2.4e-9 (O), -3.4e-10 (H2O) and +4.4e-8 Ha (H), verdict PASS on both;
-the SCAN figures sit where the recorded ones did (2.0e-10 / 1.6e-9 / 7.7e-8) inside the same
-1e-8 / 5e-6 bounds -- the certificate's own inversion does not undo the smoothing, so the floor
+the SCAN figures supersede the recorded ones (2.0e-10 / 1.6e-9 / 7.7e-8) inside the same
+1e-8 / 5e-6 bounds, the O atom moving 12x and leaving the 1e-8 bound a margin of 4.2x -- the
+certificate's own inversion does not undo the smoothing, so the floor
 enters its tau at the 1e-9-Ha level. The pyscfad backend shares `compute_alpha` (grep:
 `solver_pyscfad.py` imports it) and its tests pass (10 passed).
 
@@ -835,11 +843,18 @@ records across memory histories with the pins and different ones without).
 ## 30. The iso-orbital indicator's tail response makes the meta-GGA Fock hyper-sensitive off the SCF manifold (found 2026-08-24)
 
 **WHAT:** `alpha = (tau - tau_W)/tau_unif` divides by `n^{5/3}`, so its derivative with respect
-to the density matrix, `d alpha / dP ~ |grad chi_i . grad chi_j| / n^{5/3}`, grows without bound
-into the density tail wherever a diffuse basis function is large relative to the occupied
-orbital. Measured on Li's beta channel (`deep_mgga_3x16`, def2-svp, grid 1): on the outermost
-radial shell (rho_beta = 1.0e-9, 898 points) the raw indicator moves by 4e-4 under a 1e-14
-relative change of the density matrix (`d alpha_raw / dP ~ 4e10`), by 1.25e-6 at 2 rho_sigma =
+to the density matrix, `d alpha / dP ~ |grad chi_i . grad chi_j| / n^{5/3}`, becomes large in
+the density tail wherever a diffuse basis function is large relative to the occupied orbital.
+The response is PEAKED ON A SHELL and is not a monotone power law in the density, so the
+shorthand `d alpha / dP ~ n^{-5/3}` states a scaling the data does not show. Measured by a JVP
+of the block's raw indicator along a unit diagonal element of the most diffuse basis function
+(Li beta, `deep_mgga_3x16`, def2-svp, grid 1), `max |d alpha_raw / dP|` per density band:
+8.00e4 above 2 rho_beta = 1e-4 (1710 points), 2.22e6 on 1e-6 to 1e-4 (776), 1.26e8 on 1e-8 to
+1e-6 (1140), 4.07e11 on 1e-9 to 1e-8 (728) and 1.15e1 below 1e-9 (510) -- ten orders BELOW the
+peak in the deepest tail, a log-log fit against 2 rho giving slope -0.43, not -5/3. The
+amplification therefore lives on the 2 rho_beta ~ 1e-9 to 1e-8 shell and nowhere else. On that
+same record the raw indicator moves under a 1e-14 relative change of the density matrix by
+4e-4 on the outermost radial shell (rho_beta = 1.0e-9, 898 points), by 1.25e-6 at 2 rho_sigma =
 1e-8 to 1e-7, 1.05e-8 at 1e-6 to 1e-4 and 9.4e-10 above 1e-4; each of those 898 points
 contributes 2.9e-3 Ha to one element of the feature-response Fock term (0.57 Ha over the shell)
 while the energy they carry is 1e-8 Ha at most (their weight times the indicator's ceiling).
@@ -847,12 +862,21 @@ Consequences, all measured: (i) that channel's Fock matrix moves by 0.37 Ha in i
 virtual-virtual block under the 1e-14 probe with the smooth positive part of entry 27 in place
 (0.93 with the hard clip; 0.2-0.5 at every width from 1e-9 to 1e-5 -- no width in indicator
 units can be large against 4e-4 without an alpha floor of the same order); (ii) a
-finite-difference probe of the Fock against the energy along a direction that leaves the cone
-of positive semidefinite matrices is not a derivative estimate at any usable step: a 1e-6 step
-moves the raw indicator by 1e3 to 1e5 on those points, beyond the ceiling, and the residual
+finite-difference probe of the Fock against the energy along a linear symmetric displacement
+of a RANK-ONE channel is not a derivative estimate at any usable step: a 1e-6 step moves the
+raw indicator by 1e3 to 1e5 on those points, beyond the ceiling, and the residual
 reads 5.2e-2 (Li) and 6.0e-6 (N) flat from the 1e-5 to the 1e-7 step, on the hard clip and on
 the smoothing alike, while a density cut at rho_sigma > 1e-8 on the probe only takes Li to
-2.5e-3 because the response is still 1e6 to 1e8 a decade or two above that; (iii) H is exempt
+2.5e-3 because the response is still 1e6 to 1e8 a decade or two above that. Leaving the cone of
+positive semidefinite matrices is NOT the operative condition, measured channel by channel on
+Li at the reference density with one fixed random symmetric direction: displacing the ALPHA
+channel alone takes it out of the cone (minimum eigenvalue of the displaced block -2.2e-7) and
+still reproduces dE/dP to 1.24e-10, 5.37e-11 and 4.03e-10 at the 1e-5, 1e-6 and 1e-7 steps,
+while displacing the BETA channel alone -- rank one, raw indicator identically zero, block
+indicator saturating the ceiling along the probe (max alpha = 100.0 and max |d alpha| = 100.0
+at every step) -- reads 7.40e-1, 7.29e-1 and 7.26e-1, flat in the step; both channels together
+read 1.60e-1, 1.51e-1 and 1.48e-1. The operative condition is the rank-one boundary together
+with the ceiling crossing, not cone departure; (iii) H is exempt
 (its basis has no function more diffuse than its orbital; the same probe reads 3.8e-10 at the
 1e-7 step), O is exempt (every block's raw indicator is >= 6.6e-4 on the resolved grid), and
 N's beta channel (1s and 2s, one-orbital-like in its tail) is the multi-electron case.
@@ -865,25 +889,46 @@ apart to 0.0 and 1.9e-14 Ha, the Li figure of the order of the seed separation i
 the SCF's own manifold -- random orbital rotations of every populated channel, positive
 semidefinite at every step -- the Fock pair reproduces the energy to 2.9e-11 (H), 2.4e-10 (Li),
 9.8e-11 (N) and 5.5e-11 (O) of the probe's absolute-contribution scale at the 1e-5 step with no
-mask and no gate, which is the derivative the Roothaan step needs. The energy is unaffected
-(the tail's integrand mass is nil).
+mask and no gate, which is the tangent direction the Roothaan step needs. That restriction is a
+probe-design constraint and not a hole in the potential: the loop assembles its features and
+its Fock at the MIXER output, a convex combination of two rank-`nocc` projectors, so Li's beta
+block is rank TWO where the energy is actually evaluated (raw indicator median 0.87 at a mixing
+of 0.05 and 0.36 at 0.20, against 3e-16 at the aufbau matrix), and an UNRESTRICTED linear
+symmetric probe of both channels at that rank-raised base point reproduces dE/dP to 3.27e-10,
+5.41e-11 and 2.33e-9 (mixing 0.05) and 1.58e-10, 4.29e-10 and 2.29e-11 (mixing 0.20) at the
+1e-5, 1e-6 and 1e-7 steps -- 5.4e-11 at best, the floor the rotation path itself reaches. The
+rotation path is thus the geometry that keeps a probe off the rank-one boundary, not the only
+density the loop visits. The energy is unaffected (the tail's integrand mass is nil).
 
 **WHY DEFERRED:** the only remedy is a change of the descriptor's tail behaviour in the ENERGY --
 a smooth damping of the indicator's dependence on the density matrix below a density scale
-(the network already masks 2 rho_sigma <= 1e-10 with a hard step), or a bounded reformulation of
-the `n^{-5/3}` amplification -- which redefines the descriptor for every meta-GGA checkpoint and
-pretraining file and needs an explicit decision; a rescaling of the width in indicator units
-cannot do it (the width would have to reach the alpha scale of the tail response, 1e-2 or more,
-against a physical floor that must stay below 1e-5), and a stop-gradient is excluded by the
-2026-08-06 rule that the derivative must be the derivative of the energy.
+(the network already masks 2 rho_sigma <= 1e-10 with a hard step), or a bounded reformulation
+of the shell-peaked amplification above -- which redefines the descriptor for every meta-GGA
+checkpoint and pretraining file and needs an explicit decision; a rescaling of the width in
+indicator units cannot do it (the width would have to reach the alpha scale of the tail
+response, 1e-2 or more, against a physical floor that must stay below 1e-5), and a
+stop-gradient is excluded by the 2026-08-06 rule that the derivative must be the derivative of
+the energy.
 
-**KNOWN:** the probe geometry that is valid -- rank-preserving rotations (`_rotation_path` in
-`test_spin_scaling_solver_manual.py`, `_uks_fd_path` in `test_solv01_split_xc.py`) -- and the
-one that is not (linear symmetric displacements of a rank-deficient channel), with the numbers
-above; the per-point decomposition script pattern (contribution of each grid point to one Fock
+**KNOWN:** the probe geometries that are valid -- rank-preserving rotations (`_rotation_path` in
+`test_spin_scaling_solver_manual.py`, `_uks_fd_path` in `test_solv01_split_xc.py`), and a linear
+symmetric displacement at a rank-raised base point -- and the one that is not (a linear
+symmetric displacement of a RANK-ONE channel; rank deficiency on its own is harmless, as the
+alpha channel above shows), with the numbers above; the per-point decomposition script pattern
+(contribution of each grid point to one Fock
 element via a JVP of the block closure along a unit matrix direction) that located the shell.
-What is NOT known: whether the virtual-block noise reaches a trained model through the
-differentiable SCF's eigensolver derivative (the training gradient of a FULL-mode meta-GGA fit
+Also known, and the second route by which this can reach training: the indeterminacy is already
+in `d(Fock)/d(theta)` itself, through `feature_response_vxc` and BEFORE any eigensolver. The
+parameter gradient of the assembled beta Fock, `d/d theta <F_beta, M>` for a fixed random `M`
+(Li, `deep_mgga_3x16`, def2-svp, grid 1), moves by 6.4e-3 relative under a 1e-14
+rank-preserving change of the density matrix, and by 8.3e-1 under an unrestricted one, where an
+architecture carrying no indicator column (`deep_rung35_3x16`) moves by 2.6e-14. The smooth
+positive part of entry 27 IMPROVES that quantity by 264x over the hard clip (1.70 -> 6.4e-3)
+and it falls as 1/w exactly (6.4e-4 at w = 1e-4, 6.5e-2 at 1e-6), so nothing here counts
+against the smoothing.
+What is NOT known: whether that indeterminacy reaches a trained model -- through
+`feature_response_vxc`'s own parameter gradient, or through the differentiable SCF's
+eigensolver derivative (the training gradient of a FULL-mode meta-GGA fit
 on a one-orbital channel visits densities within 1e-14 of rank one only in its last cycles) --
 to be measured on Li with two seeds 1e-14 apart before the meta-GGA rungs are trained in FULL
 mode; and the size of the response at the production identity, where `d alpha / d sigma`

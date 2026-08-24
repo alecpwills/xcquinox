@@ -367,10 +367,13 @@ def test_manual_uks_li_beta_response_annihilates_the_occupied_orbital(
     """Li's beta channel is one orbital c (rank one, tau = tau_W). The
     indicator response of that channel's block is a continuous function of
     the density matrix now, but its size is set by the descriptor's tail
-    amplification d alpha / dP ~ n^{-5/3}: on this record the outermost
-    radial shell (rho_beta = 1.0e-9, 898 points) contributes 2.9e-3 Ha per
-    point to F_beta[1, 2] with d alpha_raw / dP ~ 4e10 there, so a 1e-14
-    relative change of the density matrix moves the raw indicator by 4e-4 --
+    amplification, which is PEAKED ON A SHELL rather than a power law in the
+    density: max |d alpha_raw / dP| reads 8.0e4 above 2 rho_beta = 1e-4,
+    2.2e6 on 1e-6 to 1e-4, 1.3e8 on 1e-8 to 1e-6, 4.1e11 on 1e-9 to 1e-8 and
+    1.2e1 below 1e-9 (log-log slope -0.43 against 2 rho, not -5/3). On this
+    record the peak shell (rho_beta = 1.0e-9, 898 points) contributes 2.9e-3
+    Ha per point to F_beta[1, 2], so a 1e-14 relative change of the density
+    matrix moves the raw indicator by 4e-4 --
     40 widths -- and the beta Fock by 0.37 Ha (measured; 0.93 with the hard
     clip, 0.2-0.5 at every width from 1e-9 to 1e-5; DEFERRED_WORK.md entry
     30). What that movement can and cannot do is pinned here:
@@ -675,9 +678,14 @@ def _rotation_path(P0, s_matrix, seed=20260824):
     """``eps -> P(eps)``: every populated channel of ``P0`` rotated by
     ``expm(eps K_s)`` in the S-metric, ``K_s`` a random antisymmetric
     generator of unit Frobenius norm -- the manifold of aufbau density
-    matrices the Roothaan step moves on (rank, idempotency and positive
+    matrices the Roothaan step returns (rank, idempotency and positive
     semidefiniteness preserved at every eps). The tangent at eps = 0 is a
-    random symmetric matrix in both channels."""
+    random symmetric matrix in both channels. The iterating loop does not
+    stay on that manifold: it assembles its features and its Fock at the
+    MIXER output, a convex combination of two rank-nocc projectors, which is
+    rank two for a one-electron block. This path is therefore the geometry
+    that keeps a probe off the rank-one boundary, not the only density the
+    loop visits (DEFERRED_WORK.md entry 30)."""
     from scipy.linalg import expm
     ev, evec = np.linalg.eigh(np.asarray(s_matrix))
     s_half = evec @ np.diag(np.sqrt(ev)) @ evec.T
@@ -735,14 +743,20 @@ def test_manual_uks_fock_is_the_derivative_along_the_scf_manifold(
     pair, for the record: 3.7e-8 on H at the 1e-6 step, falling to 3.8e-10
     at 1e-7 (the H atom is where the clip's kink used to give 7.4e-4 flat
     in the step, the closure of DEFERRED_WORK.md entry 27), but 5.2e-2 on
-    Li and 6.0e-6 on N, flat between the 1e-5 and 1e-7 steps. Such a
-    direction leaves the cone of positive semidefinite matrices, where the
-    von Weizsacker bound fails and the raw indicator turns negative; in the
-    density tail its response d alpha / dP ~ n^{-5/3} reaches 4e10 (Li's
-    outermost shell), so a 1e-6 step moves the raw indicator by 1e3-1e5
-    there, beyond any linear regime of the energy at any width of the
-    smooth positive part (entry 30). The manifold direction is the one the
-    Roothaan step needs, and on it the potential is the derivative.
+    Li and 6.0e-6 on N, flat between the 1e-5 and 1e-7 steps. What such a
+    direction hits is a RANK-ONE channel, not the boundary of the positive
+    semidefinite cone: on Li, displacing the alpha channel alone takes it
+    out of the cone (minimum eigenvalue -2.2e-7) and still reads 1.2e-10,
+    while displacing the rank-one beta channel alone reads 0.74 flat in the
+    step, its block indicator saturating the ceiling at every step. On such
+    a channel the tail response -- peaked on the 2 rho_beta ~ 1e-9 to 1e-8
+    shell, where max |d alpha_raw / dP| = 4.1e11 -- moves the raw indicator
+    by 1e3-1e5 at a 1e-6 step, beyond any linear regime of the energy at any
+    width of the smooth positive part (entry 30). The manifold direction is
+    the tangent the Roothaan step needs, and on it the potential is the
+    derivative; an unrestricted direction is a valid probe as well once the
+    base point is off the rank-one boundary, which entry 30 records at
+    5.4e-11 on the density the mixer produces.
     """
     model = _model("deep_mgga_3x16")
     md = _md(model, name, atom, spin, composition)
@@ -819,12 +833,14 @@ def test_manual_uks_fock_at_the_li_fixed_point(monkeypatch):
     random symmetric direction, which reads 0.88 relative here (analytic
     -2.58 against a finite difference of -0.316, flat between the 1e-5 and
     1e-6 steps) with the clip and with the smoothing alike. The beta block
-    is one orbital; a linear displacement takes it out of the cone of
-    positive semidefinite matrices and drives the raw indicator of its
-    outermost shell (rho_beta = 1e-9, d alpha / dP ~ 4e10) by 1e4-1e5 per
-    step, so the energy is not linearizable over any usable step there and
-    the probe measures the descriptor's tail response, not the potential
-    (entry 30). That figure is pinned as a lower bound so a change of the
+    is one orbital, and a linear displacement of a RANK-ONE block drives
+    the raw indicator of its peak response shell (2 rho_beta ~ 1e-9 to 1e-8,
+    max |d alpha_raw / dP| = 4.1e11) by 1e4-1e5 per step, so the energy is
+    not linearizable over any usable step there and the probe measures the
+    descriptor's tail response, not the potential (entry 30). Cone departure
+    is not what does it: this same displacement applied to Li's ALPHA
+    channel alone leaves the cone by -2.2e-7 and still reproduces dE/dP to
+    1.2e-10. That figure is pinned as a lower bound so a change of the
     descriptor's tail behaviour is noticed.
     """
     model = _model("deep_mgga_3x16")
@@ -944,16 +960,19 @@ def test_manual_uks_fock_is_the_derivative_on_a_spherical_open_shell(
     is not a valid probe here. N's beta channel holds 1s and 2s only, so
     tau - tau_W is small over most of space: the raw iso-orbital indicator
     of its doubled block has median 3.2e-3 and minimum 7.7e-9 against O's
-    median 0.58 and minimum 6.6e-4, and the descriptor's tail response
-    d alpha / dP ~ n^{-5/3} lets a 1e-6 step move it by orders of magnitude
-    on hundreds of resolved points (once read as 431 to 710 clip crossings
-    at the 1e-6 and 1e-5 steps). The central difference then reads 6.0e-6
-    relative on ``deep_mgga_3x16`` at the 1e-6 step with the smooth positive
-    part in place, exactly as with the hard clip, and flat from 1e-5 to
-    1e-7 -- the descriptor's tail response along a direction off the
-    positive semidefinite cone (DEFERRED_WORK.md entry 30), not a potential
-    defect. The element directions and the manifold direction do not reach
-    that regime.
+    median 0.58 and minimum 6.6e-4, and the descriptor's tail response --
+    peaked on the low-density shell rather than a power law in the density,
+    max |d alpha_raw / dP| reaching 4.1e11 on Li's 2 rho ~ 1e-9 to 1e-8 band
+    against 1.2e1 below it -- lets a 1e-6 step move it by orders of
+    magnitude on hundreds of resolved points (once read as 431 to 710 clip
+    crossings at the 1e-6 and 1e-5 steps). The central difference then reads
+    6.0e-6 relative on ``deep_mgga_3x16`` at the 1e-6 step with the smooth
+    positive part in place, exactly as with the hard clip, and flat from
+    1e-5 to 1e-7 -- the descriptor's tail response along an unrestricted
+    linear displacement (DEFERRED_WORK.md entry 30), not a potential defect
+    and not a consequence of leaving the positive semidefinite cone, which
+    on Li is measured harmless on its own. The element directions and the
+    manifold direction do not reach that regime.
     """
     model = _model(arch_name)
     md = _md(model, "N", "N 0 0 0", 3, (("N", 1),))
