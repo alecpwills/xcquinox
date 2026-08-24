@@ -599,3 +599,42 @@ independent runs and damps or masks the response term on one-electron channels i
 expression of `compute_alpha` (never a modified derivative alone), re-verify against libxc
 spin=1 SCAN (the energy is insensitive: the affected rows carry |alpha_raw| <= 1e-9), and
 re-run the one-electron FD probes.
+
+## 28. Production-basis energy/potential check for the three-block UKS Fock (2026-08-23)
+
+**WHAT:** the spin-scaling spec's oracle O2 asks for a central-difference check of the assembled
+UKS Fock matrices against the three-block energy on H, Li, N and O with every descriptor active,
+"extended from Li/def2-svp to the production basis". All four species are now covered at
+def2-svp / grid level 1: O along a random symmetric direction, N along the diagonal and two
+off-diagonal element pairs of each channel (three architectures each), and H and Li along a
+rank-preserving rotation of their one-electron channel, plus Li probed at its own fixed point
+along a constrained and an unconstrained direction. The repetition at the production identity
+(6-311++G(3df,2pd), grid level 3) is not run.
+
+**WHY DEFERRED:** cost, and the wrong machine for it. Each direction is two full three-block
+energy evaluations -- three descriptor blocks, three feature-response contractions -- plus one
+SCF cycle to capture the Fock pair on its way to the eigensolver. At def2-svp / grid level 1 with
+nao 14 the N check measures 4-8 s per architecture and the Li fixed-point check 39 s on four CPU
+threads; the production basis raises nao by roughly a factor of four and the grid by an order,
+which puts the same battery in the tens of minutes to hours and into the class of run this
+repository submits rather than runs on the workstation.
+
+**KNOWN (do not re-derive):** measured relative residuals at def2-svp / grid level 1 --
+3.8e-13 to 6.6e-11 (N, element directions, 1e-5 step, three architectures), 4.1e-11 to 4.6e-10
+(O, random symmetric direction, 1e-6 step), 7.8e-10 (H) and 8.7e-8 (Li) along the one-orbital
+rotation at the 1e-5 step, and 5.0e-10 for the alpha direction at Li's fixed point. The defect
+signal these bounds must stay below is the superseded two-block potential against the same
+three-block energy: 1.4e-4, 3.6e-5 and 7.1e-5 on O. Two things must be re-derived at the larger
+basis rather than carried over: the FD step (1e-5 to 1e-6 is right at def2-svp; a wider basis is
+worse conditioned) and the choice of direction. A random symmetric direction is unusable wherever
+a channel's iso-orbital indicator hugs the lower clip of `metagga.compute_alpha` -- N's beta
+channel holds 1s and 2s only, raw indicator median 3.2e-3 against O's 0.58, and a random step
+changes the clip state of 431 (h = 1e-6) to 710 (h = 1e-5) of its 4098 resolved points, which
+reads as a 6.0e-5 relative "failure" that is the clip's one-sided derivative (#27) and not a
+potential defect. Single-element directions cross the clip on zero points at both steps.
+
+**TRIGGER:** run on the cluster, either as a slow-marked test (`-m slow`) or as a cell of the
+workflow matrix, before the next production UKS campaign on the meta-GGA rungs, and whenever the
+three-block potential or the feature-response contraction is changed. Closing #27 (a smooth
+positive part in the energy of `compute_alpha`) also changes what the check measures on the
+one-electron channels and should be paired with it.

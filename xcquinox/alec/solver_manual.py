@@ -555,6 +555,18 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         # total-density gradient for the correlation piece (zeta=0).
         # nabla_rho_tot = nabla_rho_a + nabla_rho_b, sigma_tot = |nabla_rho_tot|^2
         # = sigma_aa + 2 sigma_ab + sigma_bb.
+        #
+        # The channel invariant above is exact; this total one is NOT bitwise
+        # the kernel contraction of P_a + P_b, which is how the TOTAL feature
+        # block is built. Floating-point addition is not associative, so the
+        # summed form differs from ``_contract_dm_to_grid_with_nabla(D_a +
+        # D_b)`` on 68-71% of the grid points of O and Li at 1.4e-15 relative
+        # or below, moving the total block's iso-orbital indicator by 8.1e-12
+        # (O, resolved region). Closing it costs one more grid contraction per
+        # energy evaluation and buys 1e-15, twelve orders below the 1.0 mHa
+        # per-atom tolerance of the program; the residual is bounded by
+        # test_manual_uks_total_block_ingredients_match_the_kernel_contraction
+        # instead.
         nabla_rho_tot = nabla_rho_a + nabla_rho_b
         sigma_tot = jnp.einsum("gd,gd->g", nabla_rho_tot, nabla_rho_tot)
         return (rho_a, rho_b, nabla_rho_a, nabla_rho_b,
@@ -600,25 +612,58 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         n_s = 1, e.g. Li beta or H alpha; the total density when N = 1, the
         H atom).
 
-        A one-electron density is a single orbital, for which tau = tau_W
-        pointwise (the von Weizsacker bound is an equality for one orbital),
-        so the indicator alpha = (tau - tau_W)/tau_unif of that block is
-        identically ZERO along the loop's own manifold -- the Roothaan step
-        always returns an idempotent aufbau matrix of fixed rank -- and the
-        exact response of the column vanishes. Autodiff cannot see the
-        manifold: alpha_raw is a 0/0 whose clip at 0 is active on the
-        rounding-selected half of the grid, and the contraction returns
-        whichever side the rounding picks. Measured (deep_mgga_3x16,
-        def2-svp, grid level 1, 1e-14 relative change of the density
-        matrix): Li's beta-channel term is 1.13 Ha and moves by 0.93 Ha; H's
-        alpha-channel and total-block terms move by 3.4e-3 and 7.6e-4 Ha;
-        every multi-electron block is stable to 4e-16. Zeroing the columns
-        implements the exact value; free H and Li atoms are atomization
-        anchors, so the Fock must be a function of the density there, not of
-        the rounding. n = 0 (an empty channel) is vacuous -- ``de/df`` is
-        already zeroed by the density-tail mask of
-        ``feature_energy_derivative`` -- and is included in the gate only for
-        uniformity. Other descriptor columns are smooth in P and stay live.
+        SCOPE. The gate is exact AT THE FIXED POINT and only there. The fixed
+        point of a one-electron block is a single orbital whatever the
+        round-off does, because the Roothaan step returns an idempotent aufbau
+        matrix of the block's own rank; for one orbital the von Weizsacker
+        bound is an equality, tau = tau_W pointwise, so the indicator
+        alpha = (tau - tau_W)/tau_unif is a 0/0 there and its clip at 0 is
+        active on the rounding-selected half of the grid. Autodiff returns
+        whichever side the rounding picks: measured (deep_mgga_3x16, def2-svp,
+        grid level 1, 1e-14 relative change of the density matrix), Li's
+        beta-channel term is 1.13 Ha and MOVES BY 0.93 Ha, and H's
+        alpha-channel and total-block terms move by 3.4e-3 and 7.6e-4 Ha,
+        while every multi-electron block is stable to 4e-16. Free H and Li are
+        atomization anchors, so the Fock the loop diagonalizes there must be a
+        function of the density and not of the rounding.
+
+        ALONG THE ITERATION the dropped response is a REAL term, not a
+        rounding artefact. The loop builds its features and its Fock at the
+        MIXER output (1-a) D_cur + a D_new, a convex combination of two
+        different rank-nocc projectors and hence rank 2 for a one-electron
+        block, where tau > tau_W and the indicator is an ordinary smooth
+        column: measured on the densities the loop visits, up to 2.60 on Li's
+        beta channel (mean 0.44) and 1.7e-3 on H's alpha channel, halving each
+        cycle as the mixer contracts. Zeroing its response there changes the
+        map -- the gate-live and gate-disabled Fock matrices differ by 0.33
+        (Li beta) to 0.44 (H alpha) per cent in norm at cycle 5 -- so the gate
+        alters the PATH, not the fixed point: the converged energies agree to
+        8e-15 Ha (Li) and the 25-cycle energies to 1.3e-14 Ha (H) and 1.0e-15
+        Ha (Li). Consequently the assembled Fock is the exact derivative of
+        the three-block energy along directions that keep the block a single
+        orbital, and is not along directions that leave that manifold
+        (measured 5.5e-2 relative on Li's converged density; see
+        test_manual_uks_gated_fock_at_the_li_fixed_point). Dropping the gate
+        is not the better alternative on that same direction: the Fock is
+        built at the converged density, where the block IS a single orbital
+        and the ungated response is the rounding-selected side of the 0/0,
+        giving -2.61 against a finite difference of -0.32 (0.88 relative)
+        instead of -0.2987 against -0.3163.
+
+        WHY THE CONDITION IS THE OCCUPANCY. ``n_electrons`` is the block's
+        integer electron count, so the gate fires on exactly the blocks whose
+        FIXED POINT carries the 0/0, and nothing it reads can be perturbed by
+        round-off. Keying instead on the clip state of ``metagga.compute_alpha``
+        or on tau - tau_W against tau_unif would fire only where the 0/0 has
+        already happened -- but which points those are, and which side of the
+        clip they land on, is precisely the rounding-selected quantity the
+        gate exists to remove, so the condition would inherit the instability
+        it is meant to cure. The durable fix is a smooth positive part in the
+        ENERGY of ``compute_alpha``, which retires the gate altogether
+        (DEFERRED_WORK #27). n = 0 (an empty channel) is vacuous -- ``de/df``
+        is already zeroed by the density-tail mask of
+        ``feature_energy_derivative`` -- and is included only for uniformity.
+        Other descriptor columns are smooth in P and stay live.
         """
         if not _alpha_cols:
             return dedf
@@ -645,6 +690,14 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         entirely in that spin block; the total block couples both.
         """
         rho_tot = rho_a + rho_b
+        # ``_drop_one_orbital_indicator_response`` below is keyed on each
+        # block's integer electron count. It is the exact response at the
+        # FIXED POINT of a one-electron block and a real dropped term away
+        # from it (the loop evaluates at the mixer output, which is rank 2 for
+        # one electron); it therefore changes the iteration path and not the
+        # converged density. Scope, measured magnitudes and the reason the
+        # condition is the occupancy rather than the clip state: the helper's
+        # docstring.
         v = feature_response_vxc(
             _drop_one_orbital_indicator_response(
                 0.5 * feature_energy_derivative(

@@ -21,7 +21,8 @@ import xcquinox.alec as alec
 import xcquinox.alec.solver_pyscfad as solver_pyscfad
 from xcquinox.alec.config import MoleculeSpec
 from xcquinox.alec.data import precompute_fixed_density_data
-from xcquinox.alec.descriptors import doubled_spin_dm
+from xcquinox.alec.descriptors import (assemble_descriptor_features,
+                                       doubled_spin_dm)
 from xcquinox.alec.oneshot import split_exc_energy_uks
 from xcquinox.alec.solver import (
     FeaturePolicy, SolverBackend, SolverConfig, SolverMode, run_scf)
@@ -279,3 +280,72 @@ def test_pyscfad_reassemble_refreshes_all_three_blocks_from_the_live_dm(
     # At least one refresh happened at a density other than the seed.
     assert any(not np.array_equal(calls[k][1], dm_seed)
                for k in range(3, len(calls), 3)), "no refresh at a moved DM"
+
+
+def _uks_rho_block(md, n_points=8):
+    """A ``(2, 4, n)`` spin-resolved rho block in pyscfad's numint layout,
+    taken from the precompute's own density at its densest grid points, so the
+    callback is exercised on real numbers rather than on a synthetic array."""
+    ao_deriv = jnp.asarray(md["ao_grid_deriv"])
+    ao, ao_grad = ao_deriv[0], ao_deriv[1:4]
+    P = jnp.asarray(md["dm_pbe"])
+    channels = []
+    for spin in (0, 1):
+        rho = jnp.einsum("ij,gi,gj->g", P[spin], ao, ao)
+        nabla = 2.0 * jnp.einsum("ij,dgi,gj->gd", P[spin], ao_grad, ao)
+        channels.append(jnp.concatenate([rho[None, :], nabla.T], axis=0))
+    full = np.asarray(jnp.stack(channels, axis=0))
+    densest = np.argsort(full[0, 0] + full[1, 0])[::-1][:n_points]
+    return full[:, :, np.sort(densest)]
+
+
+def test_pyscfad_uks_callback_refuses_a_holder_without_per_channel_blocks():
+    """The UKS branch of the callback needs the descriptor blocks of
+    diag(P_a, P_a) and diag(P_b, P_b) for its two spin-scaled exchange terms.
+    Where they are absent it must REFUSE: the reachable alternative -- the
+    total block in both channels -- is the superseded two-block evaluation,
+    which is silent, wrong on every open shell by tens of mHa, and
+    indistinguishable from the correct path in the returned arrays.
+
+    Two entries reach the missing-block state: a holder carrying only
+    ``features_full`` (the shape a caller written against the previous
+    contract would build) and the holder-less legacy path, which returns the
+    precompute block as the total block and has no per-channel block to give.
+    Both are checked, together with the positive control that the same
+    callback evaluates when all three blocks are present -- without it the
+    refusal test would pass on any error at all.
+    """
+    model = _model("deep_mgga_3x16")
+    md = _md(model, "Li", "Li 0 0 0", 1, (("Li", 1),))
+    total = assemble_descriptor_features(model.descriptors, md)
+    rho = _uks_rho_block(md)
+    n_points = rho.shape[-1]
+
+    def callback(holder):
+        return _make_alec_eval_xc(model, model.descriptors, md,
+                                  FeaturePolicy.FROZEN, feature_holder=holder)
+
+    def full_holder():
+        return {"features_full": total, "features_full_a": total,
+                "features_full_b": total, "offset": 0}
+
+    exc, vxc, _fxc, _kxc = callback(full_holder())("", rho, spin=1, deriv=1)
+    assert np.asarray(exc).shape == (n_points,)
+    assert bool(np.all(np.isfinite(np.asarray(exc))))
+    assert np.asarray(vxc[0]).shape == (n_points, 2)
+
+    for missing in ("features_full_a", "features_full_b"):
+        holder = full_holder()
+        holder.pop(missing)
+        with pytest.raises(ValueError,
+                           match="without per-channel feature blocks"):
+            callback(holder)("", rho, spin=1, deriv=1)
+        holder = full_holder()
+        holder[missing] = None
+        with pytest.raises(ValueError,
+                           match="without per-channel feature blocks"):
+            callback(holder)("", rho, spin=1, deriv=1)
+
+    whole_grid = _uks_rho_block(md, n_points=int(np.asarray(total).shape[0]))
+    with pytest.raises(ValueError, match="without per-channel feature blocks"):
+        callback(None)("", whole_grid, spin=1, deriv=1)
