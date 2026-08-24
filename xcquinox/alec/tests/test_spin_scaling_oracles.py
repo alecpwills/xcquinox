@@ -28,7 +28,11 @@ O3 is the closed-shell byte identity against the tree at ae204537e: rho_a =
 rho_b makes the three per-channel feature blocks identical, so the exact spin
 scaling has no closed-shell content at all. The record, the archived fixture
 and the comparison live in ``test_closed_shell_byte_identity``; the case below
-is the per-architecture entry point the matrix selects.
+is the per-architecture entry point the matrix selects. Bitwise equality is a
+statement about one machine, so the fixture states the platform it was
+recorded on and the comparison falls back to a documented relative floor on
+any other; the branch that ran is printed as an ``[O3]`` line in the case's
+own output, which is what the matrix's oracle log keeps.
 
 O4 is the H atom: one electron in one orbital, so the symmetric doubled density
 diag(P_a, P_a) is a two-electron single-orbital system with tau = tau_W and
@@ -58,7 +62,7 @@ from xcquinox.alec.solver import make_uks_feature_fns
 from xcquinox.alec.tests.parent_adapter import (
     LibxcParentModel, gga_rho_row, mgga_rho_row, tau_from_alpha)
 from xcquinox.alec.tests.test_closed_shell_byte_identity import (
-    assert_closed_shell_record_matches)
+    announce, assert_closed_shell_record_matches)
 from xcquinox.alec.tests.test_solv01_split_xc import (
     _UKS_FD_SPECIES, _alpha_columns, _assert_uks_fd_consistency,
     _live_model, _md_with_descriptors)
@@ -665,20 +669,26 @@ def test_o2_fock_pair_is_the_derivative_of_the_energy_on_the_open_shell_atoms(
 
 @pytest.mark.parametrize("arch_name", _ARCHS)
 def test_o3_closed_shell_record_is_byte_identical_to_the_archived_tree(
-        arch_name):
+        arch_name, capsys):
     """Oracle O3: on a closed-shell molecule the RKS and closed-shell UKS
     energies and potentials of this architecture reproduce the tree at
-    ae204537e digit for digit.
+    ae204537e digit for digit on the platform that recorded the fixture, and
+    within its documented cross-platform floor on any other.
 
     rho_a = rho_b makes the three per-channel blocks the same array, so the
     exact spin scaling has no closed-shell content and the comparison is
-    equality rather than a tolerance. The record, the archived fixture and
+    equality rather than a tolerance -- an equality that only one machine can
+    be held to, since the last digits of the reference SCF are those of the
+    BLAS kernels its CPU selects (measured: three ulps, 4.3e-14 Ha, on
+    ``E_non_xc`` between this record's workstation and an AMD Milan cluster
+    node). The record, the archived fixtures, the platform fingerprint and
     the comparison itself are in ``test_closed_shell_byte_identity``; this
     case exists so the workflow matrix's ``oracle_selector`` reaches O3 for
-    one architecture along with O1, O2 and O4. The record of an architecture
-    is computed once per process and shared by the two entry points.
+    one architecture along with O1, O2 and O4, and prints the branch that ran
+    into the oracle log. The record of an architecture is computed once per
+    process and shared by the two entry points.
     """
-    assert_closed_shell_record_matches(arch_name)
+    announce(assert_closed_shell_record_matches(arch_name), capsys)
 
 
 # ---------------------------------------------------------------------------

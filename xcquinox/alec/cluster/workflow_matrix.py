@@ -1077,6 +1077,20 @@ def _oracle_failure_note(rc, module_path, selector):
     return None
 
 
+def _o3_branch_line(log_path):
+    """The last ``[O3] ...`` line of an oracle log, or None.
+
+    The closed-shell oracle writes one such line per architecture naming the
+    branch it took (bitwise on the platform the fixtures were recorded on, a
+    1e-11 relative comparison with the measured discrepancy elsewhere)."""
+    try:
+        lines = Path(log_path).read_text().splitlines()
+    except OSError:
+        return None
+    hits = [ln.strip() for ln in lines if ln.startswith("[O3] ")]
+    return hits[-1] if hits else None
+
+
 def _run_oracles(arch, log_path, *, runner, env, timeout_s, cwd):
     """Run this architecture's slice of the spin-scaling oracles O1-O4."""
     selector = oracle_selector(arch)
@@ -1088,6 +1102,12 @@ def _run_oracles(arch, log_path, *, runner, env, timeout_s, cwd):
     record = _run_stage("oracles", argv, log_path, runner=runner, env=env,
                         timeout_s=timeout_s, cwd=cwd)
     summary = _summary_line(log_path)
+    branch = _o3_branch_line(log_path)
+    if branch is not None:
+        # The closed-shell oracle prints which comparison it ran -- bitwise
+        # on the recording platform, a documented tolerance elsewhere -- so
+        # the per-architecture row carries it beside the pytest summary.
+        summary = f"{summary} -- {branch}"
     if record["rc"] != 0:
         note = _oracle_failure_note(
             record["rc"], _oracle_module_path(cwd), selector)

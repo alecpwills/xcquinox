@@ -840,6 +840,21 @@ pickling and refcount-freeing contracts, the density-fit ordering, and two multi
 end-to-end tests -- def2-svp and DF-CH4 at the production basis -- that require bit-identical
 records across memory histories with the pins and different ones without).
 
+**One machine only (2026-08-24):** the pins fix the summation ORDER, not the arithmetic that
+executes it, so they reproduce a record across processes on one machine and cannot reproduce it
+across machines: the BLAS kernels the CPU selects and the compiled libraries around them decide
+the last digits. Measured by the workflow-matrix smoke (job 2134455, AMD Milan node dn024): the
+closed-shell record of `deep_3x16` read `E_non_xc` = -67.00327081852355 against the recording
+workstation's -67.0032708185235 -- three ulps, 4.3e-14 Ha or 6.4e-16 relative -- and the digest of
+the reference density matrix differs there for the same reason. Any bitwise comparison of records
+must therefore state the platform its reference was recorded on and refuse the bitwise claim
+anywhere else. The closed-shell fixtures of O3 now carry that platform block -- CPU model, numpy /
+jax / jaxlib / pyscf versions, the BLAS numpy reports, and the recorder's own thread and memory
+pins -- and `test_closed_shell_byte_identity` compares bitwise only where the running platform
+reproduces it, at 1e-11 relative per key otherwise (four orders above the discrepancy measured on
+the cluster, below a 1e-9 Ha movement of any key), naming the branch it took in the report line
+the oracle log keeps.
+
 ## 30. The iso-orbital indicator's tail response makes the meta-GGA Fock hyper-sensitive off the SCF manifold (found 2026-08-24)
 
 **WHAT:** `alpha = (tau - tau_W)/tau_unif` divides by `n^{5/3}`, so its derivative with respect

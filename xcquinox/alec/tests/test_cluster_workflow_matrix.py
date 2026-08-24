@@ -1074,6 +1074,20 @@ def test_run_arch_records_the_oracle_summary_line(tmp_path):
     assert oracles["selector"] == wm.oracle_selector("deep")
 
 
+def test_the_oracle_branch_line_is_read_off_the_log(tmp_path):
+    """The closed-shell oracle names the comparison it ran; the row carries
+    the last such line, and a log without one contributes nothing."""
+    log = tmp_path / "oracles.log"
+    log.write_text("collecting\n[O3] deep: bitwise (platform match)\n"
+                   "[O3] deep: cross-platform tolerance 1e-11, max rel 6.4e-16\n"
+                   "18 passed in 51.8s\n")
+    assert wm._o3_branch_line(log) == (
+        "[O3] deep: cross-platform tolerance 1e-11, max rel 6.4e-16")
+    log.write_text("18 passed in 51.8s\n")
+    assert wm._o3_branch_line(log) is None
+    assert wm._o3_branch_line(tmp_path / "absent.log") is None
+
+
 def test_run_arch_can_skip_the_oracles(tmp_path):
     result, fake = _run_arch(tmp_path, run_oracles=False)
     assert result["oracle_tests"]["rc"] is None

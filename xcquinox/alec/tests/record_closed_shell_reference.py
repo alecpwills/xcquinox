@@ -61,12 +61,27 @@ measured, not assumed:
 The two inputs (``E_non_xc`` and a digest of the reference density matrix) are
 stored beside the six numbers anyway, so that a moved input is still reported
 as such rather than as a moved code path.
+
+Both pins hold the record across PROCESSES ON ONE MACHINE; neither can hold it
+across machines. The last digits of the reference SCF are those of the BLAS
+kernels the CPU selects and of the compiled libraries doing the arithmetic, so
+a record taken here is not reproducible bit for bit on another CPU: the same
+architecture read -67.00327081852355 against this fixture's -67.0032708185235
+on an AMD Milan cluster node -- three ulps, 4.3e-14 Ha, 6.4e-16 relative. Each
+fixture
+therefore carries a ``platform`` block -- the fields of :data:`PLATFORM_KEYS`,
+written by :func:`platform_fingerprint` -- beside its ``records`` block, and
+the comparison in ``test_closed_shell_byte_identity`` is bitwise only where
+the running platform reproduces that block. The fixture layout is::
+
+    {"platform": {<PLATFORM_KEYS>}, "records": {<arch>: {<RECORD_KEYS>}}}
 """
 import contextlib
 import hashlib
 import inspect
 import json
 import os
+import platform
 import sys
 
 if __name__ == "__main__":
@@ -134,6 +149,83 @@ def _reproducible_pyscf():
     finally:
         lib.num_threads(previous_threads)
         MoleBase.max_memory = previous_memory
+
+
+#: The platform fields stamped into every fixture beside its records. The
+#: record's last digits are a property of the machine as well as of the code:
+#: the arithmetic is done by the BLAS kernels the CPU selects and by the
+#: compiled libraries around them, none of which the two pins above reach.
+#: Six fields name the machine and its numerical libraries; the last two are
+#: the recorder's own pins, so a fixture recorded at a different thread count
+#: or memory ceiling is not read as if it shared this one's summation order.
+PLATFORM_KEYS = ("cpu_model", "numpy_version", "jax_version", "jaxlib_version",
+                 "pyscf_version", "blas", "pyscf_threads",
+                 "pinned_max_memory_mb")
+
+
+def _cpu_model():
+    """The CPU's model string. ``platform.processor()`` reports only the
+    instruction set on Linux ('x86_64'), which does not separate an Intel
+    desktop part from an AMD server part, so /proc/cpuinfo is read first."""
+    try:
+        with open("/proc/cpuinfo") as handle:
+            for line in handle:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return platform.processor() or platform.machine()
+
+
+def _blas_description():
+    """The BLAS numpy reports, as one string.
+
+    numpy 2 exposes its build metadata as a dict; ``get_info`` is kept as the
+    fallback for an older numpy. A platform whose BLAS cannot be named reports
+    "unknown", which does not compare equal to a named one, so the comparison
+    takes its cross-platform branch rather than assuming a shared library.
+    """
+    try:
+        build = np.show_config("dicts")["Build Dependencies"]["blas"]
+        fields = [str(build.get("name", "unknown")),
+                  str(build.get("version", ""))]
+        configuration = build.get("openblas configuration")
+        text = " ".join(f for f in fields if f)
+        return f"{text} ({configuration})" if configuration else text
+    except Exception:
+        pass
+    try:
+        libraries = np.__config__.get_info("blas_opt").get("libraries", [])
+        return ",".join(str(name) for name in libraries) or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def platform_fingerprint() -> dict:
+    """The machine and the pins this record was computed under.
+
+    The thread count and the memory ceiling are read INSIDE
+    :func:`_reproducible_pyscf`, i.e. as the record itself sees them, so the
+    stamp is a measurement of the pins rather than a copy of the constants
+    they are set from.
+    """
+    import jaxlib
+    import pyscf
+    from pyscf import lib
+    from pyscf.gto.mole import MoleBase
+    with _reproducible_pyscf():
+        threads = int(lib.num_threads())
+        max_memory_mb = float(MoleBase.max_memory)
+    return {
+        "cpu_model": _cpu_model(),
+        "numpy_version": np.__version__,
+        "jax_version": jax.__version__,
+        "jaxlib_version": jaxlib.__version__,
+        "pyscf_version": pyscf.__version__,
+        "blas": _blas_description(),
+        "pyscf_threads": threads,
+        "pinned_max_memory_mb": max_memory_mb,
+    }
 
 
 def _build_model(arch_name):
@@ -224,9 +316,12 @@ def _closed_shell_record(arch_name) -> dict:
 def main():
     print(f"# xcquinox loaded from {sys.modules['xcquinox'].__file__}",
           file=sys.stderr)
-    record = {name: closed_shell_record(name)
-              for name in sorted(alec.ARCHITECTURES)}
-    json.dump(record, sys.stdout, indent=2, sort_keys=True)
+    document = {
+        "platform": platform_fingerprint(),
+        "records": {name: closed_shell_record(name)
+                    for name in sorted(alec.ARCHITECTURES)},
+    }
+    json.dump(document, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
 
 
