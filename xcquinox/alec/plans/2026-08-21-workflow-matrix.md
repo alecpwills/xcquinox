@@ -2366,6 +2366,14 @@ Expected: PASS.
 
 ## Task 8: The command-line entry point
 
+> As shipped (`0b534f226` and the matrix residual rounds): every refused command-line flag --
+> an unknown, empty or repeated `--archs` list, a `--work-root`, `--report` or
+> `--external-refs-dir` inside the repository, a non-positive `--timeout-s`, an out-of-range
+> `--shards` -- exits 2 through `parser.error` with the reason on stderr, so exit 1 keeps its
+> meaning of a defect the matrix found; the sketches below that expect a `ValueError` out of
+> `main` describe the pre-residual behaviour. `_refuse_repo_work_root` became
+> `_repo_path_refusal`, guarding all three paths.
+
 **Files:**
 - Modify: `xcquinox/alec/cluster/workflow_matrix.py` (append after `write_matrix_report`)
 - Test: `xcquinox/alec/tests/test_cluster_workflow_matrix.py` (append)
