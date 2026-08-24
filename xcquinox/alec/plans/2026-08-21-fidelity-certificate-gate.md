@@ -4687,7 +4687,7 @@ fixtures use non-registry arch names.
 - Produces:
   - `_arch_uncertified(run_dir: Path, arch: str) -> bool`
   - `arch_coverage(...)["uncertified"] -> List[str]`
-  - `fidelity_summary(run_dir: Path, archs=None) -> Dict[str, Any] | None` -- `{"n_archs": int, "max_atom_mHa": float, "max_dAE_kcalmol": float}`; `archs=None` means every architecture in the run's manifest grid. As shipped (commit 73ce49ab4) the dictionary also carries `n_archs_without_numbers` (certificates that state no numbers, excluded from `n_archs`) and `not_pass` (`"arch (STATUS)"` for every contributing certificate that is not PASS), and the footer marks the line when `not_pass` is non-empty.
+  - `fidelity_summary(run_dir: Path, archs=None) -> Dict[str, Any] | None` -- `{"n_archs": int, "max_atom_mHa": float, "max_dAE_kcalmol": float}`; `archs=None` means every architecture in the run's manifest grid. As shipped (commit 73ce49ab4) the dictionary also carries `n_archs_without_numbers` (certificates that state no numbers, excluded from `n_archs`) and `not_pass` (`"arch (STATUS)"` for every contributing certificate that is not PASS), and the footer marks the line when `not_pass` is non-empty. Later shipped (commit 2a977c501 and the fold round): every certificate decision reads one parsed document (`read_certificate_status_in` / `gate_certificate_from_read`), and `_validate_arm_fidelity_certificates` returns the validated status dict rather than None; sketches showing multiple reads or a None return describe the pre-fold shape.
   - `provenance_footer(baseline, scan_baseline=None, fidelity=None) -> str`
   - `_FIDELITY_DISCLOSURE: str`, `_FIDELITY_GATE_DATE: str`, `_run_predates_fidelity_gate(run_id) -> bool`
 
