@@ -1,19 +1,27 @@
 """Tests for the energy-term-weight measurement job.
 
-Three things are pinned here. The COMMAND SURFACE: what the sweep runs when
+Four things are pinned here. The COMMAND SURFACE: what the sweep runs when
 nothing is said, and what ``--smoke`` substitutes, because a sweep launched at
-the wrong basis or grid measures a different question and costs a node-day to
-find out. The RECOMMENDATION RULE: exercised on synthetic tables, including
-every edge the real table can present -- no weight clearing the gate, a weight
-clearing it only on part of the architecture set, a weight buying the energy by
-destroying the point-wise fit, and a diverged cell. The JOB SCRIPT: the house
-shell idiom, the standing mail directives and the exact invocation, since a
-script that activates the wrong environment or drops a flag produces a table
-that looks valid and is not.
+the wrong basis, grid or correlation objective measures a different question
+and costs a node-day to find out. The MEASURED QUANTITIES: the gate is
+``max |dE_x + dE_c|`` over the atoms and ``max |dAE|`` over the molecules, both
+reduced from per-system residuals, on synthetic residuals where the two
+channels disagree about which system is worst and by how much -- reading one
+channel alone, or every system as an atom, gives a different number on the same
+fit. The RECOMMENDATION RULE: exercised on synthetic tables, including every
+edge the real table can present -- no weight clearing the gates, a weight
+clearing one and missing the other, a weight clearing them only on part of the
+architecture set, a weight buying the energy by destroying the point-wise fit,
+a gate quantity that was never measured, and a diverged cell. The JOB SCRIPT:
+the house shell idiom, the standing mail directives, the wall against the
+arithmetic that asks for it, and the exact invocation, since a script that
+activates the wrong environment or drops a flag produces a table that looks
+valid and is not.
 
 The ``--smoke`` end-to-end leg runs the real sweep at a two-system STO-3G
-identity in a SUBPROCESS -- 30 s, measured -- so it is neither slow-marked nor
-able to take the test session down with it if JAX aborts at interpreter exit.
+identity in a SUBPROCESS, at BOTH polarizations -- ~20 s each, measured -- so
+it is neither slow-marked nor able to take the test session down with it if JAX
+aborts at interpreter exit.
 """
 from __future__ import annotations
 
@@ -29,6 +37,9 @@ import pytest
 _HERE = Path(__file__).resolve().parent
 _SCRIPT = _HERE / "probe_pretrain_energy_weight.py"
 _SBATCH = _HERE / "probe_pretrain_energy_weight.sbatch"
+
+#: Sentinel for "this synthetic row does not distinguish the two maxima".
+_SAME = object()
 
 
 def _load(name: str):
@@ -64,8 +75,65 @@ def test_production_defaults_are_the_swept_identity():
     assert a.loss_weighting == "integration"
     assert a.smoke is False
     assert a.tol_atom_mha == 1.0        # the certificate's tol_atom
+    assert a.tol_ae_kcal == 1.0         # the certificate's tol_AE
     assert a.margin_fraction == 0.5
     assert a.pointwise_factor == 3.0
+    assert a.resume is False
+    # The production value of the run-level flag: every configuration of the
+    # dfs6311 v3-v5 lineage and the v6 template set
+    # use_polarized_correlation: true, so the weight is measured on the
+    # objective it will be applied to rather than on the registry default.
+    assert a.polarized is True
+
+
+def test_polarization_is_a_flag_and_defaults_to_the_production_value():
+    assert _args("--polarized").polarized is True
+    assert _args("--no-polarized").polarized is False
+    with pytest.raises(SystemExit):                 # mutually exclusive
+        _args("--polarized", "--no-polarized")
+
+
+def test_the_sweep_patches_the_run_level_polarization_onto_every_arch(
+        tmp_path, monkeypatch):
+    """The flag reaches the architectures, not just the identity block.
+
+    No registry architecture carries use_polarized_correlation, so a sweep that
+    read the flag off the architecture would measure the unpolarized objective
+    whatever the command line said.
+    """
+    seen = {}
+
+    def _cell(arch, arch_name, data_path, work_dir, *, weight, **kwargs):
+        seen[(arch_name, weight)] = bool(arch.use_polarized_correlation)
+        return _row(arch_name, weight, 0.2)
+
+    monkeypatch.setattr(pw, "ensure_data",
+                        lambda *a, **k: "/nonexistent/pretrain_data.npz")
+    monkeypatch.setattr(pw, "run_cell", _cell)
+    for flag, want in (("--polarized", True), ("--no-polarized", False)):
+        seen.clear()
+        pw.main(["--data-dir", str(tmp_path), "--out",
+                 str(tmp_path / f"t{want}.json"), "--archs", "deep_3x16",
+                 "--weights", "0,1", flag])
+        assert set(seen.values()) == {want}, seen
+        identity = json.loads(
+            (tmp_path / f"t{want}.json").read_text())["identity"]
+        assert identity["polarized"] is want
+
+
+def test_the_data_file_follows_the_polarization_flag(tmp_path, monkeypatch):
+    """The generated file is the one run_pretrain will open for that arch."""
+    calls = []
+    monkeypatch.setattr(pw, "ensure_data",
+                        lambda *a, **k: (calls.append(k), "/none.npz")[1])
+    monkeypatch.setattr(
+        pw, "run_cell",
+        lambda arch, name, *a, **k: _row(name, k["weight"], 0.2))
+    pw.main(["--data-dir", str(tmp_path), "--out", str(tmp_path / "t.json"),
+             "--archs", "deep_3x16,deep_mgga_3x16", "--weights", "1",
+             "--polarized"])
+    assert [(c["polarized"], c["reference_xc"]) for c in calls] == [
+        (True, "pbe"), (True, "scan")]
 
 
 def test_smoke_substitutes_a_seconds_long_identity():
@@ -109,6 +177,8 @@ def test_archs_accept_commas_and_spaces():
     ["--grid-level", "-1"],
     ["--recon-rtol", "0"],
     ["--tol-atom-mha", "0"],
+    ["--tol-ae-kcal", "0"],
+    ["--tol-ae-kcal", "-1"],
     ["--margin-fraction", "-0.5"],
     ["--pointwise-factor", "nan"],
     ["--loss-weighting", "sortof"],
@@ -131,10 +201,19 @@ def test_data_dir_and_out_are_required(missing):
 # The recommendation rule
 # --------------------------------------------------------------------------- #
 
-def _row(arch, weight, max_mha, loss_x=1.0e-3, loss_c=1.0e-3):
+def _row(arch, weight, max_mha, loss_x=1.0e-3, loss_c=1.0e-3, *,
+         atom_mha=_SAME, n_atoms=2, ae_kcal=None, n_ae=0):
+    """One measured cell. ``atom_mha`` defaults to the all-system maximum, so
+    a table written for the point-wise or cap edges does not have to state a
+    split it is not testing; the atom / atomization gates are exercised by the
+    tests that pass them explicitly."""
     return {"arch": arch, "weight": float(weight), "final_loss_x": loss_x,
             "final_loss_c": loss_c, "max_dE_xc_mHa": max_mha,
-            "rms_dE_xc_mHa": (None if max_mha is None else 0.5 * max_mha)}
+            "rms_dE_xc_mHa": (None if max_mha is None else 0.5 * max_mha),
+            "max_atom_dE_xc_mHa": (max_mha if atom_mha is _SAME
+                                   else atom_mha),
+            "n_atom_systems": n_atoms,
+            "max_dAE_kcal": ae_kcal, "n_ae_molecules": n_ae}
 
 
 def test_smallest_clearing_weight_wins():
@@ -158,10 +237,79 @@ def test_the_gate_is_the_max_over_every_architecture():
 
 
 def test_margin_is_half_the_tolerance_and_the_boundary_clears():
-    assert pw.recommend([_row("a", 0.0, 9.0),
-                         _row("a", 1.0, 0.5)])["weight"] == 1.0
+    # A weight sitting exactly ON the margin clears it. Asserting the weight
+    # alone cannot see a flipped comparison: the fallback returns the same
+    # weight (it minimizes the worst gate quantity), so the verdict itself has
+    # to be asserted.
+    out = pw.recommend([_row("a", 0.0, 9.0), _row("a", 1.0, 0.5)])
+    assert (out["cleared"], out["weight"]) == (True, 1.0)
+    entry = next(e for e in out["per_weight"] if e["weight"] == 1.0)
+    assert entry["gate_ok"] is True
     out = pw.recommend([_row("a", 0.0, 9.0), _row("a", 1.0, 0.500001)])
     assert out["cleared"] is False
+
+
+def test_the_atom_gate_reads_the_atoms_not_every_system():
+    # The certificate bounds ATOMS at tol_atom; a molecule's absolute XC error
+    # is bounded through the atomization energy instead. A cell whose worst
+    # system is a molecule at 4 mHa but whose worst ATOM is inside the margin
+    # clears.
+    rows = [_row("a", 0.0, 9.0, atom_mha=9.0),
+            _row("a", 1.0, 4.0, atom_mha=0.4, ae_kcal=0.2, n_ae=3)]
+    out = pw.recommend(rows)
+    assert (out["cleared"], out["weight"]) == (True, 1.0)
+
+
+def test_the_atomization_gate_refuses_a_weight_the_atom_gate_admits():
+    # Every atom is well inside tol_atom while the atomization error is 0.9
+    # kcal/mol, above the 0.5 kcal/mol margin: the errors do not cancel between
+    # a molecule and its atoms, which is what the deployment sees.
+    rows = [_row("a", 0.0, 9.0, atom_mha=9.0, ae_kcal=9.0, n_ae=3),
+            _row("a", 1.0, 1.0, atom_mha=0.1, ae_kcal=0.9, n_ae=3),
+            _row("a", 10.0, 1.0, atom_mha=0.2, ae_kcal=0.4, n_ae=3)]
+    out = pw.recommend(rows)
+    assert (out["cleared"], out["weight"]) == (True, 10.0)
+    entry = next(e for e in out["per_weight"] if e["weight"] == 1.0)
+    assert entry["gate_ok"] is False
+    assert entry["worst_dAE_kcal"] == 0.9
+
+
+def test_the_atomization_gate_is_vacuous_when_the_set_has_no_molecule():
+    # The smoke identity is two free atoms: no atomization energy exists, so
+    # the gate claims nothing rather than failing.
+    rows = [_row("a", 0.0, 9.0), _row("a", 1.0, 0.4)]
+    out = pw.recommend(rows)
+    assert (out["cleared"], out["weight"]) == (True, 1.0)
+    entry = next(e for e in out["per_weight"] if e["weight"] == 1.0)
+    assert entry["worst_dAE_kcal"] is None
+
+
+def test_a_gate_quantity_that_was_not_measured_is_not_a_pass():
+    # A row that carries atoms but no atom maximum cannot certify them.
+    rows = [_row("a", 0.0, 9.0), _row("a", 1.0, 0.1, atom_mha=None,
+                                     n_atoms=14),
+            _row("a", 10.0, 0.1)]
+    out = pw.recommend(rows)
+    assert (out["cleared"], out["weight"]) == (True, 10.0)
+    entry = next(e for e in out["per_weight"] if e["weight"] == 1.0)
+    assert entry["gate_ok"] is False
+    assert entry["unmeasured_gates"] == ["a:max_atom_dE_xc_mHa"]
+
+
+def test_the_fallback_compares_the_two_gates_in_units_of_their_margins():
+    # Weight 1 is 4x its atom margin; weight 10 is 1.8x its atomization
+    # margin. Neither clears, and the one that is closest to ITS OWN margin is
+    # the one reported.
+    rows = [_row("a", 0.0, 9.0, atom_mha=9.0, ae_kcal=9.0, n_ae=3),
+            _row("a", 1.0, 2.0, atom_mha=2.0, ae_kcal=0.1, n_ae=3),
+            _row("a", 10.0, 1.0, atom_mha=0.1, ae_kcal=0.9, n_ae=3)]
+    out = pw.recommend(rows)
+    assert out["cleared"] is False
+    assert out["weight"] == 10.0
+    entry = next(e for e in out["per_weight"] if e["weight"] == 10.0)
+    assert entry["worst_gate_ratio"] == pytest.approx(1.8)
+    assert out["margin_AE_kcal"] == 0.5
+    assert out["tol_AE_kcal"] == 1.0
 
 
 def test_a_weight_that_destroys_the_pointwise_fit_is_refused():
@@ -238,6 +386,223 @@ def test_the_tolerance_and_margin_are_configurable():
     assert pw.recommend(rows)["cleared"] is False
     out = pw.recommend(rows, tol_atom_mha=2.0, margin_fraction=1.0)
     assert (out["cleared"], out["weight"]) == (True, 1.0)
+
+
+# --------------------------------------------------------------------------- #
+# The measured quantities, on synthetic per-system errors
+# --------------------------------------------------------------------------- #
+
+#: Four systems: two free atoms, a molecule built from them, and a molecule
+#: whose element the set does not carry as a free atom (the Section 7 set is
+#: exactly this shape -- Na2 with no sodium atom).
+_SYSTEMS = [["H", "H 0 0 0", 0, 1],
+            ["O", "O 0 0 0", 0, 2],
+            ["H2O", "O 0 0 0; H 0 0 1; H 0 1 0", 0, 0],
+            ["Na2", "Na 0 0 0; Na 0 0 2", 0, 0]]
+_NAMES = ["H", "O", "H2O", "Na2"]
+#: Chosen so the two channels disagree about which system is worst and about
+#: how large the error is: |dE_x| peaks at 5 mHa on H2O while |dE_x + dE_c|
+#: peaks at 4 mHa there, and the worst ATOM is 1 mHa.
+_DX = [1.0e-3, -2.0e-3, 5.0e-3, 0.0]
+_DC = [-0.5e-3, 3.0e-3, -1.0e-3, 0.0]
+
+
+def test_geometry_elements_reads_the_composition_from_the_geometry():
+    assert pw._geometry_elements("O 0 0 0; H 0 0 1; H 0 1 0") == \
+        ["O", "H", "H"]
+    assert pw._geometry_elements("CL 0 0 0\nc 0 0 1") == ["Cl", "C"]
+    assert pw._geometry_elements("H1 0 0 0; H2 0 0 1") == ["H", "H"]
+
+
+def test_classify_systems_splits_atoms_ions_and_molecules():
+    systems = _SYSTEMS + [["F-", "F 0 0 0", -1, 0]]
+    atoms, neutral, molecules = pw.classify_systems(systems)
+    # Every single-center system is held to the atom tolerance, the pool's
+    # anions included.
+    assert atoms == [0, 1, 4]
+    # Only the NEUTRAL ones are atomization references.
+    assert neutral == {"H": 0, "O": 1}
+    assert [(name, counts) for _i, name, counts in molecules] == [
+        ("H2O", {"O": 1, "H": 2}), ("Na2", {"Na": 2})]
+
+
+def test_atomization_error_is_the_molecule_minus_its_atoms():
+    delta_xc = [x + c for x, c in zip(_DX, _DC)]
+    errors, skipped = pw.atomization_errors(delta_xc, _SYSTEMS)
+    # dAE(H2O) = dE(H2O) - [2 dE(H) + dE(O)]
+    #          = 4.0e-3 - [2 (0.5e-3) + 1.0e-3] = 2.0e-3 Ha
+    assert dict(errors)["H2O"] == pytest.approx(2.0e-3 * 627.5094740631,
+                                                rel=1e-12)
+    # Na2 has no sodium atom in the set: reported as skipped, never as zero.
+    assert skipped == ["Na2"]
+    assert [name for name, _v in errors] == ["H2O"]
+
+
+def test_the_gate_quantity_is_the_sum_of_the_two_channels():
+    """max |dE_xc| is max |dE_x + dE_c|, not max |dE_x|.
+
+    Exchange and correlation are two halves of one functional and the
+    certificate bounds their sum; reading the exchange channel alone reports a
+    different number (5 mHa against 4 here) on the same fit.
+    """
+    out = pw.summarize_energy_errors(_DX, _DC, _SYSTEMS, _NAMES)
+    assert out["max_dE_xc_mHa"] == pytest.approx(4.0, rel=1e-12)
+    assert out["worst_system"] == "H2O"
+    assert out["max_dE_x_mHa"] == pytest.approx(5.0, rel=1e-12)
+    assert out["max_dE_c_mHa"] == pytest.approx(3.0, rel=1e-12)
+    # The atom gate reads the same sum, over the atoms alone.
+    assert out["max_atom_dE_xc_mHa"] == pytest.approx(1.0, rel=1e-12)
+    assert out["worst_atom"] == "O"
+    assert out["n_atom_systems"] == 2
+    # And the atomization gate reads it through the atomization energy.
+    assert out["max_dAE_kcal"] == pytest.approx(2.0e-3 * 627.5094740631,
+                                                rel=1e-12)
+    assert out["worst_ae_system"] == "H2O"
+    assert (out["n_ae_molecules"], out["ae_skipped"]) == (1, ["Na2"])
+
+
+def test_the_row_carries_the_per_system_errors_it_was_reduced_from():
+    out = pw.summarize_energy_errors(_DX, _DC, _SYSTEMS, _NAMES)
+    per = out["per_system"]
+    assert per["names"] == _NAMES
+    assert per["delta_x_mHa"] == pytest.approx([1000.0 * v for v in _DX])
+    assert per["delta_c_mHa"] == pytest.approx([1000.0 * v for v in _DC])
+    # The published maxima are the ones the stored residuals give.
+    worst = max(abs(x + c) for x, c in zip(per["delta_x_mHa"],
+                                           per["delta_c_mHa"]))
+    assert out["max_dE_xc_mHa"] == pytest.approx(worst, rel=1e-12)
+
+
+def test_a_file_without_a_manifest_measures_no_gate_quantity():
+    # No system list means no atom / molecule split; the row says so rather
+    # than reporting the all-system maximum as if it were the atom one.
+    out = pw.summarize_energy_errors(_DX, _DC, None, _NAMES)
+    assert out["max_dE_xc_mHa"] == pytest.approx(4.0, rel=1e-12)
+    assert out["max_atom_dE_xc_mHa"] is None
+    # UNKNOWN, not zero: a count of zero would read as "the set holds no atom"
+    # and let the gate pass vacuously on a row that measured nothing.
+    assert (out["n_atom_systems"], out["n_ae_molecules"]) == (None, None)
+    assert pw.recommend([_row("a", 0.0, 9.0),
+                         dict(_row("a", 1.0, 0.1), **out)])["cleared"] is False
+
+
+_RECORDED = {"energy_term_x_final": 1.0e-4, "energy_term_c_final": 4.0e-5,
+             "energy_term_max_abs_dE_mHa": 12.0,
+             "energy_term_rms_dE_mHa": 8.0}
+_RECONSTRUCTED = {"energy_term_x_recon": 1.0e-4, "energy_term_c_recon": 4.0e-5,
+                  "max_dE_xc_mHa": 12.0, "rms_dE_xc_mHa": 8.0}
+
+
+def test_check_reconstruction_refuses_a_drifted_cell():
+    """The --recon-rtol guard is what stands between a silently divergent
+    reconstruction and a table that looks valid."""
+    assert pw.check_reconstruction(_RECONSTRUCTED, _RECORDED, 1e-6, "cell",
+                                   weight=1.0) == pytest.approx(0.0, abs=1e-15)
+    drifted = dict(_RECONSTRUCTED,
+                   energy_term_c_recon=4.0e-5 * (1 + 1e-9))
+    assert pw.check_reconstruction(drifted, _RECORDED, 1e-6, "cell",
+                                   weight=1.0) == pytest.approx(1e-9, rel=1e-3)
+    with pytest.raises(RuntimeError) as excinfo:
+        pw.check_reconstruction(dict(_RECONSTRUCTED,
+                                     energy_term_c_recon=5.0e-5),
+                                _RECORDED, 1.0e-6, "cell", weight=1.0)
+    message = str(excinfo.value)
+    assert "--recon-rtol=1e-06" in message
+    assert "correlation energy term" in message
+    assert message.startswith("cell: ")
+    for key in ("energy_term_x_recon", "max_dE_xc_mHa", "rms_dE_xc_mHa"):
+        with pytest.raises(RuntimeError):
+            pw.check_reconstruction(dict(_RECONSTRUCTED,
+                                         **{key: 0.5 * _RECONSTRUCTED[key]}),
+                                    _RECORDED, 1.0e-6, "cell", weight=1.0)
+
+
+def test_the_gate_quantity_is_pinned_against_the_runs_own_measurement():
+    """run_pretrain records 1000 max|dE_x + dE_c| for the network it saved; the
+    reconstruction here reads the checkpoint back and must land on it."""
+    with pytest.raises(RuntimeError) as excinfo:
+        # What a substitution of max|dE_x| for max|dE_x + dE_c| looks like:
+        # the same fit, a maximum about twice as large.
+        pw.check_reconstruction(dict(_RECONSTRUCTED, max_dE_xc_mHa=25.0),
+                                _RECORDED, 1.0e-6, "cell", weight=1.0)
+    assert "maximum |dE_xc| in mHa" in str(excinfo.value)
+    # The check runs at weight 0 too: the record is measured on the saved
+    # network whatever the weight was.
+    with pytest.raises(RuntimeError):
+        pw.check_reconstruction(dict(_RECONSTRUCTED, max_dE_xc_mHa=25.0),
+                                _RECORDED, 1.0e-6, "cell", weight=0.0)
+    # A record predating that convention writes 0.0 at weight 0, which is not
+    # the same quantity; there is nothing to compare and nothing is claimed.
+    legacy = {"energy_term_x_final": 0.0, "energy_term_c_final": 0.0}
+    assert pw.check_reconstruction(_RECONSTRUCTED, legacy, 1e-6, "cell",
+                                   weight=0.0) is None
+    # A quantity the record does not carry is skipped, not invented.
+    assert pw.check_reconstruction(
+        _RECONSTRUCTED, {"energy_term_max_abs_dE_mHa": 12.0}, 1e-6, "cell",
+        weight=1.0) == pytest.approx(0.0, abs=1e-15)
+
+
+def test_the_generator_is_never_asked_to_waive_the_degenerate_refusal(
+        tmp_path, monkeypatch):
+    """Neither identity needs the waiver, so neither asks for it.
+
+    At the production identity grid level 3 is a floor precisely so the
+    refusal never fires, and the smoke's He and Li are not spatially
+    degenerate at any level. The manifest reads false either way -- it records
+    whether the permission was EXERCISED, not whether it was offered -- so
+    what is pinned here is the argument the probe passes.
+    """
+    from xcquinox.alec import pretrain_data_gen
+
+    seen = []
+    monkeypatch.setattr(pretrain_data_gen, "ensure_pretrain_data",
+                        lambda directory, **kw: (seen.append(kw),
+                                                 "/none.npz")[1])
+    for smoke_atoms in (None, pw.SMOKE_ATOMS):
+        pw.ensure_data(str(tmp_path), polarized=True, reference_xc="pbe",
+                       basis="sto-3g", grid_level=1, lock_strength=3.0e-5,
+                       smoke_atoms=smoke_atoms)
+    assert [kw["allow_irreproducible_degenerate"] for kw in seen] == \
+        [False, False]
+    # Executed rather than asserted from the comment: the smoke pair carries
+    # no spatially degenerate system, at its own coarse grid.
+    systems = pretrain_data_gen.resolve_pretrain_systems(
+        atoms=tuple(pw.SMOKE_ATOMS))
+    assert pretrain_data_gen._degenerate_systems(systems, "sto-3g", 1) == ()
+
+
+# --------------------------------------------------------------------------- #
+# The two readings of "meta-GGA rung"
+# --------------------------------------------------------------------------- #
+
+class _FakeDescriptor:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeArch:
+    def __init__(self, meta_gga, descriptor_names):
+        self.meta_gga = meta_gga
+        self.descriptors = tuple(_FakeDescriptor(n) for n in descriptor_names)
+
+
+def test_an_architecture_whose_rung_readings_disagree_is_refused():
+    """resolve_parent_density reads the flag OR the 'metagga' descriptor while
+    run_pretrain selects targets and parent energies from the flag alone, so
+    the two must agree before a cell is spent on the architecture."""
+    pw._check_rung_consistency("gga", _FakeArch(False, ()))
+    pw._check_rung_consistency("mgga", _FakeArch(True, ("metagga",)))
+    for arch in (_FakeArch(False, ("metagga",)), _FakeArch(True, ("cusp",))):
+        with pytest.raises(SystemExit) as excinfo:
+            pw._check_rung_consistency("mixed", arch)
+        assert "resolve_parent_density" in str(excinfo.value)
+        assert "run_pretrain" in str(excinfo.value)
+
+
+def test_every_registered_architecture_passes_the_rung_check():
+    from xcquinox.alec.config import get_architecture, list_architectures
+    for name in list_architectures():
+        pw._check_rung_consistency(name, get_architecture(name))
 
 
 # --------------------------------------------------------------------------- #
@@ -336,40 +701,211 @@ def test_a_failed_cell_is_recorded_and_exits_one(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Surviving a wall-clock kill: the incremental table and --resume
+# --------------------------------------------------------------------------- #
+
+def test_the_table_is_written_after_every_cell(tmp_path, monkeypatch):
+    """A twelve-hour reservation killed at the wall must keep what it paid for.
+
+    The rows are written as they are measured, so the table on disk after cell
+    N holds N rows and says it is not complete.
+    """
+    out = tmp_path / "t.json"
+    monkeypatch.setattr(pw, "ensure_data", lambda *a, **k: "/none.npz")
+    measured = []
+
+    def _cell(arch, name, *a, **k):
+        if len(measured) == 1:
+            raise KeyboardInterrupt("wall clock")   # not caught as a failure
+        measured.append(k["weight"])
+        return _row(name, k["weight"], 0.2)
+
+    monkeypatch.setattr(pw, "run_cell", _cell)
+    with pytest.raises(KeyboardInterrupt):
+        pw.main(["--data-dir", str(tmp_path), "--out", str(out),
+                 "--archs", "deep_3x16", "--weights", "0,1,10"])
+    payload = json.loads(out.read_text())
+    assert payload["complete"] is False
+    assert [r["weight"] for r in payload["rows"]] == [0.0]
+
+
+def test_resume_measures_only_the_cells_the_table_is_missing(
+        tmp_path, monkeypatch):
+    out = tmp_path / "t.json"
+    monkeypatch.setattr(pw, "ensure_data", lambda *a, **k: "/none.npz")
+    first = []
+
+    def _cell_a(arch, name, *a, **k):
+        if len(first) == 1:
+            raise KeyboardInterrupt("wall clock")
+        first.append(k["weight"])
+        return _row(name, k["weight"], 9.0)
+
+    monkeypatch.setattr(pw, "run_cell", _cell_a)
+    argv = ["--data-dir", str(tmp_path), "--out", str(out),
+            "--archs", "deep_3x16", "--weights", "0,1,10"]
+    with pytest.raises(KeyboardInterrupt):
+        pw.main(argv)
+
+    second = []
+
+    def _cell_b(arch, name, *a, **k):
+        second.append(k["weight"])
+        return _row(name, k["weight"], 0.2)
+
+    monkeypatch.setattr(pw, "run_cell", _cell_b)
+    rc = pw.main(argv + ["--resume"])
+    assert second == [1.0, 10.0]                 # weight 0 was not re-measured
+    payload = json.loads(out.read_text())
+    assert payload["complete"] is True
+    assert sorted(r["weight"] for r in payload["rows"]) == [0.0, 1.0, 10.0]
+    # The carried-over row is the one the first pass measured, not a fresh one.
+    assert next(r for r in payload["rows"]
+                if r["weight"] == 0.0)["max_dE_xc_mHa"] == 9.0
+    assert rc == 0
+
+
+def test_resume_without_a_table_measures_everything(tmp_path, monkeypatch):
+    monkeypatch.setattr(pw, "ensure_data", lambda *a, **k: "/none.npz")
+    seen = []
+    monkeypatch.setattr(pw, "run_cell", lambda arch, name, *a, **k: (
+        seen.append(k["weight"]), _row(name, k["weight"], 0.2))[1])
+    pw.main(["--data-dir", str(tmp_path), "--out", str(tmp_path / "t.json"),
+             "--archs", "deep_3x16", "--weights", "0,1", "--resume"])
+    assert seen == [0.0, 1.0]
+
+
+def _stored(tmp_path, identity, rows):
+    path = tmp_path / "stored.json"
+    path.write_text(json.dumps({"identity": identity, "rows": rows}))
+    return path
+
+
+def test_resume_refuses_a_table_measured_at_another_identity(tmp_path):
+    identity = pw.build_identity(_args("--smoke"), 3.0e-5, pw.SMOKE_ATOMS)
+    stored = dict(identity, basis="def2-svp", n_steps=1000)
+    path = _stored(tmp_path, stored, [_row("deep_3x16", 0.0, 1.0)])
+    with pytest.raises(SystemExit) as excinfo:
+        pw.load_resumable_rows(str(path), identity)
+    message = str(excinfo.value)
+    assert "basis" in message and "n_steps" in message
+    assert "def2-svp" in message and "sto-3g" in message
+
+
+def test_resume_refuses_a_table_measured_at_the_other_polarization(tmp_path):
+    identity = pw.build_identity(_args(), 3.0e-5, None)
+    path = _stored(tmp_path, dict(identity, polarized=False), [])
+    with pytest.raises(SystemExit) as excinfo:
+        pw.load_resumable_rows(str(path), identity)
+    assert "polarized" in str(excinfo.value)
+
+
+def test_resume_carries_over_every_row_of_the_same_identity(tmp_path):
+    identity = pw.build_identity(_args(), 3.0e-5, None)
+    rows = [_row("deep_3x16", 0.0, 1.0), _row("deep_3x16", 1.0, 1.0),
+            _row("deep_cusp_3x16", 0.0, 1.0),
+            _row("deep_3x16", 0.0, 7.0)]        # a duplicate cell
+    path = _stored(tmp_path, identity, rows)
+    kept = pw.load_resumable_rows(str(path), identity)
+    # Rows measured for ANOTHER architecture are carried, not dropped: that is
+    # how a sweep batched over architectures accumulates into one table the
+    # rule can read across all of them. A repeated cell keeps its first value.
+    assert [(r["arch"], r["weight"]) for r in kept] == [
+        ("deep_3x16", 0.0), ("deep_3x16", 1.0), ("deep_cusp_3x16", 0.0)]
+    assert kept[0]["max_dE_xc_mHa"] == 1.0
+
+
+def test_a_batched_sweep_accumulates_into_one_table(tmp_path, monkeypatch):
+    """Two submissions, one architecture each, one table and one verdict."""
+    out = tmp_path / "t.json"
+    monkeypatch.setattr(pw, "ensure_data", lambda *a, **k: "/none.npz")
+    monkeypatch.setattr(
+        pw, "run_cell",
+        lambda arch, name, *a, **k: _row(
+            name, k["weight"], 9.0 if k["weight"] == 0.0 else 0.2))
+    base = ["--data-dir", str(tmp_path), "--out", str(out), "--weights",
+            "0,1", "--resume"]
+    pw.main(base + ["--archs", "deep_3x16"])
+    pw.main(base + ["--archs", "deep_cusp_3x16"])
+    payload = json.loads(out.read_text())
+    assert sorted({r["arch"] for r in payload["rows"]}) == [
+        "deep_3x16", "deep_cusp_3x16"]
+    # The rule reads the accumulated table: both architectures at weight 1.
+    assert payload["recommendation"]["weight"] == 1.0
+    entry = next(e for e in payload["recommendation"]["per_weight"]
+                 if e["weight"] == 1.0)
+    assert entry["missing_archs"] == []
+
+
+# --------------------------------------------------------------------------- #
 # End to end at the smoke identity
 # --------------------------------------------------------------------------- #
 
-def test_smoke_sweep_end_to_end(tmp_path):
+@pytest.mark.parametrize("flag,polarized", [("--polarized", True),
+                                            ("--no-polarized", False)])
+def test_smoke_sweep_end_to_end(tmp_path, flag, polarized):
     """The real sweep at two systems / STO-3G / grid 1 / five steps.
 
-    Measured 29 s wall including both parent-density generations, so it is not
-    slow-marked. Run in a subprocess: JAX can abort at interpreter exit on this
-    backend, and a measurement probe must not be able to take the session with
-    it.
+    Run at BOTH polarizations, because the production objective is the
+    polarized one and the two read different correlation rows and a differently
+    shaped cnet input. Measured ~30 s wall per leg including both
+    parent-density generations, so neither is slow-marked. Run in a subprocess:
+    JAX can abort at interpreter exit on this backend, and a measurement probe
+    must not be able to take the session with it.
     """
     env = dict(os.environ)
     env.update(OMP_NUM_THREADS="4", OPENBLAS_NUM_THREADS="4",
                MKL_NUM_THREADS="4", JAX_PLATFORMS="cpu",
                XLA_FLAGS="--xla_cpu_multi_thread_eigen=false")
     out = tmp_path / "table.json"
+    data_dir = tmp_path / "data"
     proc = subprocess.run(
-        [sys.executable, str(_SCRIPT), "--smoke",
-         "--data-dir", str(tmp_path / "data"), "--out", str(out)],
+        [sys.executable, str(_SCRIPT), "--smoke", flag,
+         "--data-dir", str(data_dir), "--out", str(out)],
         env=env, capture_output=True, text=True, timeout=900)
     # 0 = a weight cleared, 2 = none did. Five steps from a random
     # initialization will not clear; both are completions, and 1 is not.
-    assert proc.returncode in (0, 2), proc.stdout[-4000:] + proc.stderr[-4000:]
+    # A negative code is a signal death: JAX can corrupt the heap during
+    # interpreter shutdown after the table is written, which would hand SLURM
+    # a FAILED job for a completed sweep, so the script leaves through a hard
+    # exit and this assertion is what says so.
+    assert proc.returncode in (0, 2), (
+        f"returncode={proc.returncode}\n"
+        + proc.stdout[-4000:] + proc.stderr[-4000:])
 
     payload = json.loads(out.read_text())
     assert payload["failures"] == []
+    assert payload["complete"] is True
     assert payload["identity"]["basis"] == "sto-3g"
     assert payload["identity"]["grid_level"] == 1
     assert payload["identity"]["exchange_footing"] == "spin_channel"
+    assert payload["identity"]["polarized"] is polarized
+
+    # Each parent density is written under the generator's OWN name, with no
+    # alias: the worker resolves the parent before it names the file, so the
+    # PBE name never stands for the SCAN-density rows.
+    stem = "pretrain_data_polarized" if polarized else "pretrain_data"
+    assert sorted(os.listdir(data_dir / "parent_scan")) == [
+        f"{stem}_scan.npz", f"{stem}_scan.npz.manifest.json"]
+    assert sorted(os.listdir(data_dir / "parent_pbe")) == [
+        f"{stem}.npz", f"{stem}.npz.manifest.json"]
+    for parent, name in (("pbe", f"{stem}.npz"),
+                         ("scan", f"{stem}_scan.npz")):
+        manifest = json.loads(
+            (data_dir / f"parent_{parent}" / f"{name}.manifest.json"
+             ).read_text())
+        # Neither He nor Li is spatially degenerate, so the refusal the
+        # generator applies to the production set never fires here and nothing
+        # is waived.
+        assert manifest["allow_irreproducible_degenerate"] is False
+        assert manifest["reference_xc"] == parent
+
     rows = payload["rows"]
     assert len(rows) == 4
     # Both rungs ran, each against its own parent density.
     assert {r["reference_xc"] for r in rows} == {"pbe", "scan"}
     assert {r["exchange_footing"] for r in rows} == {"spin_channel"}
+    assert {r["polarized"] for r in rows} == {polarized}
     for row in rows:
         assert row["n_systems"] == 2
         assert row["max_dE_xc_mHa"] > 0.0
@@ -378,24 +914,40 @@ def test_smoke_sweep_end_to_end(tmp_path):
         # RMS times sqrt(N); what it must never do is come back as the mean.
         assert row["max_dE_x_mHa"] > 0.0 and row["max_dE_c_mHa"] > 0.0
         assert row["worst_system"] in ("He", "Li")
+        # The gate quantity is the SUM of the two channels, per system,
+        # recomputed here from the residuals the row carries.
+        per = row["per_system"]
+        assert per["names"] == ["He", "Li"]
+        recomputed = max(abs(x + c) for x, c in zip(per["delta_x_mHa"],
+                                                    per["delta_c_mHa"]))
+        assert row["max_dE_xc_mHa"] == pytest.approx(recomputed, rel=1e-12)
+        assert row["max_dE_x_mHa"] == pytest.approx(
+            max(abs(x) for x in per["delta_x_mHa"]), rel=1e-12)
+        # Two free atoms: the atom gate reads both of them and the
+        # atomization gate has nothing to read.
+        assert row["n_atom_systems"] == 2
+        assert row["max_atom_dE_xc_mHa"] == pytest.approx(
+            row["max_dE_xc_mHa"], rel=1e-12)
+        assert row["worst_atom"] == row["worst_system"]
+        assert (row["n_ae_molecules"], row["max_dAE_kcal"]) == (0, None)
 
     by_weight = {(r["arch"], r["weight"]): r for r in rows}
     for (arch, weight), row in by_weight.items():
         if weight == 0.0:
             # THE reason the table is reconstructed rather than read off the
-            # metadata: at weight 0 the loss short-circuits before the energy
-            # term, so the recorded value is 0 while the error is not.
-            assert row["energy_term_x_final"] == 0.0
-            assert row["energy_term_c_final"] == 0.0
+            # objective: at weight 0 the loss short-circuits before the energy
+            # term, so the FITTED value is 0 while the error is not. This is
+            # the baseline row every ratio in the table is taken against.
             assert row["energy_term_x_recon"] > 0.0
             assert row["energy_term_c_recon"] > 0.0
-            assert row["recon_max_rel_dev"] is None
-        else:
-            # Where the recorded value is real, the reconstruction is it.
-            assert row["recon_max_rel_dev"] is not None
-            assert row["recon_max_rel_dev"] <= 1.0e-6
-            assert row["energy_term_x_recon"] == pytest.approx(
-                row["energy_term_x_final"], rel=1e-12)
+        # At every weight the run records the same quantities, measured on the
+        # network it saved, and the reconstruction lands on them.
+        assert row["recon_max_rel_dev"] is not None
+        assert row["recon_max_rel_dev"] <= 1.0e-6
+        assert row["energy_term_x_recon"] == pytest.approx(
+            row["energy_term_x_final"], rel=1e-12)
+        assert row["max_dE_xc_mHa"] == pytest.approx(
+            row["energy_term_max_abs_dE_mHa"], rel=1e-12)
     # The meta-GGA cell is the one that carries the synthetic mesh.
     assert by_weight[("deep_mgga_3x16", 0.0)]["pretrain_mesh"] is True
     assert by_weight[("deep_3x16", 0.0)]["pretrain_mesh"] is False
@@ -433,12 +985,22 @@ def test_single_node_one_task_with_a_thread_cap_from_slurm():
         assert f'export {var}="$THREADS"' in t
 
 
-def test_walltime_exceeds_the_short_queue_cap():
-    # The estimate is ~6 h; the short-* queues cap at 4 h, so the request and
-    # the partition have to agree on a long queue.
+def test_the_wall_matches_its_derivation():
+    """The request and the arithmetic in the header have to be the same job.
+
+    The measured per-step law (0.4527 us/row on the path the job runs) over the
+    2.88e6-row production sweep puts twenty cells at 7.25 h, and the estimate
+    at 8.25 h with the data generation; twice that is 16.5 h, and the pre-fix
+    library's extra 566 ms of compilation per step would want 22.8 h at the
+    same margin. The short-* queues cap at 4 h, so the request and the
+    partition also have to agree on a long queue.
+    """
     t = _sbatch_text()
-    assert "#SBATCH --time=12:00:00" in t
+    assert "#SBATCH --time=24:00:00" in t
     assert "#SBATCH --partition=long-" in t
+    for quoted in ("0.4527 us/row", "2.88e6", "7.25 h", "8.25 h", "16.5 h",
+                   "572.6 ms", "22.8 h"):
+        assert quoted in t, quoted
 
 
 def test_x64_is_on_and_the_platform_is_cpu():
@@ -459,10 +1021,15 @@ def test_the_invocation_carries_the_swept_identity_and_a_log():
     t = _sbatch_text()
     assert "python -u hpcjobs/probe_pretrain_energy_weight.py" in t
     for flag in ('--data-dir "$DATA_DIR"', '--out      "$OUT"',
-                 "--basis def2-svp", "--grid-level 3", "--n-steps 1000"):
+                 "--basis def2-svp", "--grid-level 3", "--n-steps 1000",
+                 # The production objective, stated rather than defaulted, and
+                 # the resume that makes a wall-clock kill recoverable.
+                 "--polarized", "--resume"):
         assert flag in t, flag
     # The log is a file, and the exit code read is python's, not tee's.
-    assert 'tee "$LOG"' in t
+    # Appended, not truncated: a resumed or batched submission adds to the log
+    # of the run it continues rather than replacing it.
+    assert 'tee -a "$LOG"' in t
     assert 'RC="${PIPESTATUS[0]}"' in t
     assert "#SBATCH --output=" in t
 
@@ -471,9 +1038,22 @@ def test_the_script_the_job_runs_exists():
     assert _SCRIPT.is_file()
 
 
+def test_the_sweep_can_be_batched_over_architectures():
+    """A wall that cannot hold the whole sweep is split into submissions, each
+    carrying its own architectures into the same table."""
+    t = _sbatch_text()
+    assert 'ARCHS="${EWSWEEP_ARCHS-}"' in t
+    assert "ARCH_ARGS=(--archs \"$ARCHS\")" in t
+    # The empty-array expansion, without which `set -u` kills the job when no
+    # batch is named.
+    assert '${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"}' in t
+
+
 def test_exit_code_two_is_documented_as_a_finding():
     # SLURM mails FAIL on any non-zero code; the log has to say that a 2 is a
     # completed sweep, or the mail reads as a crash.
     t = _sbatch_text()
-    assert "gate NOT cleared" in t
+    assert "the gates NOT cleared" in t
     assert "Not a crash" in t
+    # And a wall-clock kill is recoverable rather than a loss: the log says so.
+    assert "continues from the cells in" in t
