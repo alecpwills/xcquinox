@@ -1784,6 +1784,23 @@ def test_bent_ch2_pbe_record_sits_between_two_and_three_times_pyscfs_bar():
                           n_electrons=8)
 
 
+def test_a_record_without_the_gradient_stamp_is_refused():
+    """A record carrying its convergence stamp but no gradient stamp -- the
+    shape of a record from before the stamp -- is refused rather than let
+    past the integrity check, as an absent convergence stamp is."""
+    from xcquinox.alec.pretrain_data_gen import _require_sane_density
+    spec = _h2o_spec()
+    clear_precompute_cache()
+    md = dict(precompute_fixed_density_data(spec, reference_xc="pbe"))
+    meta = dict(md["mol_metadata"])
+    assert meta["reference_scf_converged"] is True
+    del meta["reference_scf_gradient"]
+    md["mol_metadata"] = meta
+    with pytest.raises(RuntimeError, match="reference_scf_gradient"):
+        _require_sane_density(md, spec, "pbe", spec.basis, spec.grid_level,
+                              n_electrons=10)
+
+
 def test_a_record_whose_pieces_do_not_belong_to_one_scf_is_refused():
     """The integrity half of the gradient check: a record whose stored
     density is not the one its Fock pieces were built from rebuilds a gradient

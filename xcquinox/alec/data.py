@@ -389,8 +389,12 @@ _REFERENCE_SCF_NEWTON_MAX_CYCLE = 50
 # the gradient of h1e + vhf (no DIIS) under its bar sqrt(conv_tol), then runs
 # one extra diagonalization and returns THAT density, accepting it when its
 # energy moved by less than 10 conv_tol or its gradient is under 3 times the
-# bar (scf/hf.py, the extra cycle), so the returned density's plain-Fock
-# gradient sits under 3 times the bar, not under the bar: measured 1.024 times
+# bar (scf/hf.py, the extra cycle). The energy branch bounds nothing on the
+# gradient by itself, and the second-order kernel has no extra cycle, so 3
+# times the bar is the DIIS kernel's stated ceiling rather than a bound on
+# every returned density; no converged case above it was found in some 250
+# small-basis configurations, the largest 2.26 times, and five forced
+# second-order records sit at 0.03 to 0.35 times. Measured 1.024 times
 # for singlet CH2 / SCAN / def2-svp / grid level 3 under the 3e-5 lock (7
 # cycles) and 2.258 times for the same molecule bent to 1.44 A / 102 degrees
 # under PBE. It is held at 1e-9 because the
@@ -926,8 +930,10 @@ def precompute_fixed_density_data(
     # get_grad on the plain Fock of that density (the quantity pyscf's extra
     # cycle accepted): stamped so a consumer rebuilding the gradient from the
     # stored Fock pieces can hold the record to what its precompute measured.
-    # The base object is used for the Fock and the gradient: a second-order
-    # wrapper overrides get_grad with its rotation gradient.
+    # The Fock and the gradient are read off the DIIS object whichever object
+    # the driver returned, so the stamp is one definition; at pyscf 2.11.0
+    # the second-order wrapper overrides neither get_fock nor get_grad and
+    # the two readings agree to 1e-15 on a forced second-order record.
     _base = getattr(mf, "_scf", mf)
     reference_scf_gradient = float(np.linalg.norm(_base.get_grad(
         mf.mo_coeff, mf.mo_occ, _base.get_fock(dm=dm_pbe))))

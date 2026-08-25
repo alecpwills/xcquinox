@@ -123,6 +123,9 @@ def _record_from_scf(system, basis, grid_level, reference_xc, max_cycle=None,
                                         else bool(stamp_converged)),
             "reference_scf_cycles": int(mf.cycles),
             "reference_scf_solver": "diis",
+            "reference_scf_conv_tol": float(mf.conv_tol),
+            "reference_scf_gradient": float(np.linalg.norm(mf.get_grad(
+                mf.mo_coeff, mf.mo_occ, mf.get_fock(dm=dm)))),
         },
     }
     return mf, record

@@ -490,9 +490,14 @@ def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
 #: (SCAN, def2-svp, level 3, locked; refused under a bar of 1.0 times, job
 #: 2134711) and 2.26 times for the same molecule bent to 1.44 A / 102
 #: degrees under PBE (refused under a bar of 2.0 times). The energy branch of
-#: pyscf's acceptance bounds nothing on the gradient by itself; the record's
-#: convergence stamp, refused first, is what settles convergence, and this
-#: ceiling holds the record to pyscf's stated bound.
+#: pyscf's acceptance bounds nothing on the gradient by itself, and the
+#: ceiling is the DIIS kernel's: the second-order kernel
+#: (``soscf/newton_ah.py``) tests its gradient before the last rotation, with
+#: no extra cycle and no ceiling of its own -- five forced second-order
+#: records measured 0.03 to 0.35 times the bar. No converged case above 3
+#: times was found in some 250 small-basis configurations (the largest 2.26).
+#: The record's convergence stamp, refused first, is what settles
+#: convergence; this ceiling holds the record to pyscf's stated bound.
 _GRADIENT_CHECK_MARGIN = 3.0
 #: Relative agreement required between a record's rebuilt orbital gradient
 #: and the one its precompute stamped from pyscf's ``get_grad`` on the same
@@ -586,7 +591,10 @@ def _require_sane_density(mol_data, system, reference_xc, basis, grid_level,
       gradient must reproduce the one the precompute stamped from pyscf's
       ``get_grad`` on the same density (:data:`_GRADIENT_INTEGRITY_REL_TOL`):
       a density and Fock pieces that do not belong to one SCF are refused
-      there, whatever their gradient. Measured on converged records: <=
+      there, whatever their gradient, and a record carrying no gradient stamp
+      is refused like one carrying no convergence stamp -- a record that
+      predates the stamp is regenerated, not trusted. Measured on converged
+      records: <=
       4.2e-6 (O/def2-SVP level 1), 1.02e-5 (the locked O atom at level 3),
       3.237e-5 -- 1.02 times the bar -- for singlet CH2 / SCAN / def2-svp /
       grid level 3 under the 3e-5 orientation lock, converged by pyscf in 7
@@ -635,7 +643,15 @@ def _require_sane_density(mol_data, system, reference_xc, basis, grid_level,
     grad_norm = _scf_gradient_norm(mol_data)
     bar = float(np.sqrt(scf.hf.SCF.conv_tol))
     stamped = stamp.get("reference_scf_gradient")
-    if stamped is not None:
+    if stamped is None:
+        raise RuntimeError(
+            f"the {reference_xc} record for {where} carries no "
+            "mol_metadata['reference_scf_gradient'] stamp, the orbital "
+            "gradient of the density its precompute returned, which the "
+            "gradient rebuilt from the stored Fock pieces is held to; a record "
+            "that predates the stamp is regenerated rather than trusted"
+        )
+    else:
         stamped = float(stamped)
         scale = max(stamped, bar)
         if not abs(grad_norm - stamped) <= _GRADIENT_INTEGRITY_REL_TOL * scale:
