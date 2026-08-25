@@ -9,15 +9,17 @@ must reproduce the archived tree exactly, not merely within a tolerance.
 
 Two archived records are compared against, both produced by
 ``record_closed_shell_reference.py`` with the same pins, and the live record
-is produced the same way: by that script, in a subprocess, under the pins
-its ``__main__`` block sets (the process confined to one CPU, the BLAS pools
-at one thread, XLA's Eigen contractions single-threaded). Computed in the
-test process instead, the record differs in its last bit with the number of
-CPUs XLA partitions its parallel operations over -- measured with the BLAS
-pools at one thread and Eigen single-threaded, 20 CPUs, 2 or 4 CPUs and one
-CPU gave three values of medium_attn's ``V_rks_trace`` -- which is a
-property of the process, not of the tree, and the bitwise comparison must
-not read it as one:
+is produced the same way: by that script, run by path in a subprocess,
+under the pins its ``__main__`` block sets before any numeric library loads
+(the process confined to one CPU, the BLAS pools at one thread, XLA's Eigen
+contractions single-threaded). Computed in the test process instead, the
+record inherits that process: with Eigen multi-threaded the potential of an
+attention architecture differs by one ulp (the three that failed the whole
+suite on the recording workstation), and with Eigen single-threaded it still
+differs with the CPU count XLA partitions its other parallel operations
+over (20, 4 and 2 CPUs: three values of medium_attn's ``V_rks_trace``).
+Both are properties of the process, not of the tree, and the bitwise
+comparison must not read them as one:
 
 * ``closed_shell_reference_ae204537e.json`` -- the tree at ae204537e, the last
   commit before the program's first code change. The spin-scaling change
@@ -172,12 +174,13 @@ def _load(fixture):
         raise ValueError(
             f"{Path(fixture).name} states an incomplete platform: {missing} "
             "missing. Regenerate it with record_closed_shell_reference.py.")
-    if document["pins"] != PINS:
+    stated = {name: document["pins"].get(name) for name in PINS}
+    if stated != PINS:
         raise ValueError(
             f"{Path(fixture).name} was recorded under {document['pins']}, not "
-            f"the recorder's pins {PINS}, so its last bits follow the CPU set "
-            "it happened to run on. Regenerate it with "
-            "record_closed_shell_reference.py, which pins itself.")
+            f"the recorder's pins {PINS}, so its last bits follow the process "
+            "it happened to run in. Regenerate it with "
+            "record_closed_shell_reference.py run by path, which pins itself.")
     _PLATFORM_BY_FIXTURE[fixture] = document["platform"]
     _PINS_BY_FIXTURE[fixture] = document["pins"]
     _RECORDS_BY_FIXTURE[fixture] = document["records"]
@@ -285,9 +288,9 @@ def _recorder_environment():
     neither leak into a record nor differ from what the recorder sets."""
     env = dict(os.environ)
     for name, value in PINS.items():
-        if name != "cpu_affinity_count":
-            env[name] = value
-    return env
+        if isinstance(value, str):      # the environment pins; the affinity
+            env[name] = value           # and the import order are the
+    return env                          # recorder's own to state
 
 
 def _one_cpu_prefix():
@@ -305,21 +308,25 @@ def record_live(arch_name, *, prefix=()):
     recorder script in a subprocess under its own pins.
 
     The archive was written by ``record_closed_shell_reference.py`` running
-    as a script, whose ``__main__`` block confines the process to one CPU,
-    sets the BLAS pools to one thread and turns XLA's multi-threaded Eigen
-    off before JAX initializes. A record computed in this process inherits
-    whatever this process runs with, and XLA partitions its parallel
-    operations over the CPUs the process may run on, so the last bit of the
-    record follows the CPU set (:data:`record_closed_shell_reference.PINS`
-    carries the measurements); the live side is therefore produced exactly
-    as the archive was. ``prefix`` runs the recorder under a wrapper
-    (``taskset``, in the test that pins this). Returns ``(record, pins)``.
+    by path, whose ``__main__`` block confines the process to one CPU, sets
+    the BLAS pools to one thread and turns XLA's multi-threaded Eigen off
+    before any numeric library loads. A record computed in this process
+    inherits whatever this process runs with -- multi-threaded Eigen moves
+    the potential of an attention architecture by one ulp, and the CPU count
+    moves it again through XLA's other parallel operations
+    (:data:`record_closed_shell_reference.PINS` carries the measurements) --
+    so the live side is produced exactly as the archive was. ``prefix`` runs
+    the recorder under a wrapper instead of the one-CPU ``taskset``.
+    Returns ``(record, pins)``; a failed recorder raises with its stderr.
     """
     out = subprocess.run(
         [*(prefix or _one_cpu_prefix()), sys.executable, str(_RECORDER),
          "--arch", arch_name],
-        env=_recorder_environment(), capture_output=True, text=True,
-        check=True)
+        env=_recorder_environment(), capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(
+            f"the recorder failed for {arch_name} (exit {out.returncode}); "
+            f"its stderr:\n{out.stderr}")
     document = json.loads(out.stdout)
     return document["records"][arch_name], document["pins"]
 
@@ -327,11 +334,29 @@ def record_live(arch_name, *, prefix=()):
 def _record(arch_name):
     if arch_name not in _RECORDS:
         record, pins = record_live(arch_name)
-        assert pins == PINS, (
+        assert {name: pins.get(name) for name in PINS} == PINS, (
             f"the recorder ran without its pins: {pins} != {PINS}")
         _RECORDS[arch_name] = record
         _LIVE_PINS[arch_name] = pins
     return _RECORDS[arch_name]
+
+
+def pin_differences(arch_name):
+    """The ways the live record's pins differ from a fixture's beyond the
+    pinned values themselves (which both are held to): the CPU the recorder
+    pinned to. On a hybrid part the potentials' last bits follow the core
+    class (CPUs 0, 5 and 12 of the recording workstation agree; CPU 19, an
+    efficiency core, does not), so a record from another CPU is held to the
+    cross-platform floor rather than read bitwise."""
+    _record(arch_name)
+    live = _LIVE_PINS[arch_name].get("cpu_index")
+    found = []
+    for fixture in _FIXTURES:
+        recorded = _fixture_pins(fixture).get("cpu_index")
+        if recorded != live:
+            found.append(f"pinned CPU {live} here, {recorded} when "
+                         f"{Path(fixture).name} was recorded")
+    return found
 
 
 def assert_closed_shell_record_matches(arch_name, record=None):
@@ -353,6 +378,8 @@ def assert_closed_shell_record_matches(arch_name, record=None):
     got = _record(arch_name) if record is None else record
     assert set(got) == set(reference) == set(archived) == set(RECORD_KEYS)
     differences = platform_differences()
+    if record is None:
+        differences = differences + pin_differences(arch_name)
     if differences:
         return _assert_within_the_cross_platform_floor(
             arch_name, got, reference, archived, differences)
@@ -519,9 +546,14 @@ def test_the_fixture_states_the_platform_it_was_recorded_on(fixture):
     assert recorded["pyscf_threads"] == 1, (
         "the record is reproducible only at one PySCF thread")
     assert recorded["pinned_max_memory_mb"] > 0.0
-    # And the pins: one CPU, one thread per BLAS pool, single-threaded Eigen.
-    assert _fixture_pins(fixture) == PINS
-    assert _fixture_pins(fixture)["cpu_affinity_count"] == 1
+    # And the pins: one CPU, one thread per BLAS pool, single-threaded Eigen,
+    # applied before any numeric library loaded; the CPU pinned to is stated
+    # beside them (informative, not one of the pins).
+    pins = _fixture_pins(fixture)
+    assert {name: pins.get(name) for name in PINS} == PINS
+    assert pins["cpu_affinity_count"] == 1
+    assert pins["applied_before_imports"] is True
+    assert isinstance(pins["cpu_index"], int)
 
 
 def test_the_two_fixtures_were_recorded_on_the_same_platform():
@@ -717,20 +749,34 @@ def test_closed_shell_results_are_byte_identical_to_the_archived_tree(
 
 @pytest.mark.skipif(shutil.which("taskset") is None,
                     reason="taskset is not available to change the CPU set")
-def test_the_live_record_does_not_depend_on_the_cpu_count():
-    """The live record is the same bitwise whether the recorder may run on
-    every CPU or on two: the comparison reads the tree, not the process.
-
-    medium_attn is the architecture whose potential and non-XC energy moved
-    in their last bits with the CPU set even with the BLAS pools at one
-    thread and Eigen single-threaded (20 CPUs, 2 or 4 CPUs, one CPU: three
-    values); the recorder confines itself to one CPU whatever set it is
-    started on, which is what this pins.
-    """
+def test_the_live_record_is_computed_under_the_recorders_pins():
+    """Started on a four-CPU set, the recorder confines itself to one CPU
+    before any numeric library loads and reports so; the record it returns
+    equals the one the comparison uses, which is pinned the same way."""
     arch_name = "medium_attn"
-    on_all, pins_all = record_live(arch_name)
-    on_two, pins_two = record_live(arch_name, prefix=("taskset", "-c", "0-1"))
-    assert pins_all == pins_two == PINS
-    assert on_two == on_all, {
-        key: (on_all[key], on_two[key]) for key in on_all
-        if on_all[key] != on_two[key]}
+    on_four, pins = record_live(arch_name, prefix=("taskset", "-c", "0-3"))
+    assert {name: pins.get(name) for name in PINS} == PINS
+    assert pins["cpu_index"] == 0
+    assert on_four == _record(arch_name), {
+        key: (on_four[key], _record(arch_name)[key]) for key in on_four
+        if on_four[key] != _record(arch_name)[key]}
+
+
+def test_a_recorder_run_as_a_module_states_that_its_pins_came_late(tmp_path):
+    """``python -m`` executes the package imports before the pin block, so
+    numpy and PySCF are already loaded when the pins are set and the record's
+    energies follow the machine's thread count (measured: every energy and
+    the density digest moved). The record states it, the recorder warns, and
+    the loader refuses such a document rather than reading it bitwise."""
+    out = subprocess.run(
+        [sys.executable, "-m", "xcquinox.alec.tests.record_closed_shell_reference",
+         "--arch", "deep"],
+        env=_recorder_environment(), capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    document = json.loads(out.stdout)
+    assert document["pins"]["applied_before_imports"] is False
+    assert "WARNING" in out.stderr and "numpy" in out.stderr, out.stderr
+    late = tmp_path / "late.json"
+    late.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="recorded under"):
+        _reference(late)

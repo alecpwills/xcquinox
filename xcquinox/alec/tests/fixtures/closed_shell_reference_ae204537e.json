@@ -4,7 +4,9 @@
     "OMP_NUM_THREADS": "1",
     "OPENBLAS_NUM_THREADS": "1",
     "XLA_FLAGS": "--xla_cpu_multi_thread_eigen=false",
-    "cpu_affinity_count": 1
+    "applied_before_imports": true,
+    "cpu_affinity_count": 1,
+    "cpu_index": 0
   },
   "platform": {
     "blas": "scipy-openblas 0.3.30 (OpenBLAS 0.3.30  USE64BITINT DYNAMIC_ARCH NO_AFFINITY Haswell MAX_THREADS=64)",

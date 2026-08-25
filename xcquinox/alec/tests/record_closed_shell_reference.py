@@ -13,6 +13,10 @@ script is not in that tree (it postdates it), so it is copied in and run FROM
 the archive directory::
 
     git archive ae204537e | tar -x -C <archive-dir>
+    # By PATH, never ``python -m``: run as a module, the package imports
+    # load numpy and PySCF before the pin block and the record's energies
+    # follow the machine's thread count; the record then states
+    # applied_before_imports false and the comparison refuses it.
     cp xcquinox/alec/tests/record_closed_shell_reference.py \\
        <archive-dir>/xcquinox/alec/tests/
     cd <archive-dir> && PYTHONPATH=<archive-dir> JAX_PLATFORMS=cpu \\
@@ -84,13 +88,26 @@ import os
 import platform
 import sys
 
+#: The numeric libraries whose thread pools and code paths are fixed when they
+#: load: a pin applied after any of them is in ``sys.modules`` did not govern
+#: the computation, whatever the environment says afterwards.
+_NUMERIC_LIBRARIES = ("numpy", "scipy", "jax", "jaxlib", "pyscf")
+#: What this process found before it pinned itself: which numeric libraries
+#: were already loaded (run as a module, the package ``__init__`` imports
+#: precede this block and load them all), and the CPU it pinned to. Recorded
+#: beside the pins so a record states whether the pins governed it.
+_BEFORE_PINS = {"already_loaded": (), "cpu_index": None}
+
 if __name__ == "__main__":
     # The pins, applied before JAX initializes (see PINS below): one CPU for
     # this process, one thread per BLAS pool, Eigen contractions
     # single-threaded. Set rather than defaulted, so a worker environment
     # that carries XLA_FLAGS of its own cannot leak into a record.
+    _BEFORE_PINS["already_loaded"] = tuple(
+        name for name in _NUMERIC_LIBRARIES if name in sys.modules)
     if hasattr(os, "sched_setaffinity"):
-        os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})
+        _BEFORE_PINS["cpu_index"] = min(os.sched_getaffinity(0))
+        os.sched_setaffinity(0, {_BEFORE_PINS["cpu_index"]})
     for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[_var] = "1"
     os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false"
@@ -319,34 +336,51 @@ def _closed_shell_record(arch_name) -> dict:
     }
 
 
-#: The environment this script pins for itself before JAX initializes, and
-#: which every record it writes was computed under: the process confined to
-#: ONE CPU, the three BLAS pools at one thread, XLA's Eigen contractions
-#: single-threaded. XLA partitions its parallel operations over the CPUs the
-#: process may run on, and the last bit of a record follows the partition:
-#: measured on the recording workstation with the BLAS pools at one thread
-#: and Eigen single-threaded, medium_attn's ``V_rks_trace`` read
-#: -23.666476506860090 on 20 CPUs and -23.666476506860086 on 2 or 4, its
-#: ``E_non_xc`` -67.00327081852345 on 20 CPUs and -67.0032708185235 on 2 or
-#: 4, while one CPU gave one value on CPU 0 and on CPU 5 alike. A record is
-#: therefore comparable bitwise only with a record computed under the same
-#: pins, and the affinity count is recorded beside the variables.
+#: The environment this script pins for itself before any numeric library
+#: loads, and which every record it writes was computed under: the process
+#: confined to ONE CPU, the three BLAS pools at one thread, XLA's Eigen
+#: contractions single-threaded, and the pins applied before the libraries
+#: that read them. Each pin removes a measured dependence of the record's last
+#: bits on the process rather than on the tree. Eigen multi-threaded
+#: contractions: the potential of an attention architecture computed in a
+#: 20-CPU process with the flag unset differs by one ulp from the same
+#: process with it set (the three architectures medium_attn, deep_cusp_attn
+#: and deep_notransform_attn_3x16, on the recording workstation). The CPU
+#: count: with the flag set and the BLAS pools at one thread, medium_attn's
+#: ``V_rks_trace`` still read -23.66647650686008 on 20 CPUs,
+#: -23.666476506860086 on 2 and -23.666476506860075 on 4 -- XLA partitions
+#: its other parallel operations over the CPUs the process may run on --
+#: while the energies and the density digest did not move. The pins applied
+#: late: run as a module, the package imports load numpy and PySCF before
+#: this block, the BLAS pools then run at the machine's count, and every
+#: energy and the density digest of the record move (``E_non_xc``
+#: -67.0032708185235 by path against -67.00327081852345 as a module); the
+#: record states this in ``applied_before_imports``. Which single CPU is a
+#: residual dependence on a hybrid part: CPUs 0, 5 and 12 of the recording
+#: workstation agree and CPU 19, one of its efficiency cores, moves the
+#: potentials; the pinned CPU is recorded as ``cpu_index`` and the
+#: comparison holds a record from another CPU to the cross-platform floor.
 PINS = {
     "XLA_FLAGS": "--xla_cpu_multi_thread_eigen=false",
     "OMP_NUM_THREADS": "1",
     "OPENBLAS_NUM_THREADS": "1",
     "MKL_NUM_THREADS": "1",
     "cpu_affinity_count": 1,
+    "applied_before_imports": True,
 }
 
 
 def _pins_in_force() -> dict:
-    """The pins as this process sees them: the variables, and the number of
-    CPUs the process may run on."""
+    """The pins as this process sees them, with what it found before pinning:
+    the variables, the number of CPUs the process may run on, whether the
+    pins preceded every numeric library, and the CPU it pinned to
+    (``cpu_index``, informative: not one of :data:`PINS`)."""
     pins = {name: os.environ.get(name) for name in PINS
-            if name != "cpu_affinity_count"}
+            if name not in ("cpu_affinity_count", "applied_before_imports")}
     pins["cpu_affinity_count"] = (len(os.sched_getaffinity(0))
                                   if hasattr(os, "sched_getaffinity") else None)
+    pins["applied_before_imports"] = not _BEFORE_PINS["already_loaded"]
+    pins["cpu_index"] = _BEFORE_PINS["cpu_index"]
     return pins
 
 
@@ -367,14 +401,16 @@ def main(argv=None):
     print(f"# xcquinox loaded from {sys.modules['xcquinox'].__file__}",
           file=sys.stderr)
     pins = _pins_in_force()
-    if pins != PINS:
-        # Run by path, the __main__ block pins this process before JAX
-        # initializes; run as a module, the package __init__ imports precede
-        # it. The record is still written, and states the pins it was taken
-        # under, so the comparison refuses it rather than reading it bitwise.
-        print(f"# WARNING: recording under {pins}, not the pins {PINS}; "
-              "run this script by path, under taskset -c <cpu>, so the pins "
-              "precede every import", file=sys.stderr)
+    if {name: pins[name] for name in PINS} != PINS:
+        # Run by path, the __main__ block pins this process before any
+        # numeric library loads; run as a module, the package __init__
+        # imports precede it (already_loaded names them). The record is
+        # still written and states the pins it was taken under, so the
+        # comparison refuses it rather than reading it bitwise.
+        print(f"# WARNING: recording under {pins}, not the pins {PINS} "
+              f"(loaded before the pins: "
+              f"{list(_BEFORE_PINS['already_loaded'])}); run this script "
+              "by path so the pins precede every import", file=sys.stderr)
     document = {
         "platform": platform_fingerprint(),
         "pins": pins,
