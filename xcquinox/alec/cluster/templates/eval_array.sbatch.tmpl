@@ -12,9 +12,24 @@ set -euo pipefail
 ${CONDA_ACTIVATION}
 
 # --- thread caps -----------------------------------------------------------
-export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
-export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
-export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+# The evaluation's PySCF work runs in this process on two paths -- the final
+# serial tier that finishes what the shard workers left, and the whole-serial
+# fallback when the parallel path is off or raises -- so this process's
+# OpenMP and OpenBLAS pools are capped at min(allocation, ${PYSCF_POOL_THREADS_MAX})
+# (parallel.pyscf_pool_threads) like every other PySCF-driving process; the
+# shard workers set their own pools (parallel._thread_env) and XLA sizes the
+# model's pool itself. Sized to the allocation, the two spin-waiting pools
+# stall a PySCF SCF loop (workflow-matrix job 2134488: about ten minutes per
+# molecule at 40 threads on a 40-core node against 8 s at four).
+PYSCF_THREADS=$${SLURM_CPUS_PER_TASK:-${PYSCF_POOL_THREADS_MAX}}
+case "$$PYSCF_THREADS" in ''|*[!0-9]*) PYSCF_THREADS=${PYSCF_POOL_THREADS_MAX} ;; esac
+PYSCF_THREADS=$$(( 10#$$PYSCF_THREADS ))
+[ "$$PYSCF_THREADS" -ge 1 ] || PYSCF_THREADS=1
+[ "$$PYSCF_THREADS" -le ${PYSCF_POOL_THREADS_MAX} ] || PYSCF_THREADS=${PYSCF_POOL_THREADS_MAX}
+export OMP_NUM_THREADS="$$PYSCF_THREADS"
+export MKL_NUM_THREADS="$$PYSCF_THREADS"
+export OPENBLAS_NUM_THREADS="$$PYSCF_THREADS"
+echo "[thread-caps] allocation=$${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$$PYSCF_THREADS"
 ${BENCH_REFS_ENV_LINE}
 ${SEED_ENV_LINES}
 # --- JAX/XLA CPU backend (eval is CPU-only) --------------------------------

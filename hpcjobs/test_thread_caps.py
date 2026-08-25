@@ -33,15 +33,18 @@ def test_no_job_script_sizes_the_pools_from_the_allocation_uncapped():
     numeric work itself and builds every stage's environment at
     parallel.pyscf_pool_threads."""
     import re
+    sized = re.compile(r'THREADS="?\$\{?SLURM_CPUS_PER_TASK(?::-(\d+))?\}?"?')
     for path in sorted(HPCJOBS.glob("*.sbatch")):
         text = path.read_text()
-        for m in re.finditer(r'THREADS="\$\{SLURM_CPUS_PER_TASK:-(\d+)\}"', text):
-            fallback = int(m.group(1))
-            if path.name == "workflow_matrix.sbatch":
-                continue
-            assert fallback <= PYSCF_POOL_THREADS_MAX, (
-                f"{path.name} sizes THREADS from the allocation with fallback "
-                f"{fallback}: cap it like the scripts in CAPPED_SCRIPTS")
+        if path.name == "workflow_matrix.sbatch":
+            continue
+        for m in sized.finditer(text):
+            # THREADS="${SLURM_CPUS_PER_TASK:-N}" and the no-default idioms
+            # export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK" / =${SLURM_CPUS_PER_TASK}
+            fallback = int(m.group(1)) if m.group(1) else None
+            assert fallback is not None and fallback <= PYSCF_POOL_THREADS_MAX, (
+                f"{path.name} sizes a thread pool from the allocation "
+                f"({m.group(0)}): cap it like the scripts in CAPPED_SCRIPTS")
             assert path.name in CAPPED_SCRIPTS, path.name
 
 

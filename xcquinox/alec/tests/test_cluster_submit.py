@@ -380,8 +380,9 @@ def test_render_thread_caps_present_every_template(tmp_path):
     per def2-svp molecule at 40 threads against 8 s at four)."""
     from xcquinox.alec.parallel import PYSCF_POOL_THREADS_MAX
     cfg = _make_cfg(tmp_path)
-    for kind, kw in (("train", {"array_max": 39}),
-                     ("eval", {"array_max": 39})):
+    # The train array is XLA's; its PySCF inputs come precomputed from the
+    # preflight, so its pools keep the allocation.
+    for kind, kw in (("train", {"array_max": 39}),):
         text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
         assert "export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
         assert "export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
@@ -392,8 +393,12 @@ def test_render_thread_caps_present_every_template(tmp_path):
     p = tmp_path / "grid_bench.json"
     p.write_text(json.dumps(d))
     cfg_bench = load_grid_config(str(p))
+    # The evaluation array runs PySCF in its own process on its final serial
+    # tier and on the whole-serial fallback, so it is capped with the front
+    # stages; its shard workers set their own pools.
     for kind, kw, c in (("pretrain", {"array_max": 0}, cfg),
                         ("preflight", {}, cfg), ("datagen", {}, cfg),
+                        ("eval", {"array_max": 39}, cfg),
                         ("benchmark_refs", {}, cfg_bench)):
         text = render_sbatch(kind, c, str(tmp_path / "run"), **kw)
         cap = PYSCF_POOL_THREADS_MAX
