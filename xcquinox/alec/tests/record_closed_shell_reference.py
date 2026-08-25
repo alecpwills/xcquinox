@@ -85,9 +85,15 @@ import platform
 import sys
 
 if __name__ == "__main__":
+    # The pins, applied before JAX initializes (see PINS below): one CPU for
+    # this process, one thread per BLAS pool, Eigen contractions
+    # single-threaded. Set rather than defaulted, so a worker environment
+    # that carries XLA_FLAGS of its own cannot leak into a record.
+    if hasattr(os, "sched_setaffinity"):
+        os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})
     for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[_var] = "1"
-    os.environ.setdefault("XLA_FLAGS", "--xla_cpu_multi_thread_eigen=false")
+    os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false"
 os.environ.setdefault("JAX_ENABLE_X64", "1")
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
@@ -313,13 +319,66 @@ def _closed_shell_record(arch_name) -> dict:
     }
 
 
-def main():
+#: The environment this script pins for itself before JAX initializes, and
+#: which every record it writes was computed under: the process confined to
+#: ONE CPU, the three BLAS pools at one thread, XLA's Eigen contractions
+#: single-threaded. XLA partitions its parallel operations over the CPUs the
+#: process may run on, and the last bit of a record follows the partition:
+#: measured on the recording workstation with the BLAS pools at one thread
+#: and Eigen single-threaded, medium_attn's ``V_rks_trace`` read
+#: -23.666476506860090 on 20 CPUs and -23.666476506860086 on 2 or 4, its
+#: ``E_non_xc`` -67.00327081852345 on 20 CPUs and -67.0032708185235 on 2 or
+#: 4, while one CPU gave one value on CPU 0 and on CPU 5 alike. A record is
+#: therefore comparable bitwise only with a record computed under the same
+#: pins, and the affinity count is recorded beside the variables.
+PINS = {
+    "XLA_FLAGS": "--xla_cpu_multi_thread_eigen=false",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "cpu_affinity_count": 1,
+}
+
+
+def _pins_in_force() -> dict:
+    """The pins as this process sees them: the variables, and the number of
+    CPUs the process may run on."""
+    pins = {name: os.environ.get(name) for name in PINS
+            if name != "cpu_affinity_count"}
+    pins["cpu_affinity_count"] = (len(os.sched_getaffinity(0))
+                                  if hasattr(os, "sched_getaffinity") else None)
+    return pins
+
+
+def main(argv=None):
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Record the closed-shell reference for every architecture "
+                    "(or the ones named) as JSON on stdout.")
+    parser.add_argument("--arch", action="append", default=None,
+                        metavar="NAME",
+                        help="record this architecture only (repeatable); "
+                             "default: every registered architecture")
+    args = parser.parse_args(argv)
+    names = sorted(alec.ARCHITECTURES) if not args.arch else list(args.arch)
+    unknown = [n for n in names if n not in alec.ARCHITECTURES]
+    if unknown:
+        parser.error(f"unknown architecture(s): {unknown}")
     print(f"# xcquinox loaded from {sys.modules['xcquinox'].__file__}",
           file=sys.stderr)
+    pins = _pins_in_force()
+    if pins != PINS:
+        # Run by path, the __main__ block pins this process before JAX
+        # initializes; run as a module, the package __init__ imports precede
+        # it. The record is still written, and states the pins it was taken
+        # under, so the comparison refuses it rather than reading it bitwise.
+        print(f"# WARNING: recording under {pins}, not the pins {PINS}; "
+              "run this script by path, under taskset -c <cpu>, so the pins "
+              "precede every import", file=sys.stderr)
     document = {
         "platform": platform_fingerprint(),
-        "records": {name: closed_shell_record(name)
-                    for name in sorted(alec.ARCHITECTURES)},
+        "pins": pins,
+        "records": {name: closed_shell_record(name) for name in names},
     }
     json.dump(document, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
