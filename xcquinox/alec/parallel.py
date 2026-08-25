@@ -331,8 +331,12 @@ def _thread_env(threads: int) -> dict[str, str]:
 #   (1, 20)   0.9 s   2.3 s   60.1 s
 #   (20, 1)   5.3 s  18.1 s   > 97 s  (killed at 120 s)
 #   (20, 20)  6.0 s  18.0 s   > 216 s (killed at 240 s)
-# and on a 40-core cluster node at (40, 40) the same build ran at about ten
-# minutes per molecule (workflow-matrix job 2134488, preflight stage). The cap
+# and on a 40-core cluster node at (40, 40) the same build took 739.5 s for
+# C2H2, 489.2 s for C2H4, 377.7 s for C2H6 and 56.2 s for CH3, while the atoms
+# and the radicals CH and CH2, whose OEP converges in a few iterations, stayed
+# under 9 s (workflow-matrix job 2134488, preflight stage, per-species run
+# log): the closed-shell molecules run hundreds of L-BFGS-B iterations and pay
+# the per-iteration overhead in full. The cap
 # is the largest count within 1.5x of the measured optimum on the OEP wall
 # (11.1 s against 7.5 s; 10 threads is 1.9x); a larger basis gains parallel
 # CCSD(T) from it without approaching the core count of any node in use (28,

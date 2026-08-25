@@ -401,6 +401,7 @@ def test_render_thread_caps_present_every_template(tmp_path):
         assert (f'[ "$PYSCF_THREADS" -le {cap} ] || PYSCF_THREADS={cap}'
                 in text), kind
         assert '[ "$PYSCF_THREADS" -ge 1 ] || PYSCF_THREADS=1' in text, kind
+        assert "PYSCF_THREADS=$(( 10#$PYSCF_THREADS ))" in text, kind
         for pool in ("OMP", "MKL", "OPENBLAS"):
             assert f'export {pool}_NUM_THREADS="$PYSCF_THREADS"' in text, (
                 kind, pool)
@@ -436,6 +437,14 @@ def test_render_pyscf_pool_cap_evaluates_to_the_module_rule_under_bash(tmp_path)
                              capture_output=True, text=True, check=True)
         assert out.stdout.split() == [str(pyscf_pool_threads(n))] * 3, (n, out.stdout)
         assert out.stderr == "", (n, out.stderr)
+    # A zero-padded digit string is read as its decimal value, as int() reads it.
+    for text_n, n in (("04", 4), ("007", 7), ("040", 40)):
+        out = subprocess.run(["bash", "-euo", "pipefail", "-c", probe],
+                             env={"PATH": os.environ.get("PATH", ""),
+                                  "SLURM_CPUS_PER_TASK": text_n},
+                             capture_output=True, text=True, check=True)
+        assert out.stdout.split() == [str(pyscf_pool_threads(n))] * 3, (text_n, out.stdout)
+        assert out.stderr == "", (text_n, out.stderr)
     # Unset, empty and unparseable allocations are the cap, silently (no
     # message from the integer test reaches the job log).
     for env in ({}, {"SLURM_CPUS_PER_TASK": ""},
