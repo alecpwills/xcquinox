@@ -432,15 +432,17 @@ def scan_fx(rho, sigma, alpha):
     alpha in {0, 0.5, 0.99, 1, 1.01, 2, 10, 100} (936 points), and on the
     stored rows of H2O (sto-3g) and OH (def2-svp) at grid level 1 with
     ``2 rho_sigma > 1e-10`` below the indicator ceiling (8413, 6283 and 6324
-    rows): 3.4e-15 where ``kappa = tau_W / (tau - tau_W) < 1e2``, 3.2e-13
-    where ``kappa < 1e4``, and up to 7.9e-11 on the 130 to 286 tail rows
-    beyond (rho below 3e-6, s above ~100, kappa up to 5.6e12), which is
-    1.6 kappa ulps at most: there the indicator libxc recomputes from tau is
-    itself determined only to kappa ulps (the tail figure moves between
-    7.2e-11 and 7.9e-11 across two SCF solutions of the same system, the
-    reference density's own rounding entering the difference). First derivatives
+    rows): 5.5e-15 to 1.1e-14 where ``kappa = tau_W / (tau - tau_W) < 1e2``
+    (the spread across channels and SCF solutions), 3.7e-13 where
+    ``kappa < 1e4``, and up to 1.3e-10 on the 130 to 286 tail rows beyond
+    (rho below 3e-6, s above ~100, kappa up to 5.6e12), which is 3.2 kappa
+    ulps at most over the rows with kappa above 1 and 0.2 on the tail bin
+    itself: there the indicator libxc recomputes from tau is itself
+    determined only to kappa ulps (the tail figure moves between 7.2e-11
+    and 1.3e-10 across SCF solutions of the same system, the reference
+    density's own rounding entering the difference). First derivatives
     with respect to rho, sigma and the indicator (through ``dtau/dalpha =
-    tau_unif``) against ``deriv=1``: 2.1e-13 on the grid, 1.5e-9 on the
+    tau_unif``) against ``deriv=1``: 2.1e-13 on the grid, 1.9e-9 on the
     stored rows. Accepts any broadcastable leading shape (elementwise), as
     ``pbe_fx`` does.
     """
@@ -497,10 +499,11 @@ def scan_fc(rho, sigma, zeta, alpha):
     Fermi-hole cap (``sigma_ss = 8 rho_s tau_s`` to rounding), the agreement
     is 4.3e-15 absolute. On the stored rows of H2O and OH (total density,
     ``uks_zeta``, ``rho > 1e-10``, below the indicator ceiling; 8413 and
-    6324 rows): 3.1e-14 where ``kappa = tau_W / (tau - tau_W) < 1e2``,
-    1.3e-12 where ``kappa < 1e4``, up to 1.6e-9 on the tail rows beyond it
-    (the indicator's own conditioning, as for ``scan_fx``; 1.2 kappa ulps at
-    most), 1.1e-14 Ha/bohr^3 absolute in the energy density; derivatives
+    6324 rows): 4.0e-14 where ``kappa = tau_W / (tau - tau_W) < 1e2``,
+    2.0e-12 where ``kappa < 1e4``, up to 1.6e-9 on the tail rows beyond it
+    (the indicator's own conditioning, as for ``scan_fx``; 6.5 kappa ulps at
+    most over the rows with kappa above 1), 1.2e-14 Ha/bohr^3 absolute in
+    the energy density; derivatives
     against ``deriv=1`` to 5.6e-9 on the grid (zeta, sigma and rho at the
     small-``F_c`` rows; 2.8e-13 where ``|F_c| > 1e-5`` except zeta at
     5.6e-9) and 6.2e-9 on the stored rows. Accepts any broadcastable

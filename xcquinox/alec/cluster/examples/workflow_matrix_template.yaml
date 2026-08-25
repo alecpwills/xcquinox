@@ -184,15 +184,17 @@ use_polarized_correlation: true
 inline_eval: false
 defer_eval: false
 # --- the model class (SPEC_parent_anchor.md) --------------------------------
-# Stated at the pre-anchor defaults, as every knob of this matrix is: the
-# unanchored, legacy-coordinate class, so the matrix exercises the wiring the
-# recorded campaigns (v4, v5) ran under. The campaign-v6 value follows each
-# key. An anchored matrix run -- SPEC_parent_anchor.md V6, the workflow check
-# of the anchor -- is rendered by setting the two keys to their v6 values; the
-# polarized correlation network the anchor requires is already on above.
+# Stated at the campaign-v6 class -- anchored to the parent, on the DFS
+# coordinates -- so the matrix is the workflow check of the anchor
+# (SPEC_parent_anchor.md V6): the certificate it computes is then a real
+# measurement of the anchored class, expected to PASS at the oracle floor at
+# initialization and after the 50 steps. The legacy class the recorded
+# campaigns (v4, v5) ran under is rendered by setting the two keys to false
+# and legacy; the polarized correlation network the anchor requires is
+# already on above.
 model:
-  parent_anchor: false            # v6: true
-  descriptor_coordinates: legacy  # v6: dfs
+  parent_anchor: true             # v6: true (legacy class: false)
+  descriptor_coordinates: dfs     # v6: dfs (legacy class: legacy)
 
 # Certificate tolerances stay at their binding defaults (tol_AE = 1.0 kcal/mol,
 # tol_atom = 1.0 mHa, grid_config.FidelityConfig), so the certificate is a real

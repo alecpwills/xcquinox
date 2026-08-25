@@ -895,8 +895,15 @@ def test_scan_exchange_potential_terms_match_libxc_deriv_one():
     ``metagga._ALPHA_MAX`` bounds).
 
     Measured 2.090e-13 relative, worst over the three terms at the 648 points
-    of the grid, wherever libxc's own derivative is above 1e-10 (``vsigma``
-    vanishes identically at s = 0, which is why the s axis starts at 0.05).
+    of the grid, wherever libxc's own derivative is above 1e-10. The s axis
+    starts at 0.05 because at s = 0 with alpha <= 0 the comparison reads
+    1.6e-2 relative: the chain-corrected combination vsigma + vtau/(8 rho)
+    cancels to an indicator-scale residual (got -2.107e-10, want -2.142e-10,
+    an absolute gap of 3.5e-12 against an energy density of 6.8e-7) through
+    the 1 - f_x cancellation at an indicator of 1e-13, which libxc's own
+    arithmetic carries identically; libxc's vsigma itself does not vanish at
+    s = 0 (-1.3e-4 at rs = 0.27 to -3.9e3 at rs = 20), and at s = 0 with
+    alpha >= 1e-3 the agreement is 8.4e-13.
     Bound 2e-12, 9.6 times the measurement, rather than the design's 1e-8:
     the grid includes ``alpha = 1``, where both branches of the switching
     function are cut off at DBL_EPSILON and a form that is finite in value but
