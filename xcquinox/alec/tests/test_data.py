@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from unittest.mock import patch
 
 from xcquinox.alec.config import MoleculeSpec
+from xcquinox.alec import data as data_mod
 from xcquinox.alec.data import MoleculeData, precompute_fixed_density_data
 from xcquinox.alec.descriptors import CuspDescriptor, DMStatisticsDescriptor
 from xcquinox.alec.tests.fixtures.molecules import (
@@ -1669,6 +1670,7 @@ def test_reference_scf_convergence_is_stamped_in_the_metadata():
     mf = dft.RKS(mol)
     mf.xc = "scan"
     mf.grids.level = spec.grid_level
+    mf.conv_tol = data_mod._REFERENCE_SCF_CONV_TOL   # the recipe's own bar
     mf.kernel()
     assert mf.converged
     assert isinstance(meta["reference_scf_cycles"], int)
@@ -1676,6 +1678,58 @@ def test_reference_scf_convergence_is_stamped_in_the_metadata():
     assert meta["reference_scf_cycles"] == int(mf.cycles)
     # DIIS converged, so the second-order stage never ran.
     assert meta["reference_scf_solver"] == "diis"
+    assert meta["reference_scf_conv_tol"] == data_mod._REFERENCE_SCF_CONV_TOL
+
+
+def test_reference_scf_tolerance_is_pyscfs_and_the_generators_bar_is_twice_it():
+    """The reference SCF converges at pyscf's default (the tolerance the
+    orientation lock's reproducibility was calibrated at; a decade tighter
+    the locked O atom lands on different densities in different processes),
+    and the pretraining-data generator holds a record's rebuilt plain-Fock
+    gradient to twice pyscf's gradient criterion, the bound the DIIS
+    extrapolation leaves."""
+    from pyscf import scf
+    from xcquinox.alec import pretrain_data_gen as pdg
+    assert data_mod._REFERENCE_SCF_CONV_TOL == scf.hf.SCF.conv_tol == 1e-9
+    assert pdg._GRADIENT_CHECK_MARGIN == 2.0
+
+
+def test_locked_ch2_scan_record_passes_the_generators_gradient_check():
+    """Singlet CH2 / SCAN / def2-svp / grid level 3 under the 3e-5 orientation
+    lock: pyscf converges the SCF in 7 DIIS cycles on the gradient of its
+    extrapolated Fock, while the plain-Fock gradient of the stored density
+    rebuilds at 3.237e-5, 1.02 times pyscf's bar -- the record the
+    energy-weight sweep's data generation stopped on (job 2134711) under a
+    bar of 1.0 times. It is accepted under the doubled bar, well inside it,
+    the record's stamp names the tolerance, and the unlocked record rebuilds
+    near pyscf's own 7.1e-7."""
+    from pyscf import scf
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.pretrain_data_gen import (
+        _GRADIENT_CHECK_MARGIN, _require_sane_density, _scf_gradient_norm)
+    spec = MoleculeSpec(
+        name="CH2_singlet", basis="def2-svp", charge=0, spin=0, grid_level=3,
+        atom=("C 0.0000000000 0.0000000000 0.1799180000; "
+              "H 0.0000000000 0.8554750000 -0.5397540000; "
+              "H 0.0000000000 -0.8554750000 -0.5397540000"),
+        atom_composition=(("C", 1), ("H", 2)))
+    bar = float(np.sqrt(scf.hf.SCF.conv_tol))
+    clear_precompute_cache()
+    locked = precompute_fixed_density_data(spec, reference_xc="scan",
+                                           orientation_lock_strength=3e-5)
+    assert locked["mol_metadata"]["reference_scf_converged"] is True
+    assert locked["mol_metadata"]["reference_scf_conv_tol"] == 1e-9
+    g_locked = _scf_gradient_norm(locked)
+    assert g_locked < 1.5 * bar, (g_locked, bar)
+    assert g_locked < _GRADIENT_CHECK_MARGIN * bar
+    # The generator's own check accepts the record as it stands.
+    _require_sane_density(locked, spec, "scan", spec.basis, spec.grid_level,
+                          n_electrons=8)
+    clear_precompute_cache()
+    unlocked = precompute_fixed_density_data(spec, reference_xc="scan",
+                                             orientation_lock_strength=0.0)
+    g_unlocked = _scf_gradient_norm(unlocked)
+    assert g_unlocked < bar / 10, (g_unlocked, bar)
 
 
 def test_non_converged_reference_scf_is_refused_not_recorded(monkeypatch):

@@ -383,6 +383,20 @@ _REFERENCE_SCF_MAX_CYCLE = 100
 # Measured: 7 macro-iterations on the locked PBE O-atom stall, 2 to 4 on
 # H2O / SCAN started from a one- to three-cycle DIIS density.
 _REFERENCE_SCF_NEWTON_MAX_CYCLE = 50
+# Convergence threshold of the reference SCF, both stages: pyscf's default,
+# stated here and stamped into every record. It is held at 1e-9 because the
+# orientation lock's reproducibility was calibrated at it and does not survive
+# a decade tighter: the locked O atom (PBE, def2-svp, grid level 3, the
+# pretraining identity) converges in 7 cycles at 1e-9 with two processes
+# landing on one density (second moments 3.369559 / 3.803699 / 3.749466 in
+# both), while at 1e-10 the two processes wander 37 and 42 cycles along the
+# lock's weakly broken flat direction and land on different densities
+# (moments 3.371581 / 3.771174 / 3.779969 against 3.371541 / 3.770797 /
+# 3.780388, 1.4e-3 relative in rho on 94 percent of the grid, energies 9e-8
+# Ha above the 1e-9 point). The consumers that rebuild the orbital gradient
+# from a record's Fock pieces hold it to twice pyscf's gradient criterion for
+# the reason stated at pretrain_data_gen._GRADIENT_CHECK_MARGIN.
+_REFERENCE_SCF_CONV_TOL = 1e-9
 
 
 def _converge_reference_scf(mf, label="the reference SCF"):
@@ -404,7 +418,9 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     Both stages test the same criterion, |g| < sqrt(conv_tol) and
     dE < conv_tol (``scf.hf.kernel``; ``soscf.newton_ah.kernel`` derives its
     ``conv_tol_grad`` from ``conv_tol`` the same way), so the second stage
-    changes the minimizer, not the bar. The reference SCF always starts from
+    changes the minimizer, not the bar; the bar is
+    :data:`_REFERENCE_SCF_CONV_TOL`, set here on both stages (see the
+    constant for the measurement behind it). The reference SCF always starts from
     the minao guess: a start from a converged PBE density of the same system
     was measured and rejected, not because the minao start cannot stall -- it
     can, on both functionals (unlocked SCAN O atom at def2-SVP / grid level
@@ -427,6 +443,7 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     leaves).
     """
     mf.max_cycle = _REFERENCE_SCF_MAX_CYCLE
+    mf.conv_tol = _REFERENCE_SCF_CONV_TOL
     mf.kernel()
     cycles = int(mf.cycles)
     if mf.converged:
@@ -460,6 +477,7 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     try:
         so = mf.newton()
         so.max_cycle = _REFERENCE_SCF_NEWTON_MAX_CYCLE
+        so.conv_tol = _REFERENCE_SCF_CONV_TOL
         macro = []
         # newton_ah.kernel calls back with its locals after every
         # macro-iteration and once more after the loop; the last imacro is
@@ -1306,6 +1324,10 @@ def precompute_fixed_density_data(
             "reference_scf_converged": reference_scf_converged,
             "reference_scf_cycles": reference_scf_cycles,
             "reference_scf_solver": reference_scf_solver,
+            # The threshold both stages converged to (_REFERENCE_SCF_CONV_TOL),
+            # one decade under pyscf's default, so the gradient a consumer
+            # rebuilds from the stored pieces sits under pyscf's criterion.
+            "reference_scf_conv_tol": float(_REFERENCE_SCF_CONV_TOL),
             # Grid points per block of the reference SCF's XC quadrature
             # (fixed; the summation order no longer follows process memory)
             # and pyscf's OpenMP worker count at the time. Metadata, not

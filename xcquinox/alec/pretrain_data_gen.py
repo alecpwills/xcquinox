@@ -479,6 +479,19 @@ def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
     return {k: np.concatenate(v, axis=0) for k, v in parts.items()}
 
 
+#: The factor over pyscf's gradient criterion a record's rebuilt orbital
+#: gradient is held to. pyscf converges on the gradient of the
+#: DIIS-extrapolated Fock in the current orbital basis; the plain Fock of the
+#: final density, the one a record carries, differs from it by the
+#: extrapolation's correction, which at convergence is of the same order as
+#: the gradient, so the plain gradient is bounded by twice the bar. Measured:
+#: 0.32 times the bar for the locked O atom (PBE, def2-svp, level 3) and 1.02
+#: times for singlet CH2 (SCAN, def2-svp, level 3, locked), both converged by
+#: pyscf; the unconverged examples in :func:`_require_sane_density` sit at
+#: 2.1 times and above.
+_GRADIENT_CHECK_MARGIN = 2.0
+
+
 def _scf_gradient_norm(mol_data):
     """pyscf's SCF orbital-gradient norm, rebuilt from a stored density record.
 
@@ -553,12 +566,23 @@ def _require_sane_density(mol_data, system, reference_xc, basis, grid_level,
     * the SCF orbital gradient rebuilt from the stored Fock pieces
       (:func:`_scf_gradient_norm`), the second line behind the stamp: held to
       pyscf's own convergence criterion ``conv_tol_grad = sqrt(conv_tol)``
-      (``pyscf/scf/hf.py``; 3.2e-5 at the default ``conv_tol`` of 1e-9).
-      Measured on converged records: <= 4.2e-6 (O/def2-SVP level 1); an SCF
+      (``pyscf/scf/hf.py``; 3.2e-5 at the default ``conv_tol`` of 1e-9),
+      times :data:`_GRADIENT_CHECK_MARGIN`: pyscf tests the gradient of the
+      DIIS-extrapolated Fock in the current orbital basis, and the plain Fock
+      of the final density -- which is what the record carries -- differs
+      from it by the extrapolation's correction, of the same order as the
+      gradient itself at convergence, so its bound is twice pyscf's bar.
+      Measured on converged records: <= 4.2e-6 (O/def2-SVP level 1),
+      1.02e-5 (the locked O atom at level 3), and 3.237e-5 -- 1.02 times
+      pyscf's bar -- for singlet CH2 / SCAN / def2-svp / grid level 3 under
+      the 3e-5 orientation lock, converged by pyscf in 7 cycles (7.1e-7 for
+      the same SCF unlocked), which a bar of 1.0 times refused and which the
+      energy-weight sweep's data generation stopped on (job 2134711). An SCF
       stopped after one cycle sits at 2e-3 (He) to 1 (F-), and an oxygen-atom
-      SCAN run pyscf reported unconverged at 6.7e-5. The energy-change half of
-      pyscf's criterion needs the iteration history, which the record does not
-      carry.
+      SCAN run pyscf reported unconverged at 6.7e-5 -- still refused at the
+      doubled bar, and refused before it by the stamp. The energy-change half
+      of pyscf's criterion needs the iteration history, which the record does
+      not carry.
     """
     where = (f"pretraining system {system.name!r} (geometry {system.atom!r}, "
              f"charge {system.charge}, 2S {system.spin}, basis {basis}, grid "
@@ -594,12 +618,13 @@ def _require_sane_density(mol_data, system, reference_xc, basis, grid_level,
             "density matrix does not belong to it"
         )
     grad_norm = _scf_gradient_norm(mol_data)
-    grad_tol = float(np.sqrt(scf.hf.SCF.conv_tol))
+    grad_tol = _GRADIENT_CHECK_MARGIN * float(np.sqrt(scf.hf.SCF.conv_tol))
     if not grad_norm < grad_tol:
         raise RuntimeError(
             f"the {reference_xc} SCF for {where} did not converge: the "
             f"orbital gradient of its stored density is {grad_norm:.3e}, "
-            f"against pyscf's criterion {grad_tol:.1e}"
+            f"against {_GRADIENT_CHECK_MARGIN:g} times pyscf's criterion "
+            f"({grad_tol:.1e})"
         )
 
 
