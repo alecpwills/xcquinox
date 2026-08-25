@@ -126,8 +126,10 @@ pretrain:
   # The synthetic (r_s, s, alpha) mesh's share of the total integration
   # weight, at the generator's own constant.
   mesh_fraction: 0.3        # v6: 0.3
-  # The OBJECTIVE: the point-wise enhancement-factor residual alone.
-  energy_term_weight: 0.0   # v6: hpcjobs/probe_pretrain_energy_weight.py table
+  # The OBJECTIVE: the point-wise enhancement-factor residual alone. The
+  # campaign runs the same weight, 0.0, which is exact under the parent
+  # anchor (model.parent_anchor, SPEC_parent_anchor.md Section 3.5).
+  energy_term_weight: 0.0   # v6: 0.0, exact under model.parent_anchor
   # VALIDATION and the stop criterion, both OFF. The matrix pretrains on two
   # free atoms, and the split holds out MULTI-NUCLEUS systems only, so a
   # non-zero fraction would hold out nothing here and the monitor would score
@@ -181,6 +183,17 @@ use_polarized_correlation: true
 # stages.
 inline_eval: false
 defer_eval: false
+# --- the model class (SPEC_parent_anchor.md) --------------------------------
+# Stated at the pre-anchor defaults, as every knob of this matrix is: the
+# unanchored, legacy-coordinate class, so the matrix exercises the wiring the
+# recorded campaigns (v4, v5) ran under. The campaign-v6 value follows each
+# key. An anchored matrix run -- SPEC_parent_anchor.md V6, the workflow check
+# of the anchor -- is rendered by setting the two keys to their v6 values; the
+# polarized correlation network the anchor requires is already on above.
+model:
+  parent_anchor: false            # v6: true
+  descriptor_coordinates: legacy  # v6: dfs
+
 # Certificate tolerances stay at their binding defaults (tol_AE = 1.0 kcal/mol,
 # tol_atom = 1.0 mHa, grid_config.FidelityConfig), so the certificate is a real
 # measurement with a real verdict. It is computed at the identity THIS FILE

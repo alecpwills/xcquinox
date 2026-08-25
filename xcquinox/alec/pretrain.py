@@ -1714,6 +1714,13 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "use_dm": use_dm,
         # Shape-changing flag: polarized cnet input width +1.
         "use_polarized_correlation": bool(spec.arch.use_polarized_correlation),
+        # The model class the networks were written as. Neither changes a
+        # parameter shape, so the leaves do not reveal them and the loaders
+        # (train._require_matching_model_class, the run validator, the
+        # certificate's keep check) read them from here.
+        "parent_anchor": bool(getattr(spec.arch, "parent_anchor", False)),
+        "descriptor_coordinates": str(
+            getattr(spec.arch, "descriptor_coordinates", "legacy")),
         # Architecture-shape keys the run validator cross-checks
         # (validate_run.py); the step count is already recorded as
         # "pretrain_steps" above. Absent from files written before
@@ -1831,6 +1838,22 @@ def _metadata_preflight(
             f"legacy checkpoint metadata mismatch: file has "
             f"depth={md['depth']}, nodes={md['nodes']}; "
             f"arch expects depth={arch.depth}, nodes={arch.nodes}"
+        )
+    # A legacy (step3b-era) checkpoint is the unanchored legacy-coordinate
+    # class by construction; grafting its leaves onto an anchored or
+    # dfs-coordinate skeleton would change the model class silently.
+    want_anchor = bool(getattr(arch, "parent_anchor", False))
+    want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
+    got_anchor = bool(md.get("parent_anchor", False))
+    got_coords = str(md.get("descriptor_coordinates", "legacy"))
+    if got_anchor != want_anchor or got_coords != want_coords:
+        raise ValueError(
+            f"legacy checkpoint metadata {metadata_path}: networks recorded "
+            f"as parent_anchor={got_anchor}, descriptor_coordinates="
+            f"{got_coords!r}, but the arch to load them into is "
+            f"parent_anchor={want_anchor}, descriptor_coordinates="
+            f"{want_coords!r}; the two model classes share their parameter "
+            "shapes and cannot be told apart from the leaves"
         )
     return md
 

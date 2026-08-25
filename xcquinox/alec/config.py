@@ -5,7 +5,7 @@ FeatureSpec.as_kwargs thaw round-trip, together with MoleculeSpec,
 PretrainSpec, TrainingSpec, and TestSpec.
 """
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 
 
 def _freeze(value):
@@ -144,6 +144,30 @@ class ArchitectureConfig:
     # Lieb-Oxford ceiling to 1.174; requires a "metagga" descriptor (which supplies
     # the iso-orbital alpha). A NEW checkpoint family. Default False -> unchanged.
     meta_gga: bool = False
+    # parent_anchor: True anchors both enhancement networks to the
+    # architecture's parent functional (PBE on the GGA rungs, SCAN on the
+    # meta-GGA rungs) in the pre-image of the networks' bounded map, so the
+    # model equals its parent at initialization pointwise
+    # (SPEC_parent_anchor.md Sections 3.2 to 3.4). Part of the architecture
+    # identity: the networks' parameter shapes do not change, so a checkpoint
+    # written under one anchor state is refused by a model of the other on
+    # the strength of the record beside it (pretrain_metadata.json, the
+    # certificate, the run's resolved configuration). Implies
+    # zero_init_final_layer (``anchored`` sets both); requires a
+    # polarization-aware correlation network. Default False = every model
+    # built before the anchor existed, byte for byte.
+    parent_anchor: bool = False
+    # descriptor_coordinates: the coordinates the MLPs read the row in.
+    # "legacy" is today's input layout, byte for byte; "dfs" is the coordinate
+    # set of Dick and Fernandez-Serra, PRB 104, L161109 (2021), read from the
+    # vendored dpyscfl ``get_descriptors``: the exchange MLP keeps the
+    # transformed reduced gradient (x_s) alone, the correlation MLP takes
+    # x0 = ln(rho^(1/3) + 1e-5), x1 = ln(spinscale), x_s, and the meta-GGA nets
+    # receive x_alpha = ln((alpha + 1)/2) in place of the raw indicator
+    # (networks.py states each). A NEW checkpoint family where the widths
+    # change (the correlation MLP); the parent anchor reads the row's physical
+    # quantities and is unchanged by the choice.
+    descriptor_coordinates: str = "legacy"
 
     def __post_init__(self):
         if not isinstance(self.name, str):
@@ -182,13 +206,19 @@ class ArchitectureConfig:
                 f"Python bool, got {type(self.use_polarized_correlation).__name__}"
             )
         for bool_field in ("dm_entropy_intensive", "descriptor_log_transform",
-                            "zero_init_final_layer"):
+                            "zero_init_final_layer", "parent_anchor"):
             value = getattr(self, bool_field)
             if not isinstance(value, bool):
                 raise TypeError(
                     f"ArchitectureConfig.{bool_field} must be a plain Python "
                     f"bool, got {type(value).__name__}"
                 )
+        if self.descriptor_coordinates not in DESCRIPTOR_COORDINATES:
+            raise ValueError(
+                f"ArchitectureConfig.descriptor_coordinates must be one of "
+                f"{DESCRIPTOR_COORDINATES}, got "
+                f"{self.descriptor_coordinates!r}"
+            )
         if not isinstance(self.num_heads, int) or isinstance(self.num_heads, bool):
             raise TypeError(
                 f"ArchitectureConfig.num_heads must be a plain Python int, "
@@ -275,6 +305,22 @@ class ArchitectureConfig:
         return any(getattr(spec, "name", None) == "metagga"
                    for spec in getattr(arch, "descriptors", ()))
 
+    def describe(self) -> dict:
+        """Every field as a JSON-serializable value: the descriptor and
+        constraint specs as ``{"name", "kwargs"}`` mappings, the flags as they
+        are. The architecture identity in full, ``parent_anchor`` and
+        ``descriptor_coordinates`` included, for the records that name a model
+        class rather than a registry entry."""
+        out: dict = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if f.name in ("descriptors", "x_constraints", "c_constraints"):
+                out[f.name] = [{"name": s.name, "kwargs": s.as_kwargs()}
+                               for s in value]
+            else:
+                out[f.name] = value
+        return out
+
     @property
     def x_has_lieb_oxford_constraint(self) -> bool:
         return any(s.name == "lieb_oxford" for s in self.x_constraints)
@@ -340,7 +386,9 @@ class ArchitectureConfig:
                   dm_entropy_intensive: bool = False,
                   descriptor_log_transform: bool = False,
                   meta_gga: bool = False,
-                  zero_init_final_layer: bool = False):
+                  zero_init_final_layer: bool = False,
+                  parent_anchor: bool = False,
+                  descriptor_coordinates: str = "legacy"):
         """Factory that accepts str | (str, dict) | FeatureSpec for each entry.
 
         ``num_heads`` is required when ``attention=True`` (no silent default,
@@ -411,7 +459,43 @@ class ArchitectureConfig:
             descriptor_log_transform=descriptor_log_transform,
             meta_gga=meta_gga,
             zero_init_final_layer=zero_init_final_layer,
+            parent_anchor=parent_anchor,
+            descriptor_coordinates=descriptor_coordinates,
         )
+
+
+#: The coordinate sets the networks' MLPs can read a row in
+#: (``ArchitectureConfig.descriptor_coordinates``; the harness parser states
+#: the same set as ``grid_config._DESCRIPTOR_COORDINATES``).
+DESCRIPTOR_COORDINATES = ("legacy", "dfs")
+
+
+def anchored(arch: ArchitectureConfig) -> ArchitectureConfig:
+    """``arch`` with the parent anchor on: ``parent_anchor=True`` and, as the
+    anchor requires, ``zero_init_final_layer=True`` (the four registry
+    entries that carry False -- shallow, shallow_attn, medium, medium_attn --
+    are overridden, SPEC_parent_anchor.md Section 3.3). Every other field is
+    the architecture's own; the parent itself is resolved by rung when the
+    networks are created (``networks.create_network_pair``)."""
+    return replace(arch, parent_anchor=True, zero_init_final_layer=True)
+
+
+def apply_model_block(arch: ArchitectureConfig, model) -> ArchitectureConfig:
+    """Apply a run's ``model:`` block to a registry architecture: the parent
+    anchor (:func:`anchored`) when ``model.parent_anchor`` and the descriptor
+    coordinates when ``model.descriptor_coordinates`` is stated. ``model`` is
+    duck-typed (``grid_config.ModelConfig`` or anything carrying the two
+    attributes) so the login-node parser need not be imported here. One
+    implementation for every point a run resolves an architecture -- the
+    training specs, the pretrain stage, the certificate, the run validator --
+    so the resolved identity cannot differ between them."""
+    out = arch
+    coords = getattr(model, "descriptor_coordinates", None)
+    if coords is not None and coords != out.descriptor_coordinates:
+        out = replace(out, descriptor_coordinates=coords)
+    if getattr(model, "parent_anchor", False):
+        out = anchored(out)
+    return out
 
 
 # ---------------------------------------------------------------------------

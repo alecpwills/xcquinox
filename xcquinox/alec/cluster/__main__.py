@@ -1904,7 +1904,7 @@ def cmd_repair_manifest(args) -> int:
                 return 1
             paths.append(full)
 
-        manifest_path = write_manifest(cells, paths, run_dir)
+        manifest_path = write_manifest(cells, paths, run_dir, cfg=cfg)
         _log(f"repair-manifest: rebuilt {manifest_path}, {n} spec(s), "
              f"pad width {width}. model.eqx / jobs.json / attempts.json / "
              "checkpoints/ were left untouched.")

@@ -40,7 +40,7 @@
 # the per-rung SCF seed), the pretraining protocol (the DFS set, the pool
 # atoms, the per-rung parent density, the spin-channel exchange footing, the
 # mesh share, the validation block), the enforced 1.0 kcal/mol / 1.0 mHa
-# certificate, the weight-zero objective placeholder that refuses submission,
+# certificate, the parent anchor and its exact weight-zero objective,
 # every hyperparameter, both solver blocks, the subset ledger, the three
 # reference-cache roots, every other wall (the eval budget, the pretrain,
 # preflight, datagen and benchmark-refs stages, and the 96 h timeout retry)
@@ -62,20 +62,24 @@
 # becomes of the cells that exceed 48 h.
 #
 # +-------------------------------------------------------------------------+
-# | THIS FILE IS REFUSED AT SUBMIT AS IT SHIPS. pretrain.energy_term_weight  |
-# | carries the 0.0 PLACEHOLDER, which is the objective WITHOUT the          |
-# | per-system energy term Section 7 binds, and validate_grid_semantics      |
-# | refuses that value alongside dfs_set: true and fidelity.enforce: true.   |
-# | Set it from the measured table (see the block beside the key). The file  |
-# | LOADS either way; the refusal is semantic, and every submission surface  |
-# | re-runs it.                                                              |
+# | THIS FILE SUBMITS AS IT SHIPS. model.parent_anchor: true anchors every  |
+# | architecture on this axis to its parent (PBE) in the pre-image of the   |
+# | networks' bounded map, so each equals its parent at initialization and  |
+# | the certificate holds by construction (SPEC_parent_anchor.md).          |
+# | pretrain.energy_term_weight: 0.0 is therefore EXACT, not a placeholder: |
+# | validate_grid_semantics exempts an anchored run from the weight-zero    |
+# | refusal. The energy-weight sweep measured that no weight brings a       |
+# | point-wise fit of the parent to the certificate; the anchor removes the |
+# | requirement instead of tuning it (spec Section 2).                      |
 # +-------------------------------------------------------------------------+
 #
 # PREREQUISITES, in order:
-#   a. hpcjobs/probe_pretrain_energy_weight.py has produced its table and
-#      pretrain.energy_term_weight below has been set from it. The weight is
-#      ONE campaign-wide number measured once: the same value is written into
-#      all five group files.
+#   a. pretrain.energy_term_weight needs no measurement: under
+#      model.parent_anchor the networks equal the parent at initialization
+#      and the certificate holds by construction, so 0.0 (no energy term) is
+#      the objective's exact value and is stated, not swept
+#      (SPEC_parent_anchor.md Section 3.5; the sweep it supersedes,
+#      hpcjobs/probe_pretrain_energy_weight.py, is recorded in Section 2).
 #   b. hpcjobs/seed_cache_scan.sbatch is NOT a prerequisite for this group:
 #      every architecture on this axis is GGA-rung, `seed_xc: auto` resolves to
 #      PBE for all of them, and no task reads inputs.seed_cache_dir.
@@ -313,47 +317,29 @@ pretrain:
   # inherited.
   mesh_fraction: 0.3
   # =========================================================================
-  # THE OBJECTIVE -- PLACEHOLDER. THIS FILE DOES NOT SUBMIT AS IT STANDS.
+  # THE OBJECTIVE under the parent anchor.
   #
   # `energy_term_weight` weights the per-system energy term
   # mean_s (E_xc^NN_s - E_xc^parent_s)^2, in inverse Hartree^2, beside the
-  # point-wise enhancement-factor residual. Section 7 binds its PRESENCE ("a
-  # per-system energy term in the loss beside the point-wise
-  # enhancement-factor term"); its VALUE is dimensionful and is measured, not
-  # derived. 0.0 below is the placeholder -- the pre-protocol objective, which
-  # is what defect D2 records as unable to deliver the parent.
+  # point-wise enhancement-factor residual. With model.parent_anchor: true
+  # every network on this axis EQUALS its parent at initialization
+  # (SPEC_parent_anchor.md Sections 3.2 and 3.5): both terms of the
+  # objective are zero to round-off before the first step, the certificate
+  # passes at initialization, and a pretrain from there converges where it
+  # starts. The weight is therefore no longer the value that decides whether
+  # the certificate can be met, and 0.0 -- the point-wise objective alone,
+  # the energy term not evaluated (`pretrain.py` short-circuits on
+  # `energy_weight == 0.0`) -- is the exact statement of this run's
+  # objective, not a placeholder.
   #
-  # At EXACTLY 0.0 the term is not small, it is not evaluated at all
-  # (`pretrain.py` short-circuits on `energy_weight == 0.0`), so the run would
-  # fit the protocol set with the point-wise residual alone. That is why
-  # `validate_grid_semantics` REFUSES the combination `dfs_set: true` +
-  # `fidelity.enforce: true` + `energy_term_weight: 0.0` outright: the file
-  # still LOADS (the value is legal on its own), but every submission surface
-  # -- prepare, submit, resubmit, resubmit-preflight and the deferred-eval
-  # path -- re-runs the semantic check, so an unedited submission is stopped
-  # on the login node instead of after this group's datagen job and its
-  # 6 pretrainings.
-  #
-  # Set it from the table `hpcjobs/probe_pretrain_energy_weight.py` writes.
-  # That script's recommendation rule, verbatim from `recommend()`:
-  #
-  #     take the SMALLEST swept weight for which EVERY architecture clears
-  #     BOTH halves of the Section 3.3 certificate with margin -- `max
-  #     |dE_xc|` over the ATOMS at or below `margin_fraction * tol_atom_mha`,
-  #     and `max |dAE|` over the molecules at or below `margin_fraction *
-  #     tol_ae_kcal` -- AND neither of that architecture's point-wise losses
-  #     has risen by more than `pointwise_factor` from its own weight-0 value.
-  #
-  # with margin_fraction = 0.5 and pointwise_factor = 3.0. The script prints
-  # the chosen weight on its `recommendation:` line; land that number here --
-  # the SAME number in all five group files:
-  #
-  #     sed -i 's/^  energy_term_weight: 0\.0$/  energy_term_weight: <W>/' \
-  #         hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g2_families.yaml
-  #
-  # The sweep measures at a REDUCED identity (def2-svp, 1000 steps, no
-  # validation hold-out) on six of the 31 architectures (that script's
-  # header). It is a starting point; the production certificate is the arbiter.
+  # `validate_grid_semantics` still refuses the combination `dfs_set: true`
+  # + `fidelity.enforce: true` + `energy_term_weight: 0.0` for an UNANCHORED
+  # run, where that objective was measured unable to deliver the parent
+  # (SPEC_pretrain_fidelity_program.md Section 2, 2.3 to 56.1 kcal/mol of
+  # atomization offset), and the energy-weight sweep of
+  # hpcjobs/probe_pretrain_energy_weight.py then measured that no weight
+  # closes the gap either (SPEC_parent_anchor.md Section 2). An anchored run
+  # is exempt from that refusal by construction.
   # =========================================================================
   energy_term_weight: 0.0
   # VALIDATION and the stop criterion, at the spec Section 7 / Task 7 defaults
@@ -547,6 +533,26 @@ held_out_strict: true
 inline_eval: true
 eval_coldstart: true
 defer_eval: false
+
+# --- the model class (SPEC_parent_anchor.md) --------------------------------
+# parent_anchor: every architecture on this axis is anchored to its parent
+# functional, PBE on this GGA-rung axis, in the pre-image of the networks'
+# bounded map,
+# F = 1 + L(z_parent + gated) with z_parent the point where the map returns
+# the parent, so the model equals its parent at initialization pointwise and
+# the certificate holds by construction. Requires use_polarized_correlation:
+# true (above): the parent's correlation is divided by the model's
+# zeta-dependent PW92 baseline. Recorded in the manifest, the pretrain
+# metadata and every certificate; a checkpoint written under the other
+# anchor state is refused by the loaders.
+# descriptor_coordinates: the DFS coordinate set of PRB 104 L161109 -- the
+# correlation MLP reads x0 = ln(n^(1/3) + 1e-5), x1 = ln(spinscale) and x_s,
+# the exchange MLP x_s alone, the meta-GGA nets x_alpha = ln((alpha + 1)/2)
+# -- as networks.py states them, line by line of the vendored dpyscfl source.
+# A new checkpoint family; "legacy" is the layout every run through v5 used.
+model:
+  parent_anchor: true
+  descriptor_coordinates: dfs
 
 # --- pretraining-fidelity certificate (spec Sections 3.3 and 7) ------------
 # ENFORCED at the program's binding tolerances. PASS requires

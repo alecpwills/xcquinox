@@ -71,6 +71,7 @@ from xcquinox.alec.cluster.fidelity import (CERTIFICATE_FILENAME,
                                             VERDICT_PASS,
                                             checkpoint_digest_findings,
                                             identity_mismatches,
+                                            model_class_mismatches,
                                             parent_mismatch,
                                             read_certificate_status_in,
                                             show_identity)
@@ -120,7 +121,7 @@ def _check_solver(spec, named, inputs, arch_name, idx, failures):
 
 def validate_run(run_dir: str, config_path: str | None = None):
     """Return ``(failures, warnings, n_specs)`` for the run at ``run_dir``."""
-    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.config import apply_model_block, get_architecture
 
     failures: list[str] = []
     warnings: list[str] = []
@@ -188,6 +189,10 @@ def validate_run(run_dir: str, config_path: str | None = None):
         if cfg.use_polarized_correlation:
             expected = dataclasses.replace(
                 expected, use_polarized_correlation=True)
+        # The run's model block, as spec_builder applied it.
+        model_block = getattr(cfg, "model", None)
+        if model_block is not None:
+            expected = apply_model_block(expected, model_block)
         if arch != expected:
             diffs = [f.name for f in dataclasses.fields(arch)
                      if getattr(arch, f.name) != getattr(expected, f.name)]
@@ -323,6 +328,17 @@ def validate_run(run_dir: str, config_path: str | None = None):
                     f"{key}={show_identity(got)} but the config says "
                     f"{show_identity(want)} -- the certificate was not "
                     "computed at this run's identity")
+            # The model class the certified networks were built as (the
+            # parent anchor, the descriptor coordinates): a static property
+            # the checkpoint's leaves do not reveal, so the certificate's
+            # record of it is compared with the run's model block. The
+            # comparison is the certificate module's own, as the parent's is.
+            for key, got, want in model_class_mismatches(cfg, cert):
+                failures.append(
+                    f"pretrain/{arch_name}: certificate records {key}="
+                    f"{got!r} but the config builds {key}={want!r} -- the "
+                    "certified networks are not the model class this run "
+                    "trains")
             cert_version = cert.get("xcquinox_version")
             if manifest_version is None:
                 warnings.append(
@@ -384,6 +400,25 @@ def validate_run(run_dir: str, config_path: str | None = None):
                 f"pretrain/{arch_name}: use_polarized_correlation="
                 f"{meta.get('use_polarized_correlation')}, config says "
                 f"{cfg.use_polarized_correlation}")
+        # The model class the networks were pretrained as. A metadata file
+        # written before the fields existed records neither, which is the
+        # unanchored legacy class; an anchored (or dfs-coordinate) run must
+        # not accept such a checkpoint, since the anchor state is not visible
+        # in the checkpoint's leaves.
+        model_block = getattr(cfg, "model", None)
+        want_anchor = bool(getattr(model_block, "parent_anchor", False))
+        want_coords = str(getattr(model_block, "descriptor_coordinates",
+                                  "legacy"))
+        if bool(meta.get("parent_anchor", False)) != want_anchor:
+            failures.append(
+                f"pretrain/{arch_name}: parent_anchor="
+                f"{meta.get('parent_anchor', False)}, config says "
+                f"{want_anchor}")
+        if str(meta.get("descriptor_coordinates", "legacy")) != want_coords:
+            failures.append(
+                f"pretrain/{arch_name}: descriptor_coordinates="
+                f"{meta.get('descriptor_coordinates', 'legacy')!r}, config "
+                f"says {want_coords!r}")
         try:
             reg = get_architecture(arch_name)
         except KeyError:

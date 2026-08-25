@@ -392,15 +392,69 @@ def _require_fidelity_certificate(pretrain_checkpoint: str) -> None:
         "deliberately.")
 
 
+def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
+    """Refuse a pretrain checkpoint recorded under another model class.
+
+    The parent anchor and the descriptor coordinates are static properties
+    of the networks: they change no parameter shape, so
+    ``eqx.tree_deserialise_leaves`` would load an unanchored checkpoint into
+    an anchored skeleton (or the reverse) without complaint, and the model
+    would then be the parent plus a correction trained as the whole factor,
+    O(1) off everywhere. The state is therefore read from the record written
+    beside the checkpoint, ``pretrain_metadata.json`` (SPEC_parent_anchor.md
+    Section 3.4), and a mismatch is refused with both states named. A record
+    that predates the fields describes the unanchored legacy class; a
+    checkpoint with no record at all is accepted only by that class, since
+    nothing states what an anchored model would be loading.
+    """
+    want_anchor = bool(getattr(arch, "parent_anchor", False))
+    want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
+    md_path = os.path.join(pretrain_checkpoint, "pretrain_metadata.json")
+    if not os.path.isfile(md_path):
+        if want_anchor or want_coords != "legacy":
+            raise ValueError(
+                f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r} "
+                f"into a model with parent_anchor={want_anchor} and "
+                f"descriptor_coordinates={want_coords!r}: the directory carries "
+                "no pretrain_metadata.json recording the model class its "
+                "networks were written as, and the checkpoint's leaves do not "
+                "reveal it (the anchor and the coordinates are static fields "
+                "with no parameters of their own)")
+        return
+    try:
+        with open(md_path) as f:
+            md = json.load(f)
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"pretrain_metadata.json beside {pretrain_checkpoint!r} could not "
+            f"be read to check the model class it records: {exc}") from exc
+    got_anchor = bool(md.get("parent_anchor", False))
+    got_coords = str(md.get("descriptor_coordinates", "legacy"))
+    if got_anchor != want_anchor or got_coords != want_coords:
+        raise ValueError(
+            f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r}: "
+            f"its networks were written as parent_anchor={got_anchor}, "
+            f"descriptor_coordinates={got_coords!r} (pretrain_metadata.json"
+            + ("" if "parent_anchor" in md else
+               ", which predates the fields and so records the unanchored "
+               "legacy class")
+            + f"), but the model being built is parent_anchor={want_anchor}, "
+            f"descriptor_coordinates={want_coords!r}. The two are different "
+            "model classes with identical parameter shapes; loading across "
+            "them would silently produce a model that is neither.")
+
+
 def _build_model(spec: TrainingSpec) -> AlecGGAModel:
     """Build model from scratch or pretrain checkpoint.
 
     A pretrain checkpoint must carry a PASS fidelity certificate; see
-    :func:`_require_fidelity_certificate`.
+    :func:`_require_fidelity_certificate`, and must have been written as the
+    model class being built; see :func:`_require_matching_model_class`.
     """
     if spec.pretrain_checkpoint is None:
         return AlecGGAModel.from_arch(spec.arch, seed=spec.seed)
     _require_fidelity_certificate(spec.pretrain_checkpoint)
+    _require_matching_model_class(spec.pretrain_checkpoint, spec.arch)
     xnet_skeleton, cnet_skeleton = create_network_pair(spec.arch, seed=spec.seed)
     xnet_path = os.path.join(spec.pretrain_checkpoint, "xnet.eqx")
     cnet_path = os.path.join(spec.pretrain_checkpoint, "cnet.eqx")

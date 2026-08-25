@@ -234,6 +234,15 @@ bh76_mode: reaction_energy
 # --out-dir <pretrain.data_dir>`.
 use_polarized_correlation: false
 
+# --- the model class (SPEC_parent_anchor.md) --------------------------------
+# The pre-anchor defaults, stated: the unanchored, legacy-coordinate class.
+# The campaign-v6 value follows each key (v6 anchors every architecture to
+# its parent and reads the DFS descriptor coordinates); `parent_anchor: true`
+# requires `use_polarized_correlation: true`.
+model:
+  parent_anchor: false            # v6: true
+  descriptor_coordinates: legacy  # v6: dfs
+
 # --- pretraining-fidelity certificate --------------------------------------
 # Before the train array may start, every distinct architecture must carry a
 # PASS certificate at <run_dir>/pretrain/<arch>/fidelity_certificate.json: its

@@ -479,6 +479,26 @@ def identity_mismatches(cfg, cert) -> list:
     return out
 
 
+def model_class_mismatches(cfg, cert) -> list:
+    """``[(key, recorded, wanted), ...]`` for the model-class fields a
+    certificate records -- ``parent_anchor`` and ``descriptor_coordinates``
+    -- that differ from the run's ``model`` block. A certificate written
+    before the fields existed records neither, which reads as the unanchored
+    legacy class it certified; a run of any other class must not accept it.
+    """
+    model_block = getattr(cfg, "model", None)
+    want_anchor = bool(getattr(model_block, "parent_anchor", False))
+    want_coords = str(getattr(model_block, "descriptor_coordinates", "legacy"))
+    got_anchor = bool(cert.get("parent_anchor", False))
+    got_coords = str(cert.get("descriptor_coordinates", "legacy"))
+    out = []
+    if got_anchor != want_anchor:
+        out.append(("parent_anchor", got_anchor, want_anchor))
+    if got_coords != want_coords:
+        out.append(("descriptor_coordinates", got_coords, want_coords))
+    return out
+
+
 def parent_mismatch(arch_name: str, cert):
     """``(recorded, expected)`` when the certificate names another parent.
 
@@ -595,6 +615,10 @@ def certificate_describes_run(cfg, pretrain_dir: str, arch_name: str,
             out.append(f"certificate parent {recorded!r}, but this "
                        f"architecture's rung is pretrained against "
                        f"{expected!r}")
+    for key, got, want in model_class_mismatches(cfg, cert):
+        out.append(f"certificate records {key}={got!r}, but this run builds "
+                   f"{key}={want!r} -- the certified networks are not the "
+                   "model class this run trains")
     for kind, fname, key, want, measured in checkpoint_digest_findings(
             pretrain_dir, cert):
         if kind == "unmeasured":
@@ -856,10 +880,15 @@ def build_certified_model(cfg, run_dir: str, arch_name: str):
     so the cnet input width matches the checkpoint on disk.
     """
     import dataclasses
-    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.config import apply_model_block, get_architecture
     arch = get_architecture(arch_name)
     if getattr(cfg, "use_polarized_correlation", False):
         arch = dataclasses.replace(arch, use_polarized_correlation=True)
+    # The run's model block (the parent anchor, the descriptor coordinates),
+    # so the certified model is the class the checkpoint was pretrained as.
+    model_block = getattr(cfg, "model", None)
+    if model_block is not None:
+        arch = apply_model_block(arch, model_block)
     pretrain_dir = pretrain_checkpoint_dir(run_dir, arch_name)
     return arch, _build_model(arch, pretrain_dir, seed=cfg.pretrain.seed)
 
@@ -1432,6 +1461,13 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "verdict": VERDICT_FAIL if reasons else VERDICT_PASS,
         "arch": arch_name,
         "parent": parent,
+        # The model class the certified networks were built as: whether
+        # they are anchored to the parent and which coordinates their MLPs
+        # read (a static property of the networks, absent from the
+        # checkpoint's leaf stream, so recorded here beside the arch).
+        "parent_anchor": bool(getattr(arch, "parent_anchor", False)),
+        "descriptor_coordinates": str(
+            getattr(arch, "descriptor_coordinates", "legacy")),
         "xcquinox_version": running_xcquinox_version(),
         "identity": run_identity(cfg),
         "checkpoint": checkpoint,

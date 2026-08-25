@@ -310,6 +310,38 @@ class FidelityConfig:
 
 
 # ---------------------------------------------------------------------------
+# Model class
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """The model class every architecture of the run is built as.
+
+    ``parent_anchor`` anchors each architecture's enhancement networks to its
+    parent functional (PBE on the GGA rungs, SCAN on the meta-GGA rungs) in
+    the pre-image of the networks' bounded map, so the model equals its
+    parent at initialization and the pretraining-fidelity certificate holds
+    by construction (SPEC_parent_anchor.md). Applied wherever the run
+    resolves an architecture -- the training specs, the pretrain stage, the
+    certificate, the run validator -- through ``config.apply_model_block``,
+    and recorded in the manifest, the pretrain metadata and the certificate.
+    Requires the polarized correlation network (``use_polarized_correlation``
+    at the run level or on the architecture) and, until the SCAN parent
+    lands, a GGA-rung sweep. An anchored configuration states its
+    ``pretrain.energy_term_weight`` (0.0 is exact) without a sweep: the
+    weight-zero refusal of ``validate_grid_semantics`` applies to unanchored
+    configurations only.
+
+    ``descriptor_coordinates`` selects the coordinates the networks' MLPs read
+    a row in: ``"legacy"`` (today's layout, byte for byte) or ``"dfs"`` (the
+    coordinate set of Dick and Fernandez-Serra, PRB 104, L161109 (2021), as
+    ``networks.py`` states them). Both default to the pre-anchor model class.
+    """
+    parent_anchor: bool = False
+    descriptor_coordinates: str = "legacy"
+
+
+# ---------------------------------------------------------------------------
 # Pretrain stage config
 # ---------------------------------------------------------------------------
 
@@ -541,6 +573,10 @@ class GridConfig:
     # config written before the certificate existed loads at the binding
     # 1.0 kcal/mol / 1.0 mHa defaults rather than at no tolerance.
     fidelity: FidelityConfig = field(default_factory=FidelityConfig)
+    # The model class (the parent anchor, the descriptor coordinates).
+    # Optional in the YAML: a config written before the anchor existed loads
+    # as the unanchored, legacy-coordinate class it was written for.
+    model: ModelConfig = field(default_factory=ModelConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -1332,6 +1368,45 @@ def _fidelity_tolerance(d, key: str) -> float:
     return out
 
 
+#: The coordinate sets the networks' MLPs can read a row in. Stated here as
+#: well as in ``config.DESCRIPTOR_COORDINATES`` for the reason
+#: ``_PARENT_DENSITIES`` is: this parser runs on the login node without the
+#: library; the two are pinned equal by the test suite.
+_DESCRIPTOR_COORDINATES = ("legacy", "dfs")
+
+
+def _build_model_block(d) -> ModelConfig:
+    """Build ModelConfig from a raw dict; ``None`` -> the defaults.
+
+    The ``model`` section is OPTIONAL so every YAML authored before the parent
+    anchor existed still loads, as the unanchored legacy-coordinate class. Its
+    keys are refused rather than coerced, like ``fidelity.enforce``:
+    ``bool("false")`` is True and ``bool(None)`` is False, so a coerced
+    ``parent_anchor`` would build a model class no configuration asked for.
+    """
+    if d is None:
+        return ModelConfig()
+    if not isinstance(d, dict):
+        raise ValueError(
+            f"grid config section 'model' must be a mapping, got "
+            f"{type(d).__name__}")
+    _reject_unknown_keys(d, ModelConfig, "model")
+    anchor = d.get("parent_anchor", False)
+    if not isinstance(anchor, bool):
+        raise ValueError(
+            f"grid config key 'model.parent_anchor' must be a boolean "
+            f"(true/false), got {type(anchor).__name__} ({anchor!r}); the "
+            "value selects the model class every architecture of the run is "
+            "built as and is not coerced")
+    coords = d.get("descriptor_coordinates", "legacy")
+    if not isinstance(coords, str) or coords not in _DESCRIPTOR_COORDINATES:
+        raise ValueError(
+            f"grid config key 'model.descriptor_coordinates' must be one of "
+            f"{', '.join(repr(v) for v in _DESCRIPTOR_COORDINATES)}, got "
+            f"{coords!r}")
+    return ModelConfig(parent_anchor=anchor, descriptor_coordinates=coords)
+
+
 def _build_fidelity(d) -> FidelityConfig:
     """Build FidelityConfig from a raw dict; ``None`` -> the defaults.
 
@@ -1560,6 +1635,7 @@ def load_grid_config(path: str) -> GridConfig:
         inline_eval=bool(raw.get("inline_eval", False)),
         eval_coldstart=bool(raw.get("eval_coldstart", False)),
         fidelity=_build_fidelity(raw.get("fidelity")),
+        model=_build_model_block(raw.get("model")),
     )
 
 
@@ -1614,6 +1690,14 @@ def _warn_axis_dedups(cfg: GridConfig) -> None:
                     stacklevel=2,
                 )
             seen.add(v)
+
+
+class ParentAnchorNotImplemented(NotImplementedError, ValueError):
+    """A configuration refusal whose cause is the SCAN parent not having
+    landed yet: a ``ValueError``, so every submission surface reports it as
+    the configuration refusal it is, and a ``NotImplementedError``, since the
+    refusal is the scope of the PBE commit rather than a defect of the file
+    and lifts when ``parents.scan_fx`` / ``scan_fc`` land."""
 
 
 def validate_grid_semantics(cfg: GridConfig, domain) -> None:
@@ -1686,7 +1770,8 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # Every value on the arch axis must resolve via get_architecture. Catching
     # an unknown arch on the login node gives a clear error instead of letting
     # the pretrain worker (_pretrain.py) fail at runtime on a compute node.
-    from xcquinox.alec.config import get_architecture, list_architectures
+    from xcquinox.alec.config import (ArchitectureConfig, get_architecture,
+                                      list_architectures)
     for a in cfg.sweep.arch:
         try:
             get_architecture(a)
@@ -1695,6 +1780,50 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                 f"sweep arch {a!r} is not a known architecture; valid "
                 f"architectures: {list_architectures()}"
             ) from None
+
+    # --- the model block --------------------------------------------------
+    # The parent anchor is a property of the model class the run builds, so
+    # it is checked against every architecture the run resolves, at submit:
+    # an anchored correlation network must be polarization-aware (the
+    # parent's correlation is divided by the model's zeta-dependent baseline,
+    # which the pretraining data's open-shell targets are formed against),
+    # and the SCAN parent of the meta-GGA rung is the next commit's.
+    model_block = getattr(cfg, "model", None)
+    if model_block is not None and getattr(model_block, "parent_anchor", False):
+        run_polarized = bool(getattr(cfg, "use_polarized_correlation", False))
+        for a in _canon_axis(cfg.sweep.arch):
+            arch = get_architecture(a)
+            if not (run_polarized or arch.use_polarized_correlation):
+                raise ValueError(
+                    f"model.parent_anchor is true but architecture {a!r} "
+                    "would be built with use_polarized_correlation=False. An "
+                    "anchored correlation network must be polarization-aware "
+                    "(SPEC_parent_anchor.md Section 3.1: the parent's "
+                    "correlation is divided by the zeta-dependent PW92 "
+                    "baseline the pretraining data's open-shell Fc targets are "
+                    "formed against; a zeta-blind network disagrees with them "
+                    "by 14.9 mHa on the N atom). Set "
+                    "use_polarized_correlation: true at the run level.")
+            if ArchitectureConfig.is_meta_gga(arch):
+                raise ParentAnchorNotImplemented(
+                    f"model.parent_anchor is true but architecture {a!r} is "
+                    "on the meta-GGA rung, whose parent is SCAN; the SCAN "
+                    "parent (parents.scan_fx / scan_fc) lands in the commit "
+                    "that follows the PBE anchor (SPEC_parent_anchor.md "
+                    "Section 3.7). Until then an anchored sweep is GGA-rung "
+                    "only; run the meta-GGA group unanchored or wait for it.")
+    if model_block is not None and (
+            getattr(model_block, "descriptor_coordinates", "legacy") == "dfs"
+            and not bool(getattr(cfg, "use_polarized_correlation", False))):
+        for a in _canon_axis(cfg.sweep.arch):
+            if not get_architecture(a).use_polarized_correlation:
+                raise ValueError(
+                    f"model.descriptor_coordinates is 'dfs' but architecture "
+                    f"{a!r} would be built with use_polarized_correlation="
+                    "False; the DFS correlation network reads x1 = "
+                    "ln(spinscale), so the polarized correlation network is "
+                    "required. Set use_polarized_correlation: true at the "
+                    "run level.")
 
     # --- subset_size bounds -------------------------------------------------
     pool_size = getattr(domain, "pool_size", None)
@@ -1891,7 +2020,18 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # objective on the historical four-atom set (``dfs_set`` off), and the
     # workflow-verification matrix runs the protocol set with the gate waived
     # (``enforce`` false, which already demands a written override_reason).
-    if pt.dfs_set and cfg.fidelity.enforce and pt.energy_term_weight == 0.0:
+    #
+    # An ANCHORED configuration (model.parent_anchor) is exempt: its networks
+    # equal the parent at initialization, so the certificate holds by
+    # construction and the weight is no longer the value that decides
+    # whether it can be met (SPEC_parent_anchor.md Section 3.5). The
+    # energy-weight sweep the refusal names measured that no weight brings
+    # a point-wise fit of the parent to the certificate (Section 2); 0.0 is
+    # exact for an anchored run and is stated without a sweep.
+    anchored_run = bool(getattr(getattr(cfg, "model", None),
+                                "parent_anchor", False))
+    if (pt.dfs_set and cfg.fidelity.enforce and pt.energy_term_weight == 0.0
+            and not anchored_run):
         raise ValueError(
             "pretrain.energy_term_weight is 0.0 with pretrain.dfs_set: true "
             "and fidelity.enforce: true. At exactly zero the per-system "

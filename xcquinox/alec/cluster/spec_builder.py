@@ -47,7 +47,8 @@ import dataclasses
 import os
 import warnings
 
-from xcquinox.alec.config import MoleculeSpec, TrainingSpec, TestSpec
+from xcquinox.alec.config import (MoleculeSpec, TrainingSpec, TestSpec,
+                                  apply_model_block)
 from xcquinox.alec.training_points import (
     species_union_from_points,
     _atom_anchor_atoms,
@@ -596,6 +597,13 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
         arch_cfg = get_architecture(cell.arch)
         if getattr(cfg, "use_polarized_correlation", False):
             arch_cfg = dataclasses.replace(arch_cfg, use_polarized_correlation=True)
+        # The run's model block -- the parent anchor and the descriptor
+        # coordinates -- through the one helper every resolver of a run's
+        # architecture uses (the pretrain stage, the certificate, the run
+        # validator), so the spec's arch is the identity those stages build.
+        model_block = getattr(cfg, "model", None)
+        if model_block is not None:
+            arch_cfg = apply_model_block(arch_cfg, model_block)
 
         spec = TrainingSpec.from_dicts(
             arch=arch_cfg,

@@ -198,12 +198,18 @@ def running_xcquinox_version() -> str:
     return getattr(xcquinox, "__version__", "unknown")
 
 
-def write_manifest(cells, paths, out_dir: str) -> str:
+def write_manifest(cells, paths, out_dir: str, *, model=None, cfg=None) -> str:
     """Write ``manifest.json`` recording the materialized grid.
 
     Per index it records the ``GridCell`` (as a dict), the spec filename, and
     a SHA-256 content hash of the spec file. Top-level it records the xcquinox
-    version, the running Python version, the zero-pad ``width`` and ``n_specs``.
+    version, the running Python version, the zero-pad ``width`` and ``n_specs``,
+    and the run's model class under ``"model"`` -- from ``model`` when given,
+    else from ``cfg.model``, else the unanchored legacy class stated explicitly,
+    so a manifest never leaves the class unrecorded
+    (``parent_anchor``, ``descriptor_coordinates``): the anchor state is a
+    static property of the networks that the checkpoints' leaves do not
+    reveal, so the run's records carry it.
 
     This is the final write of the preflight, so it is itself atomic (a
     partially written manifest must never be observable).
@@ -212,6 +218,12 @@ def write_manifest(cells, paths, out_dir: str) -> str:
         cells: ordered ``list[GridCell]``.
         paths: ordered spec-file paths (parallel to ``cells``).
         out_dir: directory to write ``manifest.json`` into.
+        model: the run's ``model`` block (``grid_config.ModelConfig`` or any
+            object with ``parent_anchor`` and ``descriptor_coordinates``);
+            when None the block is read from ``cfg.model``, and when that is
+            absent too the unanchored legacy class is recorded explicitly.
+        cfg: the run's ``GridConfig``, the source of the model block when
+            ``model`` is not given.
 
     Returns:
         The manifest path.
@@ -240,6 +252,15 @@ def write_manifest(cells, paths, out_dir: str) -> str:
         "width": width,
         "n_specs": n,
         "specs": entries,
+    }
+    if model is None and cfg is not None:
+        model = getattr(cfg, "model", None)
+    # Always recorded: an absent block would read as "not stated" where the
+    # loaders and validate_run need "legacy" or "anchored".
+    payload["model"] = {
+        "parent_anchor": bool(getattr(model, "parent_anchor", False)),
+        "descriptor_coordinates": str(
+            getattr(model, "descriptor_coordinates", "legacy")),
     }
 
     manifest_path = os.path.join(out_dir, "manifest.json")

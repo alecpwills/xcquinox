@@ -699,7 +699,7 @@ def main(argv=None) -> int:
     _log("writing manifest.json...")
     try:
         manifest_path = write_manifest(
-            [cell for cell, _ in specs], paths, run_dir
+            [cell for cell, _ in specs], paths, run_dir, cfg=cfg,
         )
     except Exception as exc:
         _log(f"ERROR: manifest write failed: {exc}")

@@ -74,7 +74,7 @@ import os
 import sys
 import time
 
-from xcquinox.alec.config import get_architecture
+from xcquinox.alec.config import apply_model_block, get_architecture
 from xcquinox.alec.cluster import fidelity
 from xcquinox.alec.cluster.grid_config import (
     load_grid_config, _canon_axis, pretrain_checkpoint_dir,
@@ -370,6 +370,12 @@ def main(argv=None) -> int:
     if getattr(cfg, "use_polarized_correlation", False):
         arch_config = dataclasses.replace(
             arch_config, use_polarized_correlation=True)
+    # The run's model block (the parent anchor, the descriptor coordinates),
+    # applied as spec_builder applies it, so the pretrained networks are the
+    # class the training specs load.
+    model_block = getattr(cfg, "model", None)
+    if model_block is not None:
+        arch_config = apply_model_block(arch_config, model_block)
 
     pt = cfg.pretrain
     # Run-scoped (<run_dir>/pretrain/<arch>) so two runs pretraining the same

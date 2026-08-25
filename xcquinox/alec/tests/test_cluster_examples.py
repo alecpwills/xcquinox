@@ -722,12 +722,20 @@ def test_v6_carries_the_stony_brook_job_mail():
 
 
 def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
-    """The header states a MEASURED diff -- 13 of 135 resolved fields -- and
-    names all thirteen. It is the file's own claim that everything except the
-    method, the roots and the walls is v5's, which is what makes v5-vs-v6 on
-    the five meta-GGA architectures a controlled comparison; a hyperparameter
-    or a solver knob that drifted in would break that reading while loading,
-    submitting and running exactly as before.
+    """The header states a MEASURED diff -- 15 of 137 resolved fields -- and
+    names all fifteen. It is the file's own claim that everything except the
+    method, the model class, the roots and the walls is v5's, which is what
+    makes v5-vs-v6 on the five meta-GGA architectures a controlled comparison;
+    a hyperparameter or a solver knob that drifted in would break that reading
+    while loading, submitting and running exactly as before.
+
+    The two fields the parent anchor adds are part of the method, not
+    bookkeeping: ``model.parent_anchor`` and ``model.descriptor_coordinates``
+    each define a different model class (the networks' forward is the parent
+    plus a correction rather than a correction to F = 1, and the MLPs read the
+    row in the DFS coordinates rather than the committed ones), so a v5 result
+    and a v6 result are read against different starting functionals. The field
+    count moves from 135 to 137 with them.
 
     Both trees are flattened, so DEFAULTS are compared too: a field v5 leaves
     unstated and v6 states at the same value is not a difference, and one v6
@@ -744,13 +752,15 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
     keys = sorted(set(a) | set(b))
     differing = sorted(k for k in keys
                        if a.get(k, "<absent>") != b.get(k, "<absent>"))
-    assert len(keys) == 135, len(keys)
+    assert len(keys) == 137, len(keys)
     assert differing == [
         "cluster.datagen_time",
         "cluster.pretrain_throttle",
         "cluster.time",
         "cluster.timeout_retry_time",
         "inputs.output_root",
+        "model.descriptor_coordinates",
+        "model.parent_anchor",
         "pretrain.data_dir",
         "pretrain.dfs_set",
         "pretrain.exchange_footing",
@@ -762,7 +772,7 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
     ], differing
     # ... and the file says so, in the count it states.
     text = open(path6).read()
-    assert "THIRTEEN differ" in text, path6
+    assert "FIFTEEN differ" in text, path6
     assert "The remaining 122 fields are identical" in text, path6
 
 
@@ -775,49 +785,93 @@ def _v6_semantics(cfg):
         validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
 
 
-def test_v6_is_refused_at_submit_until_the_measured_weight_lands():
-    """AS COMMITTED the file is REFUSED by the semantic check, and the
-    refusal is the point.
+def _axis_carries_a_meta_gga_architecture(cfg):
+    """Whether any architecture on the sweep axis is on the meta-GGA rung."""
+    from xcquinox.alec import get_architecture
+    from xcquinox.alec.config import ArchitectureConfig
+    return any(ArchitectureConfig.is_meta_gga(get_architecture(a))
+               for a in cfg.sweep.arch)
 
-    ``pretrain.energy_term_weight`` ships at 0.0, which is not a small energy
-    term but no energy term at all (``pretrain.py`` short-circuits on
-    ``energy_weight == 0.0``). With the protocol set on and the certificate
-    enforced at 1.0 / 1.0, submitting the file unedited buys the datagen job
-    and all 31 pretrainings and then fails every certificate, because that is
-    the objective SPEC_pretrain_fidelity_program Section 2 measured 2.3 to
-    56.1 kcal/mol of atomization offset under. Nothing downstream catches it:
-    the file LOADS (it is a legal configuration, and the value's own bounds
-    admit zero), so the refusal has to be semantic.
+
+def test_v6_is_refused_at_submit_until_the_scan_parent_lands():
+    """AS COMMITTED the file is REFUSED by the semantic check, and the cause
+    has moved: it is the RUNG, not the objective's weight.
+
+    The file states ``model.parent_anchor: true``, and its axis carries the
+    meta-GGA architectures, whose parent is SCAN. ``parents.scan_fx`` /
+    ``scan_fc`` land in the commit after the PBE anchor
+    (SPEC_parent_anchor.md Section 3.7), so an anchored meta-GGA architecture
+    is refused at construction; the login-node check raises the same refusal
+    up front, naming the architecture and SCAN, rather than letting the
+    datagen job and the whole pretrain array be bought first.
+
+    The weight refusal that used to fire here does NOT: under the anchor every
+    network EQUALS its parent at initialization, both terms of the objective
+    are zero to round-off before the first step and the certificate passes
+    there, so ``energy_term_weight: 0.0`` is the exact statement of this run's
+    objective rather than a placeholder awaiting a sweep. The refusal of the
+    weight-zero combination is kept for an UNANCHORED run, where it was
+    measured unable to deliver the parent (2.3 to 56.1 kcal/mol of atomization
+    offset, SPEC_pretrain_fidelity_program.md Section 2), and that is asserted
+    below by turning the anchor off on the same configuration.
 
     ``validate_grid_semantics`` is re-run by every submission surface --
     ``prepare``, ``submit``, ``resubmit``, ``resubmit-preflight`` and the
-    deferred-eval path -- so the refusal reaches the operator wherever the
-    file is used, and clears the moment the measured weight is written in.
+    deferred-eval path -- so both refusals reach the operator wherever the
+    file is used.
     """
+    from xcquinox.alec.cluster.grid_config import ParentAnchorNotImplemented
+
     path, cfg = _v6_config()
     assert cfg.pretrain.dfs_set is True
     assert cfg.fidelity.enforce is True
+    assert cfg.model.parent_anchor is True, path
+    assert cfg.model.descriptor_coordinates == "dfs", path
     assert cfg.pretrain.energy_term_weight == 0.0, (
-        f"{path}: the placeholder has been filled; this pin describes the "
-        "file as it ships and must be retired in the same change")
-    with pytest.raises(ValueError) as excinfo:
+        f"{path}: the weight has been changed; under the anchor 0.0 is the "
+        "exact objective, and this pin describes the file as it ships")
+    assert _axis_carries_a_meta_gga_architecture(cfg), path
+
+    with pytest.raises(ParentAnchorNotImplemented) as excinfo:
         _v6_semantics(cfg)
+    message = str(excinfo.value)
+    assert "model.parent_anchor" in message
+    assert "SCAN" in message
+    assert "meta-GGA" in message
+    # The refusal is a configuration refusal to every submission surface, all
+    # of which catch ValueError.
+    assert isinstance(excinfo.value, ValueError)
+
+    # ... and the SAME file restricted to the GGA rung is ACCEPTED as it
+    # ships, weight and all, so the refusal is the rung and not the objective.
+    from xcquinox.alec import get_architecture
+    from xcquinox.alec.config import ArchitectureConfig
+    gga_only = tuple(a for a in cfg.sweep.arch
+                     if not ArchitectureConfig.is_meta_gga(
+                         get_architecture(a)))
+    assert gga_only, path
+    _v6_semantics(dataclasses.replace(
+        cfg, sweep=dataclasses.replace(cfg.sweep, arch=gga_only)))
+
+    # ... while the same GGA-rung configuration UNANCHORED is refused for the
+    # weight, which is the refusal the anchor exempts a run from.
+    from xcquinox.alec.cluster.grid_config import ModelConfig
+    unanchored = dataclasses.replace(
+        cfg, sweep=dataclasses.replace(cfg.sweep, arch=gga_only),
+        model=ModelConfig(parent_anchor=False, descriptor_coordinates="legacy"))
+    with pytest.raises(ValueError) as excinfo:
+        _v6_semantics(unanchored)
     message = str(excinfo.value)
     assert "pretrain.energy_term_weight" in message
     assert "hpcjobs/probe_pretrain_energy_weight.py" in message
     assert "56.1 kcal/mol" in message
-    # ... and the SAME file with the measured weight in it is accepted, so
-    # the refusal is the placeholder and not the protocol block.
-    filled = dataclasses.replace(
-        cfg, pretrain=dataclasses.replace(cfg.pretrain,
-                                          energy_term_weight=1.0))
-    _v6_semantics(filled)
 
 
-def test_v6_states_the_refusal_beside_the_placeholder():
-    """The YAML says, at the key itself, that the file does not submit as it
-    stands. A banner at the top of a 435-line file is read once; the comment
-    on the line being edited is read by whoever edits it."""
+def test_v6_states_the_objective_beside_the_weight():
+    """The YAML says, at the key itself, why 0.0 is the objective and not a
+    placeholder, and that the refusal it is exempt from still stands for an
+    unanchored run. A banner at the top of a 500-line file is read once; the
+    comment on the line being edited is read by whoever edits it."""
     path, _cfg = _v6_config()
     with open(path) as f:
         lines = f.read().splitlines()
@@ -826,6 +880,8 @@ def test_v6_states_the_refusal_beside_the_placeholder():
     block = "\n".join(lines[max(0, i - 30):i])
     assert "validate_grid_semantics" in block, path
     assert "REFUSES" in block or "refuses" in block, path
+    assert "parent_anchor" in block, path
+    assert "exempt" in block, path
 
 
 def test_v6_pins_the_pretraining_validation_block_and_the_mesh_share():
@@ -1188,35 +1244,45 @@ def test_every_v6_file_runs_the_protocol_set_on_the_corrected_footing(name):
 
 
 @pytest.mark.parametrize("name", _V6_FILES)
-def test_every_v6_file_is_refused_at_submit_until_the_measured_weight_lands(
-        name):
-    """Each of the six ships the 0.0 placeholder and is REFUSED by the
-    login-node semantic check, and clears the moment the measured weight is
-    written in.
+def test_every_v6_file_submits_or_is_refused_by_its_rung(name):
+    """Each of the six states ``model.parent_anchor: true`` and ships
+    ``energy_term_weight: 0.0``, and what the login-node check then does is
+    decided by ONE thing: whether the file's axis carries a meta-GGA
+    architecture.
 
-    The split multiplies the edit: the weight is one campaign-wide number but
-    five files carry the placeholder, and a group submitted with it unedited
-    buys its datagen job and its whole pretrain array before failing every
-    certificate -- which is the objective SPEC_pretrain_fidelity_program
-    Section 2 measured 2.3 to 56.1 kcal/mol of atomization offset under. The
-    refusal has to be semantic because the value is legal on its own and the
-    file loads either way. Executed per file, not asserted from the text.
+    * The four GGA group files are ACCEPTED as they ship. Under the anchor
+      every network equals its parent at initialization, so the weight-zero
+      objective is exact rather than a placeholder, and the refusal that used
+      to hold the campaign is lifted for them by construction.
+    * The meta-GGA group file and the reference file, whose axes carry the
+      meta-GGA architectures, are REFUSED until the SCAN parent lands
+      (``parents.scan_fx`` / ``scan_fc``, the commit after the PBE anchor,
+      SPEC_parent_anchor.md Section 3.7). The refusal names the architecture
+      and SCAN, and is raised on the login node rather than after the datagen
+      job and the pretrain array have been bought.
+
+    Executed per file, not asserted from the text. When SCAN lands the two
+    refused files join the four accepted ones and this pin states that.
     """
+    from xcquinox.alec.cluster.grid_config import ParentAnchorNotImplemented
+
     path, cfg = _campaign_config(name)
+    assert cfg.model.parent_anchor is True, path
+    assert cfg.model.descriptor_coordinates == "dfs", path
     assert cfg.pretrain.energy_term_weight == 0.0, (
-        f"{path}: the placeholder has been filled; this pin describes the "
-        "files as they ship and must be retired in the same change")
-    with pytest.raises(ValueError) as excinfo:
+        f"{path}: the weight has been changed; under the anchor 0.0 is the "
+        "exact objective, and this pin describes the files as they ship")
+    if _axis_carries_a_meta_gga_architecture(cfg):
+        with pytest.raises(ParentAnchorNotImplemented) as excinfo:
+            _v6_semantics(cfg)
+        message = str(excinfo.value)
+        assert "model.parent_anchor" in message
+        assert "SCAN" in message
+        assert isinstance(excinfo.value, ValueError)
+    else:
         _v6_semantics(cfg)
-    message = str(excinfo.value)
-    assert "pretrain.energy_term_weight" in message
-    assert "hpcjobs/probe_pretrain_energy_weight.py" in message
-    assert "56.1 kcal/mol" in message
-    filled = dataclasses.replace(
-        cfg, pretrain=dataclasses.replace(cfg.pretrain,
-                                          energy_term_weight=1.0))
-    _v6_semantics(filled)
-    # ... and the file says so where it is edited, not only in a banner.
+    # ... and the file says so where the weight is edited, not only in a
+    # banner: the anchored exemption and the refusal it is an exemption from.
     with open(path) as f:
         lines = f.read().splitlines()
     i = next(i for i, ln in enumerate(lines)
@@ -1224,6 +1290,8 @@ def test_every_v6_file_is_refused_at_submit_until_the_measured_weight_lands(
     block = "\n".join(lines[max(0, i - 30):i])
     assert "validate_grid_semantics" in block, path
     assert "REFUSES" in block or "refuses" in block, path
+    assert "parent_anchor" in block, path
+    assert "exempt" in block, path
 
 
 @pytest.mark.parametrize("name", _V6_FILES)
@@ -1434,7 +1502,11 @@ def test_v6_group_differs_from_the_reference_in_exactly_what_it_claims(name):
                      # the 40-core class ships its recorded 48 h cap; the
                      # reference carries the 96-core class's 72 h.
                      "cluster.time"]
-    assert len(keys) == 135, len(keys)
+    # 137 since the parent anchor added ``model.parent_anchor`` and
+    # ``model.descriptor_coordinates``; both are the campaign's model class
+    # and are therefore IDENTICAL in every group and in the reference, so
+    # neither joins the difference list here.
+    assert len(keys) == 137, len(keys)
     assert differing == sorted(expected), (path, ref_path, differing)
     # The header makes the same claim in prose, and that is where an operator
     # reads it. What is asserted is the EXCEPT clause -- the list of fields

@@ -598,15 +598,20 @@ belonging to no system -- the mesh -- carry zero weight and a sink segment index
 dropped.
 
 At exactly `energy_term_weight = 0.0` the term is not small, it is not evaluated at all
-(`pretrain.py:178-180`, implemented at `pretrain.py:228-238`), which is the pre-protocol objective. The v6 configuration ships
-that value as a PLACEHOLDER and is refused at submit for it:
-`validate_grid_semantics` rejects the combination `dfs_set: true` +
-`fidelity.enforce: true` + `energy_term_weight: 0.0`, so an unedited submission stops on the
-login node rather than after the datagen job and the pretrainings. The value is dimensionful
-and is measured, not derived: `hpcjobs/probe_pretrain_energy_weight.py` sweeps it and
-recommends the smallest weight at which every architecture clears both halves of the
-certificate with margin (`margin_fraction = 0.5`) without any point-wise loss rising by more
-than a factor of 3 from its own weight-zero value.
+(`pretrain.py:178-180`, implemented at `pretrain.py:228-238`), which is the pre-protocol objective. For an
+unanchored run `validate_grid_semantics` rejects the combination `dfs_set: true` +
+`fidelity.enforce: true` + `energy_term_weight: 0.0`, so such a submission stops on the
+login node rather than after the datagen job and the pretrainings. The weight was to be
+measured, not derived: `hpcjobs/probe_pretrain_energy_weight.py` sweeps it and recommends
+the smallest weight at which every architecture clears both halves of the certificate with
+margin (`margin_fraction = 0.5`) without any point-wise loss rising by more than a factor of
+3 from its own weight-zero value. The sweep (job 2134963) found no such weight: the
+atomization gate does not follow the term, the residual being the correlation network's fit
+(`SPEC_parent_anchor.md` Section 2). The v6 configuration therefore anchors every
+architecture to its parent (`model: {parent_anchor: true}`, Section 3.2 of that
+specification): the networks equal the parent at initialization, the certificate holds by
+construction, and `energy_term_weight: 0.0` is the exact statement of the objective, which
+the semantic check accepts for an anchored run.
 
 Validation replaces the DFS protocol's hand interruption: a seeded 20% of the
 multi-nucleus systems is withheld and scored every 50 steps, training stops after 10
@@ -772,10 +777,12 @@ its axis: the certificate runs once per architecture on the pretrain node after 
 are written, the pretrain task exits non-zero on FAIL, and the train array's `afterok`
 dependency never releases (`cluster/fidelity.py:38-52`). All five files carry
 `fidelity: {tol_AE: 1.0, tol_atom: 1.0, override_reason: null, enforce: true}` and all five
-carry the same `pretrain.energy_term_weight: 0.0` placeholder, which is refused at submit
-until the measured weight lands in it -- one line per file, the same number in all five
-(executed check C11). The preflight additionally sweeps every swept architecture's
-certificate with no exemption before the array is submitted.
+carry `model: {parent_anchor: true, descriptor_coordinates: dfs}` with
+`pretrain.energy_term_weight: 0.0`, exact under the anchor (executed check C11 recorded the
+weight as the placeholder it then was). The four GGA-rung groups submit as they ship; the
+meta-GGA group is refused at submit until the SCAN parent lands
+(`SPEC_parent_anchor.md` Section 3.7). The preflight additionally sweeps every swept
+architecture's certificate with no exemption before the array is submitted.
 
 Registry-wide, the 31 registered architectures split 26 GGA-rung to 5 meta-GGA-rung through
 `ArchitectureConfig.is_meta_gga` (executed check C1). The campaign sweeps 20 of them --
