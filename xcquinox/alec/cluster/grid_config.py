@@ -326,8 +326,9 @@ class ModelConfig:
     certificate, the run validator -- through ``config.apply_model_block``,
     and recorded in the manifest, the pretrain metadata and the certificate.
     Requires the polarized correlation network (``use_polarized_correlation``
-    at the run level or on the architecture) and, until the SCAN parent
-    lands, a GGA-rung sweep. An anchored configuration states its
+    at the run level or on the architecture); both rungs are accepted, the
+    meta-GGA parents being ``parents.scan_fx`` / ``scan_fc``. An anchored
+    configuration states its
     ``pretrain.energy_term_weight`` (0.0 is exact) without a sweep: the
     weight-zero refusal of ``validate_grid_semantics`` applies to unanchored
     configurations only.
@@ -1693,11 +1694,14 @@ def _warn_axis_dedups(cfg: GridConfig) -> None:
 
 
 class ParentAnchorNotImplemented(NotImplementedError, ValueError):
-    """A configuration refusal whose cause is the SCAN parent not having
-    landed yet: a ``ValueError``, so every submission surface reports it as
-    the configuration refusal it is, and a ``NotImplementedError``, since the
-    refusal is the scope of the PBE commit rather than a defect of the file
-    and lifts when ``parents.scan_fx`` / ``scan_fc`` land."""
+    """The refusal the PBE-anchor commit raised for an anchored meta-GGA
+    architecture while the SCAN parent had not landed: a ``ValueError``, so
+    every submission surface reported it as a configuration refusal, and a
+    ``NotImplementedError``, since it was the scope of that commit rather
+    than a defect of the file. No longer raised: ``parents.scan_fx`` /
+    ``scan_fc`` carry the SCAN parent and a meta-GGA architecture under
+    ``model.parent_anchor`` is accepted. Kept so that the name stays
+    importable."""
 
 
 def validate_grid_semantics(cfg: GridConfig, domain) -> None:
@@ -1770,8 +1774,7 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # Every value on the arch axis must resolve via get_architecture. Catching
     # an unknown arch on the login node gives a clear error instead of letting
     # the pretrain worker (_pretrain.py) fail at runtime on a compute node.
-    from xcquinox.alec.config import (ArchitectureConfig, get_architecture,
-                                      list_architectures)
+    from xcquinox.alec.config import get_architecture, list_architectures
     for a in cfg.sweep.arch:
         try:
             get_architecture(a)
@@ -1786,8 +1789,9 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # it is checked against every architecture the run resolves, at submit:
     # an anchored correlation network must be polarization-aware (the
     # parent's correlation is divided by the model's zeta-dependent baseline,
-    # which the pretraining data's open-shell targets are formed against),
-    # and the SCAN parent of the meta-GGA rung is the next commit's.
+    # which the pretraining data's open-shell targets are formed against).
+    # Both rungs have their parent (parents.pbe_* and parents.scan_*), so the
+    # rung itself is no ground for refusal.
     model_block = getattr(cfg, "model", None)
     if model_block is not None and getattr(model_block, "parent_anchor", False):
         run_polarized = bool(getattr(cfg, "use_polarized_correlation", False))
@@ -1804,14 +1808,6 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                     "formed against; a zeta-blind network disagrees with them "
                     "by 14.9 mHa on the N atom). Set "
                     "use_polarized_correlation: true at the run level.")
-            if ArchitectureConfig.is_meta_gga(arch):
-                raise ParentAnchorNotImplemented(
-                    f"model.parent_anchor is true but architecture {a!r} is "
-                    "on the meta-GGA rung, whose parent is SCAN; the SCAN "
-                    "parent (parents.scan_fx / scan_fc) lands in the commit "
-                    "that follows the PBE anchor (SPEC_parent_anchor.md "
-                    "Section 3.7). Until then an anchored sweep is GGA-rung "
-                    "only; run the meta-GGA group unanchored or wait for it.")
     if model_block is not None and (
             getattr(model_block, "descriptor_coordinates", "legacy") == "dfs"
             and not bool(getattr(cfg, "use_polarized_correlation", False))):

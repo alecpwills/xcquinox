@@ -53,9 +53,70 @@ in its ``E_c``. ``1 -+ zeta`` is floored at ``ZETA_FLOOR``, libxc's
 interpolation. The production UKS path never reaches full polarization:
 ``oneshot.uks_zeta`` holds zeta inside ``+-(1 - 1e-6)``.
 
-The SCAN parent (``scan_fx``, ``scan_fc``) is the next commit's; both raise
-``NotImplementedError`` here and ``networks.create_network_pair`` refuses a
-meta-GGA architecture with ``parent_anchor=True`` until it lands.
+The SCAN parent (``scan_fx``, ``scan_fc``; Sun, Ruzsinszky and Perdew,
+Phys. Rev. Lett. 115, 036402 (2015) and its supplemental material) is posed
+on the same two conventions and reads the row's iso-orbital indicator on the
+repository's definition (``metagga.compute_alpha``, the RAW indicator
+recovered from the stored column by ``networks._raw_indicator``):
+
+* The exchange row of an open shell carries the indicator of the DOUBLED
+  channel, ``(2 tau_s - 4 sigma_ss / (8 2 rho_s)) / tau_unif(2 rho_s)``
+  (``data.precompute_fixed_density_data``, the per-channel blocks), which is
+  libxc's per-spin indicator ``(tau_s - tau_W,s) / (2^(2/3) tau_unif(rho_s))``
+  identically, since ``tau_unif`` is homogeneous of degree 5/3 in the
+  density; a closed shell's total density IS its doubled channel. ``scan_fx``
+  therefore reads the row's indicator as it is.
+* The correlation row carries the indicator of the TOTAL density,
+  ``(tau - tau_W) / tau_unif(rho)``, WITHOUT the spin factor
+  ``d_s(zeta) = [(1 + zeta)^(5/3) + (1 - zeta)^(5/3)] / 2`` that SCAN's
+  ``tau_unif`` carries for a polarized density (libxc's ``scan_alpha`` divides
+  by ``t_total(zeta, 1, 1)``, which is ``2^(-2/3) d_s``). ``scan_fc`` divides
+  the row's indicator by ``d_s(zeta)``; at zeta = 0 the two agree.
+
+Every constant is the value libxc 7.0.0 carries (``maple/mgga_exc/
+mgga_x_scan.mpl``, ``mgga_c_scan.mpl``, ``maple/gga_exc/gga_c_scan_e0.mpl``
+and ``gga_c_regtpss.mpl``), and four of them differ from the paper's printed
+values by more than the 1e-12 the parent is held to: ``chi_infinity`` is
+``0.12802585262625815`` (the paper's 0.128026 puts ``F_c`` 3.3e-7 off at
+s = 6), the coefficient of ``G_c(zeta)`` is 2.363 (the paper's 2.3631 is
+3.8e-5 off at zeta = 0.9), ``beta(rs)`` is built on libxc's PBE beta
+(the paper's 0.066725 is 3.3e-6 off) and ``gamma`` is PBE's
+``(1 - ln 2) / pi^2`` (the supplement's rounded 0.031091 is 1.2e-5 off); all
+four measured on the (rs, s, alpha) grid of the tests. The PW92 inside
+``eps_c^1`` is ``LDA_C_PW_MOD``, as for PBE.
+
+libxc's input sanitation (``work_mgga_inc.c``) is reproduced, since libxc is
+the oracle: each spin density is floored at ``LIBXC_SCAN_DENS_THRESHOLD``
+(1e-15, the SCAN info structs), sigma at ``LIBXC_SCAN_SIGMA_FLOOR`` (the
+square of ``sigma_threshold = dens_threshold^(4/3)``), tau at
+``LIBXC_SCAN_TAU_FLOOR`` (1e-20), and then sigma is capped at ``8 rho tau``
+per spin channel -- the von Weizsacker bound, i.e. ``alpha >= 0`` -- with
+``sigma_ab`` held inside the mean of the capped diagonal invariants. The row
+carries ``(rho, sigma, alpha)``, so tau is reconstructed as
+``alpha tau_unif + sigma / (8 rho)`` and, for the correlation, the per-channel
+sanitation is applied under the proportional split of the total quantities
+(exact for a closed shell and the split the oracle uses; on an open-shell row
+it can differ from libxc's per-channel arithmetic only where a channel
+violates its own bound, which is a rounding residue of the stored indicator
+on the model's domain). The value is taken at the sanitized point and the
+derivative at that point unscaled (``_floor_as_libxc``). Where nothing is
+clipped the reconstruction is exact: the indicator handed to the functional
+is the row's own, with no cancellation. Two consequences are visible at the
+1e-12 level and are matched: the empty channel of a fully polarized row
+enters at 1e-15, which shifts ``tau_W = sigma / (8 rho)`` by ``2e-15 / rho``
+relative and, through the ``tau - tau_W`` difference, the indicator by far
+more (the F_c of the H atom's rows at alpha = 0 is that shift times
+``G_c``); and the tau floor puts the indicator at ``1e-20 / tau_unif`` on
+a row with ``tau = 0``. The switching function is libxc's: the branch
+``exp(-c1 alpha / (1 - alpha))`` below alpha = 1 and ``-d exp(c2 / (1 -
+alpha))`` above, each set to zero where its value falls under DBL_EPSILON
+(alpha in [0.98183, 1.02206] for exchange, [0.98255, 1.04203] for
+correlation), so both branches and their derivatives are finite at
+alpha = 1, where all derivatives vanish. The conditioning of the indicator
+bounds the agreement on the density tail: where ``tau_W`` exceeds
+``tau - tau_W`` by a factor kappa, libxc's own indicator carries a rounding
+residue of ``kappa`` ulps (``scan_fx`` docstring, measured), and no function
+of the row's ``(rho, sigma, alpha)`` can follow it closer.
 """
 import math
 
@@ -212,24 +273,303 @@ def pbe_fc(rho, sigma, zeta):
     return eps_pbe / eps_base
 
 
-# --- SCAN (the next commit) --------------------------------------------------
+# --- SCAN constants, as libxc defines them -----------------------------------
+# Sun, Ruzsinszky and Perdew, Phys. Rev. Lett. 115, 036402 (2015), eqs. 2-4
+# and the supplemental material, at the values of libxc 7.0.0 (maple sources
+# named in the module docstring). Exchange: eqs. S6-S13 of the supplement.
+MU_GE = 10.0 / 81.0                    # second-order gradient expansion
+SCAN_K1 = 0.065
+SCAN_H0X = 1.174                       # h_x^0, the exchange ceiling
+SCAN_A1 = 4.9479
+SCAN_C1X = 0.667
+SCAN_C2X = 0.8
+SCAN_DX = 1.24
+SCAN_B2 = math.sqrt(5913.0 / 405000.0)
+SCAN_B1 = (511.0 / 13500.0) / (2.0 * SCAN_B2)
+SCAN_B3 = 0.5
+SCAN_B4 = MU_GE ** 2 / SCAN_K1 - 1606.0 / 18225.0 - SCAN_B1 ** 2
+# Correlation: eqs. S14-S29 of the supplement.
+SCAN_C1C = 0.64
+SCAN_C2C = 1.5
+SCAN_DC = 0.7
+SCAN_B1C = 0.0285764
+SCAN_B2C = 0.0889
+SCAN_B3C = 0.125541
+#: libxc's ``scan_chi_infty``; the paper prints 0.128026 (1.2e-6 relative
+#: off, 3.3e-7 in F_c at s = 6, measured).
+SCAN_CHI_INF = 0.12802585262625815
+#: The coefficient of ``G_c(zeta) = [1 - c (d_x(zeta) - 1)] (1 - zeta^12)``;
+#: libxc carries 2.363 (``scan_G_cnst``), the paper prints 2.3631.
+SCAN_G_CNST = 2.363
+#: ``beta(rs) = beta_a (1 + beta_b rs) / (1 + beta_c rs)`` with libxc's PBE
+#: beta (``gga_c_regtpss.mpl``), not the paper's rounded 0.066725.
+SCAN_BETA_A = PBE_BETA
+SCAN_BETA_B = 0.1
+SCAN_BETA_C = 0.1778
+#: gamma of ``H_1``: PBE's ``(1 - ln 2) / pi^2`` (``gga_c_pbe_params``), not
+#: the supplement's rounded 0.031091.
+SCAN_GAMMA = PBE_GAMMA
 
-_SCAN_MESSAGE = (
-    "the SCAN parent (Sun, Ruzsinszky and Perdew, Phys. Rev. Lett. 115, "
-    "036402 (2015)) lands in the SCAN commit that follows the PBE anchor; "
-    "SPEC_parent_anchor.md Section 3.7 sequences it second")
+#: libxc's thresholds for ``MGGA_X_SCAN`` and ``MGGA_C_SCAN`` (libxc 7.0.0:
+#: ``dens_threshold`` 1e-15 in both info structs; ``functionals.c`` sets
+#: ``sigma_threshold = dens_threshold^(4/3)`` and ``tau_threshold = 1e-20``;
+#: ``work_mgga_inc.c`` floors sigma at ``sigma_threshold^2`` and tau at
+#: ``tau_threshold``, then caps sigma at ``8 rho tau``). Measured: the
+#: exchange is zero at rho = 1e-15 and finite at 1e-14; ``F_x - 1`` at
+#: sigma = 0 is ``mu p`` with ``p = 1e-40 / (4 k_F^2 rho^2)`` (3.2e-11 at
+#: rho = 1e-12); ``F_x`` at tau = 0 sits at the indicator ``1e-20 / tau_unif``
+#: (1.6e-4 at rho = 1e-10).
+LIBXC_SCAN_DENS_THRESHOLD = 1e-15
+LIBXC_SCAN_SIGMA_FLOOR = 1e-40
+LIBXC_SCAN_TAU_FLOOR = 1e-20
+
+#: ``tau_unif = _TAU_UNIF_COEF rho^(5/3)`` (``3/10 (3 pi^2)^(2/3)``).
+_TAU_UNIF_COEF = 0.3 * _K_F_COEF ** 2
+
+
+def _clip_as_libxc(x, lo=None, hi=None):
+    """``x`` held to ``[lo, hi]`` in value with the derivative taken at the
+    clipped point and passed through unscaled (:func:`_floor_as_libxc` with
+    an upper bound as well), which is how libxc reports its potentials for a
+    sanitized input."""
+    y = x
+    if lo is not None:
+        y = jnp.maximum(y, lo)
+    if hi is not None:
+        y = jnp.minimum(y, hi)
+    return x + jax.lax.stop_gradient(y - x)
+
+
+def _row_tau(rho, sigma, alpha):
+    """The kinetic-energy density a row's raw indicator stands for,
+    ``tau = alpha tau_unif(rho) + sigma / (8 rho)`` (the inverse of
+    ``metagga.compute_alpha`` on the same conventions)."""
+    return alpha * _TAU_UNIF_COEF * rho ** (5.0 / 3.0) + sigma / (8.0 * rho)
+
+
+def _sanitized_indicator(alpha, rho, sigma, rho_f, sigma_f, tau, tau_f,
+                         tau_unif_f):
+    """The indicator at libxc's sanitized inputs ``(rho_f, sigma_f, tau_f)``,
+    written as the row's indicator plus the increments the sanitation made,
+    so that it is the row's ``alpha`` exactly (no ``tau - tau_W``
+    cancellation) whenever nothing was clipped, and libxc's value, with
+    libxc's derivative semantics, where something was."""
+    tau_unif = _TAU_UNIF_COEF * rho ** (5.0 / 3.0)
+    dtau = tau_f - tau
+    dsig = sigma_f - sigma
+    drho_term = sigma * (rho_f - rho) / (8.0 * rho * rho_f)
+    return (alpha * tau_unif + dtau + drho_term
+            - dsig / (8.0 * rho_f)) / tau_unif_f
+
+
+def _scan_switch(alpha, c1, c2, d):
+    """SCAN's interpolation ``f(alpha)`` as libxc evaluates it
+    (``scan_f_alpha`` of ``mgga_x_scan.mpl``, shared with the correlation at
+    its own constants): ``exp(-c1 alpha / (1 - alpha))`` for ``alpha <= 1``,
+    set to zero above ``ln(1/eps) / (ln(1/eps) + c1)`` where it has fallen
+    under ``eps = DBL_EPSILON``; ``-d exp(c2 / (1 - alpha))`` for
+    ``alpha > 1``, zero below ``(ln(d/eps) + c2) / ln(d/eps)``. Each branch
+    is evaluated on an argument held inside its own domain, so the value and
+    every derivative are finite at alpha = 1 (where all of them vanish) and
+    for every alpha, negative values included (the left branch is bounded by
+    ``exp(c1)``)."""
+    ln_eps = -math.log(ZETA_FLOOR)
+    left_cut = ln_eps / (ln_eps + c1)
+    ln_d = -math.log(ZETA_FLOOR / abs(d))
+    right_cut = (ln_d + c2) / ln_d
+    a_l = jnp.minimum(alpha, left_cut)
+    om_l = 1.0 - a_l
+    left = jnp.where(alpha > left_cut, 0.0,
+                     jnp.exp(-c1 * a_l / jnp.where(om_l > 0.0, om_l, 1.0)))
+    a_r = jnp.maximum(alpha, right_cut)
+    om_r = 1.0 - a_r
+    right = jnp.where(alpha < right_cut, 0.0,
+                      -d * jnp.exp(c2 / jnp.where(om_r < 0.0, om_r, -1.0)))
+    return jnp.where(alpha <= 1.0, left, right)
+
+
+def _scan_fx_core(p, alpha):
+    """``F_x^SCAN(p = s^2, alpha)``: ``[h_x^1(y) (1 - f) + h_x^0 f] g_x(s)``
+    with ``y`` of eq. S9 (the ``b4 p^2 exp(-b4 p / mu)`` term and the
+    squared ``b1 p + b2 (1 - alpha) exp(-b3 (1 - alpha)^2)``), ``h_x^1(y) =
+    1 + k1 - k1^2 / (k1 + y)`` and ``g_x = 1 - exp(-a1 / s^(1/2))``. ``p`` is
+    positive after libxc's sigma floor; the guard keeps the derivative of
+    ``g_x`` finite (it is zero to double precision) on any smaller value."""
+    oma = 1.0 - alpha
+    y = (MU_GE * p * (1.0 + (SCAN_B4 * p / MU_GE) * jnp.exp(-SCAN_B4 * p / MU_GE))
+         + (SCAN_B1 * p + SCAN_B2 * oma * jnp.exp(-SCAN_B3 * oma * oma)) ** 2)
+    h1x = 1.0 + SCAN_K1 - SCAN_K1 * SCAN_K1 / (SCAN_K1 + y)
+    fx = _scan_switch(alpha, SCAN_C1X, SCAN_C2X, SCAN_DX)
+    p_g = jnp.where(p > 1e-100, p, 1e-100)
+    gx = 1.0 - jnp.exp(-SCAN_A1 / p_g ** 0.25)
+    return (h1x * (1.0 - fx) + SCAN_H0X * fx) * gx
 
 
 def scan_fx(rho, sigma, alpha):
-    """SCAN exchange enhancement factor ``F_x(s, alpha)`` on the raw
-    indicator; not yet implemented (see the module docstring)."""
-    raise NotImplementedError(f"scan_fx: {_SCAN_MESSAGE}")
+    """SCAN exchange enhancement factor ``F_x(s, alpha)`` at libxc's
+    constants, for ONE spin channel posed on its doubled density: ``rho``
+    and ``sigma`` are the row's ``2 rho_sigma`` and ``4 sigma_sigma_sigma``
+    and ``alpha`` the RAW iso-orbital indicator of that doubled channel
+    (``metagga.compute_alpha`` before its smoothing and ceiling, which
+    ``networks._raw_indicator`` recovers from the stored column), so that
+    ``rho eps_x^LDA(rho) scan_fx`` is libxc's ``MGGA_X_SCAN`` energy density
+    at ``(rho, sigma, tau = alpha tau_unif + sigma / (8 rho))``. The row's
+    indicator on the doubled channel is libxc's per-spin indicator
+    identically (module docstring).
+
+    libxc's sanitation is applied first (module docstring): rho floored at
+    1e-15, sigma at 1e-40, tau at 1e-20, sigma capped at ``8 rho tau`` so
+    that ``alpha >= 0``; a row whose raw indicator is negative (a rounding
+    residue of ``tau - tau_W`` on a one-orbital channel, at most 1e-11 on
+    the model's domain, ``metagga.py``) is therefore evaluated at
+    ``alpha = 0`` and ``s^2 - 0.6 |alpha|``, which is libxc's value at the
+    true tau, and its derivatives are libxc's, taken at that point. Where
+    nothing is clipped the function is the analytic SCAN at the row's
+    ``(rho, sigma, alpha)`` exactly.
+
+    Measured against ``pyscf.dft.libxc.eval_xc("MGGA_X_SCAN", spin=0)`` (libxc
+    7.0.0): 2.6e-15 relative over the (rs, s, alpha) grid of the tests with
+    alpha in {0, 0.5, 0.99, 1, 1.01, 2, 10, 100} (936 points), and on the
+    stored rows of H2O (sto-3g) and OH (def2-svp) at grid level 1 with
+    ``2 rho_sigma > 1e-10`` below the indicator ceiling (8413, 6283 and 6324
+    rows): 3.4e-15 where ``kappa = tau_W / (tau - tau_W) < 1e2``, 3.2e-13
+    where ``kappa < 1e4``, and up to 7.9e-11 on the 130 to 286 tail rows
+    beyond (rho below 3e-6, s above ~100, kappa up to 5.6e12), which is
+    1.6 kappa ulps at most: there the indicator libxc recomputes from tau is
+    itself determined only to kappa ulps (the tail figure moves between
+    7.2e-11 and 7.9e-11 across two SCF solutions of the same system, the
+    reference density's own rounding entering the difference). First derivatives
+    with respect to rho, sigma and the indicator (through ``dtau/dalpha =
+    tau_unif``) against ``deriv=1``: 2.1e-13 on the grid, 1.5e-9 on the
+    stored rows. Accepts any broadcastable leading shape (elementwise), as
+    ``pbe_fx`` does.
+    """
+    rho = jnp.asarray(rho)
+    sigma = jnp.asarray(sigma)
+    alpha = jnp.asarray(alpha)
+    tau = _row_tau(rho, sigma, alpha)
+    rho_f = _floor_as_libxc(rho, LIBXC_SCAN_DENS_THRESHOLD)
+    tau_f = _clip_as_libxc(tau, lo=LIBXC_SCAN_TAU_FLOOR)
+    sigma_f = _clip_as_libxc(sigma, lo=LIBXC_SCAN_SIGMA_FLOOR,
+                             hi=8.0 * rho_f * tau_f)
+    k_f2 = _K_F_COEF ** 2 * rho_f ** (2.0 / 3.0)
+    p = sigma_f / (4.0 * k_f2 * rho_f ** 2)
+    alpha_f = _sanitized_indicator(alpha, rho, sigma, rho_f, sigma_f, tau,
+                                   tau_f, 0.3 * k_f2 * rho_f)
+    return _scan_fx_core(p, alpha_f)
 
 
 def scan_fc(rho, sigma, zeta, alpha):
-    """SCAN correlation enhancement factor relative to the model's baseline;
-    not yet implemented (see the module docstring)."""
-    raise NotImplementedError(f"scan_fc: {_SCAN_MESSAGE}")
+    """SCAN correlation enhancement factor relative to the model's baseline:
+    ``eps_c^SCAN(rs, zeta, t, alpha) / eps_c^PW92(rs, zeta)`` with the
+    numerator libxc's ``MGGA_C_SCAN`` (``eps_c^1 + f_c(alpha) (eps_c^0 -
+    eps_c^1)``: ``eps_c^1`` the PBE form on ``LDA_C_PW_MOD`` with SCAN's
+    ``beta(rs)``, ``gamma`` and ``g(A t^2) = (1 + 4 A t^2)^(-1/4)``;
+    ``eps_c^0 = (eps_c^LDA0 + H_0) G_c(zeta)`` with ``H_0 = b1c ln[1 + w0 (1 -
+    g_inf(s))]``) and the denominator the repository's
+    ``pw92c_polarized_scalar`` at the row's ``(rho, zeta)``, exactly as
+    :func:`pbe_fc` is built, so that the model's ``rho eps_c^base scan_fc``
+    is libxc's SCAN correlation energy density. ``rho`` and ``sigma`` are the
+    TOTAL density and its gradient invariant, ``zeta`` the row's spin
+    polarization (clipped to ``[-1, 1]``) and ``alpha`` the RAW indicator of
+    the total density on the repository's definition, WITHOUT the spin
+    factor; it is divided by ``d_s(zeta)`` here (module docstring).
+
+    libxc's per-channel sanitation is applied under the proportional split
+    of the row's total quantities (module docstring); the reconstruction of
+    the indicator at the floored spin densities is what makes the fully
+    polarized rows agree: at zeta = +-1 and alpha = 0 the parent is
+    ``G_c(zeta_f) (eps_c^LDA0 + H_0) / eps_c^PW92`` with ``1 - zeta_f =
+    2e-15 / rho``, of order 1e-12 or smaller -- the correlation-free
+    one-orbital limit as libxc reaches it -- and the pre-image clamp of the
+    anchored map takes it as a parent at its bound.
+
+    Measured against ``eval_xc("MGGA_C_SCAN", spin=1)`` on proportionally
+    split rows (libxc 7.0.0), the (rs, s, alpha) grid at zeta in {0, +-0.5,
+    +-0.9, +-(1 - 1e-6), +-1} (8424 points): 1.5e-13 relative wherever
+    ``|F_c| > 1e-5`` and ``|zeta| <= 1 - 1e-6`` (the production clip of
+    ``oneshot.uks_zeta``), 3.8e-12 at zeta = +-1 exactly, where libxc forms
+    ``1 - zeta`` from the rounded zeta of the floored empty channel (a
+    quantity quantized in units of 1.1e-16 around the true 1.6e-16 at rs =
+    0.27; the same effect the PBE parent's test bounds at 3e-5); on the 468
+    rows at alpha = 0 with |zeta| -> 1, where ``F_c`` falls to 1e-6 and below
+    because ``G_c`` vanishes and the two evaluations sit on libxc's
+    Fermi-hole cap (``sigma_ss = 8 rho_s tau_s`` to rounding), the agreement
+    is 4.3e-15 absolute. On the stored rows of H2O and OH (total density,
+    ``uks_zeta``, ``rho > 1e-10``, below the indicator ceiling; 8413 and
+    6324 rows): 3.1e-14 where ``kappa = tau_W / (tau - tau_W) < 1e2``,
+    1.3e-12 where ``kappa < 1e4``, up to 1.6e-9 on the tail rows beyond it
+    (the indicator's own conditioning, as for ``scan_fx``; 1.2 kappa ulps at
+    most), 1.1e-14 Ha/bohr^3 absolute in the energy density; derivatives
+    against ``deriv=1`` to 5.6e-9 on the grid (zeta, sigma and rho at the
+    small-``F_c`` rows; 2.8e-13 where ``|F_c| > 1e-5`` except zeta at
+    5.6e-9) and 6.2e-9 on the stored rows. Accepts any broadcastable
+    leading shape, as ``pbe_fc``.
+    """
+    rho = jnp.asarray(rho)
+    sigma = jnp.asarray(sigma)
+    alpha = jnp.asarray(alpha)
+    zeta_c = _clip_zeta(jnp.asarray(zeta))
+    half = 0.5 * (1.0 + zeta_c)
+    omhalf = 1.0 - half
+    tau = _row_tau(rho, sigma, alpha)
+    # libxc's per-channel sanitation under the proportional split of the
+    # row's total quantities: each spin density floored, each channel's tau
+    # floored, each diagonal gradient invariant floored and then capped at
+    # the channel's Fermi-hole bound, and sigma_ab held inside the mean of
+    # the two capped diagonals (work_mgga_inc.c, the polarized branch).
+    rho_a = _floor_as_libxc(rho * half, LIBXC_SCAN_DENS_THRESHOLD)
+    rho_b = _floor_as_libxc(rho * omhalf, LIBXC_SCAN_DENS_THRESHOLD)
+    tau_a = _clip_as_libxc(tau * half, lo=LIBXC_SCAN_TAU_FLOOR)
+    tau_b = _clip_as_libxc(tau * omhalf, lo=LIBXC_SCAN_TAU_FLOOR)
+    sig_aa = _clip_as_libxc(sigma * half * half, lo=LIBXC_SCAN_SIGMA_FLOOR,
+                            hi=8.0 * rho_a * tau_a)
+    sig_bb = _clip_as_libxc(sigma * omhalf * omhalf,
+                            lo=LIBXC_SCAN_SIGMA_FLOOR, hi=8.0 * rho_b * tau_b)
+    s_ave = 0.5 * (sig_aa + sig_bb)
+    sig_ab = _clip_as_libxc(sigma * half * omhalf, lo=-s_ave, hi=s_ave)
+    rho_f = rho_a + rho_b
+    tau_f = tau_a + tau_b
+    sigma_f = sig_aa + 2.0 * sig_ab + sig_bb
+    zeta_f = _clip_zeta((rho_a - rho_b) / rho_f)
+    rs = (3.0 / (4.0 * math.pi * rho_f)) ** (1.0 / 3.0)
+    # 1 +- zeta from the spin densities (see pbe_fc), floored at libxc's
+    # zeta threshold before the fractional powers.
+    opz = jnp.maximum(2.0 * rho_a / rho_f, ZETA_FLOOR)
+    omz = jnp.maximum(2.0 * rho_b / rho_f, ZETA_FLOOR)
+    phi = 0.5 * (opz ** (2.0 / 3.0) + omz ** (2.0 / 3.0))
+    d_x = 0.5 * (opz ** (4.0 / 3.0) + omz ** (4.0 / 3.0))
+    d_s = 0.5 * (opz ** (5.0 / 3.0) + omz ** (5.0 / 3.0))
+    eps_lsda1 = _pw92_mod_eps(rs, zeta_f, opz, omz)
+    k_f2 = _K_F_COEF ** 2 * rho_f ** (2.0 / 3.0)
+    k_f = jnp.sqrt(k_f2)
+    p = sigma_f / (4.0 * k_f2 * rho_f ** 2)                 # s^2
+    # The indicator on SCAN's polarized tau_unif: the row's, re-derived at
+    # the sanitized inputs, divided by d_s(zeta).
+    alpha_f = _sanitized_indicator(alpha, rho, sigma, rho_f, sigma_f, tau,
+                                   tau_f, 0.3 * k_f2 * rho_f) / d_s
+    # t^2 = sigma / (2 phi k_s rho)^2 with k_s^2 = 4 k_F / pi (PBE eq. 4).
+    ks2 = 4.0 * k_f / math.pi
+    t2 = p * k_f2 / (phi ** 2 * ks2)
+    # eps_c^1: eqs. S17-S20 of the supplement at libxc's beta(rs) and gamma.
+    beta = SCAN_BETA_A * (1.0 + SCAN_BETA_B * rs) / (1.0 + SCAN_BETA_C * rs)
+    gphi3 = SCAN_GAMMA * phi ** 3
+    w1 = jnp.expm1(-eps_lsda1 / gphi3)
+    a_coef = beta / (SCAN_GAMMA * w1)
+    g1 = (1.0 + 4.0 * a_coef * t2) ** (-0.25)
+    h1 = gphi3 * jnp.log1p(w1 * (1.0 - g1))
+    eps1 = eps_lsda1 + h1
+    # eps_c^0: eqs. S21-S29.
+    eps_lda0 = -SCAN_B1C / (1.0 + SCAN_B2C * jnp.sqrt(rs) + SCAN_B3C * rs)
+    w0 = jnp.expm1(-eps_lda0 / SCAN_B1C)
+    g_inf = (1.0 + 4.0 * SCAN_CHI_INF * p) ** (-0.25)
+    h0 = SCAN_B1C * jnp.log1p(w0 * (1.0 - g_inf))
+    g_c = (1.0 - SCAN_G_CNST * (d_x - 1.0)) * (1.0 - zeta_f ** 12)
+    eps0 = (eps_lda0 + h0) * g_c
+    fc = _scan_switch(alpha_f, SCAN_C1C, SCAN_C2C, SCAN_DC)
+    eps_scan = eps1 + fc * (eps0 - eps1)
+    eps_base = pw92c_polarized_scalar(rho * half, rho * omhalf)
+    return eps_scan / eps_base
 
 
 # --- dispatch ----------------------------------------------------------------
@@ -241,13 +581,23 @@ def _check_parent(parent: str) -> None:
             f"{PARENTS}")
 
 
+def _require_indicator(where: str, alpha) -> None:
+    if alpha is None:
+        raise ValueError(
+            f"{where}: the SCAN parent reads the raw iso-orbital indicator "
+            "and none was given (alpha=None); a meta-GGA row carries it at "
+            "metagga_alpha_index, and networks._raw_indicator recovers the "
+            "raw value from the stored column")
+
+
 def parent_fx(parent: str, rho, sigma, alpha=None):
     """``F_x`` of the named parent (``"pbe"`` | ``"scan"``) on a doubled spin
-    channel; ``alpha`` is the raw iso-orbital indicator the SCAN parent reads
-    and is ignored by PBE."""
+    channel; ``alpha`` is the raw iso-orbital indicator the SCAN parent
+    requires (``ValueError`` when it is missing) and PBE ignores."""
     _check_parent(parent)
     if parent == "pbe":
         return pbe_fx(rho, sigma)
+    _require_indicator("parent_fx('scan')", alpha)
     return scan_fx(rho, sigma, alpha)
 
 
@@ -257,6 +607,7 @@ def parent_fc(parent: str, rho, sigma, zeta, alpha=None):
     _check_parent(parent)
     if parent == "pbe":
         return pbe_fc(rho, sigma, zeta)
+    _require_indicator("parent_fc('scan')", alpha)
     return scan_fc(rho, sigma, zeta, alpha)
 
 

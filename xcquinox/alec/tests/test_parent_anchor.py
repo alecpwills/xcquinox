@@ -3,12 +3,18 @@
 
 V3 -- an anchored network at initialization returns its parent's enhancement
 factor pointwise, on the rows a real molecule integrates and on a row where the
-parent sits within 1e-6 of the Lieb-Oxford ceiling; an UNANCHORED network is
-today's forward, bitwise, reconstructed here from the documented expressions
-rather than restated from the code.
+parent sits within 1e-6 of the Lieb-Oxford ceiling; the parent is PBE on the
+GGA rungs and SCAN on the meta-GGA rung, whose networks read the raw
+iso-orbital indicator out of their own stored column, the rows at the
+descriptor's ceiling included. An UNANCHORED network is today's forward,
+bitwise: rebuilt from the documented expressions on the GGA rungs, and
+compared against the module as it stood in the PBE-anchor commit on the
+meta-GGA rung, whose DFS prefactor and 1.174 ceiling make a restatement
+longer than the code.
 
 V4 -- the pretraining-fidelity certificate PASSes at initialization from an
-untrained anchored checkpoint written the way the pretrain stage writes one.
+untrained anchored checkpoint written the way the pretrain stage writes one,
+on both rungs.
 
 V5 -- the spin-scaling oracles O1 to O4 hold on an anchored architecture. The
 cases are their own here because ``test_spin_scaling_oracles`` parametrizes
@@ -50,16 +56,21 @@ from xcquinox.alec.oneshot import uks_zeta
 #: nine orders under the certificate's 1.0 mHa.
 _RHO_FLOOR = 1e-10
 
-#: Every registered architecture on the GGA rung. The meta-GGA entries are
-#: refused by ``create_network_pair`` in this commit and are covered by the
-#: refusal case below.
+#: Every registered architecture, split by rung: the GGA rungs are anchored to
+#: PBE and the meta-GGA rung to SCAN (``parents.parent_for_arch``), and the two
+#: parents are different functions of different row quantities, so the V3 cases
+#: are stated once per rung rather than once over the registry.
 _GGA_ARCHS = tuple(name for name in sorted(alec.ARCHITECTURES)
                    if not ArchitectureConfig.is_meta_gga(alec.ARCHITECTURES[name]))
+_MGGA_ARCHS = tuple(name for name in sorted(alec.ARCHITECTURES)
+                    if ArchitectureConfig.is_meta_gga(alec.ARCHITECTURES[name]))
 
-#: The descriptors any registered GGA architecture can ask for. One record
-#: carrying all of them serves every architecture's feature block, so V3 costs
-#: one reference SCF per system rather than one per descriptor set.
-_ALL_GGA_DESCRIPTORS = ("cusp", "dm_statistics", "rung35", "rung35_multishell")
+#: The descriptors any registered architecture can ask for, the meta-GGA
+#: indicator included. One record carrying all of them serves every
+#: architecture's feature block, so V3 costs one reference SCF per system
+#: rather than one per descriptor set.
+_ALL_DESCRIPTORS = ("cusp", "dm_statistics", "rung35", "rung35_multishell",
+                    "metagga")
 
 _RECORDS = {}
 
@@ -77,11 +88,11 @@ def _anchored_arch(name, coordinates=None):
 
 
 def _record(name, atom, basis, spin, composition, grid_level=1):
-    """A reference record carrying every GGA descriptor block."""
+    """A reference record carrying every registered descriptor block."""
     key = (name, basis, spin, grid_level)
     if key not in _RECORDS:
         from xcquinox.alec.descriptors import make_descriptor
-        descriptors = tuple(make_descriptor(d) for d in _ALL_GGA_DESCRIPTORS)
+        descriptors = tuple(make_descriptor(d) for d in _ALL_DESCRIPTORS)
         keys = tuple(sorted({k for d in descriptors
                              for k in d.required_mol_keys}))
         _RECORDS[key] = precompute_fixed_density_data(
@@ -229,6 +240,114 @@ def test_anchored_networks_return_the_parent_at_initialization(arch_name):
     _assert_is_the_parent(got, want, (arch_name, "c"))
 
 
+@pytest.mark.parametrize("arch_name", _MGGA_ARCHS)
+def test_anchored_meta_gga_networks_return_scan_at_initialization(arch_name):
+    """V3 on the meta-GGA rung: at ``gated = 0`` the anchored forward returns
+    ``F^SCAN`` pointwise, for every registered meta-GGA architecture.
+
+    The rung's parent is SCAN, and SCAN reads a quantity PBE does not: the raw
+    iso-orbital indicator, which the network recovers from its own stored
+    ``metagga`` column (``networks._raw_indicator``) and hands to
+    ``parents.scan_fx`` / ``scan_fc``. The exchange net reads the column of the
+    DOUBLED channel and the correlation net the column of the total density,
+    which is why the two halves are compared against different arguments here.
+
+    Both stored records are exercised -- the OH radical (def2-svp), where the
+    two channels differ and the correlation rows carry a real polarization,
+    and H2O (sto-3g), a closed shell -- and the rows AT the indicator ceiling
+    (``metagga._ALPHA_MAX = 100``, 514 to 546 per channel) are INCLUDED rather
+    than excluded: there the recovery returns the ceiling and the network must
+    return the parent evaluated at it, which is the anchored model's own value
+    on those rows whatever libxc would say at the true tau.
+
+    Measured over the five architectures, 31545 exchange rows and 15785
+    correlation rows each: worst ``|F_x - scan_fx|`` 2.8e-16 and
+    ``|F_c - scan_fc|`` 2.2e-16, one ulp of 1, identical across the five
+    because at ``gated = 0`` the model IS the parent whatever its descriptors
+    are. Bound 1e-15 absolute, as on the GGA rung (see
+    :func:`_assert_is_the_parent` for why the absolute form is the statement).
+
+    RED against: resolving the meta-GGA rung's parent to PBE
+    (``parents.parent_for_arch`` returning "pbe" for every architecture),
+    which leaves the forward well-formed and moves it off SCAN by 0.159 in
+    the median and 1.71 at worst in ``F_x``, 0.222 and 0.775 in ``F_c``, on
+    the OH rows.
+    """
+    from xcquinox.alec.networks import _raw_indicator
+
+    arch = _anchored_arch(arch_name)
+    xnet, cnet = create_network_pair(arch, seed=11)
+    assert xnet.parent == "scan" and cnet.parent == "scan", arch_name
+    descriptors = arch.materialize_descriptors()
+
+    for md, tag in ((_oh_record(), "OH"), (_h2o_record(), "H2O")):
+        for channel in (0, 1):
+            rho, sigma, features = _exchange_rows(md, descriptors, channel,
+                                                  stride=1)
+            got = np.asarray(jax.vmap(
+                lambda r, s, f: xnet(_pack_row(r, s, f)).squeeze()
+            )(rho, sigma, features))
+            alpha = _raw_indicator(features[:, xnet.metagga_alpha_index])
+            want = np.asarray(jax.vmap(parents.scan_fx)(rho, sigma, alpha))
+            _assert_is_the_parent(got, want, (arch_name, tag, "x", channel))
+
+        rho, sigma, zeta, features = _correlation_rows(md, descriptors,
+                                                       stride=1)
+        got = np.asarray(jax.vmap(
+            lambda r, s, z, f: cnet(_pack_row_polarized(r, s, z, f)).squeeze()
+        )(rho, sigma, zeta, features))
+        alpha = _raw_indicator(features[:, cnet.metagga_alpha_index])
+        want = np.asarray(jax.vmap(parents.scan_fc)(rho, sigma, zeta, alpha))
+        _assert_is_the_parent(got, want, (arch_name, tag, "c"))
+
+
+def test_the_anchored_meta_gga_forward_holds_at_the_indicator_ceiling():
+    """The rows pinned at ``metagga._ALPHA_MAX`` are part of the identity, and
+    the network stays differentiable in the column there.
+
+    ``networks._raw_indicator`` returns the ceiling unchanged above it (the
+    column carries no information about how far past 100 the row went), so the
+    anchored forward evaluates SCAN at ``alpha = 100`` and its derivative with
+    respect to the column runs through the parent's saturated switching
+    function rather than through the smoothing inverse. A one-sided clip or a
+    ``jnp.where`` on the wrong side would show as a NaN in the potential of
+    every meta-GGA architecture on rows a real molecule integrates.
+
+    Measured on the OH radical's alpha channel (def2-svp, grid level 1): 514
+    of the 6797 rows above the tail threshold sit at the ceiling, the recovery
+    returns exactly 100.0 on all of them, ``dF_x/d(column)`` is finite
+    everywhere and is 7.4e-6 at most on those rows against 0.261 below the
+    ceiling -- the saturation, four orders down, not a frozen gradient.
+
+    RED against: making ``networks._raw_indicator`` invert the smoothing above
+    the ceiling as well, so the recovery no longer returns 100.0 there.
+    """
+    from xcquinox.alec.metagga import _ALPHA_MAX
+    from xcquinox.alec.networks import _raw_indicator
+
+    arch = _anchored_arch("deep_mgga_3x16")
+    xnet, _cnet = create_network_pair(arch, seed=11)
+    descriptors = arch.materialize_descriptors()
+    rho, sigma, features = _exchange_rows(_oh_record(), descriptors, 0,
+                                          stride=1)
+    column = np.asarray(features[:, xnet.metagga_alpha_index])
+    at_ceiling = column >= _ALPHA_MAX
+    assert int(at_ceiling.sum()) > 400, int(at_ceiling.sum())
+    recovered = np.asarray(_raw_indicator(features[:, xnet.metagga_alpha_index]))
+    np.testing.assert_array_equal(recovered[at_ceiling],
+                                  np.full(int(at_ceiling.sum()), _ALPHA_MAX))
+
+    grads = np.asarray(jax.vmap(
+        jax.grad(lambda r, s, f: xnet(_pack_row(r, s, f)).squeeze(), argnums=2)
+    )(rho, sigma, features))
+    assert bool(np.all(np.isfinite(grads)))
+    column_grad = np.abs(grads[:, xnet.metagga_alpha_index])
+    assert float(column_grad[at_ceiling].max()) <= 1e-4, \
+        float(column_grad[at_ceiling].max())
+    assert float(column_grad[~at_ceiling].max()) > 1e-2, \
+        float(column_grad[~at_ceiling].max())
+
+
 def test_anchored_networks_return_the_parent_on_a_closed_shell():
     """V3 on a closed shell, where ``rho_a = rho_b`` makes the doubled channel
     the total density and zeta is identically zero: the anchored exchange net
@@ -355,6 +474,121 @@ def _rebuild_unanchored_xnet_forward(xnet, arch, rho, sigma, features):
     return jax.vmap(one)(rho, sigma, features)
 
 
+#: The commit the PBE anchor landed in, before ``parents.scan_fx`` /
+#: ``scan_fc`` existed. It is the last state of ``networks.py`` in which no
+#: meta-GGA architecture could be anchored at all, so a forward built from it
+#: is an independent copy of the unanchored path.
+_PBE_ANCHOR_COMMIT = "9407da362"
+
+
+def _committed_networks_module(tmp_path):
+    """``networks.py`` as of :data:`_PBE_ANCHOR_COMMIT`, imported under its own
+    name so both versions are live in one process.
+
+    Skips where the object cannot be read -- a source or wheel checkout with no
+    git history has nothing to compare against, which is not a failure.
+    """
+    import importlib.util
+    import subprocess
+
+    repo = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(alec.__file__)), "..", ".."))
+    try:
+        shown = subprocess.run(
+            ["git", "show", f"{_PBE_ANCHOR_COMMIT}:xcquinox/alec/networks.py"],
+            capture_output=True, text=True, cwd=repo, check=False)
+    except OSError as exc:  # no git on this machine
+        pytest.skip(f"git is unavailable: {exc}")
+    if shown.returncode != 0 or not shown.stdout:
+        pytest.skip(f"{_PBE_ANCHOR_COMMIT}:xcquinox/alec/networks.py is not "
+                    f"readable in this checkout: {shown.stderr.strip()[:200]}")
+    path = str(tmp_path / "committed_networks.py")
+    with open(path, "w") as f:
+        f.write(shown.stdout)
+    spec = importlib.util.spec_from_file_location("committed_networks", path)
+    module = importlib.util.module_from_spec(spec)
+    import sys
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_an_unanchored_meta_gga_network_is_the_committed_forward_bitwise(
+        tmp_path):
+    """The SCAN commit changes NOTHING on the unanchored meta-GGA path.
+
+    The GGA case above rebuilds today's forward from the documented
+    expressions; the meta-GGA forward carries the DFS ``(x2 + tanh^2(x3))``
+    UEG prefactor and the 1.174 ceiling as well, so it is compared instead
+    against the module as it stood in the PBE-anchor commit -- read out of git,
+    imported beside the live one, and driven on the same rows with the same
+    seed. That version REFUSED an anchored meta-GGA architecture, so the
+    comparison is necessarily of the unanchored class, which is exactly the
+    class the recorded checkpoints belong to.
+
+    ``zero_init_final_layer`` is turned OFF for the comparison. Every
+    registered meta-GGA entry carries it True, which makes the MLP output
+    identically zero and the forward the constant ``1 + LOB(0)`` on every row
+    -- a comparison that could not see a changed gate, a changed coordinate or
+    a changed ceiling. With the final layer live the forward exercises all
+    three, and the case asserts that the outputs vary across the rows, so it
+    cannot silently go vacuous again.
+
+    Measured: 120 parameter leaves and 30 output arrays over the five
+    registered meta-GGA architectures on both stored records, every one
+    identical under ``np.array_equal``.
+
+    RED against: any change to the live meta-GGA forward. Driven by
+    perturbing the DFS UEG prefactor of the COMMITTED copy by one part in
+    1e12 (``tanh(x3)^2 -> tanh(x3)^2 (1 + 1e-12)``), which the comparison
+    catches on the first array it reaches.
+    """
+    committed = _committed_networks_module(tmp_path)
+    n_leaves = n_arrays = 0
+    for arch_name in _MGGA_ARCHS:
+        plain = dataclasses.replace(alec.get_architecture(arch_name),
+                                    use_polarized_correlation=True,
+                                    zero_init_final_layer=False)
+        assert plain.parent_anchor is False, arch_name
+        live_x, live_c = create_network_pair(plain, seed=7)
+        old_x, old_c = committed.create_network_pair(plain, seed=7)
+        for live, old in ((live_x, old_x), (live_c, old_c)):
+            live_leaves = jax.tree_util.tree_leaves(live)
+            old_leaves = jax.tree_util.tree_leaves(old)
+            assert len(live_leaves) == len(old_leaves), arch_name
+            for a, b in zip(live_leaves, old_leaves):
+                np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+                n_leaves += 1
+
+        descriptors = plain.materialize_descriptors()
+        for md in (_oh_record(), _h2o_record()):
+            for channel in (0, 1):
+                rho, sigma, features = _exchange_rows(md, descriptors, channel,
+                                                      stride=53)
+                live = np.asarray(jax.vmap(
+                    lambda r, s, f: live_x(_pack_row(r, s, f)).squeeze()
+                )(rho, sigma, features))
+                assert float(live.std()) > 1e-6, (arch_name, "constant F_x")
+                np.testing.assert_array_equal(live, np.asarray(jax.vmap(
+                    lambda r, s, f: old_x(_pack_row(r, s, f)).squeeze()
+                )(rho, sigma, features)))
+                n_arrays += 1
+            rho, sigma, zeta, features = _correlation_rows(md, descriptors,
+                                                           stride=53)
+            live = np.asarray(jax.vmap(
+                lambda r, s, z, f:
+                live_c(_pack_row_polarized(r, s, z, f)).squeeze()
+            )(rho, sigma, zeta, features))
+            assert float(live.std()) > 1e-6, (arch_name, "constant F_c")
+            np.testing.assert_array_equal(live, np.asarray(jax.vmap(
+                lambda r, s, z, f:
+                old_c(_pack_row_polarized(r, s, z, f)).squeeze()
+            )(rho, sigma, zeta, features)))
+            n_arrays += 1
+    assert n_leaves == 120, n_leaves
+    assert n_arrays == 30, n_arrays
+
+
 @pytest.mark.parametrize("arch_name", ["deep_attn_3x16", "deep_combined_attn_3x16",
                                        "deep_rung35_attn_3x16"])
 def test_zero_initialization_is_exact_on_the_attention_path(arch_name):
@@ -407,14 +641,22 @@ def test_an_anchored_zeta_blind_correlation_network_is_refused():
 
 
 @pytest.mark.parametrize("arch_name", ["deep_mgga_3x16", "deep_rung35_mgga_3x16"])
-def test_an_anchored_meta_gga_architecture_names_the_scan_commit(arch_name):
-    """The meta-GGA rung's parent is SCAN, which is not implemented in this
-    commit: the refusal names it rather than silently anchoring a meta-GGA
-    network to PBE, which would pretrain the rung to the wrong functional
-    (measured 24.0 mHa per system in the fidelity program's Section 2)."""
-    arch = _anchored_arch(arch_name)
-    with pytest.raises(NotImplementedError, match="(?i)scan"):
-        create_network_pair(arch, seed=0)
+def test_an_anchored_meta_gga_architecture_resolves_to_the_scan_parent(arch_name):
+    """The meta-GGA rung anchors to SCAN and says so on the network itself.
+
+    The parent is a STATIC field of the built network, which is what the
+    checkpoint loader, the certificate and the manifest read the model class
+    from, so an architecture whose rung resolved to the wrong parent would
+    pretrain against the wrong functional (24.0 mHa per system, the fidelity
+    program's Section 2) while every shape and every leaf still matched.
+
+    RED against: ``parents.parent_for_arch`` returning "pbe" for every
+    architecture.
+    """
+    xnet, cnet = create_network_pair(_anchored_arch(arch_name), seed=0)
+    assert xnet.parent == "scan", arch_name
+    assert cnet.parent == "scan", arch_name
+    assert parents.parent_for_arch(alec.get_architecture(arch_name)) == "scan"
 
 
 def test_the_anchored_helper_forces_the_zero_initialized_final_layer():
@@ -559,6 +801,70 @@ def test_certificate_passes_at_initialization_for_an_anchored_architecture(
     control = fid.fidelity_certificate(
         _anchored_cfg(parent_anchor=False), control_dir, "deep_3x16",
         oracle_set=_tiny_oracle_set())
+    assert control["verdict"] == "FAIL"
+    assert control["summary"]["max_atom_mHa"] > 1.0
+
+
+@pytest.mark.slow
+def test_certificate_passes_at_initialization_for_an_anchored_meta_gga(tmp_path):
+    """V4 on the meta-GGA rung: the certificate PASSes at initialization
+    against SCAN.
+
+    Same construction as the GGA-rung case -- an untrained anchored
+    ``deep_mgga_3x16`` written with the pretrain stage's own serialization,
+    certified at def2-svp / grid level 1 on the H atom and H2 -- with the
+    parent resolved by rung, so what the certificate reads is the SCAN parent
+    against itself on the production energy path.
+
+    Measured, per system: H2, a closed shell, ``dE_xc = -1.11e-13 mHa``, one
+    ulp on an ``E_xc`` of order 0.7 Ha; the H atom, fully spin-polarized,
+    ``dE_xc = -7.35e-5 mHa``, whose atomization fold gives 9.23e-5 kcal/mol.
+    As on the GGA rung the whole residual is the fully-polarized limit -- the
+    model evaluates correlation at ``oneshot.uks_zeta``'s clipped ``1 - 1e-6``
+    while libxc is called at an empty beta channel -- and it is larger here
+    than PBE's 7.10e-4 mHa only in that SCAN's correlation carries ``G_c`` and
+    the indicator through the same limit.
+
+    Bounds asserted: 5e-4 mHa and 5e-4 kcal/mol, 6.8 and 5.4 times the
+    measurement and three orders under the binding 1.0 / 1.0 gate.
+
+    The same architecture UNANCHORED is the control: ``zero_init_final_layer``
+    gives it ``F_x = F_c = 1``, the LDA/PW92 limit, which FAILs the same gate
+    at 22.3 mHa per atom and 5.97 kcal/mol per atomization.
+
+    RED against: ``parents.parent_for_arch`` returning "pbe", which anchors
+    the model to PBE while the certificate still reads it against SCAN and
+    gives 8.78 mHa per atom and 5.26 kcal/mol.
+    """
+    from xcquinox.alec.cluster import fidelity as fid
+
+    run_dir = str(tmp_path / "run")
+    arch = _anchored_arch("deep_mgga_3x16")
+    _write_untrained_pretrain_checkpoint(run_dir, arch, "deep_mgga_3x16",
+                                         seed=0)
+    payload = fid.fidelity_certificate(
+        _anchored_cfg(arch=("deep_mgga_3x16",)), run_dir, "deep_mgga_3x16",
+        oracle_set=_tiny_oracle_set())
+
+    assert payload["verdict"] == "PASS", payload["summary"]
+    assert payload["parent"] == "scan"
+    assert payload.get("parent_anchor") is True
+    assert payload["summary"]["failure_reasons"] == []
+    assert payload["summary"]["max_atom_mHa"] < 5e-4, payload["summary"]
+    assert payload["summary"]["max_dAE_kcalmol"] < 5e-4, payload["summary"]
+
+    by_name = {r["name"]: r for r in payload["per_system"]}
+    assert abs(by_name["H2"]["dE_xc_mHa"]) < 1e-12, by_name["H2"]
+    assert abs(by_name["atom_H"]["dE_xc_mHa"]) < 5e-4, by_name["atom_H"]
+
+    control_dir = str(tmp_path / "control")
+    plain = dataclasses.replace(alec.get_architecture("deep_mgga_3x16"),
+                                use_polarized_correlation=True)
+    _write_untrained_pretrain_checkpoint(control_dir, plain, "deep_mgga_3x16",
+                                         seed=0)
+    control = fid.fidelity_certificate(
+        _anchored_cfg(arch=("deep_mgga_3x16",), parent_anchor=False),
+        control_dir, "deep_mgga_3x16", oracle_set=_tiny_oracle_set())
     assert control["verdict"] == "FAIL"
     assert control["summary"]["max_atom_mHa"] > 1.0
 
@@ -810,18 +1116,39 @@ def test_the_model_block_is_a_closed_schema(tmp_path):
         load_grid_config(_write_config(tmp_path, raw, name="typo.yaml"))
 
 
-def test_an_anchored_meta_gga_sweep_is_refused_before_submission(tmp_path):
-    """``model.parent_anchor: true`` with a meta-GGA architecture on the sweep
-    axis is refused on the login node in this commit: the SCAN parent lands in
-    the second one, and the refusal names it rather than letting the array
-    fail per task."""
+def test_an_anchored_meta_gga_sweep_is_accepted_before_submission(tmp_path):
+    """``model.parent_anchor: true`` with the meta-GGA architectures on the
+    sweep axis passes the login-node semantic check.
+
+    The refusal the PBE-anchor commit raised here was the scope of that commit
+    -- ``parents.scan_fx`` / ``scan_fc`` did not exist -- and not a property of
+    the configuration; both rungs now have their parent, so the rung is no
+    ground for refusal and the meta-GGA group submits as it ships. The mixed
+    axis is exercised as well as the pure one, since a sweep that resolves two
+    parents is what the campaign's reference file does.
+
+    RED against: restoring the PBE commit's ``ParentAnchorNotImplemented``
+    raise in ``validate_grid_semantics`` -- the refusal fires on the first
+    meta-GGA name on the axis.
+    """
     from xcquinox.alec.cluster.grid_config import (
         load_grid_config, validate_grid_semantics)
 
+    for name, axis in (("mgga.yaml", ["deep_mgga_3x16"]),
+                       ("mixed.yaml", ["deep_3x16", "deep_mgga_3x16",
+                                       "deep_rung35ms_mgga_3x16"])):
+        raw = _config_dict(parent_anchor=True)
+        raw["sweep"]["arch"] = axis
+        cfg = load_grid_config(_write_config(tmp_path, raw, name=name))
+        validate_grid_semantics(cfg, SimpleNamespace(pool_size=64))
+
+    # ... and the zeta-blind refusal still stands on the same axis, so what
+    # was lifted is the rung and not the anchor's own requirement.
     raw = _config_dict(parent_anchor=True)
     raw["sweep"]["arch"] = ["deep_mgga_3x16"]
-    cfg = load_grid_config(_write_config(tmp_path, raw, name="mgga.yaml"))
-    with pytest.raises((ValueError, NotImplementedError), match="(?i)scan"):
+    raw["use_polarized_correlation"] = False
+    cfg = load_grid_config(_write_config(tmp_path, raw, name="mgga_blind.yaml"))
+    with pytest.raises(ValueError, match="(?i)polarized"):
         validate_grid_semantics(cfg, SimpleNamespace(pool_size=64))
 
 
@@ -977,12 +1304,19 @@ def _training_spec(arch, pretrain_checkpoint, tmp_path):
         pretrain_checkpoint=pretrain_checkpoint)
 
 
+@pytest.mark.parametrize("arch_name", ["deep_3x16", "deep_mgga_3x16"])
 @pytest.mark.parametrize("recorded,requested",
                          [(False, True), (True, False)])
 def test_the_loader_refuses_an_anchor_state_mismatch(tmp_path, monkeypatch,
-                                                     recorded, requested):
+                                                     recorded, requested,
+                                                     arch_name):
     """V7: networks recorded under one anchor state are not loadable into a
     model of the other, and the refusal names both states.
+
+    Stated on both model classes: the anchored GGA-rung network is a
+    correction to PBE and the anchored meta-GGA one a correction to SCAN, so
+    reading either as an unanchored checkpoint (a correction to ``F = 1``) is
+    a different functional in both cases.
 
     The flag is a STATIC field, so it lives in the treedef and not in the eqx
     leaf stream: ``tree_deserialise_leaves`` would load an unanchored
@@ -997,16 +1331,16 @@ def test_the_loader_refuses_an_anchor_state_mismatch(tmp_path, monkeypatch,
     from xcquinox.alec import train as train_mod
 
     monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
-    base = dataclasses.replace(alec.get_architecture("deep_3x16"),
+    base = dataclasses.replace(alec.get_architecture(arch_name),
                                use_polarized_correlation=True)
     recorded_arch = anchored(base) if recorded else base
     requested_arch = anchored(base) if requested else base
 
-    run_dir = str(tmp_path / f"run_{recorded}_{requested}")
+    run_dir = str(tmp_path / f"run_{arch_name}_{recorded}_{requested}")
     d = _write_untrained_pretrain_checkpoint(run_dir, recorded_arch,
-                                             "deep_3x16", seed=0)
+                                             arch_name, seed=0)
     with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
-        json.dump({"verdict": "PASS", "arch": "deep_3x16",
+        json.dump({"verdict": "PASS", "arch": arch_name,
                    "parent_anchor": recorded}, f)
 
     spec = _training_spec(requested_arch, d, tmp_path)
@@ -1014,21 +1348,32 @@ def test_the_loader_refuses_an_anchor_state_mismatch(tmp_path, monkeypatch,
         train_mod._build_model(spec)
 
 
-def test_the_loader_accepts_a_matching_anchor_state(tmp_path, monkeypatch):
+@pytest.mark.parametrize("arch_name,parent", [("deep_3x16", "pbe"),
+                                              ("deep_mgga_3x16", "scan")])
+def test_the_loader_accepts_a_matching_anchor_state(tmp_path, monkeypatch,
+                                                    arch_name, parent):
     """The control for the refusal above: an anchored checkpoint loads into an
     anchored model, so the refusal is a statement about the mismatch and not
-    about the anchor."""
+    about the anchor.
+
+    The model that comes back states the parent its rung resolves -- PBE for
+    the GGA-rung architecture, SCAN for the meta-GGA one -- so the loader is
+    shown to build the right functional and not merely to accept the file.
+
+    RED against: ``parents.parent_for_arch`` returning "pbe" for every
+    architecture, which the meta-GGA arm catches on the returned model.
+    """
     from xcquinox.alec import train as train_mod
 
     monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
-    arch = anchored(dataclasses.replace(alec.get_architecture("deep_3x16"),
+    arch = anchored(dataclasses.replace(alec.get_architecture(arch_name),
                                         use_polarized_correlation=True))
-    run_dir = str(tmp_path / "run_match")
-    d = _write_untrained_pretrain_checkpoint(run_dir, arch, "deep_3x16", seed=0)
+    run_dir = str(tmp_path / f"run_match_{arch_name}")
+    d = _write_untrained_pretrain_checkpoint(run_dir, arch, arch_name, seed=0)
     with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
-        json.dump({"verdict": "PASS", "arch": "deep_3x16",
+        json.dump({"verdict": "PASS", "arch": arch_name,
                    "parent_anchor": True}, f)
     model = train_mod._build_model(_training_spec(arch, d, tmp_path))
     assert model is not None
-    assert getattr(model.xnet, "parent", None) == "pbe"
-    assert getattr(model.cnet, "parent", None) == "pbe"
+    assert getattr(model.xnet, "parent", None) == parent
+    assert getattr(model.cnet, "parent", None) == parent

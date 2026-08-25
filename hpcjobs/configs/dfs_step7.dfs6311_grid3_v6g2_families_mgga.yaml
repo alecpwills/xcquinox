@@ -52,21 +52,21 @@
 # reference file's: 72 h train, 96 h timeout retry.
 #
 # +-------------------------------------------------------------------------+
-# | STATED ANCHORED, REFUSED AT SUBMIT UNTIL THE SCAN PARENT LANDS.         |
-# | model.parent_anchor: true anchors every architecture to its parent, and |
-# | on this axis the parent is SCAN, which the PBE-anchor commit does not   |
-# | carry yet (parents.scan_fx / scan_fc; SPEC_parent_anchor.md Section 3.7 |
-# | sequences it second). validate_grid_semantics refuses the file with a   |
-# | ParentAnchorNotImplemented naming that commit; the refusal lifts, and   |
-# | the file submits unedited, when it lands. pretrain.energy_term_weight:  |
-# | 0.0 is then exact, as in the GGA groups, not a placeholder.             |
+# | ANCHORED TO SCAN. model.parent_anchor: true anchors every architecture  |
+# | to its parent, and on this axis the parent is SCAN (parents.scan_fx /   |
+# | scan_fc, evaluated at the installed libxc's constants and               |
+# | regularizations; SPEC_parent_anchor.md Sections 3.1 and 3.8): every     |
+# | network on this axis equals SCAN at initialization to round-off, the    |
+# | certificate holds there by construction, and validate_grid_semantics    |
+# | accepts the file as it ships. pretrain.energy_term_weight: 0.0 is        |
+# | exact, as in the GGA groups, not a placeholder.                         |
 # +-------------------------------------------------------------------------+
 #
 # PREREQUISITES, in order:
-#   a. the SCAN parent (parents.scan_fx / scan_fc) has landed; until then
-#      validate_grid_semantics refuses this file (the box above). Under the
-#      anchor pretrain.energy_term_weight needs no measurement: 0.0 is the
-#      objective's exact value (SPEC_parent_anchor.md Section 3.5).
+#   a. pretrain.energy_term_weight needs no measurement: under the anchor the
+#      networks equal SCAN at initialization and the certificate holds by
+#      construction, so 0.0 is the objective's exact value
+#      (SPEC_parent_anchor.md Section 3.5).
 #   b. hpcjobs/seed_cache_scan.sbatch has completed into inputs.seed_cache_dir.
 #      Inherited from v5 and already complete for these species: every
 #      architecture of this group is meta-GGA-rung and resolves to the SCAN
@@ -501,9 +501,9 @@ defer_eval: false
 
 # --- the model class (SPEC_parent_anchor.md) --------------------------------
 # parent_anchor: every architecture on this axis is anchored to its parent
-# functional, SCAN on this meta-GGA axis, which the PBE-anchor commit refuses
-# until the SCAN parent lands (the box in the header), in the pre-image of the
-# networks' bounded map,
+# functional, SCAN on this meta-GGA axis (parents.scan_fx / scan_fc at the
+# installed libxc's constants and regularizations; the box in the header), in
+# the pre-image of the networks' bounded map,
 # F = 1 + L(z_parent + gated) with z_parent the point where the map returns
 # the parent, so the model equals its parent at initialization pointwise and
 # the certificate holds by construction. Requires use_polarized_correlation:

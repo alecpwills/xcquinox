@@ -685,13 +685,15 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
     (``parents.parent_for_arch``: PBE on the GGA rungs, SCAN on the meta-GGA
     rungs) and forces ``zero_init_final_layer`` so the pair returns the parent
     at initialization; it requires ``use_polarized_correlation`` (a zeta-blind
-    correlation network is refused, ``ValueError`` naming the architecture),
-    and a meta-GGA architecture is refused with ``NotImplementedError`` until
-    the SCAN commit lands. ``arch.descriptor_coordinates`` selects the MLP
-    coordinates ("dfs" requires the polarized correlation network). MLP input
-    widths: exchange ``1 + n_extra`` in both coordinate sets; correlation
-    ``2 + n_extra`` (legacy, zeta-blind), ``3 + n_extra`` (legacy polarized
-    and dfs).
+    correlation network is refused, ``ValueError`` naming the architecture).
+    A meta-GGA architecture's networks hand the SCAN parent the raw indicator
+    recovered from the row's ``metagga`` column (``_raw_indicator``), the
+    exchange net on the doubled channel and the correlation net on the total
+    density (``parents.scan_fx`` / ``scan_fc`` state the conventions).
+    ``arch.descriptor_coordinates`` selects the MLP coordinates ("dfs"
+    requires the polarized correlation network). MLP input widths: exchange
+    ``1 + n_extra`` in both coordinate sets; correlation ``2 + n_extra``
+    (legacy, zeta-blind), ``3 + n_extra`` (legacy polarized and dfs).
     """
     _descs = arch.materialize_descriptors()
     n_extra_features = sum(d.n_features for d in _descs)
@@ -711,14 +713,6 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
                 "on the N atom's correlation term). Build the architecture "
                 "with use_polarized_correlation=True (every v6 configuration "
                 "does)."
-            )
-        if ArchitectureConfig.is_meta_gga(arch):
-            raise NotImplementedError(
-                f"create_network_pair: architecture {arch.name!r} is on the "
-                "meta-GGA rung and parent_anchor=True needs the SCAN parent, "
-                "which lands in the SCAN commit that follows the PBE anchor "
-                "(SPEC_parent_anchor.md Section 3.7); parents.scan_fx / "
-                "scan_fc are not implemented yet."
             )
         parent = parent_for_arch(arch)
         # SPEC_parent_anchor.md Section 3.3: the final layer is zero whatever

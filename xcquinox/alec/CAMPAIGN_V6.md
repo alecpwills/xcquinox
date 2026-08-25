@@ -779,9 +779,10 @@ dependency never releases (`cluster/fidelity.py:38-52`). All five files carry
 `fidelity: {tol_AE: 1.0, tol_atom: 1.0, override_reason: null, enforce: true}` and all five
 carry `model: {parent_anchor: true, descriptor_coordinates: dfs}` with
 `pretrain.energy_term_weight: 0.0`, exact under the anchor (executed check C11 recorded the
-weight as the placeholder it then was). The four GGA-rung groups submit as they ship; the
-meta-GGA group is refused at submit until the SCAN parent lands
-(`SPEC_parent_anchor.md` Section 3.7). The preflight additionally sweeps every swept
+weight as the placeholder it then was). All five groups submit as they ship: the GGA-rung
+groups anchored to PBE, the meta-GGA group to SCAN (`parents.scan_fx` / `scan_fc` at the
+installed libxc's constants and regularizations; `SPEC_parent_anchor.md` Sections 3.1 and
+3.8). The preflight additionally sweeps every swept
 architecture's certificate with no exemption before the array is submitted.
 
 Registry-wide, the 31 registered architectures split 26 GGA-rung to 5 meta-GGA-rung through

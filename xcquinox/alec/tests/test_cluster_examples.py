@@ -793,35 +793,32 @@ def _axis_carries_a_meta_gga_architecture(cfg):
                for a in cfg.sweep.arch)
 
 
-def test_v6_is_refused_at_submit_until_the_scan_parent_lands():
-    """AS COMMITTED the file is REFUSED by the semantic check, and the cause
-    has moved: it is the RUNG, not the objective's weight.
+def test_v6_submits_at_the_login_node_semantic_check():
+    """AS COMMITTED the file is ACCEPTED by the semantic check, on both rungs.
 
-    The file states ``model.parent_anchor: true``, and its axis carries the
-    meta-GGA architectures, whose parent is SCAN. ``parents.scan_fx`` /
-    ``scan_fc`` land in the commit after the PBE anchor
-    (SPEC_parent_anchor.md Section 3.7), so an anchored meta-GGA architecture
-    is refused at construction; the login-node check raises the same refusal
-    up front, naming the architecture and SCAN, rather than letting the
-    datagen job and the whole pretrain array be bought first.
+    The file states ``model.parent_anchor: true`` and its axis carries the
+    meta-GGA architectures, whose parent is SCAN. The PBE-anchor commit
+    refused exactly this combination because ``parents.scan_fx`` / ``scan_fc``
+    did not exist yet (SPEC_parent_anchor.md Section 3.8 sequences PBE first,
+    SCAN second); both now do, so the rung is no ground for refusal and the
+    whole 31-architecture axis submits.
 
-    The weight refusal that used to fire here does NOT: under the anchor every
-    network EQUALS its parent at initialization, both terms of the objective
-    are zero to round-off before the first step and the certificate passes
-    there, so ``energy_term_weight: 0.0`` is the exact statement of this run's
-    objective rather than a placeholder awaiting a sweep. The refusal of the
-    weight-zero combination is kept for an UNANCHORED run, where it was
-    measured unable to deliver the parent (2.3 to 56.1 kcal/mol of atomization
-    offset, SPEC_pretrain_fidelity_program.md Section 2), and that is asserted
-    below by turning the anchor off on the same configuration.
+    The weight refusal does not fire either: under the anchor every network
+    EQUALS its parent at initialization, both terms of the objective are zero
+    to round-off before the first step and the certificate passes there, so
+    ``energy_term_weight: 0.0`` is the exact statement of this run's objective
+    rather than a placeholder awaiting a sweep. The refusal of the weight-zero
+    combination is kept for an UNANCHORED run, where it was measured unable to
+    deliver the parent (2.3 to 56.1 kcal/mol of atomization offset,
+    SPEC_pretrain_fidelity_program.md Section 2), and that is asserted below
+    by turning the anchor off on the same configuration -- so what the file is
+    exempt from is stated beside what it is accepted for.
 
     ``validate_grid_semantics`` is re-run by every submission surface --
     ``prepare``, ``submit``, ``resubmit``, ``resubmit-preflight`` and the
-    deferred-eval path -- so both refusals reach the operator wherever the
-    file is used.
+    deferred-eval path -- so the acceptance and the remaining refusal both
+    reach the operator wherever the file is used.
     """
-    from xcquinox.alec.cluster.grid_config import ParentAnchorNotImplemented
-
     path, cfg = _v6_config()
     assert cfg.pretrain.dfs_set is True
     assert cfg.fidelity.enforce is True
@@ -832,26 +829,20 @@ def test_v6_is_refused_at_submit_until_the_scan_parent_lands():
         "exact objective, and this pin describes the file as it ships")
     assert _axis_carries_a_meta_gga_architecture(cfg), path
 
-    with pytest.raises(ParentAnchorNotImplemented) as excinfo:
-        _v6_semantics(cfg)
-    message = str(excinfo.value)
-    assert "model.parent_anchor" in message
-    assert "SCAN" in message
-    assert "meta-GGA" in message
-    # The refusal is a configuration refusal to every submission surface, all
-    # of which catch ValueError.
-    assert isinstance(excinfo.value, ValueError)
+    _v6_semantics(cfg)
 
-    # ... and the SAME file restricted to the GGA rung is ACCEPTED as it
-    # ships, weight and all, so the refusal is the rung and not the objective.
+    # ... and so is the same file restricted to either rung, so the acceptance
+    # is not an artefact of the mixed axis.
     from xcquinox.alec import get_architecture
     from xcquinox.alec.config import ArchitectureConfig
     gga_only = tuple(a for a in cfg.sweep.arch
                      if not ArchitectureConfig.is_meta_gga(
                          get_architecture(a)))
-    assert gga_only, path
-    _v6_semantics(dataclasses.replace(
-        cfg, sweep=dataclasses.replace(cfg.sweep, arch=gga_only)))
+    mgga_only = tuple(a for a in cfg.sweep.arch if a not in gga_only)
+    assert gga_only and mgga_only, path
+    for axis in (gga_only, mgga_only):
+        _v6_semantics(dataclasses.replace(
+            cfg, sweep=dataclasses.replace(cfg.sweep, arch=axis)))
 
     # ... while the same GGA-rung configuration UNANCHORED is refused for the
     # weight, which is the refusal the anchor exempts a run from.
@@ -1244,27 +1235,30 @@ def test_every_v6_file_runs_the_protocol_set_on_the_corrected_footing(name):
 
 
 @pytest.mark.parametrize("name", _V6_FILES)
-def test_every_v6_file_submits_or_is_refused_by_its_rung(name):
-    """Each of the six states ``model.parent_anchor: true`` and ships
-    ``energy_term_weight: 0.0``, and what the login-node check then does is
-    decided by ONE thing: whether the file's axis carries a meta-GGA
-    architecture.
+def test_every_v6_file_submits_at_the_login_node_semantic_check(name):
+    """Each of the six states ``model.parent_anchor: true``, ships
+    ``energy_term_weight: 0.0``, and is ACCEPTED by the login-node check --
+    the reference file and the meta-GGA group included.
 
-    * The four GGA group files are ACCEPTED as they ship. Under the anchor
-      every network equals its parent at initialization, so the weight-zero
-      objective is exact rather than a placeholder, and the refusal that used
-      to hold the campaign is lifted for them by construction.
-    * The meta-GGA group file and the reference file, whose axes carry the
-      meta-GGA architectures, are REFUSED until the SCAN parent lands
-      (``parents.scan_fx`` / ``scan_fc``, the commit after the PBE anchor,
-      SPEC_parent_anchor.md Section 3.7). The refusal names the architecture
-      and SCAN, and is raised on the login node rather than after the datagen
-      job and the pretrain array have been bought.
+    Under the anchor every network equals its parent at initialization, so the
+    weight-zero objective is exact rather than a placeholder and the refusal
+    that used to hold the campaign is lifted by construction; and both rungs
+    now have their parent (``parents.pbe_*`` and ``parents.scan_*``,
+    SPEC_parent_anchor.md Section 3.8), so the rung the file's axis sits on no
+    longer decides whether it submits. The two files that carry the meta-GGA
+    architectures were the ones the PBE-anchor commit refused, and they are
+    the point of this pin.
 
-    Executed per file, not asserted from the text. When SCAN lands the two
-    refused files join the four accepted ones and this pin states that.
+    Each file's resolved parents are asserted as well as its acceptance: the
+    parent is a property of the ARCHITECTURE's rung (``fidelity.resolve_parent``
+    reads ``rungs.seed_xc_for_arch``), it is what the pretraining data, the
+    certificate and the checkpoint identity are all posed against, and a file
+    that submits while resolving the wrong one would buy the whole array
+    before the mismatch showed.
+
+    Executed per file, not asserted from the text.
     """
-    from xcquinox.alec.cluster.grid_config import ParentAnchorNotImplemented
+    from xcquinox.alec.cluster import fidelity as fid
 
     path, cfg = _campaign_config(name)
     assert cfg.model.parent_anchor is True, path
@@ -1272,15 +1266,20 @@ def test_every_v6_file_submits_or_is_refused_by_its_rung(name):
     assert cfg.pretrain.energy_term_weight == 0.0, (
         f"{path}: the weight has been changed; under the anchor 0.0 is the "
         "exact objective, and this pin describes the files as they ship")
+    _v6_semantics(cfg)
+
+    resolved = {a: fid.resolve_parent(a) for a in cfg.sweep.arch}
+    assert set(resolved.values()) <= {"pbe", "scan"}, (path, resolved)
+    from xcquinox.alec import get_architecture
+    from xcquinox.alec.config import ArchitectureConfig
+    for arch_name, parent in resolved.items():
+        expected = "scan" if ArchitectureConfig.is_meta_gga(
+            get_architecture(arch_name)) else "pbe"
+        assert parent == expected, (path, arch_name, parent, expected)
     if _axis_carries_a_meta_gga_architecture(cfg):
-        with pytest.raises(ParentAnchorNotImplemented) as excinfo:
-            _v6_semantics(cfg)
-        message = str(excinfo.value)
-        assert "model.parent_anchor" in message
-        assert "SCAN" in message
-        assert isinstance(excinfo.value, ValueError)
+        assert "scan" in set(resolved.values()), (path, resolved)
     else:
-        _v6_semantics(cfg)
+        assert set(resolved.values()) == {"pbe"}, (path, resolved)
     # ... and the file says so where the weight is edited, not only in a
     # banner: the anchored exemption and the refusal it is an exemption from.
     with open(path) as f:

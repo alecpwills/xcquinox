@@ -25,10 +25,13 @@ below depends on them:
 Environment the numbers quoted in the docstrings were measured on: pyscf
 2.11.0, libxc 7.0.0, ``jax_enable_x64``, CPU.
 
-The SCAN cases are written against ``MGGA_X_SCAN`` / ``MGGA_C_SCAN`` and are
-marked ``xfail(strict=True)``: ``parents.scan_fx`` / ``parents.scan_fc`` raise
-``NotImplementedError`` in the PBE commit and are implemented in the SCAN one,
-where these become the SCAN oracle unchanged.
+The SCAN cases are written against ``MGGA_X_SCAN`` / ``MGGA_C_SCAN`` on the
+same two conventions, at the RAW iso-orbital indicator the row's stored column
+encodes. What they do not reach -- the correlation potential, the
+``d_s(zeta)`` conversion of the row's indicator, libxc's Fermi-hole cap, the
+switching function's two DBL_EPSILON cutoffs, full polarization, the stored
+molecular grids and the constants at which libxc departs from the printed
+paper -- is in ``test_parents_scan``.
 """
 import numpy as np
 import pytest
@@ -790,7 +793,7 @@ def test_lob_preimage_keeps_the_transform_inside_its_bounds():
 
 
 # ---------------------------------------------------------------------------
-# SCAN: the same oracles, awaiting the second commit
+# SCAN: the same oracles
 # ---------------------------------------------------------------------------
 
 def _scan_tau(rho, sigma, alpha):
@@ -808,7 +811,6 @@ def _scan_tau(rho, sigma, alpha):
 _ALPHA_GRID = (0.0, 0.5, 1.0, 2.0, 10.0, 100.0)
 
 
-@pytest.mark.xfail(strict=True, reason="SCAN parent lands in the second commit")
 def test_scan_fx_matches_libxc_on_the_reduced_gradient_indicator_grid():
     """V1, SCAN exchange: ``scan_fx`` against libxc's ``MGGA_X_SCAN`` on the
     doubled-channel convention, at the RAW iso-orbital indicator.
@@ -817,10 +819,17 @@ def test_scan_fx_matches_libxc_on_the_reduced_gradient_indicator_grid():
     (``metagga.compute_alpha``); the parent is evaluated at the raw value
     recovered from it, which is what the pretraining targets are posed at
     (``pretrain_data_gen.spin_channel_exchange_rows`` calls libxc at the row's
-    true tau). Tolerance 1e-12 as for PBE; the design's stated departures --
-    1.8e-3 relative in ``F_x`` on rows above ``_ALPHA_MAX = 100``, and 4.2e-7
-    from the smoothing floor at ``alpha = 0`` -- lie outside this grid, whose
-    largest indicator IS the ceiling.
+    true tau). The design's stated departures -- 1.8e-3 relative in ``F_x`` on
+    rows above ``_ALPHA_MAX = 100``, and 4.2e-7 from the smoothing floor at
+    ``alpha = 0`` -- lie outside this grid, whose largest indicator IS the
+    ceiling.
+
+    Measured 2.627e-15 relative over the 702 points of the grid, reached at
+    rs = 20 and s = 6 (the valence tail at the largest reduced gradient the
+    stored rows reach). Bound 2e-14, 7.6 times the measurement, rather than
+    the 1e-12 the design states for the value comparison: the implementation
+    is at round-off here and the looser figure would not see a departure two
+    orders above it.
     """
     worst = 0.0
     for rs in _RS_GRID:
@@ -833,10 +842,9 @@ def test_scan_fx_matches_libxc_on_the_reduced_gradient_indicator_grid():
                                             jnp.asarray(alpha)))
                 want = float(_libxc_fx("MGGA_X_SCAN", rho, sigma, tau)[0])
                 worst = max(worst, float(_rel(got, want)))
-    assert worst <= 1e-12, worst
+    assert worst <= 2e-14, worst
 
 
-@pytest.mark.xfail(strict=True, reason="SCAN parent lands in the second commit")
 def test_scan_fc_matches_libxc_on_the_rs_s_zeta_indicator_grid():
     """V1, SCAN correlation: ``scan_fc`` against libxc's ``MGGA_C_SCAN``
     divided by the model's polarized PW92 baseline, at zeta in
@@ -845,6 +853,17 @@ def test_scan_fc_matches_libxc_on_the_rs_s_zeta_indicator_grid():
     split libxc's SCAN correlation is exact under (its per-spin quantities
     enter only through the Fermi-hole bound ``sigma_ss <= 8 rho_s tau_s``,
     which a proportional split satisfies whenever ``alpha >= 0``).
+
+    ``scan_fc`` reads the row's indicator on the repository's convention --
+    ``tau_unif`` of the TOTAL density, no ``d_s(zeta)`` -- and divides by
+    ``d_s`` itself; without that division the same grid is 0.494 off at
+    zeta = 0.9 (``test_parents_scan``, which also carries zeta = +-1 and the
+    correlation potential).
+
+    Measured 2.650e-14 relative over the 3510 points of the grid, reached at
+    rs = 1.50, s = 6, alpha = 0.5, zeta = 0.9; no point on it has ``|F_c|``
+    below 1e-5, so the relative measure is meaningful everywhere. Bound
+    2e-13, 7.5 times the measurement, rather than the design's 1e-12.
     """
     worst = 0.0
     for rs in _RS_GRID:
@@ -860,21 +879,28 @@ def test_scan_fc_matches_libxc_on_the_rs_s_zeta_indicator_grid():
                     want = float(_libxc_fc("MGGA_C_SCAN", rho, sigma, zeta,
                                            tau)[0])
                     worst = max(worst, float(_rel(got, want)))
-    assert worst <= 1e-12, worst
+    assert worst <= 2e-13, worst
 
 
-@pytest.mark.xfail(strict=True, reason="SCAN parent lands in the second commit")
 def test_scan_exchange_potential_terms_match_libxc_deriv_one():
     """V2, SCAN exchange: ``jax.grad`` of ``rho eps_x`` with respect to the
     density, the gradient invariant and the indicator, against libxc's
     ``deriv=1`` (``vrho``, ``vsigma``, ``vtau`` carried through
-    ``dtau/dalpha = tau_unif``). Tolerance 1e-8, as for PBE.
+    ``dtau/dalpha = tau_unif``).
 
     The indicator derivative is taken through the SMOOTHED quantity the
     network differentiates, so the potential inherits the model's own
     regularization rather than the raw indicator's response (whose
     ``d alpha / d sigma`` reaches 2.2e31 in the tail, the divergence
     ``metagga._ALPHA_MAX`` bounds).
+
+    Measured 2.090e-13 relative, worst over the three terms at the 648 points
+    of the grid, wherever libxc's own derivative is above 1e-10 (``vsigma``
+    vanishes identically at s = 0, which is why the s axis starts at 0.05).
+    Bound 2e-12, 9.6 times the measurement, rather than the design's 1e-8:
+    the grid includes ``alpha = 1``, where both branches of the switching
+    function are cut off at DBL_EPSILON and a form that is finite in value but
+    not under differentiation would return NaN rather than a large number.
     """
     def ex_density(rho, sigma, alpha):
         return rho * lda_x(rho) * parents.scan_fx(rho, sigma, alpha)
@@ -906,4 +932,4 @@ def test_scan_exchange_potential_terms_match_libxc_deriv_one():
                                   (got_alpha, vtau)):
                     if abs(want) > 1e-10:
                         worst = max(worst, float(_rel(got, want)))
-    assert worst <= 1e-8, worst
+    assert worst <= 2e-12, worst

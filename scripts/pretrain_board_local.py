@@ -2,9 +2,11 @@
 """Local pretraining board: every architecture, pretrained on this workstation.
 
 The board is the statement that pretraining WORKS for each architecture before
-any cluster time is spent on it. One small pretraining dataset is generated per
-session (sto-3g, grid level 3, polarized, the production orientation lock) and
-every registered architecture is pretrained on it twice for a short schedule:
+any cluster time is spent on it. A small pretraining dataset is generated per
+session and per PARENT DENSITY (sto-3g, grid level 3, polarized, the production
+orientation lock; PBE's self-consistent density for the GGA rung and SCAN's for
+the meta-GGA rung) and every requested architecture is pretrained on the one
+its rung resolves, twice, for a short schedule:
 
 * ANCHORED, in the DFS coordinates. At initialization the model IS its parent,
   so the per-system XC energy errors must sit at the oracle floor before a
@@ -26,8 +28,9 @@ the checkpoint on disk by the energy-weight probe's own machinery
 
 Usage::
 
-    python scripts/pretrain_board_local.py                 # the whole board
-    python scripts/pretrain_board_local.py --arch deep_3x16
+    python scripts/pretrain_board_local.py                 # the GGA rung
+    python scripts/pretrain_board_local.py --include-meta-gga   # both rungs
+    python scripts/pretrain_board_local.py --arch deep_mgga_3x16
     python scripts/pretrain_board_local.py --steps 200 --threads 4
 
 Exit status is 0 only when every gated row passes.
@@ -91,9 +94,12 @@ TOL_AE_KCAL = 1.0
 #: parameter sets agree to 7.5e-9 relative (3.05e-7 at zeta = +-1), so on an
 #: E_c of order 0.3 Ha the two conventions differ by of order 1e-6 mHa. The
 #: floor is measured here at 6.32e-7 mHa (worst atom) and 7.94e-7 kcal/mol
-#: (worst atomization) on the board's own identity, identical across
-#: architectures because at ``gated = 0`` the model IS the parent whatever its
-#: descriptors are. 1e-5 mHa clears it by 16x and still sits five orders under
+#: (worst atomization) on the GGA rung and 5.73e-7 mHa / 2.92e-6 kcal/mol on
+#: the meta-GGA rung, identical across architectures within a rung because at
+#: ``gated = 0`` the model IS the parent whatever its descriptors are; the
+#: rungs differ because SCAN's correlation carries ``G_c`` and the indicator
+#: through the fully-polarized limit that the free atoms' rows sit in. 1e-5
+#: mHa clears the larger of the two by 3.4x and still sits five orders under
 #: the certificate.
 TOL_INIT_MHA = 1e-5
 
@@ -110,14 +116,18 @@ UNANCHORED_MARGIN = 2.0
 #: recorded 2026-08-25 and are what a regression would show against.
 #:
 #: Read them beside the anchored rows, which sit at 3e-4 mHa and 2e-4 kcal/mol
-#: after the same schedule: an unanchored fit in these coordinates is 1.4 to
-#: 6.7 mHa per free atom and 1.2 to 2.5 kcal/mol per atomization energy, i.e.
-#: OUTSIDE the certificate at 300 steps, which is the measurement the anchor
-#: exists to remove.
+#: after the same schedule on the GGA rung and 4.9e-3 mHa / 1.1e-3 kcal/mol on
+#: the meta-GGA one: an unanchored fit in these coordinates is 1.4 to 19.9 mHa
+#: per free atom and 1.2 to 8.7 kcal/mol per atomization energy, i.e. OUTSIDE
+#: the certificate at 300 steps on every architecture measured, which is what
+#: the anchor exists to remove. The meta-GGA entry is fitted against SCAN on
+#: SCAN's own density and is the worst of them, the rung's parent being the
+#: harder target.
 UNANCHORED_REFERENCE: dict = {
     "deep": {"max_atom_mHa": 5.9677, "max_dAE_kcal": 2.0465},
     "deep_3x16": {"max_atom_mHa": 6.6742, "max_dAE_kcal": 2.4636},
     "deep_attn": {"max_atom_mHa": 1.4230, "max_dAE_kcal": 1.2328},
+    "deep_mgga_3x16": {"max_atom_mHa": 19.8748, "max_dAE_kcal": 8.6720},
 }
 
 
@@ -140,9 +150,11 @@ def _load_probe():
 def board_architectures(include_meta_gga=False):
     """The architectures the board covers, in registry order.
 
-    The meta-GGA entries are excluded until the SCAN parent lands: an anchored
-    meta-GGA architecture is refused at construction in the PBE commit, and an
-    unanchored one has no parent to be measured against on this board.
+    The meta-GGA entries are off by default because they are pretrained on a
+    DIFFERENT dataset -- their parent is SCAN, so their rows sit on SCAN's
+    self-consistent density and the run pays a second generation -- not
+    because they cannot be run: ``include_meta_gga=True`` (``--include-meta-gga``)
+    adds them, and ``run_board`` then generates both files.
     """
     import xcquinox.alec as alec
     from xcquinox.alec.config import ArchitectureConfig
@@ -176,10 +188,11 @@ def ensure_board_data(data_dir, *, systems=BOARD_SYSTEMS, basis=BOARD_BASIS,
     without it their rows are one arbitrary member of the P-term manifold.
 
     ``reference_xc`` is the parent whose SELF-CONSISTENT density the rows sit
-    on -- "pbe" for the GGA rung, which is the whole board until the SCAN
-    parent lands, and "scan" for the meta-GGA rows after it. The two are
-    different densities and are written under different names, so a board that
-    covers both rungs generates two files.
+    on -- "pbe" for the GGA rung and "scan" for the meta-GGA rung. The two are
+    different densities and are written under different names
+    (``pretrain_data_gen.pretrain_data_filename``), so a board that covers
+    both rungs generates two files and ``run_pretrain`` refuses the wrong one
+    by name.
     """
     from xcquinox.alec.pretrain_data_gen import (
         PRETRAIN_ORIENTATION_LOCK_STRENGTH, ensure_pretrain_data)
@@ -355,26 +368,49 @@ def format_table(rows):
 
 def run_board(*, archs=None, steps=300, seed=0, work_dir, data_dir=None,
               coordinates="dfs", include_unanchored=True, progress=False,
-              log=print):
-    """Every architecture, both anchor states. Returns ``(rows, ok)``."""
+              include_meta_gga=False, log=print):
+    """Every architecture, both anchor states. Returns ``(rows, ok)``.
+
+    One dataset per PARENT DENSITY is generated, not one per board: an
+    architecture's rows sit on the self-consistent density of the functional
+    it is anchored to (``pretrain_data_gen.resolve_parent_density`` under the
+    rung baseline), so a board spanning both rungs holds a PBE file and a SCAN
+    file and hands each cell the one its architecture resolves. The anchor
+    state does not enter that choice -- the parent is a property of the rung,
+    so an unanchored control row reads the same file as its anchored twin and
+    the two are comparable.
+    """
+    from xcquinox.alec.pretrain_data_gen import resolve_parent_density
+
     probe = _load_probe()
     data_dir = data_dir or os.path.join(work_dir, "data")
-    data_path = ensure_board_data(data_dir, progress=progress)
-    names = tuple(archs) if archs else board_architectures()
+    names = tuple(archs) if archs else board_architectures(
+        include_meta_gga=include_meta_gga)
+    parents = {name: resolve_parent_density(board_arch(name, anchor=True),
+                                            "auto")
+               for name in names}
+    data_paths = {}
+    for parent in sorted(set(parents.values())):
+        data_paths[parent] = ensure_board_data(
+            data_dir, reference_xc=parent, progress=progress)
+        log(f"[board] {parent} pretraining data: {data_paths[parent]}")
     rows = []
     ok = True
     for name in names:
         states = (True, False) if include_unanchored else (True,)
         for anchor in states:
-            row = run_cell(name, anchor=anchor, data_path=data_path,
+            row = run_cell(name, anchor=anchor,
+                           data_path=data_paths[parents[name]],
                            work_dir=work_dir, steps=steps, seed=seed,
                            coordinates=coordinates, probe=probe)
             passed, reasons = verdict(row)
             row["verdict"] = "PASS" if passed else "FAIL"
             row["reasons"] = reasons
+            row["parent"] = parents[name]
             ok = ok and passed
             log(f"[board] {name} "
-                f"{'anchored' if anchor else 'plain'}: {row['verdict']} "
+                f"{'anchored' if anchor else 'plain'} ({parents[name]}): "
+                f"{row['verdict']} "
                 f"init_atom={row['init_max_atom_mHa']!r} "
                 f"atom={row['max_atom_mHa']!r} mHa "
                 f"AE={row['max_dAE_kcal']!r} kcal/mol "
@@ -402,6 +438,10 @@ def build_parser():
                    help="OpenMP/BLAS worker count (default 4)")
     p.add_argument("--anchored-only", action="store_true",
                    help="skip the unanchored control rows")
+    p.add_argument("--include-meta-gga", action="store_true",
+                   help="add the meta-GGA architectures, whose parent is "
+                        "SCAN; a second pretraining dataset is generated on "
+                        "SCAN's self-consistent density for them")
     p.add_argument("--quiet", action="store_true")
     return p
 
@@ -429,6 +469,7 @@ def main(argv=None):
     rows, ok = run_board(archs=args.arch, steps=args.steps, seed=args.seed,
                          work_dir=work_dir, coordinates=args.coordinates,
                          include_unanchored=not args.anchored_only,
+                         include_meta_gga=args.include_meta_gga,
                          progress=not args.quiet, log=_log)
     print()
     print(f"Local pretraining board -- {BOARD_BASIS}, grid level "

@@ -13,7 +13,8 @@ isolation::
 What each case asserts, on the session's shared dataset (sto-3g, grid level 3,
 polarized, the production orientation lock, seven systems: the free atoms H,
 Li, N, O and the molecules H2O, LiH, N2, so every atomization energy in the set
-is defined):
+is defined) -- built on PBE's self-consistent density for the GGA rung and on
+SCAN's for the meta-GGA rung, whose parent is SCAN:
 
 * At INITIALIZATION an anchored model IS its parent, so the per-system XC
   energy errors sit at the oracle floor: 1e-6 mHa per free atom and per
@@ -71,7 +72,8 @@ _MGGA_ARCHS = tuple(name for name in sorted(alec.ARCHITECTURES)
 
 @pytest.fixture(scope="module")
 def board_data(tmp_path_factory):
-    """The session's ONE pretraining dataset, shared by every case.
+    """The session's PBE-density pretraining dataset, shared by every GGA-rung
+    case.
 
     Module-scoped because the generator's cost is a reference SCF per system
     and the file's identity is fixed; the generator's own manifest check makes
@@ -80,6 +82,22 @@ def board_data(tmp_path_factory):
     """
     work = tmp_path_factory.mktemp("pretrain_board")
     return str(work), board.ensure_board_data(str(work / "data"))
+
+
+@pytest.fixture(scope="module")
+def board_data_scan(tmp_path_factory):
+    """The same dataset on SCAN's self-consistent density, which the meta-GGA
+    rung's rows sit on.
+
+    Its own file rather than the PBE one: the parent density is a different
+    SCF solution, the rows are not interchangeable, and ``run_pretrain``
+    resolves the parent from the architecture before it names the file (and
+    refuses the PBE name for a SCAN-parent run). Generation measured at 12.2 s
+    for the board's seven systems at sto-3g / grid level 3.
+    """
+    work = tmp_path_factory.mktemp("pretrain_board_scan")
+    return str(work), board.ensure_board_data(str(work / "data"),
+                                              reference_xc="scan")
 
 
 def _run(name, anchor, board_data):
@@ -148,25 +166,26 @@ def test_the_unanchored_architecture_in_the_same_coordinates(
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True,
-                   reason="the meta-GGA rung's SCAN parent lands in the "
-                          "second commit; an anchored meta-GGA architecture "
-                          "is refused at construction until then")
 @pytest.mark.parametrize("arch_name", _MGGA_ARCHS)
 def test_the_anchored_meta_gga_architecture_pretrains_within_the_certificate(
-        arch_name, board_data, capsys):
-    """The meta-GGA rows of the board, written now and expected to fail until
-    SCAN lands.
+        arch_name, board_data_scan, capsys):
+    """The meta-GGA rows of the board: the same three statements as the GGA
+    rung, against SCAN.
 
-    Until the SCAN parent exists, ``create_network_pair`` refuses the anchored
-    meta-GGA architecture by name, which it does before any row is read -- so
-    the case is posed on the shared PBE-density file and costs nothing beyond
-    the refusal. When SCAN lands the parent density of a meta-GGA architecture
-    is SCAN's, and the case then needs
-    ``board.ensure_board_data(..., reference_xc="scan")`` beside the shared
-    file, ``parent_density="auto"`` in the board's spec selecting it.
+    The rung's parent is SCAN, so its rows sit on SCAN's SELF-CONSISTENT
+    density and not on the shared PBE file -- ``run_pretrain`` resolves the
+    parent from the architecture before it names the file and refuses the PBE
+    one by name -- which is why this case takes its own dataset fixture.
+
+    Measured for ``deep_mgga_3x16`` on this workstation (sto-3g, grid level 3,
+    polarized, 300 steps, seed 0, 4 threads): at initialization 5.726e-7 mHa
+    on the worst free atom and 2.919e-6 kcal/mol on the worst atomization,
+    both under the board's 1e-5 initialization floor; after the schedule
+    0.0049 mHa and 0.0011 kcal/mol, two to three orders inside the
+    certificate's 1.0 mHa and 1.0 kcal/mol. Pointwise losses 9.11e-12 (x) and
+    2.54e-12 (c); wall 14.8 s.
     """
-    work_dir, data_path = board_data
+    work_dir, data_path = board_data_scan
     row = board.run_cell(arch_name, anchor=True, data_path=data_path,
                          work_dir=work_dir, steps=BOARD_STEPS,
                          seed=BOARD_SEED, coordinates="dfs")
@@ -176,6 +195,85 @@ def test_the_anchored_meta_gga_architecture_pretrains_within_the_certificate(
         print()
         print(board.format_table([row]))
     assert passed, (arch_name, reasons)
+    assert row["init_max_atom_mHa"] is not None
+    assert abs(row["init_max_atom_mHa"]) <= board.TOL_INIT_MHA
+    assert abs(row["init_max_dAE_kcal"]) <= board.TOL_INIT_MHA
+    assert abs(row["max_atom_mHa"]) <= board.TOL_ATOM_MHA
+    assert abs(row["max_dAE_kcal"]) <= board.TOL_AE_KCAL
+
+
+@pytest.mark.slow
+def test_the_unanchored_meta_gga_architecture_in_the_same_coordinates(
+        board_data_scan, capsys):
+    """The meta-GGA control row: ``deep_mgga_3x16`` in the DFS coordinates,
+    fitted to SCAN WITHOUT the anchor, recorded rather than gated.
+
+    It is the measurement the anchored row has to be read against, and it is
+    the worst of the recorded architectures: measured 577.6 mHa on the worst
+    free atom at initialization (an unanchored network starts at ``F = 1``,
+    the LDA/PW92 limit, which is further from SCAN than from PBE) and, after
+    300 steps, 19.8748 mHa and 8.6720 kcal/mol -- an order outside the
+    certificate, against the anchored row's 0.0049 mHa and 0.0011 kcal/mol on
+    the same data and schedule.
+    """
+    work_dir, data_path = board_data_scan
+    row = board.run_cell("deep_mgga_3x16", anchor=False, data_path=data_path,
+                         work_dir=work_dir, steps=BOARD_STEPS,
+                         seed=BOARD_SEED, coordinates="dfs")
+    passed, reasons = board.verdict(row)
+    row["verdict"] = "PASS" if passed else "FAIL"
+    with capsys.disabled():
+        print()
+        print(board.format_table([row]))
+    assert passed, reasons
+    assert abs(row["init_max_atom_mHa"]) > board.TOL_INIT_MHA, (
+        "an unanchored network starts at F = 1, the LDA/PW92 limit, not at "
+        "its parent; if this holds the control is not a control")
+    assert abs(row["max_dAE_kcal"]) > board.TOL_AE_KCAL, (
+        "the unanchored fit is outside the certificate at 300 steps, which is "
+        "the measurement the anchor exists to remove")
+
+
+def test_the_board_generates_one_dataset_per_parent_density(monkeypatch):
+    """``run_board`` asks for the file each architecture's rung resolves, once
+    per parent rather than once per architecture.
+
+    The parent is read from the ARCHITECTURE (``resolve_parent_density`` under
+    the rung baseline), not from the anchor state, so an unanchored control
+    row reads the same file as its anchored twin and the two stay comparable;
+    a board spanning both rungs therefore generates exactly two files however
+    many architectures it holds. Driven with the generator and the cell runner
+    stubbed, so the wiring is stated without a pretraining.
+    """
+    requested = []
+    cells = []
+
+    monkeypatch.setattr(board, "_load_probe", lambda: None)
+    monkeypatch.setattr(
+        board, "ensure_board_data",
+        lambda data_dir, **kw: (requested.append(kw.get("reference_xc", "pbe"))
+                                or f"{data_dir}/{kw.get('reference_xc')}.npz"))
+
+    def _cell(name, *, anchor, data_path, **kw):
+        cells.append((name, anchor, data_path))
+        return {"arch": name, "anchored": anchor, "init_max_atom_mHa": 0.0,
+                "init_max_dAE_kcal": 0.0, "max_atom_mHa": 0.0,
+                "max_dAE_kcal": 0.0, "wall_s": 0.0}
+
+    monkeypatch.setattr(board, "run_cell", _cell)
+    rows, ok = board.run_board(
+        archs=("deep_3x16", "deep_mgga_3x16", "deep_rung35_mgga_3x16"),
+        work_dir="/tmp/board_wiring", log=lambda message: None)
+    assert ok and len(rows) == 6
+    assert sorted(requested) == ["pbe", "scan"], requested
+    by_arch = {(name, anchor): path for name, anchor, path in cells}
+    assert by_arch[("deep_3x16", True)].endswith("pbe.npz")
+    assert by_arch[("deep_3x16", False)] == by_arch[("deep_3x16", True)]
+    for name in ("deep_mgga_3x16", "deep_rung35_mgga_3x16"):
+        assert by_arch[(name, True)].endswith("scan.npz"), name
+        assert by_arch[(name, False)] == by_arch[(name, True)], name
+    assert all(row["parent"] == ("scan" if row["arch"].endswith("mgga_3x16")
+                                 else "pbe") for row in rows)
 
 
 # ---------------------------------------------------------------------------
