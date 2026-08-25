@@ -243,9 +243,13 @@ def platform_differences():
 
 
 def comparison_mode():
-    """:data:`BITWISE` on the platform the fixtures were recorded on,
-    :data:`CROSS_PLATFORM` anywhere else."""
-    return CROSS_PLATFORM if platform_differences() else BITWISE
+    """:data:`BITWISE` on the platform and CPU the fixtures were recorded on,
+    :data:`CROSS_PLATFORM` anywhere else. On the recording platform but
+    another CPU the bitwise comparison is still attempted first and this
+    names the branch a failure of it falls to."""
+    if platform_differences() or pin_differences():
+        return CROSS_PLATFORM
+    return BITWISE
 
 
 def _cross_platform_bound(expected):
@@ -293,14 +297,30 @@ def _recorder_environment():
     return env                          # recorder's own to state
 
 
+def _pinned_cpu():
+    """The CPU the live recorder is confined to: the CPU the live fixture was
+    recorded on when this process may run on it -- so a run whose lowest CPU
+    is not the recording one still compares bitwise -- and otherwise the
+    lowest CPU of this process's set, which is what the recorder pins itself
+    to. ``None`` where affinity cannot be read."""
+    if not hasattr(os, "sched_getaffinity"):
+        return None
+    allowed = os.sched_getaffinity(0)
+    recorded = _fixture_pins().get("cpu_index")
+    if recorded in allowed:
+        return recorded
+    return min(allowed)
+
+
 def _one_cpu_prefix():
-    """``taskset`` confining the recorder to the lowest CPU this process may
-    run on, applied from outside so the confinement precedes the interpreter
-    itself; empty where ``taskset`` is not available (the recorder then
-    confines itself, before JAX initializes)."""
-    if shutil.which("taskset") is None or not hasattr(os, "sched_getaffinity"):
+    """``taskset`` confining the recorder to :func:`_pinned_cpu`, applied from
+    outside so the confinement precedes the interpreter itself; empty where
+    ``taskset`` is not available (the recorder then confines itself to the
+    lowest CPU of its set, before JAX initializes)."""
+    cpu = _pinned_cpu()
+    if shutil.which("taskset") is None or cpu is None:
         return ()
-    return ("taskset", "-c", str(min(os.sched_getaffinity(0))))
+    return ("taskset", "-c", str(cpu))
 
 
 def record_live(arch_name, *, prefix=()):
@@ -336,26 +356,32 @@ def _record(arch_name):
         record, pins = record_live(arch_name)
         assert {name: pins.get(name) for name in PINS} == PINS, (
             f"the recorder ran without its pins: {pins} != {PINS}")
+        expected_cpu = _pinned_cpu()
+        if shutil.which("taskset") is not None and expected_cpu is not None:
+            assert pins.get("cpu_index") == expected_cpu, (
+                f"the recorder was pinned to CPU {pins.get('cpu_index')}, "
+                f"not the CPU {expected_cpu} it was started on")
         _RECORDS[arch_name] = record
         _LIVE_PINS[arch_name] = pins
     return _RECORDS[arch_name]
 
 
-def pin_differences(arch_name):
-    """The ways the live record's pins differ from a fixture's beyond the
-    pinned values themselves (which both are held to): the CPU the recorder
-    pinned to. On a hybrid part the potentials' last bits follow the core
-    class (CPUs 0, 5 and 12 of the recording workstation agree; CPU 19, an
-    efficiency core, does not), so a record from another CPU is held to the
-    cross-platform floor rather than read bitwise."""
-    _record(arch_name)
-    live = _LIVE_PINS[arch_name].get("cpu_index")
+def pin_differences():
+    """The ways the live recorder's pins differ from a fixture's beyond the
+    pinned values themselves (which both are held to): the CPU it is confined
+    to. On a hybrid part the potentials' last bits follow the core class
+    (CPUs 0, 5 and 12 of the recording workstation agree; CPU 19, an
+    efficiency core, does not), so a record from another CPU that does not
+    match bitwise is held to the cross-platform floor instead. Empty on the
+    recording CPU, which :func:`_pinned_cpu` selects whenever this process
+    may run on it."""
+    live = _pinned_cpu()
     found = []
     for fixture in _FIXTURES:
         recorded = _fixture_pins(fixture).get("cpu_index")
         if recorded != live:
-            found.append(f"pinned CPU {live} here, {recorded} when "
-                         f"{Path(fixture).name} was recorded")
+            found.append(f"recorder confined to CPU {live} here, {recorded} "
+                         f"when {Path(fixture).name} was recorded")
     return found
 
 
@@ -378,12 +404,23 @@ def assert_closed_shell_record_matches(arch_name, record=None):
     got = _record(arch_name) if record is None else record
     assert set(got) == set(reference) == set(archived) == set(RECORD_KEYS)
     differences = platform_differences()
-    if record is None:
-        differences = differences + pin_differences(arch_name)
     if differences:
         return _assert_within_the_cross_platform_floor(
             arch_name, got, reference, archived, differences)
-    return _assert_bitwise(arch_name, got, reference, archived)
+    pinned_elsewhere = pin_differences() if record is None else []
+    if not pinned_elsewhere:
+        return _assert_bitwise(arch_name, got, reference, archived)
+    # The recording platform, but the recorder confined to another CPU: the
+    # strongest comparison is still tried, and only its failure is held to
+    # the floor, since a record bit-identical to the fixtures says more than
+    # the floor does whichever CPU produced it.
+    try:
+        return _assert_bitwise(arch_name, got, reference, archived)
+    except AssertionError as failure:
+        report = _assert_within_the_cross_platform_floor(
+            arch_name, got, reference, archived, pinned_elsewhere)
+        return (f"{report} (not bitwise on this CPU: "
+                f"{str(failure).splitlines()[0]})")
 
 
 def _assert_bitwise(arch_name, got, reference, archived):
@@ -764,10 +801,13 @@ def test_the_live_record_is_computed_under_the_recorders_pins():
 
 def test_a_recorder_run_as_a_module_states_that_its_pins_came_late(tmp_path):
     """``python -m`` executes the package imports before the pin block, so
-    numpy and PySCF are already loaded when the pins are set and the record's
-    energies follow the machine's thread count (measured: every energy and
-    the density digest moved). The record states it, the recorder warns, and
-    the loader refuses such a document rather than reading it bitwise."""
+    the numeric libraries are already loaded when the pins are set: with the
+    BLAS pins absent from the environment every energy and the density
+    digest move (measured), and even with them exported, as this test's
+    environment does, the affinity pin comes after XLA's pool is sized and
+    the potentials move. The record states that its pins came late, the
+    recorder warns naming the libraries, and the loader refuses such a
+    document rather than reading it bitwise."""
     out = subprocess.run(
         [sys.executable, "-m", "xcquinox.alec.tests.record_closed_shell_reference",
          "--arch", "deep"],
