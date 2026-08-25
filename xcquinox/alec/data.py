@@ -384,7 +384,16 @@ _REFERENCE_SCF_MAX_CYCLE = 100
 # H2O / SCAN started from a one- to three-cycle DIIS density.
 _REFERENCE_SCF_NEWTON_MAX_CYCLE = 50
 # Convergence threshold of the reference SCF, both stages: pyscf's default,
-# stated here and stamped into every record. It is held at 1e-9 because the
+# stated here and stamped into every record beside the orbital gradient of the
+# density the SCF returns (reference_scf_gradient). pyscf's loop converges on
+# the gradient of h1e + vhf (no DIIS) under its bar sqrt(conv_tol), then runs
+# one extra diagonalization and returns THAT density, accepting it when its
+# energy moved by less than 10 conv_tol or its gradient is under 3 times the
+# bar (scf/hf.py, the extra cycle), so the returned density's plain-Fock
+# gradient sits under 3 times the bar, not under the bar: measured 1.024 times
+# for singlet CH2 / SCAN / def2-svp / grid level 3 under the 3e-5 lock (7
+# cycles) and 2.258 times for the same molecule bent to 1.44 A / 102 degrees
+# under PBE. It is held at 1e-9 because the
 # orientation lock's reproducibility was calibrated at it and does not survive
 # a decade tighter: the locked O atom (PBE, def2-svp, grid level 3, the
 # pretraining identity) converges in 7 cycles at 1e-9 with two processes
@@ -913,6 +922,15 @@ def precompute_fixed_density_data(
     # Extract SCF quantities
     dm_pbe = mf.make_rdm1()
     h_core = mf.get_hcore()
+    # The orbital gradient of the density this SCF returns, pyscf's own
+    # get_grad on the plain Fock of that density (the quantity pyscf's extra
+    # cycle accepted): stamped so a consumer rebuilding the gradient from the
+    # stored Fock pieces can hold the record to what its precompute measured.
+    # The base object is used for the Fock and the gradient: a second-order
+    # wrapper overrides get_grad with its rotation gradient.
+    _base = getattr(mf, "_scf", mf)
+    reference_scf_gradient = float(np.linalg.norm(_base.get_grad(
+        mf.mo_coeff, mf.mo_occ, _base.get_fock(dm=dm_pbe))))
     # NOTE (density-fitting): j_matrix / E_pbe are deliberately computed with the
     # FULL ERI even when SolverConfig.density_fit is on. The PBE result is a
     # fixed, reference-quality anchor (it seeds E_non_xc and the FIXED_J pin);
@@ -1324,10 +1342,14 @@ def precompute_fixed_density_data(
             "reference_scf_converged": reference_scf_converged,
             "reference_scf_cycles": reference_scf_cycles,
             "reference_scf_solver": reference_scf_solver,
-            # The threshold both stages converged to (_REFERENCE_SCF_CONV_TOL),
-            # one decade under pyscf's default, so the gradient a consumer
-            # rebuilds from the stored pieces sits under pyscf's criterion.
+            # The threshold both stages converged to (_REFERENCE_SCF_CONV_TOL,
+            # pyscf's default) and the orbital gradient of the density
+            # returned, pyscf's own get_grad on its plain Fock: what a
+            # consumer rebuilding the gradient from the stored pieces holds
+            # the record to, and what pyscf's extra cycle accepted (under 3
+            # times sqrt(conv_tol), or with an energy change under 10 conv_tol).
             "reference_scf_conv_tol": float(_REFERENCE_SCF_CONV_TOL),
+            "reference_scf_gradient": reference_scf_gradient,
             # Grid points per block of the reference SCF's XC quadrature
             # (fixed; the summation order no longer follows process memory)
             # and pyscf's OpenMP worker count at the time. Metadata, not
