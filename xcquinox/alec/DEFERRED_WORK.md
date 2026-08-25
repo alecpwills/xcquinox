@@ -953,3 +953,30 @@ reaches 2.2e31 (entry 27's measurement) and the outermost shells are diffuse.
 gradient's determinism first), or any finite-difference check of the meta-GGA potential that
 must probe directions off the SCF manifold.
 
+
+## 31. The train array's thread pools keep the allocation on an unmeasured premise (2026-08-25)
+
+**WHAT:** every process that drives PySCF in its own address space now caps its OpenMP and
+OpenBLAS pools at `parallel.PYSCF_POOL_THREADS_MAX` (8) from the allocation -- the stage
+templates for datagen, pretrain, preflight, benchmark refs and the evaluation array, the
+standalone job scripts, and the workflow matrix's stage environment -- because the two pools,
+sized to the allocation, spin-wait between the small dense operations of an SCF loop
+(workflow-matrix job 2134488: about ten minutes per molecule at 40 threads on a 40-core node
+against 8 s at four). The train array's template is the one exemption: it still exports the
+allocation to both pools, on the premise that its per-step work is XLA's and its PySCF work is
+confined to inputs the preflight precomputed.
+
+**WHY deferred:** the premise is a statement about where a train step's time goes, not about
+which libraries load -- `solver_pyscfad.py` and `df_jk.py` import PySCF and sit on the
+training path (integrals built once per system) -- and settling it needs one timing of a
+production train step at 8 against 40 threads per pool on a node, which is cluster work.
+
+**KNOWN:** the inline train-and-evaluate template already runs its pools at `SLURM_CPUS_ON_NODE / 12`
+(3 on a 40-core node, 8 on a 96-core node) with XLA's own pool taking the rest, and the v4 and
+v5 campaigns trained under that setting; the array template's allocation-sized pools have
+never been compared against it on the same cell.
+
+**TRIGGER:** before the v6 groups are submitted on the array template, or at the first
+group's first train cell: time one cell's first hundred steps at the two settings from the
+same checkpoint; if the capped setting is not slower, cap the train array too and retire the
+exemption in `test_render_thread_caps_present_every_template`.
