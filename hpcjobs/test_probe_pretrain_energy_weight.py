@@ -1348,9 +1348,7 @@ def test_single_node_one_task_with_a_thread_cap_from_slurm():
     # digit string (the 10# parse), and unset, empty and non-digit
     # allocations (the case guard), all silently.
     for text_n, expect in (("04", 4), ("040", 8), ("", 8), ("abc", 8)):
-        env = {"PATH": os.environ.get("PATH", "")}
-        if text_n is not None:
-            env["SLURM_CPUS_PER_TASK"] = text_n
+        env = {"PATH": os.environ.get("PATH", ""), "SLURM_CPUS_PER_TASK": text_n}
         out = subprocess.run(["bash", "-uo", "pipefail", "-c", snippet],
                              env=env, capture_output=True, text=True, check=True)
         assert out.stdout.split() == [str(expect)] * 3, (text_n, out.stdout)

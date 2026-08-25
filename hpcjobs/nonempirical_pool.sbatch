@@ -57,11 +57,21 @@ case "$PYBIN" in
      exit 1 ;;
 esac
 
-# --- thread caps (defensive fallback; SLURM vars are not assumed present) ----
-THREADS="${SLURM_CPUS_PER_TASK:-24}"
+# --- thread caps (SLURM vars not assumed present) ---------------------------
+# PySCF's OpenMP pool and numpy's OpenBLAS pool run at min(allocation, 8)
+# threads each (parallel.PYSCF_POOL_THREADS_MAX, the rule the stage templates
+# and the energy-weight sweep apply): sized to the allocation, the two
+# spin-waiting pools stall the small dense operations of a PySCF SCF loop --
+# measured at about ten minutes per molecule at 40 threads on a 40-core node
+# against 8 s at four (workflow-matrix job 2134488).
+THREADS="${SLURM_CPUS_PER_TASK:-8}"
+case "$THREADS" in ''|*[!0-9]*) THREADS=8 ;; esac
+THREADS=$(( 10#$THREADS ))
+[ "$THREADS" -ge 1 ] || THREADS=1
+[ "$THREADS" -le 8 ] || THREADS=8
 export OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" OPENBLAS_NUM_THREADS="$THREADS"
 ulimit -u unlimited 2>/dev/null || true
-echo "[nonemp-pool] BLAS threads: $THREADS"
+echo "[nonemp-pool] allocation=${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$THREADS"
 
 REFS=/gpfs/scratch/awills/external_refs_bench_6311ppg3df2pd_g3
 OUT="${1:-/gpfs/scratch/awills/nonempirical_pool_6311ppg3df2pd_g3}"
