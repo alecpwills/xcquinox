@@ -229,7 +229,18 @@ python -c "import xcquinox.alec.pretrain" \
     || { echo "[ewsweep] FATAL: repo import failed (env/activation)"; exit 1; }
 
 # --- thread caps and JAX platform (SLURM vars not assumed present) ----------
-THREADS="${SLURM_CPUS_PER_TASK:-40}"
+# PySCF's OpenMP pool and numpy's OpenBLAS pool run at min(allocation, 8)
+# threads each (parallel.PYSCF_POOL_THREADS_MAX, the same rule the stage
+# templates apply): sized to the allocation, the two spin-waiting pools stall
+# the small dense operations of the per-system SCFs the gates are measured on
+# -- the workflow matrix's def2-svp reference build ran at about ten minutes
+# per molecule at 40 threads on a 40-core node against 8 s at four (job
+# 2134488). XLA sizes the pretraining's own pool from the CPUs the job holds.
+THREADS="${SLURM_CPUS_PER_TASK:-8}"
+case "$THREADS" in ''|*[!0-9]*) THREADS=8 ;; esac
+THREADS=$(( 10#$THREADS ))
+[ "$THREADS" -ge 1 ] || THREADS=1
+[ "$THREADS" -le 8 ] || THREADS=8
 export OMP_NUM_THREADS="$THREADS"
 export MKL_NUM_THREADS="$THREADS"
 export OPENBLAS_NUM_THREADS="$THREADS"

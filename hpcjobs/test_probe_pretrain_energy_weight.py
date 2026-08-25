@@ -1325,9 +1325,28 @@ def test_single_node_one_task_with_a_thread_cap_from_slurm():
     assert "#SBATCH --nodes=1" in t
     assert "#SBATCH --ntasks=1" in t
     assert "#SBATCH --cpus-per-task=40" in t
-    assert 'THREADS="${SLURM_CPUS_PER_TASK:-40}"' in t
+    # The PySCF-serving pools are capped at parallel.PYSCF_POOL_THREADS_MAX
+    # from the allocation, as the stage templates cap theirs; the shell form
+    # is evaluated below against the module rule.
+    from xcquinox.alec.parallel import PYSCF_POOL_THREADS_MAX, pyscf_pool_threads
+    assert f'THREADS="${{SLURM_CPUS_PER_TASK:-{PYSCF_POOL_THREADS_MAX}}}"' in t
+    assert f'[ "$THREADS" -le {PYSCF_POOL_THREADS_MAX} ] || THREADS={PYSCF_POOL_THREADS_MAX}' in t
     for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         assert f'export {var}="$THREADS"' in t
+    lines = t.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith('THREADS="${SLURM_CPUS_PER_TASK'))
+    end = next(i for i, l in enumerate(lines) if l.startswith("export OPENBLAS_NUM_THREADS="))
+    snippet = "\n".join(lines[start:end + 1]) + '\necho "$OMP_NUM_THREADS $MKL_NUM_THREADS $OPENBLAS_NUM_THREADS"'
+    for n in (1, 4, 8, 9, 28, 40, 96):
+        out = subprocess.run(["bash", "-euo", "pipefail", "-c", snippet],
+                             env={"PATH": os.environ.get("PATH", ""),
+                                  "SLURM_CPUS_PER_TASK": str(n)},
+                             capture_output=True, text=True, check=True)
+        assert out.stdout.split() == [str(pyscf_pool_threads(n))] * 3, (n, out.stdout)
+    out = subprocess.run(["bash", "-euo", "pipefail", "-c", snippet],
+                         env={"PATH": os.environ.get("PATH", "")},
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.split() == [str(PYSCF_POOL_THREADS_MAX)] * 3, out.stdout
 
 
 def test_the_wall_matches_its_derivation():
