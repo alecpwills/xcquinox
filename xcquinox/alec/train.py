@@ -33,6 +33,10 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
+from xcquinox.alec.checkpoint_class import (model_class_of_model,
+                                            remove_class_record,
+                                            require_matching_class,
+                                            write_class_record)
 from xcquinox.alec.config import TrainingSpec, ArchitectureConfig
 from xcquinox.alec.solver import SolverConfig, SolverMode
 from xcquinox.alec.data import precompute_fixed_density_data
@@ -732,6 +736,32 @@ def _validation_reaction_mae(model, val_mol_data, val_reactions,
     return float(mae)
 
 
+def _serialise_trained_model(path, model, arch, *, atomic=False) -> None:
+    """Write one TRAINED checkpoint: its model-class record, then its leaves.
+
+    The single write path for every trained checkpoint this module produces --
+    the final / best / validation-best set here and the periodic resume set
+    below -- so an ``.eqx`` can never reach disk without the record stating
+    which model class its leaves belong to (``checkpoint_class``: the anchor
+    and the descriptor coordinates change no parameter shape, so the stream
+    itself does not reveal them). The record goes first because a checkpoint
+    is a signal the moment it appears -- ``model.eqx`` is what the eval task
+    reads as "training completed" -- and a kill between the two writes must
+    not leave a signal with no class beside it.
+
+    ``atomic`` selects the crash-safe leaf write (:func:`_atomic_serialise`)
+    the resume set needs. ``arch`` may be ``None``, which writes no record;
+    the readers take a checkpoint with no record as the legacy class, so that
+    form is for legacy callers only.
+    """
+    if arch is not None:
+        write_class_record(path, arch)
+    if atomic:
+        _atomic_serialise(path, model)
+    else:
+        eqx.tree_serialise_leaves(path, model)
+
+
 def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
                     val_best_model=None, extra_metadata=None) -> dict:
     """Save model.eqx (final), losses.npy, aux_log, train_metadata.json. If a
@@ -747,14 +777,15 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
     os.makedirs(spec.checkpoint_dir, exist_ok=True)
 
     model_path = os.path.join(spec.checkpoint_dir, "model.eqx")
-    eqx.tree_serialise_leaves(model_path, model)
+    _serialise_trained_model(model_path, model, spec.arch)
     if best_model is not None:
-        eqx.tree_serialise_leaves(
-            os.path.join(spec.checkpoint_dir, "model_best.eqx"), best_model)
+        _serialise_trained_model(
+            os.path.join(spec.checkpoint_dir, "model_best.eqx"), best_model,
+            spec.arch)
     if val_best_model is not None:
-        eqx.tree_serialise_leaves(
+        _serialise_trained_model(
             os.path.join(spec.checkpoint_dir, "model_val_best.eqx"),
-            val_best_model)
+            val_best_model, spec.arch)
 
     losses_np = np.array(losses, dtype=np.float64)
     np.save(os.path.join(spec.checkpoint_dir, "losses.npy"), losses_np)
@@ -875,7 +906,7 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
                              order, train_best_loss, train_recent, train_window,
                              train_best_model, val_present, val_best_mae,
                              val_finite_metrics, val_best_model, epoch, update,
-                             losses, aux_log, early_stopped) -> None:
+                             losses, aux_log, early_stopped, arch=None) -> None:
     """Write one resume checkpoint ATOMICALLY from PRE-CAPTURED state (WS5).
 
     Persists everything needed to continue the per_molecule loop exactly where
@@ -903,19 +934,28 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
     (or ``None``); ``resume_best.eqx`` / ``resume_val_best.eqx`` are written ONLY
     when the respective snapshot is present. ``val_present`` is True iff
     validation ran (its scalars are then meaningful).
+
+    ``arch`` is the model class the snapshots are written under; the loop
+    passes ``spec.arch`` so each model file carries its class record
+    (``checkpoint_class``), which :func:`_load_resume_checkpoint` compares
+    against the skeleton it is about to fill. Left ``None``, no record is
+    written and the set is readable only by the legacy class, which is the
+    readers' rule for a checkpoint with no record. The optimizer state is not
+    a model and carries none.
     """
     os.makedirs(checkpoint_dir, exist_ok=True)
-    _atomic_serialise(os.path.join(checkpoint_dir, _RESUME_MODEL), model)
+    _serialise_trained_model(os.path.join(checkpoint_dir, _RESUME_MODEL),
+                             model, arch, atomic=True)
     _atomic_serialise(os.path.join(checkpoint_dir, _RESUME_OPT_STATE), opt_state)
 
     has_train_best = train_best_model is not None
     if has_train_best:
-        _atomic_serialise(os.path.join(checkpoint_dir, _RESUME_BEST),
-                          train_best_model)
+        _serialise_trained_model(os.path.join(checkpoint_dir, _RESUME_BEST),
+                                 train_best_model, arch, atomic=True)
     has_val_best = bool(val_present) and val_best_model is not None
     if has_val_best:
-        _atomic_serialise(os.path.join(checkpoint_dir, _RESUME_VAL_BEST),
-                          val_best_model)
+        _serialise_trained_model(os.path.join(checkpoint_dir, _RESUME_VAL_BEST),
+                                 val_best_model, arch, atomic=True)
 
     state = {
         "epoch": int(epoch),
@@ -961,12 +1001,22 @@ def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
     ``model, opt_state, rng_state, order, train_tracker, val_tracker, epoch,
     update, losses, aux_log, early_stopped``. ``val_tracker`` is ``None`` when
     none was saved; ``order`` is the restored per-epoch group permutation.
+
+    Every snapshot is held to the model class of ``model_skeleton`` before its
+    leaves are read (``checkpoint_class.require_matching_class``, the class
+    taken off the skeleton's own static fields): a run whose configuration
+    changed class between the kill and the restart would otherwise resume from
+    the other class's weights, which no shape reveals. The caller treats any
+    raise here as "no usable resume checkpoint" and starts fresh.
     """
+    want_class = model_class_of_model(model_skeleton)
     with open(os.path.join(checkpoint_dir, _RESUME_STATE), "rb") as f:
         state = pickle.load(f)  # noqa: S301 -- trusted, written by this codebase
 
-    model = eqx.tree_deserialise_leaves(
-        os.path.join(checkpoint_dir, _RESUME_MODEL), model_skeleton)
+    resume_model_path = os.path.join(checkpoint_dir, _RESUME_MODEL)
+    require_matching_class(resume_model_path, want_class,
+                           what="resume checkpoint")
+    model = eqx.tree_deserialise_leaves(resume_model_path, model_skeleton)
     opt_state = eqx.tree_deserialise_leaves(
         os.path.join(checkpoint_dir, _RESUME_OPT_STATE), opt_state_skeleton)
 
@@ -974,8 +1024,11 @@ def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
     train_tracker.best_loss = float(state["best_loss"])
     train_tracker._recent = list(state["_recent"])
     if state.get("has_train_best"):
+        best_path = os.path.join(checkpoint_dir, _RESUME_BEST)
+        require_matching_class(best_path, want_class,
+                               what="resume checkpoint")
         train_tracker.best_model = eqx.tree_deserialise_leaves(
-            os.path.join(checkpoint_dir, _RESUME_BEST), model_skeleton)
+            best_path, model_skeleton)
 
     val_tracker = None
     if state.get("val_present"):
@@ -985,8 +1038,11 @@ def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
                                 else float("inf"))
         val_tracker._finite_metrics = list(state["_finite_metrics"] or [])
         if state.get("has_val_best"):
+            val_best_path = os.path.join(checkpoint_dir, _RESUME_VAL_BEST)
+            require_matching_class(val_best_path, want_class,
+                                   what="resume checkpoint")
             val_tracker.best_model = eqx.tree_deserialise_leaves(
-                os.path.join(checkpoint_dir, _RESUME_VAL_BEST), model_skeleton)
+                val_best_path, model_skeleton)
 
     return {
         "model": model,
@@ -1017,7 +1073,8 @@ def _finalize_completion(checkpoint_dir, *, early_stopped, epochs_run) -> None:
     """Mark a run COMPLETE (WS5/WS6): write the ``completion.json`` sentinel and
     DELETE the ``resume_*`` set. Call AFTER ``_save_artifacts`` has written
     ``model.eqx``. Deleting an absent resume file is tolerated (idempotent;
-    a checkpoint_every=0 run never wrote them)."""
+    a checkpoint_every=0 run never wrote them). Each model file's class record
+    goes with it, so no record outlives the checkpoint it describes."""
     sentinel = {
         "completed": True,
         "early_stopped": bool(early_stopped),
@@ -1026,8 +1083,10 @@ def _finalize_completion(checkpoint_dir, *, early_stopped, epochs_run) -> None:
     with open(os.path.join(checkpoint_dir, _COMPLETION_SENTINEL), "w") as f:
         json.dump(sentinel, f, indent=2)
     for fn in _RESUME_FILES:
+        path = os.path.join(checkpoint_dir, fn)
+        remove_class_record(path)
         try:
-            os.remove(os.path.join(checkpoint_dir, fn))
+            os.remove(path)
         except FileNotFoundError:
             pass
 
@@ -1736,7 +1795,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             val_best_model=_live["val_best_model"],
             epoch=_live["epoch"], update=_live["update"],
             losses=_live["losses"], aux_log=_live["aux_log"],
-            early_stopped=_live["early_stopped"])
+            early_stopped=_live["early_stopped"], arch=spec.arch)
 
     if resume_enabled:
         _capture_live()                  # seed with the resume/initial boundary

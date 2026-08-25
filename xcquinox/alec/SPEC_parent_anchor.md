@@ -75,7 +75,9 @@ are 2.6e-6 relative off it at s = 1 and are not used):
   (deferred item 30) rather than the raw indicator's response.
 - Correlation, on the total density, relative to the model's own baseline: the model's
   correlation energy density is `rho eps_c^base F_c` with `eps_c^base` the polarized PW92
-  when the correlation network is polarization-aware and the unpolarized PW92 otherwise;
+  (an anchored correlation network is polarization-aware by construction: the zeta-blind
+  case is refused when the pair is built, so the unpolarized-baseline branch does not
+  exist for the anchored class);
   the pretraining data divides its `Fc` targets by the polarized PW92 for open-shell rows
   (`pretrain_data_gen.py`, the polarized branch), and every v6 configuration runs
   `use_polarized_correlation: true`, so for the campaign the two agree and `zeta` is already
@@ -204,9 +206,12 @@ anchored architectures are covered by the oracles of Section 4.
 
 The v6 model class feeds its networks the coordinates of Dick and Fernandez-Serra (PRB
 104, L161109 (2021)), read off the vendored source (`dpyscfl/net.py`, `get_descriptors`,
-the dpyscfl branch): the density coordinate `x0 = ln(rho^(1/3) + 1e-5)` -- on the doubled
-channel density for the spin-scaled exchange net, on the total density for the
-correlation net (Eq. 7); the spin coordinate of the correlation net
+the dpyscfl branch): the density coordinate `x0 = ln(rho^(1/3) + 1e-5)` on the total
+density, for the correlation net only (Eq. 7) -- the exchange net receives no density
+coordinate (the source's `X_L(n_input=1, use=[1])` selects the reduced-gradient column
+alone, and with it the meta-GGA indicator column), so its enhancement factor is invariant
+under uniform density scaling, `rho -> lambda^3 rho`, `sigma -> lambda^8 sigma` at fixed
+`s`, bitwise in the implementation; the spin coordinate of the correlation net
 `x1 = ln(0.5 [(1 + zeta)^(4/3) + (1 - zeta)^(4/3)])`; the reduced gradient
 `x_s = (1 - e^(-s^2)) ln(s + 1)` (Eq. 9) with `s` from the same density the net
 integrates over, no zeta rescaling (that line is xcdiff's, not the paper's); and, for the
@@ -238,9 +243,13 @@ gain over an in-repository implementation held to the same oracle.
 ## 4. Verification (executed, in the test suite)
 
 - V1 parents vs libxc pointwise (PBE and SCAN, x and c) on the model's domain
-  (`rho > 1e-10`): PBE at round-off (<= 1e-12 relative); SCAN within the stated indicator
-  floors, with the raw-indicator reconstruction exact below the ceiling; on the
-  `(rs, s, zeta, alpha)` grid of Section 3.1 and on stored molecular grids.
+  (`rho > 1e-10`): PBE at round-off -- `F_x` <= 1e-15 relative, `F_c` <= 1e-13 absolute
+  and <= 1e-12 relative where `F_c > 1e-3` (in the far tail `F_c` falls to 1e-12 and the
+  relative measure of a quantity at round-off is unbounded: the measured worst is 6.4e-3
+  relative at `rho = 1.7e-10`, `s = 1.6e3`, `F_c = 2.2e-12`), and the correlation energy on
+  the quadrature <= 1e-15 Ha; SCAN within the stated indicator floors, with the
+  raw-indicator reconstruction exact below the ceiling; on the `(rs, s, zeta, alpha)` grid
+  of Section 3.1 and on stored molecular grids.
 - V2 first derivatives vs libxc `deriv=1`: <= 1e-8 relative where the derivative is above
   round-off (SCAN at the smoothed indicator, stated); the model's `eval_exc` at `gated = 0`
   integrated against the certificate's three parent routes on the certificate's systems:
@@ -263,8 +272,13 @@ gain over an in-repository implementation held to the same oracle.
 - V8 the local pretraining board (`scripts/pretrain_board_local.py`,
   `tests/test_pretrain_board_local.py`, slow-marked): every registered architecture,
   anchored with the DFS coordinates, pretrained on this workstation on one small dataset
-  (sto-3g, grid level 1, polarized, a system list with an open shell and a closed-shell
-  molecule) for a short schedule, its per-system XC errors against the parent at the
+  (sto-3g, grid level 3 -- below level 3 the rows of the spatially degenerate free atoms
+  O and N are one arbitrary member of the P-term manifold, locked draws at level 1
+  differing by of order unity in the iso-orbital indicator, and the generator refuses to
+  write a file whose manifest would record an identity it does not have -- polarized, a
+  system list with an
+  open shell and a closed-shell molecule) for a short schedule, its per-system XC errors
+  against the parent at the
   oracle floor at initialization and under the certificate's tolerances afterwards, in
   one table; beside it the unanchored DFS-coordinate fit's losses and errors, pinned to
   their measured values, as the record of what the coordinates alone deliver. Nothing is

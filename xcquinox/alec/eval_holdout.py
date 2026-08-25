@@ -1003,10 +1003,22 @@ def load_trained_model(training_spec, model_path: Path):
     ``xcquinox.alec.oneshot.fixed_density_total_energy`` based on the
     cnet's ``use_spin_polarization`` flag, which is exactly what
     ``AlecGGAModel.from_arch`` sets from
-    ``arch.use_polarized_correlation``."""
+    ``arch.use_polarized_correlation``.
+
+    The checkpoint's model class -- the parent anchor and the descriptor
+    coordinates, neither of which changes a parameter shape and so neither of
+    which the leaf stream reveals -- is compared with the class of the
+    skeleton before the leaves are read, from the record written beside the
+    checkpoint by the training stage (``checkpoint_class``). A checkpoint of
+    the other class would otherwise load here in silence and be evaluated as
+    a model that is neither."""
     import equinox as eqx
+    from xcquinox.alec.checkpoint_class import (model_class_of_arch,
+                                                require_matching_class)
     from xcquinox.alec.models import AlecGGAModel
     skeleton = AlecGGAModel.from_arch(training_spec.arch, seed=0)
+    require_matching_class(model_path,
+                           model_class_of_arch(training_spec.arch))
     polarized = arch_polarized_flag(training_spec.arch)
     mode = "polarized (UKS for open-shell)" if polarized else "unpolarized (RKS)"
     print(f"  arch: {getattr(training_spec.arch, 'name', '?')}  "

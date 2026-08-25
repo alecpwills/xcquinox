@@ -58,8 +58,9 @@ _S_GRID = np.linspace(0.0, 6.0, 13)
 #: The polarizations V1 is stated at. ``1 - 1e-6`` is the production clip
 #: (``oneshot._ZETA_BOUNDARY_EPS``), which is as close to full polarization as
 #: any row the model integrates ever comes; exactly +-1 is a separate case
-#: because libxc's own fully-polarized branch departs from the analytic form
-#: there (see :func:`test_pbe_fc_at_exactly_full_polarization`).
+#: because libxc floors the empty spin channel at its density threshold rather
+#: than evaluating at it, which ``pbe_fc`` reproduces (see
+#: :func:`test_pbe_fc_at_exactly_full_polarization`).
 _ZETA_GRID = (0.0, 0.3, -0.3, 0.9, -0.9)
 _ZETA_CLIP = 1.0 - 1e-6
 
@@ -375,25 +376,29 @@ def test_pbe_fc_at_the_production_zeta_clip():
     assert worst <= 1e-11, worst
 
 
-def test_pbe_fc_at_exactly_full_polarization():
-    """V1, correlation, at zeta = +-1 exactly: finite, positive, and held to
-    libxc's own fully-polarized branch rather than to round-off.
+#: Ceiling on the relative deviation of ``pbe_fc`` from libxc at ``zeta = +-1``
+#: on the (rs, s) mesh. Measured worst with the shipped spin floor: 1.121e-10;
+#: with the floor removed, 2.725e-5. The ceiling leaves one order over the
+#: former and stands more than four orders under the latter, so it is the floor
+#: that has to be in place for it to be met -- which
+#: :func:`test_the_libxc_spin_floor_is_load_bearing` asserts from the other
+#: side.
+_FULL_POLARIZATION_CEILING = 1e-9
 
-    At ``zeta = +-1`` one spin density is identically zero and libxc's
-    ``GGA_C_PBE`` departs from the closed form of PBE eqs. 3-8: measured
-    residual 0.0 at (rs = 0.02, s = 0) rising to 2.73e-5 relative at
-    (rs = 20, s = 6), monotone in both rs and s, and already 1.9e-5 at
-    ``zeta = 1 - 1e-8`` while it is 1.4e-13 at ``zeta = 1 - 1e-5``. It is
-    therefore a property of libxc's empty-channel branch and not of the
-    parent: no row the model integrates reaches it, because ``uks_zeta``
-    clips at ``1 - 1e-6``. 3e-5 bounds it; what is asserted besides is that
-    ``F_c`` stays finite and positive and does not exceed 1, which is what the
-    anchored transform's pre-image needs. The ceiling carries 1e-4 of slack
-    because the two PW92 parameter sets do not cancel in the ratio: ``H >= 0``
-    makes ``eps_c^PBE`` no more negative than its own LDA limit, so the exact
-    ratio is at most 1, but the numerator's limit is ``LDA_C_PW_MOD`` and the
-    denominator is the repository's ``LDA_C_PW``, which stand 1.49e-5 apart at
-    rs = 0.02 and zeta = 1 (measured maximum of ``F_c`` here 1.0000149).
+
+def _worst_fc_at_full_polarization():
+    """Worst relative deviation of ``pbe_fc`` from libxc over the (rs, s) mesh
+    at ``zeta = +-1``, with ``F_c`` checked finite, positive and no greater
+    than 1 on every row.
+
+    Shared by the two cases below so that the floored and the unfloored
+    figures are taken on identical rows. The ``1e-4`` of slack on the upper
+    bound is there because the two PW92 parameter sets do not cancel in the
+    ratio: ``H >= 0`` makes ``eps_c^PBE`` no more negative than its own LDA
+    limit, so the exact ratio is at most 1, but the numerator's limit is
+    ``LDA_C_PW_MOD`` and the denominator is the repository's ``LDA_C_PW``,
+    which stand 1.49e-5 apart at rs = 0.02 and zeta = 1 (measured maximum of
+    ``F_c`` here 1.0000149, floored and unfloored alike).
     """
     worst = 0.0
     for rs in _RS_GRID:
@@ -407,7 +412,71 @@ def test_pbe_fc_at_exactly_full_polarization():
                 assert 0.0 < got <= 1.0 + 1e-4, (rs, s, zeta, got)
                 want = float(_libxc_fc("GGA_C_PBE", rho, sigma, zeta)[0])
                 worst = max(worst, float(_rel(got, want)))
-    assert worst <= 3e-5, worst
+    return worst
+
+
+def test_pbe_fc_at_exactly_full_polarization():
+    """V1, correlation, at zeta = +-1 exactly: finite, positive, and at
+    round-off against libxc because libxc's own spin floor is applied.
+
+    At ``zeta = +-1`` one spin density is identically zero, and libxc does not
+    evaluate ``GGA_C_PBE`` there: its input sanitation floors each spin
+    density at the functional's ``dens_threshold``, 1e-12, so the oracle's
+    empty channel carries 1e-12 electrons and its ``zeta`` is not 1.
+    ``pbe_fc`` applies the same floor (``parents.LIBXC_DENS_THRESHOLD``) and
+    so evaluates the parent at the point libxc evaluates it at; the worst
+    relative deviation on the mesh is then 1.121e-10, at (rs = 0.047, s = 6),
+    which ``_FULL_POLARIZATION_CEILING`` bounds with an order to spare.
+
+    That 1.121e-10 is ROUND-OFF in the floored channel's ``1 - zeta``, not a
+    perturbation of the parent by the floor. Where the floor is a few ulps of
+    the density the two evaluations cannot form ``1 - zeta`` identically:
+    at rs = 0.047 (rho = 2.24e3) the floored channel is 4.5e-16 of the
+    density, so ``1 - zeta`` is 8.94e-16, four ulps of 1; ``pbe_fc`` forms it
+    as ``2 rho_b / rho`` directly, while libxc subtracts a ``zeta`` that is
+    itself within a few ulps of 1 and lands one ulp lower, at 7.77e-16.
+    Rebuilding ``pbe_fc`` with that subtraction in place of the direct form
+    puts this row at 0.0 relative and the mesh worst at 1.1e-11 (measured).
+    Two further measurements say the same: at rs = 0.02 the floored channel
+    falls under ``ZETA_FLOOR`` in both evaluations and the residual is 0.0
+    exactly, and at rs = 20, where ``1 - zeta`` is 6.7e-8 and both forms are
+    well resolved, it is 0.0 exactly as well. Varying the floor confirms the
+    direction: the mesh worst is smallest AT libxc's own 1e-12 and rises in
+    both directions away from it (9.5e-5 at 1e-11, 5.7e-3 at 1e-8, 2.1e-5 at
+    1e-13, 2.725e-5 at 0).
+
+    No row the model integrates reaches full polarization at all, because
+    ``oneshot.uks_zeta`` clips at ``1 - 1e-6``; what this case guards is that
+    the anchored transform's pre-image stays defined at the boundary, which is
+    why ``F_c`` is asserted finite, positive and no greater than 1 besides.
+    """
+    worst = _worst_fc_at_full_polarization()
+    assert worst <= _FULL_POLARIZATION_CEILING, worst
+
+
+def test_the_libxc_spin_floor_is_load_bearing(monkeypatch):
+    """V1, correlation: removing libxc's 1e-12 spin floor breaks the agreement
+    at zeta = +-1, which is what makes the case above a test OF the floor.
+
+    ``parents.LIBXC_DENS_THRESHOLD`` is the one regularization ``pbe_fc``
+    carries, and it is not a smoothing of the parent's own form: it puts the
+    evaluation at the point the oracle evaluates. With it set to zero the
+    empty channel stays empty while libxc's is still floored, so the two are
+    at different densities, and the worst relative deviation on the same mesh
+    rises from 1.121e-10 to 2.725e-5 -- at (rs = 20, s = 6), monotone in both
+    rs and s, and more than four orders above
+    ``_FULL_POLARIZATION_CEILING``. The floor's consequence for the energy is
+    recorded in the module docstring of :mod:`xcquinox.alec.parents`: 1.3e-9
+    Ha in the H atom's integrated ``E_c``.
+
+    ``F_c`` stays finite, positive and bounded by 1 without the floor (the
+    shared helper asserts it on every row), so the failure the floor prevents
+    is one of AGREEMENT with the oracle, not one of definedness.
+    """
+    monkeypatch.setattr(parents, "LIBXC_DENS_THRESHOLD", 0.0)
+    worst = _worst_fc_at_full_polarization()
+    assert worst > _FULL_POLARIZATION_CEILING, worst
+    assert worst > 1e-5, worst
 
 
 def test_pbe_fc_on_stored_open_shell_rows():

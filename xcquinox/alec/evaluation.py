@@ -11,6 +11,8 @@ from typing import ClassVar
 import jax.numpy as jnp
 import equinox as eqx
 
+from xcquinox.alec.checkpoint_class import (model_class_of_arch,
+                                            require_matching_class)
 from xcquinox.alec.config import TestSpec, ArchitectureConfig
 from xcquinox.alec.models import AlecGGAModel
 from xcquinox.alec.data import precompute_fixed_density_data
@@ -453,6 +455,15 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
 
     # 2. Build model skeleton
     skeleton = AlecGGAModel.from_arch(spec.arch, seed=0)
+
+    # The model class the checkpoint was written as, against the class of the
+    # skeleton about to be filled. The parent anchor and the descriptor
+    # coordinates change no parameter shape, so a checkpoint of another class
+    # deserialises into this skeleton without complaint and evaluates as a
+    # model that is neither -- the same hazard the polarization check below
+    # covers for the one property that DOES change a width. Refused before
+    # the leaves are read.
+    require_matching_class(spec.model_checkpoint, model_class_of_arch(spec.arch))
 
     # 3. Deserialize trained weights
     try:
