@@ -1337,13 +1337,25 @@ def test_single_node_one_task_with_a_thread_cap_from_slurm():
     start = next(i for i, l in enumerate(lines) if l.startswith('THREADS="${SLURM_CPUS_PER_TASK'))
     end = next(i for i, l in enumerate(lines) if l.startswith("export OPENBLAS_NUM_THREADS="))
     snippet = "\n".join(lines[start:end + 1]) + '\necho "$OMP_NUM_THREADS $MKL_NUM_THREADS $OPENBLAS_NUM_THREADS"'
-    for n in (1, 4, 8, 9, 28, 40, 96):
-        out = subprocess.run(["bash", "-euo", "pipefail", "-c", snippet],
+    for n in (0, 1, 4, 8, 9, 28, 40, 96):
+        out = subprocess.run(["bash", "-uo", "pipefail", "-c", snippet],
                              env={"PATH": os.environ.get("PATH", ""),
                                   "SLURM_CPUS_PER_TASK": str(n)},
                              capture_output=True, text=True, check=True)
         assert out.stdout.split() == [str(pyscf_pool_threads(n))] * 3, (n, out.stdout)
-    out = subprocess.run(["bash", "-euo", "pipefail", "-c", snippet],
+        assert out.stderr == "", (n, out.stderr)
+    # The guard lines, each pinned by a value only it handles: a zero-padded
+    # digit string (the 10# parse), and unset, empty and non-digit
+    # allocations (the case guard), all silently.
+    for text_n, expect in (("04", 4), ("040", 8), ("", 8), ("abc", 8)):
+        env = {"PATH": os.environ.get("PATH", "")}
+        if text_n is not None:
+            env["SLURM_CPUS_PER_TASK"] = text_n
+        out = subprocess.run(["bash", "-uo", "pipefail", "-c", snippet],
+                             env=env, capture_output=True, text=True, check=True)
+        assert out.stdout.split() == [str(expect)] * 3, (text_n, out.stdout)
+        assert out.stderr == "", (text_n, out.stderr)
+    out = subprocess.run(["bash", "-uo", "pipefail", "-c", snippet],
                          env={"PATH": os.environ.get("PATH", "")},
                          capture_output=True, text=True, check=True)
     assert out.stdout.split() == [str(PYSCF_POOL_THREADS_MAX)] * 3, out.stdout

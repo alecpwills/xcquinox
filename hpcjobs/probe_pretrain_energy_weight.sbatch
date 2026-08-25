@@ -247,7 +247,7 @@ export OPENBLAS_NUM_THREADS="$THREADS"
 export MALLOC_ARENA_MAX=2
 export JAX_PLATFORMS=cpu
 export JAX_ENABLE_X64=1
-echo "[ewsweep] BLAS threads=${THREADS}  MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX}"
+echo "[ewsweep] allocation=${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=${THREADS}  MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX}"
 echo "[ewsweep] JAX_PLATFORMS=${JAX_PLATFORMS} JAX_ENABLE_X64=${JAX_ENABLE_X64}"
 
 # The architecture selection, as an array so an empty list adds no argument.

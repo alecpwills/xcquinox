@@ -78,11 +78,21 @@ case "$PYBIN" in
 esac
 
 # --- thread caps (SLURM vars not assumed present) ---------------------------
-THREADS="${SLURM_CPUS_PER_TASK:-40}"
+# PySCF's OpenMP pool and numpy's OpenBLAS pool run at min(allocation, 8)
+# threads each (parallel.PYSCF_POOL_THREADS_MAX, the rule the stage templates
+# and the energy-weight sweep apply): sized to the allocation, the two
+# spin-waiting pools stall the small dense operations of a PySCF SCF loop --
+# measured at about ten minutes per molecule at 40 threads on a 40-core node
+# against 8 s at four (workflow-matrix job 2134488).
+THREADS="${SLURM_CPUS_PER_TASK:-8}"
+case "$THREADS" in ''|*[!0-9]*) THREADS=8 ;; esac
+THREADS=$(( 10#$THREADS ))
+[ "$THREADS" -ge 1 ] || THREADS=1
+[ "$THREADS" -le 8 ] || THREADS=8
 export OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" OPENBLAS_NUM_THREADS="$THREADS"
 export MALLOC_ARENA_MAX=2
 ulimit -u unlimited 2>/dev/null || true
-echo "[lockfix] BLAS threads: $THREADS  MALLOC_ARENA_MAX=$MALLOC_ARENA_MAX"
+echo "[lockfix] allocation=${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$THREADS  MALLOC_ARENA_MAX=$MALLOC_ARENA_MAX"
 
 echo "[lockfix] live refs (READ-ONLY here): $REFS"
 echo "[lockfix] staging out-dir:            $STAGE"
