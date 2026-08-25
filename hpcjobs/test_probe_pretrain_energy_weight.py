@@ -1542,6 +1542,27 @@ def test_the_wrapper_lets_a_usage_exit_keep_its_code(monkeypatch):
     assert excinfo.value.code == 2
 
 
+def test_the_wrapper_hands_an_interrupt_on_after_writing_the_table(
+        monkeypatch, capsys):
+    """An interrupt owes the same partial table and is then handed on, so the
+    shared exit reports it as an interrupt (130) rather than as an escape (3):
+    the one status class the wrapper does not own."""
+    written = []
+
+    def _interrupt():
+        raise KeyboardInterrupt("wall clock")
+
+    monkeypatch.setattr(pw, "main", _interrupt)
+    pw._install_partial_writer(lambda complete: written.append(complete))
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            pw._sweep_and_own_the_table()
+    finally:
+        pw._install_partial_writer(None)
+    assert written == [False]
+    assert "the partial table was written" in capsys.readouterr().err
+
+
 def test_the_wrapper_writes_the_partial_table_on_an_escape(monkeypatch,
                                                            capsys):
     """An escaped exception takes the distinct code and still owes the table.

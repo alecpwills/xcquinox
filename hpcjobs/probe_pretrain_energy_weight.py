@@ -1423,19 +1423,29 @@ def _sweep_and_own_the_table():
     An exception that escapes is the fourth outcome: the traceback is printed,
     whatever cells were measured are written, and the status is
     :data:`EXIT_UNHANDLED`, which separates an escape from a completed sweep
-    whose cells failed and from a wall-clock kill.
+    whose cells failed and from a wall-clock kill. An interrupt is owed the
+    same partial table and is then handed on, so the shared exit reports it
+    as an interrupt (130) like every other stage's.
     """
     try:
         return main()
     except SystemExit:
         raise
-    except BaseException:           # noqa: BLE001 - the finished cells are owed
+    except KeyboardInterrupt:
+        _write_partial_table_after_escape()
+        raise
+    except Exception:               # noqa: BLE001 - the finished cells are owed
         traceback.print_exc()
-        if write_partial_table():
-            print("probe_pretrain_energy_weight: the partial table was "
-                  "written, holding whatever cells were measured before the "
-                  "failure; --resume carries them over.", file=sys.stderr)
+        _write_partial_table_after_escape()
         return EXIT_UNHANDLED
+
+
+def _write_partial_table_after_escape() -> None:
+    """Write the partial table an escaped sweep owes, saying so on stderr."""
+    if write_partial_table():
+        print("probe_pretrain_energy_weight: the partial table was "
+              "written, holding whatever cells were measured before the "
+              "failure; --resume carries them over.", file=sys.stderr)
 
 
 if __name__ == "__main__":

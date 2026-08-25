@@ -334,14 +334,6 @@ def test_smoke_temp_dir_is_removed_when_main_returns(tmp_path, monkeypatch):
     import xcquinox.alec as alec
     from xcquinox.alec import _train_one_spec as worker_mod
 
-    # Both halves are required in-process. ``tempfile.gettempdir`` caches the
-    # root it resolved on first use in ``tempfile.tempdir``, so a test that
-    # only sets TMPDIR redirects nothing once anything in the session has
-    # already made a temporary file -- the directory lands in the real /tmp
-    # and the containment assertion below passes on an empty glob while the
-    # leak it is meant to catch sits elsewhere. The attribute is set as well,
-    # which is what ``gettempdir`` returns, and ``monkeypatch`` restores the
-    # cached value afterwards.
     # Both halves are needed in-process. ``tempfile.gettempdir`` caches the
     # root it resolves on first use in ``tempfile.tempdir``, so TMPDIR alone
     # redirects nothing once anything in the session has already made a

@@ -924,10 +924,11 @@ def _completed_pretrain(run_dir, arch, payload, *, networks=("xnet.eqx",
     """Write the artifacts a completed pretrain task leaves behind.
 
     A dict payload is completed with the facts the certificate writer records
-    beside the verdict -- this run's identity, the architecture's parent and
-    the SHA-256 digests of the networks just written -- unless it states them
-    itself. The keep check compares those three against the run, so a document
-    that omitted them would be refused for the omission and could say nothing
+    beside the verdict -- the architecture's name, the running code's
+    version, this run's identity, the architecture's parent and the SHA-256
+    digests of the networks just written -- unless it states them itself. The
+    keep check compares those five against the run, so a document that
+    omitted them would be refused for the omission and could say nothing
     about the release rule each case here is written for; the cases that
     perturb them are separate and use the writer's own output.
     """
@@ -944,6 +945,9 @@ def _completed_pretrain(run_dir, arch, payload, *, networks=("xnet.eqx",
         if isinstance(payload, dict):
             cfg = load_grid_config(
                 os.path.join(run_dir, "resolved_config.yaml"))
+            payload.setdefault("arch", arch)
+            payload.setdefault("xcquinox_version",
+                               fidelity.running_xcquinox_version())
             payload.setdefault("identity", fidelity.run_identity(cfg))
             payload.setdefault("parent", fidelity.resolve_parent(arch))
             digests = {
@@ -1187,19 +1191,31 @@ def _edit_cnet_digest(payload):
     payload["checkpoint"]["cnet_sha256"] = "0" * 64
 
 
+def _edit_arch(payload):
+    # A file copied from another architecture's pretrain directory.
+    payload["arch"] = "deep_attn_3x16"
+
+
+def _edit_version(payload):
+    # A certificate written by an earlier deployment than the one recovering.
+    payload["xcquinox_version"] = "1.0.0+999.gdeadbeef"
+
+
 @pytest.mark.parametrize("edit,named", [
     (_edit_basis, "basis"),
     (_edit_lock, "orientation_lock_strength"),
     (_edit_parent, "parent"),
     (_edit_xnet_digest, "xnet.eqx"),
     (_edit_cnet_digest, "cnet.eqx"),
+    (_edit_arch, "names arch"),
+    (_edit_version, "xcquinox_version"),
 ])
 def test_a_certificate_that_describes_another_run_is_not_kept(
         run_dir, monkeypatch, capsys, edit, named):
     """One perturbed fact per case, each of them one ``validate_run`` refuses.
 
     The verdict still reads PASS in every case, so nothing but the fact under
-    test moves: a keep check reading the verdict alone keeps all five.
+    test moves: a keep check reading the verdict alone keeps all seven.
     """
     _cfg, payload = _real_certificate(run_dir)
     edit(payload)
@@ -1217,7 +1233,7 @@ def test_a_certificate_written_for_these_networks_is_kept(run_dir, monkeypatch,
                                                           capsys):
     """The unperturbed writer output at this run's identity is still kept.
 
-    The discriminator for the five cases above: the comparison refuses a
+    The discriminator for the seven cases above: the comparison refuses a
     disagreement rather than everything.
     """
     _real_certificate(run_dir)

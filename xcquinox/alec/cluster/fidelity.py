@@ -543,14 +543,32 @@ def checkpoint_digest_findings(pretrain_dir: str, cert) -> list:
     return out
 
 
+def running_xcquinox_version() -> str:
+    """The version the running code stamps into every record it writes --
+    the certificate here and the manifest in ``materialize`` -- so the two
+    writers and the keep check read one expression. The package is imported
+    here rather than at module level: this module is one of the cheap readers
+    the gate and the status command import, and the package import is not
+    cheap."""
+    import xcquinox
+    return getattr(xcquinox, "__version__", "unknown")
+
+
 def certificate_describes_run(cfg, pretrain_dir: str, arch_name: str,
                               cert) -> list:
     """Every way ``cert`` fails to describe this run, as short statements.
 
-    An empty list means the certificate records this run's identity, this
-    architecture's parent and the digests of the two networks now on disk --
-    the three facts the record layer re-checks, so an empty list is the
-    statement that the stages after this one would accept what is on disk.
+    An empty list means the certificate names this architecture, was written
+    by the running code, records this run's identity and this architecture's
+    parent, and carries the digests of the two networks now on disk -- the
+    five facts the record layer re-checks (``validate_run``), so an empty list
+    is the statement that the stages after this one would accept what is on
+    disk. The version is compared with the running code's rather than with
+    the manifest's, because the recovery that reaches this check re-runs the
+    preflight, which stamps the manifest from the running code: a
+    certificate written by an earlier deployment would then disagree with the
+    manifest the record layer compares it with, after the whole train and
+    eval graph has been spent.
 
     ``"unmeasured"`` is the one digest finding not reported: a certificate
     that records no digest for a file that is not there states nothing about a
@@ -558,6 +576,18 @@ def certificate_describes_run(cfg, pretrain_dir: str, arch_name: str,
     refused it on that ground.
     """
     out = []
+    recorded_arch = cert.get("arch")
+    if recorded_arch != arch_name:
+        out.append(f"certificate names arch {recorded_arch!r}, not "
+                   f"{arch_name!r} -- a file from another architecture's "
+                   "directory certifies nothing here")
+    recorded_version = cert.get("xcquinox_version")
+    running = running_xcquinox_version()
+    if recorded_version != running:
+        out.append(f"certificate xcquinox_version {recorded_version!r} is not "
+                   f"the running code's {running!r}, the version the "
+                   "recovered preflight stamps into the manifest the record "
+                   "layer compares it with")
     for key, got, want in identity_mismatches(cfg, cert):
         out.append(f"certificate identity {key}={show_identity(got)} but the "
                    f"config states {show_identity(want)}")
@@ -1175,7 +1205,6 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     identity and the SHA-256 digests of the two checkpoint files the verdict
     refers to.
     """
-    import xcquinox
 
     t0 = time.time()
     fid_cfg = cfg.fidelity
@@ -1411,7 +1440,7 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "verdict": VERDICT_FAIL if reasons else VERDICT_PASS,
         "arch": arch_name,
         "parent": parent,
-        "xcquinox_version": getattr(xcquinox, "__version__", "unknown"),
+        "xcquinox_version": running_xcquinox_version(),
         "identity": run_identity(cfg),
         "checkpoint": checkpoint,
         "atom_orientation_lock": {
