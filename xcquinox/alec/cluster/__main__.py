@@ -40,7 +40,6 @@ import json
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,7 +59,8 @@ from xcquinox.alec.cluster.inputs import prepare_inputs
 from xcquinox.alec.cluster.submit import submit_jobs
 from xcquinox.alec.cluster.materialize import write_manifest
 from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
-                                            certificate_status_in)
+                                            gate_certificate_from_read,
+                                            read_certificate_status_in)
 
 
 # ---------------------------------------------------------------------------
@@ -1067,13 +1067,26 @@ def cmd_submit_eval(args) -> int:
 # ===========================================================================
 
 def _pretrain_counts(run_dir: str):
-    """``(n_archs, checkpoint_pairs, pass_certificates)``, or None.
+    """``(n_archs, checkpoint_pairs, pass_certificates, released, waived)``,
+    or None.
 
     The measurement behind :func:`_pretrain_status`, kept separate because the
     remedy line has to decide WHICH stage of a stalled graph is the incomplete
     one and a formatted string is no basis for that. None when the run dir
     carries no readable resolved config, which is the same condition under
     which the status line is omitted.
+
+    Two counts, because two different questions are asked of the same file.
+    ``pass_certificates`` is the RECORD-layer count -- what ``validate_run``
+    and the figure suite require -- and it is what the status line reports.
+    ``released`` is the ON-NODE rule, :func:`gate_certificate_from_read`: PASS,
+    or FAIL under a recorded waiver naming its reason. That is the rule the
+    pretrain task, the preflight sweep and the train task decide on, so it is
+    the one that says whether the train array's ``afterok`` dependency could
+    fire; ``waived`` names the architectures released the second way, which is
+    a state a report may not silently call a failure. A remedy deciding the
+    dependency question on the PASS count would state that a run was gated out
+    by a certificate that in fact released it.
     """
     cfg_path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
     if not os.path.exists(cfg_path):
@@ -1085,18 +1098,29 @@ def _pretrain_counts(run_dir: str):
     archs = sorted(set(cfg.sweep.arch))
     done = 0
     certified = 0
+    released = 0
+    waived = []
     for arch in archs:
         d = pretrain_checkpoint_dir(run_dir, arch)
         if (os.path.exists(os.path.join(d, "xnet.eqx"))
                 and os.path.exists(os.path.join(d, "cnet.eqx"))):
             done += 1
-        status, _reason = certificate_status_in(d)
+        # ONE read, classified twice: a certificate rewritten between two
+        # opens would otherwise let the record count and the gate count
+        # describe different documents in the same report.
+        status, reason, payload = read_certificate_status_in(d)
         if status == VERDICT_PASS:
             certified += 1
-    return len(archs), done, certified
+        allowed, _gate_reason = gate_certificate_from_read(
+            status, reason, payload)
+        if allowed:
+            released += 1
+            if status != VERDICT_PASS:
+                waived.append(arch)
+    return len(archs), done, certified, released, waived
 
 
-def _pretrain_status(run_dir: str) -> str | None:
+def _pretrain_status(run_dir: str, counts=None) -> str | None:
     """Lightweight pretrain-stage status line, or None if it cannot be checked.
 
     Pretrain is a small up-front stage, it gets no per-index
@@ -1112,11 +1136,17 @@ def _pretrain_status(run_dir: str) -> str | None:
     architectures carry a PASS fidelity certificate: the pretrain array can
     finish and still leave the campaign blocked, because the train array is
     gated on the certificate, not on the checkpoint files.
+
+    ``counts`` takes an already-made :func:`_pretrain_counts` measurement, so
+    one ``status`` invocation parses the resolved config and scans the
+    per-architecture directories once rather than once per consumer. It is
+    measured here when the caller has none.
     """
-    counts = _pretrain_counts(run_dir)
+    if counts is None:
+        counts = _pretrain_counts(run_dir)
     if counts is None:
         return None
-    n_archs, done, certified = counts
+    n_archs, done, certified = counts[:3]
     return (f"{done}/{n_archs} architecture checkpoint pair(s) present, "
             f"{certified}/{n_archs} architecture certificate(s) PASS")
 
@@ -1155,7 +1185,10 @@ def cmd_status(args) -> int:
     n_specs = int(manifest["n_specs"])
     _log(f"status: run dir {run_dir}, manifest records {n_specs} spec(s).")
 
-    pt_status = _pretrain_status(run_dir)
+    # One measurement per invocation: the status line and the remedy below
+    # both read it, and a second scan could disagree with the first.
+    pt_counts = _pretrain_counts(run_dir)
+    pt_status = _pretrain_status(run_dir, pt_counts)
     if pt_status is not None:
         _log(f"  pretrain: {pt_status}")
 
@@ -1224,27 +1257,54 @@ def cmd_status(args) -> int:
         # `cmd_resubmit` recovers neither (it reduces the train and eval kinds
         # only). One command recovers both, so what the operator needs from
         # this line is which stage is incomplete.
-        counts = _pretrain_counts(run_dir)
-        n_archs, pt_done, pt_certified = counts or (0, 0, 0)
+        counts = pt_counts
+        n_archs, pt_done, pt_certified, pt_released, pt_waived = (
+            counts or (0, 0, 0, 0, []))
+        # The dependency question is decided on the ON-NODE release rule, the
+        # one the pretrain task and the preflight apply
+        # (fidelity.gate_certificate_from_read): a FAIL under a recorded
+        # waiver releases the train array and is kept by the pretrain task, so
+        # a run in that state was not gated out by its certificate and may not
+        # be reported as if it were. The waived architectures are named, since
+        # a released waiver is a state of the run an operator has to know
+        # about -- it can never enter validate_run or the figure suite.
+        waived_note = ""
+        if pt_waived:
+            waived_note = (
+                f" ({pt_certified}/{n_archs} PASS, {len(pt_waived)} waived: "
+                + ", ".join(pt_waived)
+                + " -- FAIL under a recorded fidelity.enforce=false waiver, "
+                  "which releases the on-node gates only and can never enter "
+                  "validate_run or the figure suite)")
         if counts is not None and pt_done < n_archs:
             _log("  remedy: `resubmit-preflight <run_dir>`: the PRETRAIN stage "
                  f"is incomplete ({pt_done}/{n_archs} architecture checkpoint "
                  "pair(s) on disk) and no train task ran. It re-submits the "
                  "whole pretrain->preflight->train->eval graph, and an "
-                 "architecture whose networks and certificate are already on "
-                 "disk is kept by the pretrain task, so only what is "
-                 "incomplete is re-run.")
-        elif counts is not None and pt_certified < n_archs:
+                 "architecture whose networks are already on disk under a "
+                 "released certificate measured on those networks at this "
+                 "run's identity is kept by the pretrain task, so only what "
+                 "is incomplete is re-run.")
+        elif counts is not None and pt_released < n_archs:
             _log("  remedy: `resubmit-preflight <run_dir>`: the PRETRAIN array "
-                 f"wrote every checkpoint but only {pt_certified}/{n_archs} "
-                 "architecture(s) carry a PASS certificate, so the train array "
-                 "was gated out. It re-submits the whole "
-                 "pretrain->preflight->train->eval graph; a certified "
-                 "architecture is kept by the pretrain task, so only what is "
-                 "incomplete is re-run.")
+                 f"wrote every checkpoint but only {pt_released}/{n_archs} "
+                 "architecture(s) carry a certificate the on-node gate "
+                 "releases (PASS, or FAIL under a recorded waiver naming its "
+                 f"reason){waived_note}, so the train array was gated out. It "
+                 "re-submits the whole pretrain->preflight->train->eval graph; "
+                 "an architecture whose released certificate was measured on "
+                 "the networks beside it at this run's identity is kept by "
+                 "the pretrain task, so only what is incomplete is re-run.")
         else:
+            released_note = ""
+            if counts is not None and n_archs:
+                released_note = (
+                    "; every architecture carries a certificate the on-node "
+                    f"gate releases{waived_note}, so the pretrain stage did "
+                    "not block the train array")
             _log("  remedy: `resubmit-preflight <run_dir>`: the preflight job "
-                 "appears to have failed (no train task ran).")
+                 "appears to have failed (no train task ran)"
+                 f"{released_note}.")
     elif train_failed > 0:
         _log("  remedy: `resubmit <run_dir>`: re-run the failed train "
              "task(s) IN THIS run directory. A wall-kill with no checkpoint "

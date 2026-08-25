@@ -65,15 +65,15 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import sys
 
 from xcquinox.alec.cluster.grid_config import expand_grid, load_grid_config
 from xcquinox.alec.cluster.fidelity import (CERTIFICATE_FILENAME,
-                                            CHECKPOINT_DIGEST_KEYS,
                                             VERDICT_PASS,
+                                            checkpoint_digest_findings,
+                                            identity_mismatches,
+                                            parent_mismatch,
                                             read_certificate_status_in,
-                                            resolve_parent, run_identity)
-from xcquinox.alec.cluster.materialize import _sha256_file
+                                            show_identity)
 from xcquinox.alec.cluster._eval_one_spec import (_load_spec, _read_width,
                                                   _spec_path)
 
@@ -81,38 +81,6 @@ from xcquinox.alec.cluster._eval_one_spec import (_load_spec, _read_width,
 def _enum_name(value) -> str:
     """Canonical comparable form for enum-or-string mode/policy values."""
     return str(value).split(".")[-1].upper()
-
-
-# Distinguishes "the key is not there" from "the key is there and null", which
-# are different statements about a run's identity.
-_ABSENT = object()
-
-
-def _show_identity(value) -> str:
-    """Readable form of an identity value, naming an absent key as absent."""
-    return "<absent>" if value is _ABSENT else repr(value)
-
-
-def _coerce_identity(key, value):
-    """Read a recorded identity value in the type the config states it in.
-
-    ``grid_level`` and ``orientation_lock_strength`` are numbers that a YAML
-    or JSON round trip may present as ``"1"`` or ``1``; coercing them is what
-    makes those the same identity rather than a spurious disagreement. A value
-    that cannot be coerced is returned unchanged, so it compares unequal and is
-    reported as a disagreement: this module reports, and one malformed field
-    may not abort the scan and discard the failures already collected.
-    """
-    if value is _ABSENT or value is None:
-        return value
-    try:
-        if key == "grid_level":
-            return int(value)
-        if key == "orientation_lock_strength":
-            return float(value)
-    except (TypeError, ValueError):
-        return value
-    return value
 
 
 def _check_solver(spec, named, inputs, arch_name, idx, failures):
@@ -332,39 +300,28 @@ def validate_run(run_dir: str, config_path: str | None = None):
                     "architecture")
             # The parent functional is a property of the arch's rung (PBE for
             # GGA, SCAN for meta-GGA); a certificate measured against the
-            # other one bounds nothing here.
+            # other one bounds nothing here. The comparison is the certificate
+            # module's own, so this layer and the pretrain stage's keep check
+            # cannot come to different conclusions about one file.
             try:
-                expected_parent = resolve_parent(arch_name)
+                mismatch = parent_mismatch(arch_name, cert)
             except KeyError:
-                expected_parent = None
                 failures.append(
                     f"pretrain/{arch_name}: arch is not in the registry, so "
                     "the parent functional its certificate must be measured "
                     "against cannot be resolved")
-            if (expected_parent is not None
-                    and cert.get("parent") != expected_parent):
-                failures.append(
-                    f"pretrain/{arch_name}: certificate parent "
-                    f"{cert.get('parent')!r}, but this architecture's rung "
-                    f"is pretrained against {expected_parent!r}")
-            identity = cert.get("identity")
-            if not isinstance(identity, dict):
-                identity = {}
-            # The expected identity comes from the SHARED builder, so a field
-            # added there is checked here without a second edit; the scan
-            # covers the UNION of the two key sets, since a field the
-            # certificate states and the run does not is as much a
-            # disagreement as the reverse.
-            expected_identity = run_identity(cfg)
-            for key in sorted(set(expected_identity) | set(identity)):
-                want = expected_identity.get(key, _ABSENT)
-                got = _coerce_identity(key, identity.get(key, _ABSENT))
-                if got == want:
-                    continue
+            else:
+                if mismatch is not None:
+                    recorded_parent, expected_parent = mismatch
+                    failures.append(
+                        f"pretrain/{arch_name}: certificate parent "
+                        f"{recorded_parent!r}, but this architecture's rung "
+                        f"is pretrained against {expected_parent!r}")
+            for key, got, want in identity_mismatches(cfg, cert):
                 failures.append(
                     f"pretrain/{arch_name}: certificate identity "
-                    f"{key}={_show_identity(got)} but the config says "
-                    f"{_show_identity(want)} -- the certificate was not "
+                    f"{key}={show_identity(got)} but the config says "
+                    f"{show_identity(want)} -- the certificate was not "
                     "computed at this run's identity")
             cert_version = cert.get("xcquinox_version")
             if manifest_version is None:
@@ -381,46 +338,36 @@ def validate_run(run_dir: str, config_path: str | None = None):
             # The verdict refers to two specific files. Comparing their
             # digests is what ties it to the networks the train stage loads:
             # a checkpoint rewritten (or re-pretrained) after certification is
-            # not the one that was measured. The file names and the payload
-            # keys come from the certificate module's own table, so the two
-            # sides of the comparison cannot drift apart.
-            recorded = cert.get("checkpoint")
-            if not isinstance(recorded, dict):
-                recorded = {}
-            for fname, key in CHECKPOINT_DIGEST_KEYS:
-                ck_path = os.path.join(pretrain_dir, fname)
-                want = recorded.get(key)
-                on_disk = os.path.isfile(ck_path)
-                if want is None and not on_disk:
+            # not the one that was measured. The comparison is the certificate
+            # module's own -- file names, payload keys and the five outcomes
+            # -- so the two sides of it cannot drift apart and the pretrain
+            # stage's keep check reaches the same verdict on the same pair.
+            for kind, fname, key, want, measured in (
+                    checkpoint_digest_findings(pretrain_dir, cert)):
+                if kind == "unmeasured":
                     warnings.append(
                         f"pretrain/{arch_name}: the certificate records "
                         f"no {key} and no {fname} is present, so the "
                         "certified networks cannot be cross-checked "
                         "against the ones the run trains from")
-                    continue
-                if want is None:
+                elif kind == "unrecorded":
                     failures.append(
                         f"pretrain/{arch_name}: {fname} is present but "
                         f"the certificate records no {key}, so the file "
                         "cannot be tied to the verdict")
-                    continue
-                if not on_disk:
+                elif kind == "no_file":
                     failures.append(
                         f"pretrain/{arch_name}: the certificate measured "
                         f"{fname} (sha256 {str(want)[:12]}...) but no "
                         "such file is present in the run")
-                    continue
-                try:
-                    got_digest = _sha256_file(ck_path)
-                except OSError as exc:  # report, never crash the scan
+                elif kind == "unreadable":  # report, never crash the scan
                     failures.append(
                         f"pretrain/{arch_name}: {fname} could not be read "
-                        f"to check it against the certificate ({exc})")
-                    continue
-                if got_digest != want:
+                        f"to check it against the certificate ({measured})")
+                else:
                     failures.append(
                         f"pretrain/{arch_name}: {fname} sha256 "
-                        f"{got_digest[:12]}... is not the file the "
+                        f"{str(measured)[:12]}... is not the file the "
                         f"certificate measured ({str(want)[:12]}...) -- "
                         "the checkpoint changed after it was certified")
 

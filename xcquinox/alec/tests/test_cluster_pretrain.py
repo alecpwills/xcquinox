@@ -913,18 +913,45 @@ def test_pretrain_log_reaches_the_caller_through_the_hard_exit(tmp_path):
 # (``fidelity.gate_certificate_from_read``), so a kept architecture is one a
 # later stage would accept: PASS, or FAIL under a recorded waiver that states
 # its reason. Anything else -- a missing network, no certificate, an unreadable
-# one, an enforced FAIL -- is redone.
+# one, an enforced FAIL -- is redone. A released verdict is necessary and not
+# sufficient: the certificate must also describe THESE networks at THIS run's
+# identity, against this architecture's parent, which is the second block of
+# cases at the end of this file.
 
 
 def _completed_pretrain(run_dir, arch, payload, *, networks=("xnet.eqx",
                                                              "cnet.eqx")):
-    """Write the artifacts a completed pretrain task leaves behind."""
+    """Write the artifacts a completed pretrain task leaves behind.
+
+    A dict payload is completed with the facts the certificate writer records
+    beside the verdict -- this run's identity, the architecture's parent and
+    the SHA-256 digests of the networks just written -- unless it states them
+    itself. The keep check compares those three against the run, so a document
+    that omitted them would be refused for the omission and could say nothing
+    about the release rule each case here is written for; the cases that
+    perturb them are separate and use the writer's own output.
+    """
+    from xcquinox.alec.cluster import fidelity
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    from xcquinox.alec.cluster.materialize import _sha256_file
+
     d = os.path.join(run_dir, "pretrain", arch)
     os.makedirs(d, exist_ok=True)
     for name in networks:
         with open(os.path.join(d, name), "wb") as f:
             f.write(b"checkpoint-bytes-" + name.encode())
     if payload is not None:
+        if isinstance(payload, dict):
+            cfg = load_grid_config(
+                os.path.join(run_dir, "resolved_config.yaml"))
+            payload.setdefault("identity", fidelity.run_identity(cfg))
+            payload.setdefault("parent", fidelity.resolve_parent(arch))
+            digests = {
+                key: _sha256_file(os.path.join(d, name))
+                for name, key in fidelity.CHECKPOINT_DIGEST_KEYS
+                if name in networks
+            }
+            payload.setdefault("checkpoint", digests)
         with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
             if isinstance(payload, str):
                 f.write(payload)
@@ -1059,6 +1086,191 @@ def test_the_keep_check_runs_before_any_pretraining_work(run_dir, monkeypatch,
     assert pt.main([run_dir, "0"]) == 0
     out = capsys.readouterr().out
     assert "running run_pretrain" not in out, out
+
+
+# ---------------------------------------------------------------------------
+# the certificate must describe THESE networks at THIS run's identity
+# ---------------------------------------------------------------------------
+# A released verdict says the architecture reproduced its parent -- it does not
+# say WHICH networks were measured, at which basis and grid, or against which
+# parent. Those three facts are recorded in the certificate and are refused by
+# ``validate_run`` (parent, identity over the union of both key sets, and the
+# two SHA-256 digests), i.e. AFTER the whole train and eval graph has been
+# spent. ``resubmit-preflight`` reloads and re-validates ``resolved_config.yaml``
+# precisely because it can be edited between submissions, and none of its
+# refusals covers an edited basis, grid level, density-fitting backend,
+# auxiliary basis or orientation lock; a redo interrupted between the networks
+# being written and the certificate being recomputed reaches the digest half
+# with no edit at all. The keep check therefore compares the same three facts
+# the later stage does, through the same helpers, and pretrains again on a
+# disagreement.
+
+
+def _real_certificate(run_dir, arch="deep"):
+    """Real networks plus the certificate the certificate WRITER produces.
+
+    The document is the certificate module's own rather than a hand-built
+    dict, so the identity, the parent and the two digests are exactly the
+    fields the later stages compare, and a test that perturbs one perturbs the
+    real thing. The oracle set and the per-system evaluation are stubbed --
+    what is under test is the bookkeeping beside the verdict, not the verdict
+    -- which keeps the fixture at a fraction of a second rather than forty
+    reference SCFs.
+    """
+    import equinox as eqx
+
+    from xcquinox.alec.cluster import fidelity
+    from xcquinox.alec.cluster.grid_config import (load_grid_config,
+                                                   pretrain_checkpoint_dir)
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.networks import create_network_pair
+
+    cfg = load_grid_config(os.path.join(run_dir, "resolved_config.yaml"))
+    xnet, cnet = create_network_pair(get_architecture(arch), seed=cfg.pretrain.seed)
+    d = pretrain_checkpoint_dir(run_dir, arch)
+    os.makedirs(d, exist_ok=True)
+    eqx.tree_serialise_leaves(os.path.join(d, "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(os.path.join(d, "cnet.eqx"), cnet)
+
+    def _evaluate(model, descriptors, mol_spec, *, parent, auxbasis=None,
+                  orientation_lock_strength=0.0):
+        return {"name": mol_spec.name, "spin": int(mol_spec.spin),
+                "charge": int(mol_spec.charge),
+                "is_atom": fidelity.is_atom_system(mol_spec), "n_grid": 10,
+                "reference_xc": parent, "E_xc_nn": -1.0 + 0.5 / 1000.0,
+                "E_xc_parent": -1.0, "E_xc_parent_numint": -1.0,
+                "E_xc_parent_record": -1.0, "parent_grid_diff_Ha": 0.0,
+                "parent_record_diff_Ha": 0.0, "dE_xc_mHa": 0.5,
+                "duration_s": 0.0}
+
+    basis = cfg.inputs.basis
+    level = int(cfg.inputs.grid_level)
+    oracle = (
+        MoleculeSpec(name="atom_H", atom="H 0.0 0.0 0.0", basis=basis, spin=1,
+                     atom_composition=(("H", 1),), grid_level=level),
+        MoleculeSpec(name="H2", atom="H 0 0 0.371395; H 0 0 -0.371395",
+                     basis=basis, spin=0, atom_composition=(("H", 2),),
+                     grid_level=level),
+    )
+    payload = fidelity.fidelity_certificate(
+        cfg, run_dir, arch, oracle_set=oracle, evaluate=_evaluate)
+    assert payload["verdict"] == "PASS", payload["summary"]
+    return cfg, payload
+
+
+def _rewrite_certificate(run_dir, payload, arch="deep"):
+    """Put an edited certificate back through the module's own writer."""
+    from xcquinox.alec.cluster import fidelity
+
+    fidelity._write_certificate_payload(
+        payload, fidelity.certificate_path(run_dir, arch))
+    return payload
+
+
+def _edit_basis(payload):
+    payload["identity"]["basis"] = "sto-3g"
+
+
+def _edit_lock(payload):
+    payload["identity"]["orientation_lock_strength"] = 0.0
+
+
+def _edit_parent(payload):
+    payload["parent"] = "scan"
+
+
+def _edit_xnet_digest(payload):
+    payload["checkpoint"]["xnet_sha256"] = "0" * 64
+
+
+def _edit_cnet_digest(payload):
+    payload["checkpoint"]["cnet_sha256"] = "0" * 64
+
+
+@pytest.mark.parametrize("edit,named", [
+    (_edit_basis, "basis"),
+    (_edit_lock, "orientation_lock_strength"),
+    (_edit_parent, "parent"),
+    (_edit_xnet_digest, "xnet.eqx"),
+    (_edit_cnet_digest, "cnet.eqx"),
+])
+def test_a_certificate_that_describes_another_run_is_not_kept(
+        run_dir, monkeypatch, capsys, edit, named):
+    """One perturbed fact per case, each of them one ``validate_run`` refuses.
+
+    The verdict still reads PASS in every case, so nothing but the fact under
+    test moves: a keep check reading the verdict alone keeps all five.
+    """
+    _cfg, payload = _real_certificate(run_dir)
+    edit(payload)
+    _rewrite_certificate(run_dir, payload)
+    calls = _recorder(monkeypatch)
+
+    assert pt.main([run_dir, "0"]) == 0
+    assert len(calls) == 1, named
+    out = capsys.readouterr().out
+    assert "pretraining from scratch" in out, out
+    assert named in out, out
+
+
+def test_a_certificate_written_for_these_networks_is_kept(run_dir, monkeypatch,
+                                                          capsys):
+    """The unperturbed writer output at this run's identity is still kept.
+
+    The discriminator for the five cases above: the comparison refuses a
+    disagreement rather than everything.
+    """
+    _real_certificate(run_dir)
+    _forbid(monkeypatch, "_run_pretrain", "_fidelity_certificate")
+
+    assert pt.main([run_dir, "0"]) == 0
+    out = capsys.readouterr().out
+    assert "KEPT" in out, out
+
+
+def test_the_keep_reason_names_every_fact_that_disagrees(run_dir):
+    """The reason is the log line an operator reads, so it names the facts.
+
+    All three kinds at once -- identity field, parent, digest -- since a
+    check that stopped at the first would leave the rest to be discovered one
+    resubmission at a time.
+    """
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+
+    cfg, payload = _real_certificate(run_dir)
+    _edit_basis(payload)
+    _edit_parent(payload)
+    _edit_xnet_digest(payload)
+    _rewrite_certificate(run_dir, payload)
+
+    keep, reason = pt.completed_pretraining(
+        pretrain_checkpoint_dir(run_dir, "deep"), cfg, "deep")
+    assert keep is False
+    assert "basis" in reason
+    assert "scan" in reason
+    assert "xnet.eqx" in reason
+
+
+def test_the_keep_check_and_the_run_record_apply_one_comparison():
+    """The keep check calls the record layer's own comparison helpers.
+
+    Two implementations of "does this certificate describe what is on disk"
+    would drift, and the cost of the drift is a train and eval graph: the
+    pretrain stage keeps an architecture the record layer later refuses. The
+    helpers live in the certificate module and both stages import them from
+    there.
+    """
+    import inspect
+
+    from xcquinox.alec.cluster import fidelity, validate_run
+
+    source = inspect.getsource(pt.completed_pretraining)
+    assert "certificate_describes_run" in source
+    for name in ("identity_mismatches", "parent_mismatch",
+                 "checkpoint_digest_findings"):
+        assert hasattr(fidelity, name), name
+        assert getattr(validate_run, name, None) is getattr(fidelity, name), \
+            name
 
 
 if __name__ == "__main__":

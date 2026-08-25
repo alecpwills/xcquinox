@@ -2204,16 +2204,22 @@ def test_status_remedy_for_an_inline_run_is_a_resubmit_that_works(
 # The remedy has to say which stage is incomplete, or an operator reads
 # "preflight" for a run whose preflight never started.
 
-def _certify(run_dir, arch, verdict="PASS"):
-    """Write the artifacts a completed, certified pretrain leaves behind."""
+def _certify(run_dir, arch, verdict="PASS", **extra):
+    """Write the artifacts a completed, certified pretrain leaves behind.
+
+    ``extra`` sets any further certificate field, which is how the waived FAIL
+    -- ``enforced=False`` beside a ``tolerances.override_reason`` -- is built.
+    """
     from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
 
     ck = pretrain_checkpoint_dir(run_dir, arch)
     os.makedirs(ck, exist_ok=True)
     open(os.path.join(ck, "xnet.eqx"), "wb").close()
     open(os.path.join(ck, "cnet.eqx"), "wb").close()
+    payload = {"verdict": verdict, "arch": arch}
+    payload.update(extra)
     with open(os.path.join(ck, "fidelity_certificate.json"), "w") as f:
-        json.dump({"verdict": verdict, "arch": arch}, f)
+        json.dump(payload, f)
     return ck
 
 
@@ -2262,3 +2268,42 @@ def test_status_still_names_the_preflight_when_the_pretrain_is_certified(
     remedy = out.split("remedy:")[-1]
     assert "resubmit-preflight <run_dir>" in remedy, out
     assert "preflight" in remedy, out
+
+
+def test_status_names_a_waived_certificate_as_released_not_gated_out(
+        tmp_path, monkeypatch, capsys):
+    """A FAIL under a recorded waiver releases the on-node gates.
+
+    ``fidelity.gate_certificate_from_read`` releases a FAIL that records
+    ``enforced: false`` and a non-empty ``tolerances.override_reason``, and the
+    pretrain task keeps such an architecture, so the train array was NOT gated
+    out by that certificate -- the workflow-verification matrix, and cluster
+    job 2134455, run in exactly this state. A remedy deciding on a PASS-only
+    count states a cause that did not happen and disagrees with the pretrain
+    stage about the same file.
+    """
+    run_dir = _status_with_nothing_downstream(tmp_path, monkeypatch)
+    _certify(run_dir, "medium", verdict="FAIL", enforced=False,
+             tolerances={"override_reason": "workflow matrix: wiring check"})
+    assert main(["status", run_dir]) == 0
+    out = capsys.readouterr().out
+    remedy = out.split("remedy:")[-1]
+    assert "gated out" not in remedy, out
+    assert "waived" in remedy, out
+    assert "medium" in remedy, out
+
+
+def test_status_says_gated_out_for_an_enforced_failing_certificate(
+        tmp_path, monkeypatch, capsys):
+    """An enforced FAIL really does block the train array's dependency.
+
+    The pretrain task exits non-zero on it, so ``afterok`` never fires. The
+    branch above must not swallow this one: the two differ only in the waiver.
+    """
+    run_dir = _status_with_nothing_downstream(tmp_path, monkeypatch)
+    _certify(run_dir, "medium", verdict="FAIL")
+    assert main(["status", run_dir]) == 0
+    out = capsys.readouterr().out
+    remedy = out.split("remedy:")[-1]
+    assert "gated out" in remedy, out
+    assert "0/1" in remedy, out

@@ -1492,22 +1492,79 @@ def test_the_entry_point_leaves_through_the_hard_exit():
     runs where the teardown happens to corrupt the heap -- it is a symptom
     check, not a pin. (It does happen: an unrelated driver run against this
     same path exited with "corrupted size vs. prev_size" while these numbers
-    were being measured.) The idiom is therefore asserted directly: the last
-    statement of the entry point is ``os._exit``, both streams are flushed
-    first because ``os._exit`` does not flush them, and no ``sys.exit`` --
-    which runs the teardown the idiom exists to skip -- is left anywhere in
-    the block.
+    were being measured.) The idiom is therefore asserted directly, and it is
+    the SHARED one: the last statement of the entry point is
+    ``cluster._exit.run_and_exit``, which flushes both streams and then leaves
+    through ``os._exit``, and no ``sys.exit`` -- which runs the teardown the
+    idiom exists to skip -- is left anywhere in the block. A local copy of the
+    idiom would be a second implementation of an exit rule every other job
+    stage takes from one module; ``run_and_exit``'s own last-statement pin and
+    the behavioural measurements in real subprocesses are in
+    ``xcquinox/alec/tests/test_worker_hard_exit.py``, which enumerates this
+    script among the entry points it covers.
+
+    The callable handed to the helper is checked too: it is the wrapper that
+    owns the partial table on an escape, not ``main`` itself, so the cells a
+    broken run paid for are still written.
     """
     block = _main_block()
     last = block.body[-1]
     assert isinstance(last, ast.Expr) and isinstance(last.value, ast.Call), (
         ast.dump(last))
-    assert _called_name(last.value) == "os._exit"
+    assert _called_name(last.value).split(".")[-1] == "run_and_exit"
+    assert [a.id for a in last.value.args
+            if isinstance(a, ast.Name)] == ["_sweep_and_own_the_table"]
     names = [_called_name(node) for node in ast.walk(block)
              if isinstance(node, ast.Call)]
-    assert "sys.stdout.flush" in names
-    assert "sys.stderr.flush" in names
     assert "sys.exit" not in names
+    assert not any(isinstance(node, ast.Raise)
+                   and isinstance(node.exc, ast.Call)
+                   and _called_name(node.exc) == "SystemExit"
+                   for node in ast.walk(block))
+
+
+def test_the_wrapper_hands_the_sweeps_own_status_back(monkeypatch):
+    """0, 1 and 2 are the sweep's verdicts and pass through untouched."""
+    for rc in (0, 1, 2):
+        monkeypatch.setattr(pw, "main", lambda _rc=rc: _rc)
+        assert pw._sweep_and_own_the_table() == rc
+
+
+def test_the_wrapper_lets_a_usage_exit_keep_its_code(monkeypatch):
+    """argparse refuses inside ``main``; its status is the interpreter's own,
+    which the shared exit reproduces from the ``SystemExit`` it re-raises."""
+    def _refuse():
+        raise SystemExit(2)
+
+    monkeypatch.setattr(pw, "main", _refuse)
+    with pytest.raises(SystemExit) as excinfo:
+        pw._sweep_and_own_the_table()
+    assert excinfo.value.code == 2
+
+
+def test_the_wrapper_writes_the_partial_table_on_an_escape(monkeypatch,
+                                                           capsys):
+    """An escaped exception takes the distinct code and still owes the table.
+
+    The subprocess measurement above exercises the same path end to end; this
+    one pins the two effects on the wrapper itself, where a lost partial-table
+    call would otherwise only show up as a table that never appeared.
+    """
+    written = []
+
+    def _boom():
+        raise RuntimeError("the sweep broke")
+
+    monkeypatch.setattr(pw, "main", _boom)
+    pw._install_partial_writer(lambda complete: written.append(complete))
+    try:
+        assert pw._sweep_and_own_the_table() == pw.EXIT_UNHANDLED
+    finally:
+        pw._install_partial_writer(None)
+    assert written == [False]
+    captured = capsys.readouterr()
+    assert "the sweep broke" in captured.err
+    assert "the partial table was written" in captured.err
 
 
 def test_an_unhandled_exception_still_leaves_through_that_exit(tmp_path):

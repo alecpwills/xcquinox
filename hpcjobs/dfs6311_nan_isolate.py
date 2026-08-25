@@ -66,7 +66,6 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import argparse
 import dataclasses
 import faulthandler
-import sys
 import tempfile
 import time
 

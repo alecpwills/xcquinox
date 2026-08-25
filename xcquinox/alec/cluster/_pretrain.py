@@ -117,18 +117,38 @@ def _log(arch, message):
     sys.stdout.flush()
 
 
-def completed_pretraining(checkpoint_dir: str) -> tuple[bool, str]:
+def completed_pretraining(checkpoint_dir: str, cfg,
+                          arch_name: str) -> tuple[bool, str]:
     """``(keep, reason)`` for pretraining already present in ``checkpoint_dir``.
 
-    ``keep`` is True only when both networks are on disk AND the certificate
-    beside them is one an on-node gate releases -- PASS, or FAIL under a
-    recorded waiver naming its reason. The release rule is
-    :func:`fidelity.gate_certificate_from_read` applied to a single read, i.e.
-    exactly the rule this stage applies to its own verdict at the end of a
-    fresh run and the rule the preflight sweep and the train task apply to the
-    same file. An architecture is therefore kept only when the stages after it
-    would accept what is on disk; a missing network, an absent or unreadable
+    ``keep`` is True only when both networks are on disk, the certificate
+    beside them is one an on-node gate releases, AND that certificate
+    describes those networks at this run's identity.
+
+    The release rule is :func:`fidelity.gate_certificate_from_read` applied to
+    a single read -- PASS, or FAIL under a recorded waiver naming its reason
+    -- which is exactly the rule this stage applies to its own verdict at the
+    end of a fresh run and the rule the preflight sweep and the train task
+    apply to the same file. A missing network, an absent or unreadable
     certificate, and an enforced FAIL are each a reason to pretrain again.
+
+    The verdict alone is not enough, because it does not say WHICH networks
+    were measured, at which basis and grid, or against which parent. Those
+    three facts are recorded beside it and are re-checked by ``validate_run``
+    (parent, identity over the union of both key sets, and the two SHA-256
+    digests), so a certificate that disagrees on any of them costs the whole
+    train and eval graph before the run is refused. Two routes reach that
+    state through the recovery this check exists to serve: ``submit`` always
+    creates a fresh run dir, so only ``resubmit-preflight`` re-runs pretrain
+    into an existing one, and it reloads ``resolved_config.yaml`` precisely
+    because the file can be edited between submissions -- none of its refusals
+    covers an edited ``inputs.basis``, ``grid_level``, ``density_fit``,
+    ``auxbasis`` or ``orientation_lock_strength``, none of which changes the
+    cell count; and a redo interrupted between ``run_pretrain`` writing the
+    two networks and the certificate being recomputed leaves new networks
+    beside an older certificate with no edit at all. The comparison is
+    :func:`fidelity.certificate_describes_run`, the one the record layer
+    applies, and the reason names every fact that disagrees.
 
     A checkpoint with no certificate beside it is NOT kept even though the
     networks are usable: there is then no record of what was measured, and the
@@ -146,8 +166,18 @@ def completed_pretraining(checkpoint_dir: str) -> tuple[bool, str]:
                        f"(missing: {missing})")
     status, status_reason, on_disk = fidelity.read_certificate_status_in(
         checkpoint_dir)
-    return fidelity.gate_certificate_from_read(
+    allowed, gate_reason = fidelity.gate_certificate_from_read(
         status, status_reason, on_disk)
+    if not allowed:
+        return False, gate_reason
+    # Released, so the payload is the document the status was read from.
+    mismatches = fidelity.certificate_describes_run(
+        cfg, checkpoint_dir, arch_name, on_disk or {})
+    if mismatches:
+        return False, (
+            f"{gate_reason}; but the certificate does not describe this "
+            "run's pretraining: " + "; ".join(mismatches))
+    return True, gate_reason
 
 
 def _fmt_secs(seconds):
@@ -357,13 +387,13 @@ def main(argv=None) -> int:
     # of that recovery, and it replaces the checkpoint the run's certificate
     # was measured on with a different one. Checked BEFORE any work, so the
     # recovery costs a directory listing per completed architecture.
-    keep, keep_reason = completed_pretraining(checkpoint_dir)
+    keep, keep_reason = completed_pretraining(checkpoint_dir, cfg, arch_name)
     if keep:
         _log(arch_name,
              f"pretrain KEPT: {checkpoint_dir} already holds xnet.eqx + "
-             f"cnet.eqx and a certificate this node's gate releases "
-             f"({keep_reason}); the completed pretraining stands and is not "
-             "repeated")
+             f"cnet.eqx and a certificate this node's gate releases, measured "
+             f"on those networks at this run's identity ({keep_reason}); the "
+             "completed pretraining stands and is not repeated")
         return 0
     _log(arch_name, f"pretraining from scratch: {keep_reason}")
 

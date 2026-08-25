@@ -31,7 +31,6 @@ import json
 import math
 import os
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple

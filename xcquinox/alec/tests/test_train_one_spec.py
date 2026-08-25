@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 
 def _base_env():
@@ -333,7 +334,24 @@ def test_smoke_temp_dir_is_removed_when_main_returns(tmp_path, monkeypatch):
     import xcquinox.alec as alec
     from xcquinox.alec import _train_one_spec as worker_mod
 
+    # Both halves are required in-process. ``tempfile.gettempdir`` caches the
+    # root it resolved on first use in ``tempfile.tempdir``, so a test that
+    # only sets TMPDIR redirects nothing once anything in the session has
+    # already made a temporary file -- the directory lands in the real /tmp
+    # and the containment assertion below passes on an empty glob while the
+    # leak it is meant to catch sits elsewhere. The attribute is set as well,
+    # which is what ``gettempdir`` returns, and ``monkeypatch`` restores the
+    # cached value afterwards.
+    # Both halves are needed in-process. ``tempfile.gettempdir`` caches the
+    # root it resolves on first use in ``tempfile.tempdir``, so TMPDIR alone
+    # redirects nothing once anything in the session has already made a
+    # temporary file: the directory lands in the real /tmp, and a containment
+    # assertion against ``tmp_path`` then reads an empty glob of a path
+    # nothing was ever written to. Measured: the smoke directory was created
+    # at /tmp/xcq_smoke_* with TMPDIR set to this test's own directory.
+    # ``monkeypatch`` restores the cached value afterwards.
     monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     seen = {}
 
     def fake_run_training(spec, progress_callback=None):
@@ -350,6 +368,12 @@ def test_smoke_temp_dir_is_removed_when_main_returns(tmp_path, monkeypatch):
     assert rc == 0
     assert seen["present_during_training"] is True
     assert seen["n_steps"] == 1
+    # Under the test's own directory, so the containment assertion below is a
+    # statement about the directory the worker actually made rather than about
+    # an empty glob of a path nothing was ever written to.
+    assert seen["checkpoint_dir"].startswith(str(tmp_path)), (
+        f"the smoke directory landed outside the test's own directory: "
+        f"{seen['checkpoint_dir']}")
     assert not os.path.exists(seen["checkpoint_dir"]), (
         f"--smoke left {seen['checkpoint_dir']} on disk")
     assert not sorted(tmp_path.glob("xcq_smoke_*"))

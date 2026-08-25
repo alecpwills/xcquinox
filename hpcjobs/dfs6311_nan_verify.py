@@ -52,7 +52,6 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import argparse
 import dataclasses
 import json
-import sys
 import time
 
 import jax

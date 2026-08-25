@@ -7,8 +7,9 @@ finished and its outputs are on disk -- ``corrupted size vs. prev_size while
 consolidating``, SIGABRT, return code -6 (134 through a shell). The class was
 first recorded on a pytest session (cluster job 2091615 batch 2: a green
 summary followed by the abort, exit 134) and closed there by the same idiom in
-``xcquinox/alec/tests/conftest.py``; ``hpcjobs/probe_pretrain_energy_weight.py``
-carries it too.
+``xcquinox/alec/tests/conftest.py``, which is the one remaining copy of it --
+``hpcjobs/probe_pretrain_energy_weight.py`` carried a second one and now
+leaves through this module like every other job stage.
 
 The workflow-matrix smoke (cluster job 2134455, node dn024) measured it on a
 harness WORKER: ``python -m xcquinox.alec.cluster._pretrain`` ran both

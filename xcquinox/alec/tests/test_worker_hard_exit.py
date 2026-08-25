@@ -55,6 +55,7 @@ NAMED_ENTRY_POINTS = {
     "hpcjobs/dfs6311_nan_isolate.py",
     "hpcjobs/dfs6311_nan_verify.py",
     "hpcjobs/dfs6311_pretrained_holdout.py",
+    "hpcjobs/probe_pretrain_energy_weight.py",
     "analysis/precompute_scan_pool.py",
     "analysis/precompute_nonempirical_pool.py",
 }
@@ -82,6 +83,7 @@ EXTRA_ENTRY_FILES = (
     REPO_ROOT / "hpcjobs" / "dfs6311_nan_isolate.py",
     REPO_ROOT / "hpcjobs" / "dfs6311_nan_verify.py",
     REPO_ROOT / "hpcjobs" / "dfs6311_pretrained_holdout.py",
+    REPO_ROOT / "hpcjobs" / "probe_pretrain_energy_weight.py",
     REPO_ROOT / "notebooks" / "analysis" / "precompute_scan_pool.py",
     REPO_ROOT / "notebooks" / "analysis" / "precompute_nonempirical_pool.py",
 )

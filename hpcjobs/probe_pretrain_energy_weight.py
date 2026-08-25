@@ -1414,39 +1414,42 @@ def main(argv=None):
     return 0 if verdict["cleared"] else 2
 
 
-if __name__ == "__main__":
-    # The exit code IS the finding here (0 cleared / 2 did not / 1 broke /
-    # 3 escaped), and JAX's atexit backend cleanup can corrupt the heap during
-    # interpreter shutdown ("corrupted size vs. prev_size", SIGABRT, code 134)
-    # AFTER the table has been written -- the same teardown that once made a
-    # green cluster regression batch read as FAILED (see
-    # xcquinox/alec/tests/conftest.py). SLURM would then record a signal death
-    # for a sweep that completed. Leaving through os._exit skips teardown
-    # entirely; the streams are flushed explicitly because it does not.
-    #
-    # EVERY path out of main() leaves through that one exit, an unhandled
-    # exception included: the teardown is no safer because the sweep broke,
-    # and a run that dies with a traceback still owes the cells it finished.
-    # The traceback is printed, the partial table is written, and the code is
-    # EXIT_UNHANDLED, which separates an escape from a completed sweep whose
-    # cells failed (1) and from the signal death a bare traceback plus a
-    # corrupted teardown would otherwise be reported as.
+def _sweep_and_own_the_table():
+    """Run the sweep, leaving an escaped failure with its partial table on disk.
+
+    ``main`` returns the sweep's own outcome (0 a weight cleared, 2 none did,
+    1 a cell or a refusal broke a run that still finished its schedule) and
+    argparse raises its usage exit through it; both are handed on untouched.
+    An exception that escapes is the fourth outcome: the traceback is printed,
+    whatever cells were measured are written, and the status is
+    :data:`EXIT_UNHANDLED`, which separates an escape from a completed sweep
+    whose cells failed and from a wall-clock kill.
+    """
     try:
-        _code = main()
-    except SystemExit as _exc:      # argparse, and the sweep's own refusals
-        _code = _exc.code
-        if _code is None:
-            _code = 0
-        elif not isinstance(_code, int):
-            print(_code, file=sys.stderr)
-            _code = 1
-    except BaseException:           # noqa: BLE001 - nothing may skip the exit
+        return main()
+    except SystemExit:
+        raise
+    except BaseException:           # noqa: BLE001 - the finished cells are owed
         traceback.print_exc()
-        _code = EXIT_UNHANDLED
         if write_partial_table():
             print("probe_pretrain_energy_weight: the partial table was "
                   "written, holding whatever cells were measured before the "
                   "failure; --resume carries them over.", file=sys.stderr)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(int(_code))
+        return EXIT_UNHANDLED
+
+
+if __name__ == "__main__":
+    # The exit code IS the finding here, and JAX's atexit backend cleanup can
+    # corrupt the heap during interpreter shutdown ("corrupted size vs.
+    # prev_size", SIGABRT, code 134) AFTER the table has been written -- the
+    # same teardown that once made a green cluster regression batch read as
+    # FAILED (see xcquinox/alec/tests/conftest.py) and that reported a
+    # completed pretrain stage as a signal death (cluster job 2134455). SLURM
+    # would then record a signal death for a sweep that completed. The shared
+    # hard exit flushes the streams and leaves through ``os._exit``, so the
+    # status the process hands the scheduler is the one the sweep returned;
+    # it is the same exit every other job stage leaves through, so this one
+    # cannot drift from them. Imported here rather than in the module body,
+    # since the helper is needed only when the module is RUN.
+    from xcquinox.alec.cluster._exit import run_and_exit
+    run_and_exit(_sweep_and_own_the_table)

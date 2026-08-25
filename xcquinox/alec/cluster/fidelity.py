@@ -408,6 +408,191 @@ def run_identity(cfg) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Does a certificate describe THESE networks, at THIS run's identity, against
+# THIS architecture's parent?
+# ---------------------------------------------------------------------------
+# The verdict says an architecture reproduced its parent. It does not say
+# which networks were measured, at which basis and grid, or against which
+# parent -- those are recorded in the certificate beside the verdict, and a
+# document that disagrees with the run on any of them bounds nothing in it.
+# The comparison lives here, with the writer of those fields, and is applied
+# by the record layer (``validate_run``) and by the pretrain stage's
+# keep-a-completed-pretraining check alike: two implementations would drift,
+# and the cost of the drift is a train and eval graph run against a
+# certificate the record layer refuses at the end of it.
+#
+# Distinguishes "the key is not there" from "the key is there and null", which
+# are different statements about a run's identity.
+_ABSENT = object()
+
+
+def show_identity(value) -> str:
+    """Readable form of an identity value, naming an absent key as absent."""
+    return "<absent>" if value is _ABSENT else repr(value)
+
+
+def coerce_identity(key, value):
+    """Read a recorded identity value in the type the config states it in.
+
+    ``grid_level`` and ``orientation_lock_strength`` are numbers that a YAML
+    or JSON round trip may present as ``"1"`` or ``1``; coercing them is what
+    makes those the same identity rather than a spurious disagreement. A value
+    that cannot be coerced is returned unchanged, so it compares unequal and is
+    reported as a disagreement: a malformed field is a disagreement, and one
+    of them may not abort a scan that has findings to report.
+    """
+    if value is _ABSENT or value is None:
+        return value
+    try:
+        if key == "grid_level":
+            return int(value)
+        if key == "orientation_lock_strength":
+            return float(value)
+    except (TypeError, ValueError):
+        return value
+    return value
+
+
+def identity_mismatches(cfg, cert) -> list:
+    """``(field, recorded, expected)`` per identity field that disagrees.
+
+    The expected identity comes from :func:`run_identity`, so a field added
+    there is compared without a second edit, and the scan covers the UNION of
+    the two key sets: a field the certificate states and the run does not is
+    as much a disagreement as the reverse. An absent key on either side is
+    reported through the :func:`show_identity` sentinel rather than as
+    ``None``, since a run that states ``auxbasis: null`` and a certificate
+    that omits the key entirely say different things.
+    """
+    recorded = cert.get("identity")
+    if not isinstance(recorded, dict):
+        recorded = {}
+    expected = run_identity(cfg)
+    out = []
+    for key in sorted(set(expected) | set(recorded)):
+        want = expected.get(key, _ABSENT)
+        got = coerce_identity(key, recorded.get(key, _ABSENT))
+        if got != want:
+            out.append((key, got, want))
+    return out
+
+
+def parent_mismatch(arch_name: str, cert):
+    """``(recorded, expected)`` when the certificate names another parent.
+
+    The parent functional is a property of the architecture's RUNG (PBE for
+    GGA, SCAN for meta-GGA), so a certificate measured against the other one
+    bounds nothing for this architecture. ``None`` when they agree.
+
+    ``KeyError`` propagates from :func:`resolve_parent` for an architecture
+    that is not in the registry: the parent is then not resolvable at all,
+    which is a finding of its own and is stated by the caller.
+    """
+    expected = resolve_parent(arch_name)
+    recorded = cert.get("parent")
+    return None if recorded == expected else (recorded, expected)
+
+
+def checkpoint_digest_findings(pretrain_dir: str, cert) -> list:
+    """``(kind, filename, digest_key, recorded, measured)`` per network file.
+
+    The verdict refers to two specific files, and comparing their digests is
+    what ties it to the networks the train stage loads: a checkpoint rewritten
+    (or re-pretrained) after certification is not the one that was measured.
+    The file names and the payload keys come from
+    :data:`CHECKPOINT_DIGEST_KEYS`, so the two sides of the comparison cannot
+    drift apart.
+
+    ``kind`` is one of:
+
+    * ``"unmeasured"`` -- neither a digest nor a file, so there is nothing to
+      cross-check. The only kind that is not a disagreement.
+    * ``"unrecorded"`` -- the file is present and the certificate records no
+      digest for it, so it cannot be tied to the verdict.
+    * ``"no_file"`` -- a digest is recorded and no such file is present.
+    * ``"unreadable"`` -- the file could not be read; ``measured`` carries the
+      ``OSError``. Reported, never raised: a scan with findings to report may
+      not be aborted by one unreadable file.
+    * ``"mismatch"`` -- both are there and they differ.
+
+    A pair that agrees produces no entry.
+    """
+    recorded = cert.get("checkpoint")
+    if not isinstance(recorded, dict):
+        recorded = {}
+    out = []
+    for fname, key in CHECKPOINT_DIGEST_KEYS:
+        path = os.path.join(pretrain_dir, fname)
+        want = recorded.get(key)
+        on_disk = os.path.isfile(path)
+        if want is None:
+            out.append(("unmeasured" if not on_disk else "unrecorded",
+                        fname, key, want, None))
+            continue
+        if not on_disk:
+            out.append(("no_file", fname, key, want, None))
+            continue
+        try:
+            got = _sha256_file(path)
+        except OSError as exc:
+            out.append(("unreadable", fname, key, want, exc))
+            continue
+        if got != want:
+            out.append(("mismatch", fname, key, want, got))
+    return out
+
+
+def certificate_describes_run(cfg, pretrain_dir: str, arch_name: str,
+                              cert) -> list:
+    """Every way ``cert`` fails to describe this run, as short statements.
+
+    An empty list means the certificate records this run's identity, this
+    architecture's parent and the digests of the two networks now on disk --
+    the three facts the record layer re-checks, so an empty list is the
+    statement that the stages after this one would accept what is on disk.
+
+    ``"unmeasured"`` is the one digest finding not reported: a certificate
+    that records no digest for a file that is not there states nothing about a
+    network, and the caller that cares about the missing network has already
+    refused it on that ground.
+    """
+    out = []
+    for key, got, want in identity_mismatches(cfg, cert):
+        out.append(f"certificate identity {key}={show_identity(got)} but the "
+                   f"config states {show_identity(want)}")
+    try:
+        mismatch = parent_mismatch(arch_name, cert)
+    except KeyError:
+        out.append(f"architecture {arch_name!r} is not in the registry, so "
+                   "the parent functional its certificate must be measured "
+                   "against cannot be resolved")
+    else:
+        if mismatch is not None:
+            recorded, expected = mismatch
+            out.append(f"certificate parent {recorded!r}, but this "
+                       f"architecture's rung is pretrained against "
+                       f"{expected!r}")
+    for kind, fname, key, want, measured in checkpoint_digest_findings(
+            pretrain_dir, cert):
+        if kind == "unmeasured":
+            continue
+        if kind == "unrecorded":
+            out.append(f"{fname} is present but the certificate records no "
+                       f"{key}, so the file cannot be tied to the verdict")
+        elif kind == "no_file":
+            out.append(f"the certificate measured {fname} (sha256 "
+                       f"{str(want)[:12]}...) but no such file is present")
+        elif kind == "unreadable":
+            out.append(f"{fname} could not be read to check it against the "
+                       f"certificate ({measured})")
+        else:
+            out.append(f"{fname} sha256 {str(measured)[:12]}... is not the "
+                       f"file the certificate measured "
+                       f"({str(want)[:12]}...)")
+    return out
+
+
 def _distinct_archs(cfg):
     """The de-duplicated, sorted architecture list of the sweep.
 
