@@ -10,11 +10,19 @@ The first case below measures exactly that -- a cross-class
 ``tree_deserialise_leaves`` succeeding -- so the refusals that follow are held
 against a real hazard rather than an assumed one.
 
+The record and the checkpoint are two files with one rename each, so the
+second property under test is that the record DESCRIBES the leaves it stands
+beside rather than merely arriving in a particular order: the kill-point cases
+interrupt the writer at each boundary and hold every reader to the state that
+is left. The digests the cases compare against are taken with ``hashlib``
+here, not with the module's own helper, so the two are independent.
+
 Costs: no PySCF. The evaluation entry point is reached with a valid spec and
 raises before any precompute; the acceptance leg is observed with a sentinel
 raised at the step after the check.
 """
 import dataclasses
+import hashlib
 import json
 import os
 
@@ -24,6 +32,7 @@ import numpy as np
 import pytest
 
 from xcquinox.alec.checkpoint_class import (CLASS_RECORD_SUFFIX,
+                                            ClassRecordStale,
                                             class_record_path,
                                             model_class_of_arch,
                                             model_class_of_model,
@@ -83,12 +92,24 @@ def _model(arch, seed=0):
 
 
 def _write_checkpoint(path, arch, *, record=True, seed=0):
-    """A trained checkpoint of ``arch``'s class, with or without its record."""
+    """A trained checkpoint of ``arch``'s class, with or without its record.
+
+    The record is written for the leaves that are already on disk, which is
+    what makes it describe them; the training stage's own writer stages it
+    around the leaves' rename instead (``train._serialise_trained_model``).
+    """
     model = _model(arch, seed=seed)
+    eqx.tree_serialise_leaves(path, model)
     if record:
         write_class_record(path, arch)
-    eqx.tree_serialise_leaves(path, model)
     return model
+
+
+def _sha256_of(path):
+    """The digest of the file at ``path``, taken here rather than through the
+    module under test."""
+    with open(os.fspath(path), "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def _arrays(model):
@@ -181,11 +202,18 @@ def test_the_record_sits_at_the_checkpoints_own_path(tmp_path):
     """The record's path follows from the checkpoint's, which is what lets a
     reader holding one FILE (``TestSpec.model_checkpoint``, the eval task's
     choice among model.eqx / model_best.eqx / model_val_best.eqx) find it with
-    no knowledge of the run layout, and what keeps the two together when a
-    single checkpoint is copied out on its own."""
+    no knowledge of the run layout.
+
+    The pull the local re-evaluation workflow uses narrows per spec DIRECTORY
+    (``cluster.sync.build_rsync_command``), so every record comes down beside
+    its own checkpoint. A bare copy of the ``.eqx`` alone leaves the record
+    behind and reads as a checkpoint with no record, which an anchored or dfs
+    skeleton refuses and a LEGACY skeleton accepts and loads as legacy -- so
+    the record must be copied with the checkpoint whenever one is moved
+    outside that pull."""
     ckpt = str(tmp_path / "model_val_best.eqx")
     assert class_record_path(ckpt) == ckpt + CLASS_RECORD_SUFFIX
-    write_class_record(ckpt, _anchored_arch())
+    _write_checkpoint(ckpt, _anchored_arch())
     assert os.path.isfile(str(tmp_path / "model_val_best.eqx.class.json"))
     with open(str(tmp_path / "model_val_best.eqx.class.json")) as f:
         assert json.load(f)["parent_anchor"] is True
@@ -418,15 +446,14 @@ def test_an_unrecorded_resume_set_is_readable_only_by_the_legacy_class(tmp_path)
 
 
 class _KilledInTheRename(Exception):
-    """Stands for a kill inside the atomic write, at the instant the leaves
-    have been written to their temporary sibling and the rename that puts them
-    in place has not returned."""
+    """Stands for a kill inside the write, at the instant one of the two
+    renames that commit a checkpoint and its record has not returned."""
 
 
-def _kill_the_rename_of(monkeypatch, basename):
+def _kill_the_rename_onto(monkeypatch, basename):
     """Make ``os.replace`` raise :class:`_KilledInTheRename` when it is asked to
-    move something onto ``basename``, and behave normally otherwise. The atomic
-    writer's leaf rename is then the only step that dies."""
+    move something onto ``basename``, and behave normally otherwise, so one
+    named step of the write is the only one that dies."""
     real_replace = os.replace
 
     def _replace(src, dst, *args, **kwargs):
@@ -437,67 +464,191 @@ def _kill_the_rename_of(monkeypatch, basename):
     monkeypatch.setattr(os, "replace", _replace)
 
 
-def test_a_killed_atomic_write_leaves_the_record_describing_the_leaves(
-        tmp_path, monkeypatch):
-    """The atomic writer's two files change together or not at all.
+def _run_to_the_kill(fn, *args, **kwargs):
+    """Call ``fn`` and return the :class:`_KilledInTheRename` it raised, or
+    ``None`` if it ran to completion.
 
-    Unlike the truncating write, an aborted atomic write leaves the PREVIOUS
-    ``.eqx`` in place. A record put down before the rename would therefore come
-    to stand beside the old class's leaves -- a checkpoint labelled as a class
-    it is not, which every reader then accepts. After a kill at the rename the
-    record beside the surviving checkpoint must still be the surviving
-    checkpoint's own, or absent (absent is the legacy class, which an anchored
-    skeleton refuses).
+    The kill is not asserted here: what the case is about is the state left on
+    disk, and a writer that reached further than the kill point says so more
+    plainly through that state than through a missing exception.
     """
-    from xcquinox.alec.train import _serialise_trained_model
+    try:
+        fn(*args, **kwargs)
+    except _KilledInTheRename as exc:
+        return exc
+    return None
 
-    _write_resume_set(tmp_path, _legacy_arch())
+
+def test_a_kill_between_the_record_and_the_leaves_is_refused_by_every_reader(
+        tmp_path, monkeypatch):
+    """Kill point "4 to 5" of the writer's table: the record has been renamed
+    into place and the leaves have not.
+
+    What stands on disk is then the NEW record over the PREVIOUS run's
+    complete ``.eqx``. That is the state a record-first write left ACCEPTED --
+    an anchored record over a legacy run's weights, read as anchored by both
+    evaluation loaders and by the resume path, in silence. The record carries
+    the digest of the leaves it was written for, so here every reader refuses
+    it, and refuses it whichever class its own skeleton is: a record that does
+    not describe these leaves is not evidence about them.
+    """
+    from xcquinox.alec.eval_holdout import load_trained_model
+    from xcquinox.alec.evaluation import run_test
+    from xcquinox.alec.train import (_load_resume_checkpoint,
+                                     _serialise_trained_model)
+
+    legacy, other = _legacy_arch(), _anchored_dfs_arch()
+    _written, optimizer = _write_resume_set(tmp_path, legacy)
     ckpt = os.path.join(str(tmp_path), "resume_model.eqx")
     with open(ckpt, "rb") as f:
         leaves_before = f.read()
-    assert read_class_record(ckpt)["descriptor_coordinates"] == "legacy"
 
-    _kill_the_rename_of(monkeypatch, "resume_model.eqx")
-    other = _anchored_dfs_arch()
-    with pytest.raises(_KilledInTheRename):
-        _serialise_trained_model(ckpt, _model(other, seed=3), other, atomic=True)
+    _kill_the_rename_onto(monkeypatch, "resume_model.eqx")
+    killed = _run_to_the_kill(_serialise_trained_model, ckpt,
+                              _model(other, seed=3), other)
     monkeypatch.undo()
 
     with open(ckpt, "rb") as f:
-        assert f.read() == leaves_before, "the previous leaves did not survive"
+        assert f.read() == leaves_before, (
+            "the write reached the leaves: the previous run's checkpoint was "
+            "overwritten by a write that was killed before its rename")
+    assert killed is not None, "the leaves' rename was never reached"
     record = read_class_record(ckpt)
-    assert record is None or (record["parent_anchor"] is False
-                              and record["descriptor_coordinates"] == "legacy"), (
-        "the record was renamed into place while the leaves beside it are "
-        f"still the previous class's: {record}")
+    assert record["descriptor_coordinates"] == "dfs", record
+    assert record["sha256"] != _sha256_of(ckpt), (
+        "the crossing state was not built: the record describes these leaves")
+
+    for skeleton_arch in (legacy, other):
+        with pytest.raises(ValueError) as excinfo:
+            load_trained_model(_SpecStub(skeleton_arch), ckpt)
+        assert isinstance(excinfo.value, ClassRecordStale), excinfo.value
+        assert _sha256_of(ckpt) in str(excinfo.value)
+
+        spec = _make_test_spec(skeleton_arch, ckpt, tmp_path / "out")
+        with pytest.raises(ValueError) as excinfo:
+            run_test(spec)
+        assert isinstance(excinfo.value, ClassRecordStale), excinfo.value
+
+        skeleton = _model(skeleton_arch, seed=9)
+        opt_skeleton = optimizer.init(eqx.filter(skeleton, eqx.is_array))
+        with pytest.raises(ValueError) as excinfo:
+            _load_resume_checkpoint(str(tmp_path), model_skeleton=skeleton,
+                                    opt_state_skeleton=opt_skeleton)
+        assert isinstance(excinfo.value, ClassRecordStale), excinfo.value
 
 
-def test_the_non_atomic_write_still_puts_the_record_down_first(tmp_path,
-                                                               monkeypatch):
-    """The other half of the same invariant, pinned so the two branches are
-    not unified into one order by mistake.
+def test_a_record_committed_over_no_checkpoint_is_refused(tmp_path,
+                                                          monkeypatch):
+    """The same kill point in an EMPTY directory, the first write a run makes:
+    the record lands and the leaves do not, so the record describes a
+    checkpoint that is not there.
 
-    ``eqx.tree_serialise_leaves`` truncates its target, so its leaves cannot
-    survive a kill and the record may safely precede them. The order the
-    atomic branch needs would, here, leave a COMPLETE checkpoint of this class
-    with no record beside it -- which a legacy skeleton accepts and reads as
-    legacy, the load this module exists to refuse.
+    A record outliving -- or here outrunning -- its ``.eqx`` states the class
+    of leaves nothing on disk holds, so it is refused rather than applied to
+    whatever is written next. ``model.eqx`` is the harness's completion
+    signal, and it is the rename that never happened, so the run reads as
+    unfinished, which it is.
     """
-    from xcquinox.alec import train
+    from xcquinox.alec.train import _serialise_trained_model
 
     ckpt = str(tmp_path / "model.eqx")
     arch = _anchored_dfs_arch()
+    _kill_the_rename_onto(monkeypatch, "model.eqx")
+    killed = _run_to_the_kill(_serialise_trained_model, ckpt, _model(arch), arch)
+    monkeypatch.undo()
+
+    assert not os.path.isfile(ckpt), (
+        "the leaves landed: this is not the state a kill at the rename leaves")
+    assert killed is not None, "the leaves' rename was never reached"
+    assert not os.path.isfile(ckpt + ".tmp"), "the leaves' temporary was left"
+    assert read_class_record(ckpt)["descriptor_coordinates"] == "dfs"
+
+    with pytest.raises(ValueError) as excinfo:
+        require_matching_class(ckpt, model_class_of_arch(arch))
+    assert isinstance(excinfo.value, ClassRecordStale), excinfo.value
+    assert "model.eqx" in str(excinfo.value)
+
+
+def test_a_kill_before_the_record_commit_leaves_the_previous_checkpoint(
+        tmp_path, monkeypatch):
+    """Kill points 1 to 3 of the same table: neither file has been renamed, so
+    the directory is exactly as the write found it.
+
+    Found here as an unrecorded LEGACY checkpoint -- what every run before the
+    anchor left -- and the rule for one of those is unchanged by anything the
+    digest adds: the legacy skeleton loads those leaves, and the anchored
+    skeleton is refused because nothing on disk states what they are.
+    """
+    from xcquinox.alec.eval_holdout import load_trained_model
+    from xcquinox.alec.train import _serialise_trained_model
+
+    ckpt = str(tmp_path / "model.eqx")
+    legacy_model = _write_checkpoint(ckpt, _legacy_arch(), record=False)
+    with open(ckpt, "rb") as f:
+        leaves_before = f.read()
+
+    _kill_the_rename_onto(monkeypatch, "model.eqx" + CLASS_RECORD_SUFFIX)
+    other = _anchored_dfs_arch()
+    killed = _run_to_the_kill(_serialise_trained_model, ckpt,
+                              _model(other, seed=3), other)
+    monkeypatch.undo()
+
+    with open(ckpt, "rb") as f:
+        assert f.read() == leaves_before, (
+            "the write reached the leaves after its record was killed")
+    assert killed is not None, "the record's rename was never reached"
+    assert read_class_record(ckpt) is None, (
+        "a record was left behind by a write that committed neither file")
+    assert not os.path.isfile(ckpt + ".tmp"), "the leaves' temporary was left"
+
+    loaded = load_trained_model(_SpecStub(_legacy_arch()), ckpt)
+    a, b = _arrays(legacy_model), _arrays(loaded)
+    assert a and all(np.array_equal(x, y) for x, y in zip(a, b))
+    with pytest.raises(ValueError, match="no model-class record"):
+        load_trained_model(_SpecStub(_anchored_arch()), ckpt)
+
+
+def test_a_kill_before_the_leaves_are_serialised_never_commits_the_record(
+        tmp_path, monkeypatch):
+    """Kill point 1, with the serialisation itself raising: the record on disk
+    is the previous one, or none -- never the new one.
+
+    This is the window a record-first write opened at its widest. The
+    truncation the earlier order relied on happens when
+    ``tree_serialise_leaves`` OPENS its target, so a failure of that open
+    (EACCES, EMFILE, a read-only remount) or a kill in the interval before it
+    left the previous complete ``.eqx`` under the new record. Here the leaves
+    are the first thing written and they are written to a temporary, so a
+    failure there has touched neither file the readers look at.
+    """
+    from xcquinox.alec import train
+    from xcquinox.alec.eval_holdout import load_trained_model
+
+    ckpt = str(tmp_path / "model.eqx")
+    legacy_model = _write_checkpoint(ckpt, _legacy_arch())
+    with open(ckpt, "rb") as f:
+        leaves_before = f.read()
 
     def _die(*args, **kwargs):
         raise _KilledInTheRename(ckpt)
 
     monkeypatch.setattr(train.eqx, "tree_serialise_leaves", _die)
+    other = _anchored_dfs_arch()
     with pytest.raises(_KilledInTheRename):
-        train._serialise_trained_model(ckpt, _model(arch), arch)
+        train._serialise_trained_model(ckpt, _model(other, seed=3), other)
     monkeypatch.undo()
 
-    assert not os.path.isfile(ckpt), "the leaves were written after all"
-    assert read_class_record(ckpt)["descriptor_coordinates"] == "dfs"
+    record = read_class_record(ckpt)
+    assert record["descriptor_coordinates"] == "legacy", (
+        "the new class's record was committed over the previous run's "
+        f"checkpoint: {record}")
+    with open(ckpt, "rb") as f:
+        assert f.read() == leaves_before
+    assert record["sha256"] == _sha256_of(ckpt)
+
+    loaded = load_trained_model(_SpecStub(_legacy_arch()), ckpt)
+    a, b = _arrays(legacy_model), _arrays(loaded)
+    assert a and all(np.array_equal(x, y) for x, y in zip(a, b))
 
 
 def test_a_refused_set_then_a_killed_write_does_not_resume_the_other_class(
@@ -528,7 +679,7 @@ def test_a_refused_set_then_a_killed_write_does_not_resume_the_other_class(
     # The class B run's first periodic checkpoint, killed at the LAST model
     # file it writes: the snapshots before it are class B's throughout, and the
     # validation-best file is the one left holding class A's leaves.
-    _kill_the_rename_of(monkeypatch, "resume_val_best.eqx")
+    _kill_the_rename_onto(monkeypatch, "resume_val_best.eqx")
     with pytest.raises(_KilledInTheRename):
         _write_resume_checkpoint(
             str(tmp_path), model=_model(class_b, seed=3), opt_state=opt_skeleton,
@@ -584,6 +735,38 @@ def test_a_refused_resume_load_removes_the_stale_set_with_its_records(tmp_path):
     assert left == [], left
 
 
+def test_the_resume_loader_refuses_a_record_that_describes_other_leaves(tmp_path):
+    """The crossing state, built on disk rather than by interrupting a writer:
+    one run's record over another run's leaves, with ``resume_state.pkl``
+    present so the set is offered to the loader.
+
+    ``_has_resume_checkpoint`` requires that state pickle, which is written
+    after every snapshot it names, so a HALF-WRITTEN set is never read at all.
+    That gate says nothing about the state here -- a set that was complete
+    when it was written and has since had one of its files replaced by another
+    run's -- and the class comparison says nothing about it either, since the
+    record it reads is the one the skeleton's own class wrote. What refuses it
+    is the digest.
+    """
+    from xcquinox.alec.train import (_has_resume_checkpoint,
+                                     _load_resume_checkpoint)
+
+    _written, optimizer = _write_resume_set(tmp_path, _legacy_arch())
+    ckpt = os.path.join(str(tmp_path), "resume_model.eqx")
+    recorded = read_class_record(ckpt)
+    eqx.tree_serialise_leaves(ckpt, _model(_anchored_dfs_arch(), seed=3))
+    assert _has_resume_checkpoint(str(tmp_path)), "the state gate is not set"
+    assert recorded["descriptor_coordinates"] == "legacy"
+
+    skeleton = _model(_legacy_arch(), seed=9)
+    opt_skeleton = optimizer.init(eqx.filter(skeleton, eqx.is_array))
+    with pytest.raises(ValueError) as excinfo:
+        _load_resume_checkpoint(str(tmp_path), model_skeleton=skeleton,
+                                opt_state_skeleton=opt_skeleton)
+    assert isinstance(excinfo.value, ClassRecordStale), excinfo.value
+    assert _sha256_of(ckpt) in str(excinfo.value)
+
+
 def test_completion_deletes_the_resume_records_with_their_checkpoints(tmp_path):
     """No record outlives the checkpoint it describes: completion clears the
     resume set and its records together, so the next run in the same directory
@@ -609,6 +792,59 @@ def test_an_unreadable_record_is_refused_rather_than_read_as_legacy(tmp_path):
     with open(class_record_path(str(ckpt)), "w") as f:
         f.write("{not json")
     with pytest.raises(ValueError, match="could not be read"):
+        require_matching_class(str(ckpt), model_class_of_arch(_anchored_arch()))
+
+
+def test_a_tampered_checkpoint_is_refused_beside_its_own_record(tmp_path):
+    """One byte of the ``.eqx`` changed, its length unchanged, the record left
+    exactly as it was written.
+
+    The refusal is the digest's alone: the size the record also carries still
+    agrees, and the class it names is still the class of the skeleton asking.
+    A checkpoint that is not the one the record was written for is refused
+    whatever made it differ -- an interrupted write, a partial copy, a file
+    edited in place.
+    """
+    from xcquinox.alec.eval_holdout import load_trained_model
+
+    ckpt = tmp_path / "model.eqx"
+    _write_checkpoint(str(ckpt), _anchored_dfs_arch())
+    before = ckpt.read_bytes()
+    tampered = bytearray(before)
+    tampered[-1] ^= 0x01
+    ckpt.write_bytes(bytes(tampered))
+    assert os.path.getsize(str(ckpt)) == len(before)
+
+    with pytest.raises(ValueError) as excinfo:
+        require_matching_class(str(ckpt),
+                               model_class_of_arch(_anchored_dfs_arch()))
+    assert isinstance(excinfo.value, ClassRecordStale), excinfo.value
+    assert _sha256_of(ckpt) in str(excinfo.value)
+    # Both sides of the message carry the same byte count: the size the record
+    # also states still agrees, and the digest is what refused.
+    assert str(excinfo.value).count(f"({len(before)} bytes)") == 2, excinfo.value
+    with pytest.raises(ValueError, match="sha256"):
+        load_trained_model(_SpecStub(_anchored_dfs_arch()), ckpt)
+
+
+def test_a_record_without_a_digest_is_unreadable_rather_than_believed(tmp_path):
+    """A record that states no ``sha256`` cannot be held to the leaves beside
+    it, and a record that cannot be checked is not evidence about them: it
+    raises, exactly as a record that will not parse does, rather than being
+    taken at its word about the class.
+
+    Nothing in production predates the digest -- the v6 groups are
+    unsubmitted -- so this rule downgrades no checkpoint that exists.
+    """
+    ckpt = tmp_path / "model.eqx"
+    _write_checkpoint(str(ckpt), _anchored_arch())
+    record = read_class_record(str(ckpt))
+    record.pop("sha256", None)
+    record.pop("size", None)
+    with open(class_record_path(str(ckpt)), "w") as f:
+        json.dump(record, f, indent=2)
+
+    with pytest.raises(ValueError, match="sha256"):
         require_matching_class(str(ckpt), model_class_of_arch(_anchored_arch()))
 
 

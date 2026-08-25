@@ -1011,7 +1011,13 @@ def load_trained_model(training_spec, model_path: Path):
     skeleton before the leaves are read, from the record written beside the
     checkpoint by the training stage (``checkpoint_class``). A checkpoint of
     the other class would otherwise load here in silence and be evaluated as
-    a model that is neither."""
+    a model that is neither.
+
+    The record is held to the checkpoint first, by the SHA-256 it carries: the
+    two are separate files with one rename each, so a training write
+    interrupted between them leaves the new record standing over the previous
+    run's complete ``.eqx``, and a class read off a record that does not
+    describe these leaves is no better than no check at all."""
     import equinox as eqx
     from xcquinox.alec.checkpoint_class import (model_class_of_arch,
                                                 require_matching_class)

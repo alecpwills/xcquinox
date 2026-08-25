@@ -463,6 +463,14 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
     # model that is neither -- the same hazard the polarization check below
     # covers for the one property that DOES change a width. Refused before
     # the leaves are read.
+    #
+    # The record is first held to the leaves it claims to describe, by the
+    # SHA-256 it carries (checkpoint_class.require_matching_digest). Record
+    # and checkpoint are two files with one rename each, so a training write
+    # interrupted between them leaves the new record over the previous run's
+    # complete .eqx; without the digest this reader would take the record's
+    # word for leaves another run wrote, which is the silent cross-class load
+    # in the form the class comparison alone cannot see.
     require_matching_class(spec.model_checkpoint, model_class_of_arch(spec.arch))
 
     # 3. Deserialize trained weights

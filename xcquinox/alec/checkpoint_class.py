@@ -32,9 +32,19 @@ silent cross-class load this module exists to prevent, back again, because the
 one file that stated the class was left behind. The record must therefore be
 copied with the checkpoint whenever a checkpoint is moved outside the pull.
 
+The record DESCRIBES the checkpoint rather than merely standing beside it: it
+carries the SHA-256 and the byte count of the exact ``.eqx`` it was written
+for, and :func:`require_matching_class` digests the file on disk and compares
+before it compares classes. Two files cannot be renamed in one step, so some
+kill always lands between them and no write ORDER can keep them consistent on
+its own; the digest is what tells a reader which side of that kill it is
+looking at. A record whose digest is not the digest of the leaves beside it is
+a record of a checkpoint that is no longer there, and is refused
+(:class:`ClassRecordStale`) rather than believed.
+
 Payload, in the vocabulary of the records it sits beside
 (``pretrain_metadata.json`` for the first five keys, the fidelity certificate
-for the last two)::
+for the two after them)::
 
     parent_anchor              bool   the class, compared by the readers
     descriptor_coordinates     str    the class, compared by the readers
@@ -45,23 +55,28 @@ for the last two)::
     parent                     str    the parent functional when anchored, else
                                       null (``parents.parent_for_arch``)
     xcquinox_version           str    provenance
+    sha256                     str    the digest of the .eqx this record
+                                      describes, verified before the class is
+                                      compared
+    size                       int    that checkpoint's size in bytes
 
-Only the first two are compared: they are what "the model class" means, and
-they are the two a leaf stream cannot reveal. The rest states what wrote the
-file.
+Only ``parent_anchor`` and ``descriptor_coordinates`` are compared as the
+class: they are what "the model class" means, and they are the two a leaf
+stream cannot reveal. ``sha256`` and ``size`` say which leaves the two refer
+to. The rest states what wrote the file.
 
 A checkpoint with NO record beside it is a legacy checkpoint -- unanchored, on
 the legacy coordinates -- because every run that writes an anchored or a
 ``dfs`` checkpoint writes the record in the same call that writes the ``.eqx``
-(:func:`write_class_record`, or :func:`stage_class_record` followed by
-:func:`commit_class_record` where the checkpoint itself is written
-atomically). A legacy skeleton therefore accepts it and any
-other skeleton refuses it, which is the rule
+(``train._serialise_trained_model``, the one write path, through
+:func:`stage_class_record` and :func:`commit_class_record`). A legacy skeleton
+therefore accepts it and any other skeleton refuses it, which is the rule
 ``train._require_matching_model_class`` applies to a pretrain directory with
 no metadata.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -71,6 +86,10 @@ CLASS_RECORD_SUFFIX = ".class.json"
 #: Appended to a class record's path to give the path a record is STAGED at
 #: while the checkpoint it describes is still being written. Nothing reads it.
 STAGED_RECORD_SUFFIX = ".tmp"
+
+#: Read size for :func:`file_digest`. The whole checkpoint is never held in
+#: memory, and one chunk covers every checkpoint this project writes.
+DIGEST_CHUNK_BYTES = 1 << 20
 
 #: The class of a checkpoint with no record: what everything written before
 #: the anchor existed is.
@@ -89,6 +108,23 @@ class ModelClassMismatch(ValueError):
     """
 
 
+class ClassRecordStale(ValueError):
+    """A class record does not describe the checkpoint lying beside it.
+
+    Raised when the SHA-256 (or the byte count) the record carries is not the
+    one the ``.eqx`` on disk has, and when the record stands beside no ``.eqx``
+    at all. The record and the leaves are separate files, so a write
+    interrupted between the two renames leaves exactly this state -- the new
+    record over the previous run's complete checkpoint -- and it is the state
+    in which a reader would otherwise load one model class believing the
+    record's word for another. A ``ValueError``, so every caller that already
+    treats a refusal as "no usable checkpoint" sees what it saw before; a type
+    of its own so the condition can be told from a class mismatch (which is a
+    correctly described checkpoint of the wrong class) and from an unreadable
+    record.
+    """
+
+
 def class_record_path(checkpoint_path) -> str:
     """The class record's path for the checkpoint at ``checkpoint_path``."""
     return f"{os.fspath(checkpoint_path)}{CLASS_RECORD_SUFFIX}"
@@ -98,6 +134,65 @@ def staged_class_record_path(checkpoint_path) -> str:
     """Where a record for ``checkpoint_path`` is staged before it is committed
     (:func:`stage_class_record`)."""
     return f"{class_record_path(checkpoint_path)}{STAGED_RECORD_SUFFIX}"
+
+
+def file_digest(path) -> tuple:
+    """``(sha256_hex, size_in_bytes)`` of the file at ``path``.
+
+    Read in :data:`DIGEST_CHUNK_BYTES` chunks, so an arbitrarily large
+    checkpoint costs one buffer rather than its own size in memory. Measured
+    on this project's checkpoints: 13,968 bytes (``deep_rung35ms_mgga_3x16``)
+    in 0.015 ms, and the largest ``.eqx`` in the tree, 131,122 bytes
+    (a ``deep_combined_attn``), in 0.091 ms -- against 0.90 ms to serialise
+    the first of the two, so the digest is under 2 percent of the write it
+    protects and is not on any inner loop.
+    """
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(DIGEST_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def fsync_file(path) -> None:
+    """Flush the file at ``path`` to stable storage.
+
+    A crash, as opposed to a clean kill, can otherwise reorder the two writes
+    arbitrarily: the small record reaches the platter while the checkpoint it
+    describes has not. Both temporaries are fsync'd before either is renamed,
+    so the only ordering a reader can see is the order of the renames.
+    """
+    fd = os.open(os.fspath(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fsync_dir_of(path) -> None:
+    """Flush the DIRECTORY entry of ``path``, so the renames themselves are
+    durable and not only the bytes they point at.
+
+    A filesystem that does not permit the directory to be opened or synced
+    (nothing this project runs on) is tolerated: the renames are still atomic
+    there, only their durability across a crash is the filesystem's business.
+    """
+    directory = os.path.dirname(os.path.abspath(os.fspath(path))) or "."
+    try:
+        fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def model_class_of_arch(arch) -> dict:
@@ -144,8 +239,14 @@ def describe_class(model_class) -> str:
             f"{model_class['descriptor_coordinates']!r}")
 
 
-def class_record(arch) -> dict:
+def class_record(arch, *, sha256, size) -> dict:
     """The full payload written beside a checkpoint built from ``arch``.
+
+    ``sha256`` and ``size`` are the digest and the byte count of the exact
+    ``.eqx`` this record is being written for -- of the temporary the leaves
+    were just serialised to, in the one write path, since that is the file
+    about to become the checkpoint. They are what makes the record describe a
+    particular set of leaves rather than a location.
 
     The parent name comes from ``parents.parent_for_arch`` rather than from a
     second reading of the rung, so the record cannot name a parent the
@@ -165,36 +266,29 @@ def class_record(arch) -> dict:
         "parent": (parents.parent_for_arch(arch)
                    if record["parent_anchor"] else None),
         "xcquinox_version": running_xcquinox_version(),
+        "sha256": str(sha256),
+        "size": int(size),
     })
     return record
 
 
-def write_class_record(checkpoint_path, arch) -> str:
-    """Write the class record for the checkpoint at ``checkpoint_path``.
+def stage_class_record(checkpoint_path, arch, *, sha256, size) -> str:
+    """Write the record for ``checkpoint_path`` to its STAGED path, flush it,
+    and return that path: the first half of the two-phase record write.
 
-    THE writer: every trained ``.eqx`` gets its record from this one call, in
-    the same code path that serialises the leaves, so the two cannot drift.
-    Returns the record's path.
-    """
-    path = class_record_path(checkpoint_path)
-    with open(path, "w") as f:
-        json.dump(class_record(arch), f, indent=2)
-    return path
-
-
-def stage_class_record(checkpoint_path, arch) -> str:
-    """Write the record for ``checkpoint_path`` to its STAGED path and return
-    it, the first half of the two-phase write an atomic checkpoint needs.
-
-    An atomic ``.eqx`` write leaves the previous checkpoint in place when it
-    is interrupted, so its record cannot be put down first: it would come to
-    stand beside the old class's leaves. Staged here and committed by
-    :func:`commit_class_record` once the checkpoint itself has landed, the
-    record on disk is at every instant either the previous one or this one.
+    The record is written where nothing reads it and moved into place by
+    :func:`commit_class_record`, so the record on disk is at every instant
+    either wholly the previous one or wholly this one -- never a half-written
+    JSON file some reader has to parse. ``sha256`` / ``size`` describe the
+    leaves this record is being committed for; the reader compares them
+    against the ``.eqx`` it finds, which is what tells it whether the two
+    files are the pair they claim to be.
     """
     staged = staged_class_record_path(checkpoint_path)
     with open(staged, "w") as f:
-        json.dump(class_record(arch), f, indent=2)
+        json.dump(class_record(arch, sha256=sha256, size=size), f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
     return staged
 
 
@@ -203,6 +297,29 @@ def commit_class_record(checkpoint_path) -> str:
     (``os.replace``), and return the record's path."""
     path = class_record_path(checkpoint_path)
     os.replace(staged_class_record_path(checkpoint_path), path)
+    return path
+
+
+def write_class_record(checkpoint_path, arch) -> str:
+    """Record ``arch``'s class for the checkpoint ALREADY on disk at
+    ``checkpoint_path``, and return the record's path.
+
+    The digest is taken from the file as it stands at this moment, so the
+    record cannot describe leaves other than the ones it was written for. The
+    checkpoint must exist; a record for an absent ``.eqx`` is the stale state
+    the readers refuse, and writing one deliberately is never what a caller
+    means.
+
+    This is the form for a checkpoint that is already in place -- adopting one
+    written elsewhere, or re-recording one whose class is known. The training
+    stage does not use it: ``train._serialise_trained_model`` stages the
+    record around the leaves' own rename so that a kill between the two is a
+    state the digest can name.
+    """
+    sha256, size = file_digest(checkpoint_path)
+    stage_class_record(checkpoint_path, arch, sha256=sha256, size=size)
+    path = commit_class_record(checkpoint_path)
+    fsync_dir_of(path)
     return path
 
 
@@ -230,11 +347,43 @@ def remove_class_record(checkpoint_path) -> None:
         pass
 
 
+def _digest_fields(record, path):
+    """``(sha256, size)`` from a parsed record, or ``ValueError``.
+
+    A record that states no digest cannot be checked against the checkpoint,
+    and a record that cannot be checked is not evidence of anything: it is
+    read as unreadable rather than trusted on its class alone. Nothing in
+    production predates the digest -- the v6 groups are unsubmitted and every
+    record a test writes is made by the writers above.
+    """
+    sha256 = record.get("sha256") if isinstance(record, dict) else None
+    size = record.get("size") if isinstance(record, dict) else None
+    if not isinstance(sha256, str) or len(sha256) != 64:
+        raise ValueError(
+            f"the model-class record {path!r} states no usable sha256 for the "
+            "checkpoint it describes, so it cannot be checked against the "
+            "leaves on disk: the record and the checkpoint are separate "
+            f"files, and the digest is what says they are a pair (got "
+            f"{sha256!r})")
+    try:
+        int(sha256, 16)
+    except ValueError as exc:
+        raise ValueError(
+            f"the model-class record {path!r} states a sha256 that is not "
+            f"hexadecimal: {sha256!r}") from exc
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        raise ValueError(
+            f"the model-class record {path!r} states no usable size in bytes "
+            f"for the checkpoint it describes (got {size!r})")
+    return sha256.lower(), size
+
+
 def read_class_record(checkpoint_path):
     """The record beside ``checkpoint_path``, or ``None`` when there is none.
 
-    A record that cannot be read or parsed raises ``ValueError``: an
-    unreadable record is not the same as no record, and answering "legacy"
+    A record that cannot be read, cannot be parsed, or does not carry the
+    ``sha256`` / ``size`` of the checkpoint it describes raises ``ValueError``:
+    an unreadable record is not the same as no record, and answering "legacy"
     for it would be a guess at the one thing this file exists to state.
     """
     path = class_record_path(checkpoint_path)
@@ -242,11 +391,54 @@ def read_class_record(checkpoint_path):
         return None
     try:
         with open(path) as f:
-            return json.load(f)
+            record = json.load(f)
     except (OSError, ValueError) as exc:
         raise ValueError(
             f"the model-class record {path!r} beside checkpoint "
             f"{os.fspath(checkpoint_path)!r} could not be read: {exc}") from exc
+    _digest_fields(record, path)
+    return record
+
+
+def require_matching_digest(checkpoint_path, record) -> None:
+    """Refuse a record that does not describe the ``.eqx`` beside it.
+
+    The record carries the SHA-256 and the byte count of the leaves it was
+    written for; here they are compared against the file on disk. The two are
+    separate files and cannot be renamed in one step, so the state this
+    catches is a real one: a write interrupted between the record's rename and
+    the checkpoint's leaves the NEW record over the PREVIOUS run's complete
+    ``.eqx``, and without the digest a reader takes the record's word for
+    leaves that were written by another run, of another class
+    (``train._serialise_trained_model`` sets out every kill point). A record
+    beside no checkpoint at all is the same failure with the leaves missing
+    rather than stale.
+
+    Raises :class:`ClassRecordStale`, naming the file and both digests.
+    """
+    path = os.fspath(checkpoint_path)
+    recorded_sha, recorded_size = _digest_fields(record, class_record_path(path))
+    try:
+        got_sha, got_size = file_digest(path)
+    except FileNotFoundError as exc:
+        raise ClassRecordStale(
+            f"the model-class record {class_record_path(path)!r} describes a "
+            f"checkpoint that is not on disk: {path!r} is absent, while the "
+            f"record states sha256={recorded_sha} over {recorded_size} bytes. "
+            "A record outliving its checkpoint states the class of leaves "
+            "that are gone, so it is refused rather than applied to whatever "
+            "is written next.") from exc
+    if got_sha != recorded_sha or got_size != recorded_size:
+        raise ClassRecordStale(
+            f"refusing to read the model class of {path!r} from the record "
+            f"{class_record_path(path)!r}: the record describes leaves with "
+            f"sha256={recorded_sha} ({recorded_size} bytes), and the "
+            f"checkpoint on disk is sha256={got_sha} ({got_size} bytes). The "
+            "record and the checkpoint are separate files; a write "
+            "interrupted between them leaves exactly this pair, and the "
+            "record's class is not the class of these leaves. Rewrite the "
+            "checkpoint, or delete both and retrain -- nothing on disk states "
+            "what this .eqx is.")
 
 
 def require_matching_class(checkpoint_path, want_class, *,
@@ -258,6 +450,12 @@ def require_matching_class(checkpoint_path, want_class, *,
     :func:`model_class_of_model` (a built skeleton). Returns the recorded
     class -- :data:`LEGACY_CLASS` when there is no record -- so a caller can
     log what it accepted.
+
+    The record is held to the ``.eqx`` on disk BEFORE the classes are
+    compared (:func:`require_matching_digest`): a record that does not
+    describe these leaves is no evidence about them, whichever class it names,
+    so the same refusal answers a skeleton of either class. Raises
+    :class:`ClassRecordStale` there.
 
     Raises :class:`ModelClassMismatch` (a ``ValueError``) when the record
     names another class, and when there is NO record and the skeleton is not
@@ -278,6 +476,7 @@ def require_matching_class(checkpoint_path, want_class, *,
                 "or dfs checkpoint writes the record with it, so a checkpoint "
                 "without one was written by the unanchored legacy class.")
         return dict(LEGACY_CLASS)
+    require_matching_digest(path, record)
     got_class = {
         "parent_anchor": bool(record.get("parent_anchor", False)),
         "descriptor_coordinates": str(
