@@ -21,6 +21,8 @@ ${CONDA_ACTIVATION}
 # production BLAS cap (SLURM_CPUS_ON_NODE/12) + the XLA compile trims in
 # _preflight._compile_smoke_impl so the gate mirrors a real train node.
 PYSCF_THREADS=$${SLURM_CPUS_PER_TASK:-${PYSCF_POOL_THREADS_MAX}}
+case "$$PYSCF_THREADS" in ''|*[!0-9]*) PYSCF_THREADS=${PYSCF_POOL_THREADS_MAX} ;; esac
+[ "$$PYSCF_THREADS" -ge 1 ] || PYSCF_THREADS=1
 [ "$$PYSCF_THREADS" -le ${PYSCF_POOL_THREADS_MAX} ] || PYSCF_THREADS=${PYSCF_POOL_THREADS_MAX}
 export OMP_NUM_THREADS="$$PYSCF_THREADS"
 export MKL_NUM_THREADS="$$PYSCF_THREADS"

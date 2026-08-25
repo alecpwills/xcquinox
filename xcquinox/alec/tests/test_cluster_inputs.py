@@ -484,6 +484,89 @@ def test_prepare_inputs_external_domain_scopes_to_the_runs_cells(
     assert staged.cell_species_without_reference == ()
 
 
+def test_prepare_inputs_builds_the_regularizer_anchors_the_specs_carry(
+    tmp_path, stub_refs, monkeypatch
+):
+    """spec_builder injects the neutral H and Li anchors into every spec whose
+    subset lacks them as single atoms, so the references must cover them even
+    when no chosen point names them: a single cell on a point without lithium
+    still trains with the Li anchor in its spec. DFS domain: the anchors are
+    taken from the canonical set with their own sources, in canonical order."""
+    from types import SimpleNamespace
+    pool = _make_pool()
+    fake_domain = SimpleNamespace(pool_builder=lambda cfg: pool,
+                                  ccsd_species_from_ledger=False,
+                                  regularize_atom_syms=("H", "Li"))
+    monkeypatch.setattr(inputs_mod, "_get_domain_profile",
+                        lambda name: fake_domain)
+    canonical = [SpeciesEntry("H", 0, 1, "dfs_atom"),
+                 SpeciesEntry("Li", 0, 1, "dfs_atom")] + \
+        [SpeciesEntry(n, 0, 0, "dfs_ae") for n in ("P0", "P1", "P2", "P3", "Q")]
+    monkeypatch.setattr(inputs_mod, "_build_species_union", lambda: canonical)
+    cfg = _make_cfg(tmp_path)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+
+    staged = prepare_inputs(cfg)
+
+    built = stub_refs["precompute_kwargs"]["species"]
+    assert [(s.name, s.charge, s.spin, s.source) for s in built] == [
+        ("H", 0, 1, "dfs_atom"), ("Li", 0, 1, "dfs_atom"),
+        ("P0", 0, 0, "dfs_ae"), ("P1", 0, 0, "dfs_ae"), ("P2", 0, 0, "dfs_ae")]
+    assert staged.reference_species == ("H", "Li", "P0", "P1", "P2")
+    assert staged.cell_species_without_reference == ()
+
+
+def test_prepare_inputs_external_domain_builds_the_regularizer_anchors(
+    tmp_path, monkeypatch
+):
+    """External pool: the anchors are built with the bare-atom geometries the
+    specs carry (NIST ground-state spins: H 1, Li 1), beside the cells' own
+    species; an anchor a point already names is not duplicated."""
+    from types import SimpleNamespace
+
+    def _pt(name, spnames):
+        sp = []
+        for n in spnames:
+            a = Atoms("He", positions=[(0.0, 0.0, 0.0)])
+            a.info.update(name=n, charge=0, spin=0)
+            sp.append(a)
+        return TrainingPoint(kind="bh76", name=name, species=tuple(sp),
+                             metadata={"e_rxn_ref": 1.0})
+
+    h_atom = _named_atoms("H", "H", charge=0, spin=1)
+    pool = [_pt("P0", ["a"]), _pt("P1", ["b"]),
+            TrainingPoint(kind="ae", name="P2", species=(_named_atoms("H", "c"),
+                                                          h_atom),
+                          metadata={"ae_kcalmol": 1.0})]
+    fake_domain = SimpleNamespace(pool_builder=lambda cfg: pool,
+                                  ccsd_species_from_ledger=True,
+                                  regularize_atom_syms=("H", "Li"))
+    monkeypatch.setattr(inputs_mod, "_get_domain_profile", lambda name: fake_domain)
+    cap = {}
+
+    def fake_precompute(species, *, cache_dir, basis, grid_level,
+                        density_fit=False, auxbasis=None, atoms_by_key=None,
+                        validate_overrides=True, run_preflight=True,
+                        orientation_lock_strength=0.0):
+        cap["keys"] = sorted(atoms_by_key)
+        cap["names"] = sorted(s.name for s in species)
+        cap["li"] = atoms_by_key[("Li", 0, 1)]
+    monkeypatch.setattr(inputs_mod, "_precompute_all", fake_precompute)
+    monkeypatch.setattr(inputs_mod, "_ensure_pretrain_data", lambda *a, **k: None)
+
+    cfg = _make_cfg(tmp_path)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+
+    staged = prepare_inputs(cfg)
+
+    assert cap["keys"] == [("H", 0, 1), ("Li", 0, 1), ("a", 0, 0), ("b", 0, 0),
+                           ("c", 0, 0)]
+    assert cap["names"] == ["H", "Li", "a", "b", "c"]
+    assert cap["li"].get_chemical_symbols() == ["Li"]
+    assert cap["li"].info["spin"] == 1 and cap["li"].info["charge"] == 0
+    assert sorted(staged.reference_species) == ["H", "Li", "a", "b", "c"]
+
+
 def test_prepare_inputs_threads_density_fit_and_ensures_pretrain(
     tmp_path, stub_pool, stub_refs
 ):

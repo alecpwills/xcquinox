@@ -400,6 +400,7 @@ def test_render_thread_caps_present_every_template(tmp_path):
         assert f"PYSCF_THREADS=${{SLURM_CPUS_PER_TASK:-{cap}}}" in text, kind
         assert (f'[ "$PYSCF_THREADS" -le {cap} ] || PYSCF_THREADS={cap}'
                 in text), kind
+        assert '[ "$PYSCF_THREADS" -ge 1 ] || PYSCF_THREADS=1' in text, kind
         for pool in ("OMP", "MKL", "OPENBLAS"):
             assert f'export {pool}_NUM_THREADS="$PYSCF_THREADS"' in text, (
                 kind, pool)
@@ -428,16 +429,23 @@ def test_render_pyscf_pool_cap_evaluates_to_the_module_rule_under_bash(tmp_path)
     snippet = _thread_cap_snippet(render_sbatch("preflight", cfg,
                                                 str(tmp_path / "run")))
     probe = snippet + '\necho "$OMP_NUM_THREADS $MKL_NUM_THREADS $OPENBLAS_NUM_THREADS"'
-    for n in (1, 4, 8, 9, 24, 28, 40, 96):
+    for n in (0, 1, 2, 4, 7, 8, 9, 24, 28, 40, 96):
         out = subprocess.run(["bash", "-euo", "pipefail", "-c", probe],
                              env={"PATH": os.environ.get("PATH", ""),
                                   "SLURM_CPUS_PER_TASK": str(n)},
                              capture_output=True, text=True, check=True)
         assert out.stdout.split() == [str(pyscf_pool_threads(n))] * 3, (n, out.stdout)
-    out = subprocess.run(["bash", "-euo", "pipefail", "-c", probe],
-                         env={"PATH": os.environ.get("PATH", "")},
-                         capture_output=True, text=True, check=True)
-    assert out.stdout.split() == [str(PYSCF_POOL_THREADS_MAX)] * 3, out.stdout
+        assert out.stderr == "", (n, out.stderr)
+    # Unset, empty and unparseable allocations are the cap, silently (no
+    # message from the integer test reaches the job log).
+    for env in ({}, {"SLURM_CPUS_PER_TASK": ""},
+                {"SLURM_CPUS_PER_TASK": "not-a-number"},
+                {"SLURM_CPUS_PER_TASK": "-4"}):
+        out = subprocess.run(["bash", "-euo", "pipefail", "-c", probe],
+                             env={"PATH": os.environ.get("PATH", ""), **env},
+                             capture_output=True, text=True, check=True)
+        assert out.stdout.split() == [str(PYSCF_POOL_THREADS_MAX)] * 3, (env, out.stdout)
+        assert out.stderr == "", (env, out.stderr)
 
 
 def test_render_inline_thread_cap_scales_from_node_cores(tmp_path):

@@ -51,7 +51,7 @@ from dataclasses import dataclass
 
 from xcquinox.alec import external_refs as _external_refs
 from xcquinox.alec import pretrain_data_gen as _pretrain_data_gen
-from xcquinox.alec.training_points import build_dfs_pool_points
+from xcquinox.alec.training_points import build_dfs_pool_points, _atom_anchor_atoms
 from xcquinox.alec.cluster.grid_config import GridConfig, expand_grid
 
 
@@ -82,10 +82,26 @@ def _get_domain_profile(name):
     return get_domain_profile(name)
 
 
-def _ledger_scoped_species(points, subset_ledger):
+def _regularizer_anchor_atoms(domain) -> list:
+    """The neutral ground-state atoms ``spec_builder`` injects into every spec
+    whose chosen subset lacks them as single atoms -- one per symbol in
+    ``domain.regularize_atom_syms`` (the Dick regularizer set, H and Li) --
+    built by the same helper the natural AE path uses, so their names, charges
+    and spins are the ones the specs carry. A run's references must cover
+    them whether or not a chosen point names them: a single-cell run on a
+    point without lithium still carries the Li anchor in its spec, and on a
+    cold cache the anchor would otherwise reach training without a density
+    reference."""
+    return [_atom_anchor_atoms(sym)
+            for sym in tuple(getattr(domain, "regularize_atom_syms", ()) or ())]
+
+
+def _ledger_scoped_species(points, subset_ledger, *, extra_atoms=()):
     """CCSD species to precompute = the union of species across every training
     point named in the loaded subset ledger (training-subset species only), plus
-    a ``{(name,charge,spin): ASE Atoms}`` geometry map for ``precompute_all``.
+    ``extra_atoms`` (the regularizer anchors, :func:`_regularizer_anchor_atoms`)
+    deduplicated on the same key, plus a ``{(name,charge,spin): ASE Atoms}``
+    geometry map for ``precompute_all``.
 
     Generalizable: works for any name-keyed ledger over any pool. Returns
     ``(list[SpeciesEntry], atoms_by_key)``."""
@@ -100,7 +116,15 @@ def _ledger_scoped_species(points, subset_ledger):
             if pn in by_name and pn not in seen:
                 seen.add(pn)
                 chosen.append(by_name[pn])
-    union_atoms = species_union_from_points(chosen)
+    union_atoms = list(species_union_from_points(chosen))
+    have = {(a.info["name"], int(a.info.get("charge", 0)),
+             int(a.info.get("spin", 0))) for a in union_atoms}
+    for a in extra_atoms:
+        key = (a.info["name"], int(a.info.get("charge", 0)),
+               int(a.info.get("spin", 0)))
+        if key not in have:
+            have.add(key)
+            union_atoms.append(a)
     species = []
     atoms_by_key = {}
     for a in union_atoms:
@@ -124,14 +148,17 @@ def _run_cells_ledger(cfg: GridConfig, subset_ledger: dict) -> dict:
             for m, r in _metric_size_pairs(cfg)}
 
 
-def _run_scoped_canonical_species(points, run_ledger):
+def _run_scoped_canonical_species(points, run_ledger, anchor_atoms=()):
     """DFS domain: the canonical species (:func:`build_species_union`, with
-    their own geometry sources) that the run's cells name, in canonical order.
+    their own geometry sources) that the run's specs carry -- the species its
+    cells name plus the regularizer anchors ``spec_builder`` injects
+    (``anchor_atoms``) -- in canonical order.
 
     Returns ``(species, canonical_count, outside)``: the entries to build, the
     size of the canonical set, and the sorted ``(name, charge, spin)`` keys the
-    cells name that the canonical set does not carry."""
-    scoped, _atoms = _ledger_scoped_species(points, run_ledger)
+    specs carry that the canonical set does not."""
+    scoped, _atoms = _ledger_scoped_species(points, run_ledger,
+                                            extra_atoms=anchor_atoms)
     wanted = {(s.name, s.charge, s.spin) for s in scoped}
     canonical = _build_species_union()
     species = [s for s in canonical if (s.name, s.charge, s.spin) in wanted]
@@ -340,7 +367,9 @@ def prepare_inputs(
     # --- 3. ensure CCSD external references --------------------------------
     # Scoped to THIS run: the species named by the training points of the
     # run's own (metric, subset_size) cells, read off the ledger entries the
-    # grid requires -- the ledger file carries every cell ever selected. DFS
+    # grid requires -- the ledger file carries every cell ever selected --
+    # plus the regularizer anchors spec_builder injects into every spec whose
+    # subset lacks them (H and Li), since the specs carry them either way. DFS
     # domain: those species taken from the canonical set build_species_union
     # assembles (training, probe and HBPT species), so a species outside that
     # set -- an atom an AE reaction names that no reference was ever built
@@ -357,12 +386,14 @@ def prepare_inputs(
     # put the longest OEP tails (O2S, H2O2, F2O) on the critical path of every
     # preflight, for species no cell trains on.
     run_ledger = _run_cells_ledger(cfg, subset_ledger)
+    anchors = _regularizer_anchor_atoms(domain)
     reference_species: tuple = ()
     canonical_count = 0
     without_reference: tuple = ()
     if recompute_refs:
         if domain.ccsd_species_from_ledger:
-            species, atoms_by_key = _ledger_scoped_species(points, run_ledger)
+            species, atoms_by_key = _ledger_scoped_species(
+                points, run_ledger, extra_atoms=anchors)
             _precompute_all(
                 species,
                 cache_dir=cfg.inputs.external_refs_dir,
@@ -377,7 +408,7 @@ def prepare_inputs(
             )
         else:
             species, canonical_count, outside = _run_scoped_canonical_species(
-                points, run_ledger)
+                points, run_ledger, anchors)
             without_reference = tuple(outside)
             _precompute_all(
                 species,

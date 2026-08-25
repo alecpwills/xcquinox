@@ -333,9 +333,11 @@ def _thread_env(threads: int) -> dict[str, str]:
 #   (20, 20)  6.0 s  18.0 s   > 216 s (killed at 240 s)
 # and on a 40-core cluster node at (40, 40) the same build ran at about ten
 # minutes per molecule (workflow-matrix job 2134488, preflight stage). The cap
-# is the largest count within 1.5x of the measured optimum; a larger basis
-# gains parallel CCSD(T) from it without approaching the core count of any node
-# in use (28, 40 and 96).
+# is the largest count within 1.5x of the measured optimum on the OEP wall
+# (11.1 s against 7.5 s; 10 threads is 1.9x); a larger basis gains parallel
+# CCSD(T) from it without approaching the core count of any node in use (28,
+# 40 and 96). The shell form in the job templates treats an allocation that is
+# not a non-negative integer as unset (the cap) and floors at one thread.
 PYSCF_POOL_THREADS_MAX = 8
 
 
