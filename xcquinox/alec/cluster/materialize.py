@@ -187,6 +187,17 @@ def _write_json_atomic(payload: dict, path: str) -> None:
             os.unlink(tmp_name)
 
 
+def running_xcquinox_version() -> str:
+    """The version the running code stamps into every record it writes --
+    the manifest here and the fidelity certificate -- and the value the
+    pretrain stage's keep check compares a certificate with, so the writers
+    and the check read one expression. The package is imported inside: this
+    module is one of the cheap readers the status command and the certificate
+    gate import, and the package import is not cheap."""
+    import xcquinox
+    return getattr(xcquinox, "__version__", "unknown")
+
+
 def write_manifest(cells, paths, out_dir: str) -> str:
     """Write ``manifest.json`` recording the materialized grid.
 
@@ -211,8 +222,6 @@ def write_manifest(cells, paths, out_dir: str) -> str:
             "must be the same length"
         )
 
-    import xcquinox
-
     n = len(cells)
     width = max(4, len(str(n - 1))) if n > 0 else 4
 
@@ -226,7 +235,7 @@ def write_manifest(cells, paths, out_dir: str) -> str:
         })
 
     payload = {
-        "xcquinox_version": getattr(xcquinox, "__version__", "unknown"),
+        "xcquinox_version": running_xcquinox_version(),
         "python_version": sys.version.split()[0],
         "width": width,
         "n_specs": n,

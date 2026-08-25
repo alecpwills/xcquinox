@@ -76,7 +76,8 @@ from xcquinox.alec.cluster.domain import KCAL_PER_HA
 from xcquinox.alec.cluster.grid_config import (
     _canon_axis, load_grid_config, pretrain_checkpoint_dir,
 )
-from xcquinox.alec.cluster.materialize import _sha256_file, _write_json_atomic
+from xcquinox.alec.cluster.materialize import (
+    _sha256_file, _write_json_atomic, running_xcquinox_version)
 
 
 CERTIFICATE_FILENAME = "fidelity_certificate.json"
@@ -543,17 +544,6 @@ def checkpoint_digest_findings(pretrain_dir: str, cert) -> list:
     return out
 
 
-def running_xcquinox_version() -> str:
-    """The version the running code stamps into every record it writes --
-    the certificate here and the manifest in ``materialize`` -- so the two
-    writers and the keep check read one expression. The package is imported
-    here rather than at module level: this module is one of the cheap readers
-    the gate and the status command import, and the package import is not
-    cheap."""
-    import xcquinox
-    return getattr(xcquinox, "__version__", "unknown")
-
-
 def certificate_describes_run(cfg, pretrain_dir: str, arch_name: str,
                               cert) -> list:
     """Every way ``cert`` fails to describe this run, as short statements.
@@ -561,9 +551,11 @@ def certificate_describes_run(cfg, pretrain_dir: str, arch_name: str,
     An empty list means the certificate names this architecture, was written
     by the running code, records this run's identity and this architecture's
     parent, and carries the digests of the two networks now on disk -- the
-    five facts the record layer re-checks (``validate_run``), so an empty list
-    is the statement that the stages after this one would accept what is on
-    disk. The version is compared with the running code's rather than with
+    five facts the record layer re-checks (``validate_run``) beside the
+    verdict, which the caller judges first by the release rule; an empty list
+    is the statement that on those five facts the stages after this one
+    would accept what is on disk. The version is compared with the running
+    code's rather than with
     the manifest's, because the recovery that reaches this check re-runs the
     preflight, which stamps the manifest from the running code: a
     certificate written by an earlier deployment would then disagree with the
