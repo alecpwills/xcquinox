@@ -33,9 +33,13 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from xcquinox.alec.checkpoint_class import (model_class_of_model,
+from xcquinox.alec.checkpoint_class import (ModelClassMismatch,
+                                            commit_class_record,
+                                            discard_staged_record,
+                                            model_class_of_model,
                                             remove_class_record,
                                             require_matching_class,
+                                            stage_class_record,
                                             write_class_record)
 from xcquinox.alec.config import TrainingSpec, ArchitectureConfig
 from xcquinox.alec.solver import SolverConfig, SolverMode
@@ -737,29 +741,64 @@ def _validation_reaction_mae(model, val_mol_data, val_reactions,
 
 
 def _serialise_trained_model(path, model, arch, *, atomic=False) -> None:
-    """Write one TRAINED checkpoint: its model-class record, then its leaves.
+    """Write one TRAINED checkpoint together with its model-class record.
 
     The single write path for every trained checkpoint this module produces --
     the final / best / validation-best set here and the periodic resume set
-    below -- so an ``.eqx`` can never reach disk without the record stating
+    below -- so an ``.eqx`` can never reach disk without a record stating
     which model class its leaves belong to (``checkpoint_class``: the anchor
     and the descriptor coordinates change no parameter shape, so the stream
-    itself does not reveal them). The record goes first because a checkpoint
-    is a signal the moment it appears -- ``model.eqx`` is what the eval task
-    reads as "training completed" -- and a kill between the two writes must
-    not leave a signal with no class beside it.
+    itself does not reveal them).
 
-    ``atomic`` selects the crash-safe leaf write (:func:`_atomic_serialise`)
-    the resume set needs. ``arch`` may be ``None``, which writes no record;
-    the readers take a checkpoint with no record as the legacy class, so that
-    form is for legacy callers only.
+    INVARIANT, held by both branches: the record on disk describes the
+    ``.eqx`` on disk, or no record stands beside it. Absent is the fail-safe
+    state -- a checkpoint with no record is the legacy class, which every
+    other skeleton refuses -- while a record beside leaves it does not
+    describe is the failure this whole mechanism exists to prevent, since the
+    readers then accept the wrong class silently. Two files cannot be renamed
+    in one step, so the ORDER differs by branch, each chosen so that the
+    intermediate a kill can leave is a state a reader refuses:
+
+    * NON-ATOMIC (``model.eqx`` and its two snapshots): record FIRST.
+      ``eqx.tree_serialise_leaves`` truncates its target, so a kill between
+      the two writes leaves a record beside a ``.eqx`` that deserialisation
+      refuses; the reverse order would leave a COMPLETE ``.eqx`` of this class
+      with no record, which a legacy skeleton would accept and read as legacy.
+      ``model.eqx`` is also the harness's "training completed" signal, so it
+      must not appear before the class it was written as.
+    * ATOMIC (the ``resume_*`` set, :func:`_atomic_serialise`): record LAST,
+      staged to a sibling temporary path before the leaves are written and
+      committed only once the ``.eqx`` rename has returned. Here the PREVIOUS
+      ``.eqx`` SURVIVES an aborted write, so a record put down first would
+      come to stand beside the old class's leaves -- a checkpoint labelled as
+      a class it is not. Committed last, the only crossing state a kill can
+      leave is new leaves under the record that was already there, which in a
+      resume set is the same class: one run writes that set repeatedly from
+      one ``spec.arch``, and a set left behind by a run of ANOTHER class is
+      deleted the moment :func:`_load_resume_checkpoint` refuses it, rather
+      than being left for a later partial write to re-label.
+
+    ``arch`` may be ``None``, which writes no record; the readers take a
+    checkpoint with no record as the legacy class, so that form is for legacy
+    callers only.
     """
-    if arch is not None:
-        write_class_record(path, arch)
-    if atomic:
-        _atomic_serialise(path, model)
-    else:
+    if not atomic:
+        if arch is not None:
+            write_class_record(path, arch)
         eqx.tree_serialise_leaves(path, model)
+        return
+    if arch is not None:
+        stage_class_record(path, arch)
+    try:
+        _atomic_serialise(path, model)
+    except BaseException:
+        # The checkpoint on disk is still the previous one, so the record
+        # beside it must stay the previous one too.
+        if arch is not None:
+            discard_staged_record(path)
+        raise
+    if arch is not None:
+        commit_class_record(path)
 
 
 def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
@@ -893,6 +932,31 @@ _RESUME_FILES = (
 )
 
 
+def _remove_resume_set(checkpoint_dir) -> None:
+    """Delete the whole ``resume_*`` set: each file, its class record, and any
+    temporary sibling an interrupted atomic write left behind.
+
+    Two callers, for the two reasons a set stops being usable.
+    :func:`_finalize_completion` calls it because ``model.eqx`` has superseded
+    the set; :func:`_load_resume_checkpoint` calls it when it REFUSES the set
+    as another model class, where leaving it is what would let a later partial
+    write re-label its files (the records and the leaves are separate files,
+    so a set that survives a refusal can be updated one file at a time). A
+    refused set can never be loaded again in that directory: the run that was
+    refused starts fresh and overwrites it. Deleting an absent file is
+    tolerated, so both callers are idempotent.
+    """
+    for fn in _RESUME_FILES:
+        path = os.path.join(checkpoint_dir, fn)
+        remove_class_record(path)
+        discard_staged_record(path)
+        for candidate in (path, path + ".tmp"):
+            try:
+                os.remove(candidate)
+            except FileNotFoundError:
+                pass
+
+
 def _atomic_serialise(path, pytree) -> None:
     """``eqx.tree_serialise_leaves`` to ``path`` ATOMICALLY (write to a sibling
     temp file then ``os.replace``), so a SIGKILL mid-write can never leave a
@@ -1008,14 +1072,37 @@ def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
     changed class between the kill and the restart would otherwise resume from
     the other class's weights, which no shape reveals. The caller treats any
     raise here as "no usable resume checkpoint" and starts fresh.
+
+    A set REFUSED for its class is DELETED before the raise
+    (:func:`_remove_resume_set`), and the message says so, so the caller's
+    warning reports it. A refused set is dead either way -- the run that was
+    refused starts fresh and overwrites it -- and leaving it on disk is what
+    makes the mislabelling sequence reachable: its class records and its
+    leaves are separate files, so a later partial write can leave one of them
+    describing the other's class. Nothing else here deletes: a corrupt pickle
+    or a record that could not be read may be transient, and the caller
+    already starts fresh on those.
     """
     want_class = model_class_of_model(model_skeleton)
+
+    def _require(path):
+        """The class check, with the refused set discarded on refusal."""
+        try:
+            return require_matching_class(path, want_class,
+                                          what="resume checkpoint")
+        except ModelClassMismatch as exc:
+            _remove_resume_set(checkpoint_dir)
+            raise ModelClassMismatch(
+                f"{exc} The refused resume set and its class records have "
+                f"been removed from {os.fspath(checkpoint_dir)!r}, so no "
+                "later partial write can re-label them as this class."
+            ) from exc
+
     with open(os.path.join(checkpoint_dir, _RESUME_STATE), "rb") as f:
         state = pickle.load(f)  # noqa: S301 -- trusted, written by this codebase
 
     resume_model_path = os.path.join(checkpoint_dir, _RESUME_MODEL)
-    require_matching_class(resume_model_path, want_class,
-                           what="resume checkpoint")
+    _require(resume_model_path)
     model = eqx.tree_deserialise_leaves(resume_model_path, model_skeleton)
     opt_state = eqx.tree_deserialise_leaves(
         os.path.join(checkpoint_dir, _RESUME_OPT_STATE), opt_state_skeleton)
@@ -1025,8 +1112,7 @@ def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
     train_tracker._recent = list(state["_recent"])
     if state.get("has_train_best"):
         best_path = os.path.join(checkpoint_dir, _RESUME_BEST)
-        require_matching_class(best_path, want_class,
-                               what="resume checkpoint")
+        _require(best_path)
         train_tracker.best_model = eqx.tree_deserialise_leaves(
             best_path, model_skeleton)
 
@@ -1039,8 +1125,7 @@ def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
         val_tracker._finite_metrics = list(state["_finite_metrics"] or [])
         if state.get("has_val_best"):
             val_best_path = os.path.join(checkpoint_dir, _RESUME_VAL_BEST)
-            require_matching_class(val_best_path, want_class,
-                                   what="resume checkpoint")
+            _require(val_best_path)
             val_tracker.best_model = eqx.tree_deserialise_leaves(
                 val_best_path, model_skeleton)
 
@@ -1074,7 +1159,8 @@ def _finalize_completion(checkpoint_dir, *, early_stopped, epochs_run) -> None:
     DELETE the ``resume_*`` set. Call AFTER ``_save_artifacts`` has written
     ``model.eqx``. Deleting an absent resume file is tolerated (idempotent;
     a checkpoint_every=0 run never wrote them). Each model file's class record
-    goes with it, so no record outlives the checkpoint it describes."""
+    goes with it (:func:`_remove_resume_set`), so no record outlives the
+    checkpoint it describes."""
     sentinel = {
         "completed": True,
         "early_stopped": bool(early_stopped),
@@ -1082,13 +1168,7 @@ def _finalize_completion(checkpoint_dir, *, early_stopped, epochs_run) -> None:
     }
     with open(os.path.join(checkpoint_dir, _COMPLETION_SENTINEL), "w") as f:
         json.dump(sentinel, f, indent=2)
-    for fn in _RESUME_FILES:
-        path = os.path.join(checkpoint_dir, fn)
-        remove_class_record(path)
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
+    _remove_resume_set(checkpoint_dir)
 
 
 # Module-level resume-flusher holder. The per_molecule loop registers a
@@ -1450,7 +1530,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
         components, comp_values, model_grads = _model_grad_step(
             model, batch, weights)
         # Per-task gnorms: each call is its own JIT.  XLA frees
-        # intermediates between calls so peak memory ≈ ONE forward+
+        # intermediates between calls so peak memory is about ONE forward+
         # backward at a time, not n_tasks of them simultaneously.
         per_task_gnorms = []
         for i, k in enumerate(component_keys):
@@ -1716,7 +1796,10 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     # missing resume_*.eqx must not crash the task -- on ANY load error we log a
     # warning and START FRESH (treat as no resume). The whole restore is staged
     # through `restored` (one call) and applied only on success, so a failed load
-    # never leaves half-restored state.
+    # never leaves half-restored state. A set refused for its MODEL CLASS is
+    # deleted by the loader before it raises, and its message says so, so the
+    # warning below reports the removal: a refused set left on disk is what
+    # would let a later partial write re-label it as this class.
     start_epoch = 0
     if resume_enabled and _has_resume_checkpoint(checkpoint_dir):
         try:

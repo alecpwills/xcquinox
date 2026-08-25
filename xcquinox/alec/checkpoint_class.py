@@ -18,9 +18,19 @@ rather than one file per checkpoint directory. The readers are handed a FILE
 ``model_path``; the eval task picks among ``model.eqx``,
 ``model_best.eqx`` and ``model_val_best.eqx`` in the same directory), so the
 record's path follows from what the reader already holds, with no knowledge of
-the run layout; and a checkpoint copied out on its own -- the surgical
-single-file pull ``cluster.sync`` supports, the local re-evaluation workflow
--- carries its class with it.
+the run layout.
+
+What that buys operationally is that the record travels with the checkpoint
+under the pull the local re-evaluation workflow uses:
+``cluster.sync.build_rsync_command`` narrows per spec DIRECTORY (its
+``spec_indices`` emit ``--include=/checkpoints/spec_NNNN/***``), so every
+record comes down beside its own ``.eqx``. A file copied out BY HAND does not
+carry its sibling, and the residual risk is asymmetric: the bare copy then
+reads as a checkpoint with no record, which an anchored or ``dfs`` skeleton
+refuses (fail-safe) but a LEGACY skeleton accepts and loads as legacy -- the
+silent cross-class load this module exists to prevent, back again, because the
+one file that stated the class was left behind. The record must therefore be
+copied with the checkpoint whenever a checkpoint is moved outside the pull.
 
 Payload, in the vocabulary of the records it sits beside
 (``pretrain_metadata.json`` for the first five keys, the fidelity certificate
@@ -43,7 +53,9 @@ file.
 A checkpoint with NO record beside it is a legacy checkpoint -- unanchored, on
 the legacy coordinates -- because every run that writes an anchored or a
 ``dfs`` checkpoint writes the record in the same call that writes the ``.eqx``
-(:func:`write_class_record`). A legacy skeleton therefore accepts it and any
+(:func:`write_class_record`, or :func:`stage_class_record` followed by
+:func:`commit_class_record` where the checkpoint itself is written
+atomically). A legacy skeleton therefore accepts it and any
 other skeleton refuses it, which is the rule
 ``train._require_matching_model_class`` applies to a pretrain directory with
 no metadata.
@@ -56,14 +68,36 @@ import os
 #: Appended to a checkpoint's own path to give its class record's path.
 CLASS_RECORD_SUFFIX = ".class.json"
 
+#: Appended to a class record's path to give the path a record is STAGED at
+#: while the checkpoint it describes is still being written. Nothing reads it.
+STAGED_RECORD_SUFFIX = ".tmp"
+
 #: The class of a checkpoint with no record: what everything written before
 #: the anchor existed is.
 LEGACY_CLASS = {"parent_anchor": False, "descriptor_coordinates": "legacy"}
 
 
+class ModelClassMismatch(ValueError):
+    """A checkpoint's recorded class is not the class being built.
+
+    A ``ValueError``, so every caller that already handles the refusal sees
+    what it saw before; a type of its own so a caller that can ACT on it can
+    tell a class refusal -- which is permanent for that pair of file and
+    configuration -- from a missing file or a record that could not be read.
+    ``train._load_resume_checkpoint`` is the caller that acts: it discards the
+    resume set it refused.
+    """
+
+
 def class_record_path(checkpoint_path) -> str:
     """The class record's path for the checkpoint at ``checkpoint_path``."""
     return f"{os.fspath(checkpoint_path)}{CLASS_RECORD_SUFFIX}"
+
+
+def staged_class_record_path(checkpoint_path) -> str:
+    """Where a record for ``checkpoint_path`` is staged before it is committed
+    (:func:`stage_class_record`)."""
+    return f"{class_record_path(checkpoint_path)}{STAGED_RECORD_SUFFIX}"
 
 
 def model_class_of_arch(arch) -> dict:
@@ -148,6 +182,42 @@ def write_class_record(checkpoint_path, arch) -> str:
     return path
 
 
+def stage_class_record(checkpoint_path, arch) -> str:
+    """Write the record for ``checkpoint_path`` to its STAGED path and return
+    it, the first half of the two-phase write an atomic checkpoint needs.
+
+    An atomic ``.eqx`` write leaves the previous checkpoint in place when it
+    is interrupted, so its record cannot be put down first: it would come to
+    stand beside the old class's leaves. Staged here and committed by
+    :func:`commit_class_record` once the checkpoint itself has landed, the
+    record on disk is at every instant either the previous one or this one.
+    """
+    staged = staged_class_record_path(checkpoint_path)
+    with open(staged, "w") as f:
+        json.dump(class_record(arch), f, indent=2)
+    return staged
+
+
+def commit_class_record(checkpoint_path) -> str:
+    """Move the record staged for ``checkpoint_path`` into place, atomically
+    (``os.replace``), and return the record's path."""
+    path = class_record_path(checkpoint_path)
+    os.replace(staged_class_record_path(checkpoint_path), path)
+    return path
+
+
+def discard_staged_record(checkpoint_path) -> None:
+    """Remove a staged record whose checkpoint never landed; absent is fine.
+
+    The record on disk is left exactly as it was, which is what keeps a failed
+    write from re-labelling the checkpoint that survived it.
+    """
+    try:
+        os.remove(staged_class_record_path(checkpoint_path))
+    except FileNotFoundError:
+        pass
+
+
 def remove_class_record(checkpoint_path) -> None:
     """Delete the class record beside ``checkpoint_path``; absent is fine.
 
@@ -189,15 +259,16 @@ def require_matching_class(checkpoint_path, want_class, *,
     class -- :data:`LEGACY_CLASS` when there is no record -- so a caller can
     log what it accepted.
 
-    Raises ``ValueError`` when the record names another class, and when there
-    is NO record and the skeleton is not the legacy class: nothing then states
-    what the anchored model would be loading, and the leaves do not reveal it.
+    Raises :class:`ModelClassMismatch` (a ``ValueError``) when the record
+    names another class, and when there is NO record and the skeleton is not
+    the legacy class: nothing then states what the anchored model would be
+    loading, and the leaves do not reveal it.
     """
     record = read_class_record(checkpoint_path)
     path = os.fspath(checkpoint_path)
     if record is None:
         if not is_legacy_class(want_class):
-            raise ValueError(
+            raise ModelClassMismatch(
                 f"refusing to load the {what} {path!r} into a model with "
                 f"{describe_class(want_class)}: no model-class record "
                 f"({class_record_path(os.path.basename(path))}) stands beside "
@@ -213,7 +284,7 @@ def require_matching_class(checkpoint_path, want_class, *,
             record.get("descriptor_coordinates", "legacy")),
     }
     if got_class != want_class:
-        raise ValueError(
+        raise ModelClassMismatch(
             f"refusing to load the {what} {path!r}: it was written as "
             f"{describe_class(got_class)}, but the model being built is "
             f"{describe_class(want_class)}. The two are different model "

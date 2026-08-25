@@ -430,19 +430,27 @@ def test_pbe_fc_at_exactly_full_polarization():
 
     That 1.121e-10 is ROUND-OFF in the floored channel's ``1 - zeta``, not a
     perturbation of the parent by the floor. Where the floor is a few ulps of
-    the density the two evaluations cannot form ``1 - zeta`` identically:
-    at rs = 0.047 (rho = 2.24e3) the floored channel is 4.5e-16 of the
-    density, so ``1 - zeta`` is 8.94e-16, four ulps of 1; ``pbe_fc`` forms it
-    as ``2 rho_b / rho`` directly, while libxc subtracts a ``zeta`` that is
-    itself within a few ulps of 1 and lands one ulp lower, at 7.77e-16.
+    the density the two evaluations cannot form ``1 - zeta`` identically: at
+    rs = 0.047 (rho = 2.24e3) the floored channel is 4.5e-16 of the density,
+    so ``1 - zeta`` is 8.94e-16, which is 4.03 times ulp(1) = 2.220e-16 and
+    8.05 times the 1.110e-16 spacing of the numbers just BELOW 1, where the
+    subtraction's result lies (both units are quoted because the value sits on
+    the boundary between them). ``pbe_fc`` forms it as ``2 rho_b / rho``
+    directly, while libxc subtracts a ``zeta`` that is itself within a few
+    ulps of 1 and lands 1.17e-16 lower, at 7.77e-16 -- one spacing below 1.
     Rebuilding ``pbe_fc`` with that subtraction in place of the direct form
     puts this row at 0.0 relative and the mesh worst at 1.1e-11 (measured).
-    Two further measurements say the same: at rs = 0.02 the floored channel
-    falls under ``ZETA_FLOOR`` in both evaluations and the residual is 0.0
-    exactly, and at rs = 20, where ``1 - zeta`` is 6.7e-8 and both forms are
-    well resolved, it is 0.0 exactly as well. Varying the floor confirms the
-    direction: the mesh worst is smallest AT libxc's own 1e-12 and rises in
-    both directions away from it (9.5e-5 at 1e-11, 5.7e-3 at 1e-8, 2.1e-5 at
+    The same reading holds away from that row, where ``1 - zeta`` is either
+    fully floored or well resolved and the deviation drops by two to four
+    orders, though neither row is exact: at rs = 0.02 the direct
+    ``1 - zeta`` is 6.70e-17, under ``ZETA_FLOOR`` = 2.22e-16, so both
+    evaluations take the floor instead, and the 13 s values of that row
+    deviate by at most 1.129e-12 (exactly zero at 4 of them); at rs = 20,
+    where ``1 - zeta`` is 6.70e-8 and both forms are well resolved, the row
+    maximum is 1.442e-13 (exactly zero at 2 of 13). Both rows measure the same
+    at zeta = +1 and at zeta = -1. Varying the floor confirms the direction:
+    the mesh worst is smallest AT libxc's own 1e-12 and rises in both
+    directions away from it (9.5e-5 at 1e-11, 5.7e-3 at 1e-8, 2.1e-5 at
     1e-13, 2.725e-5 at 0).
 
     No row the model integrates reaches full polarization at all, because

@@ -211,7 +211,9 @@ density, for the correlation net only (Eq. 7) -- the exchange net receives no de
 coordinate (the source's `X_L(n_input=1, use=[1])` selects the reduced-gradient column
 alone, and with it the meta-GGA indicator column), so its enhancement factor is invariant
 under uniform density scaling, `rho -> lambda^3 rho`, `sigma -> lambda^8 sigma` at fixed
-`s`, bitwise in the implementation; the spin coordinate of the correlation net
+`s`, to round-off in the implementation (bitwise at `lambda = 0.5`, within 5.2e-16 relative
+at `lambda` = 2 and 10, where the recomputed `s` differs in its last bit); the spin
+coordinate of the correlation net
 `x1 = ln(0.5 [(1 + zeta)^(4/3) + (1 - zeta)^(4/3)])`; the reduced gradient
 `x_s = (1 - e^(-s^2)) ln(s + 1)` (Eq. 9) with `s` from the same density the net
 integrates over, no zeta rescaling (that line is xcdiff's, not the paper's); and, for the

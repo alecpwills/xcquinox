@@ -72,6 +72,12 @@ def _anchored_dfs_arch():
                                descriptor_coordinates="dfs")
 
 
+def _dfs_arch():
+    """DFS coordinates with NO anchor: the fourth reachable class, and the one
+    the two compared fields separate on their own."""
+    return _base_arch(descriptor_coordinates="dfs")
+
+
 def _model(arch, seed=0):
     return AlecGGAModel.from_arch(arch, seed=seed)
 
@@ -411,6 +417,173 @@ def test_an_unrecorded_resume_set_is_readable_only_by_the_legacy_class(tmp_path)
                                 opt_state_skeleton=opt_skeleton)
 
 
+class _KilledInTheRename(Exception):
+    """Stands for a kill inside the atomic write, at the instant the leaves
+    have been written to their temporary sibling and the rename that puts them
+    in place has not returned."""
+
+
+def _kill_the_rename_of(monkeypatch, basename):
+    """Make ``os.replace`` raise :class:`_KilledInTheRename` when it is asked to
+    move something onto ``basename``, and behave normally otherwise. The atomic
+    writer's leaf rename is then the only step that dies."""
+    real_replace = os.replace
+
+    def _replace(src, dst, *args, **kwargs):
+        if os.path.basename(os.fspath(dst)) == basename:
+            raise _KilledInTheRename(dst)
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", _replace)
+
+
+def test_a_killed_atomic_write_leaves_the_record_describing_the_leaves(
+        tmp_path, monkeypatch):
+    """The atomic writer's two files change together or not at all.
+
+    Unlike the truncating write, an aborted atomic write leaves the PREVIOUS
+    ``.eqx`` in place. A record put down before the rename would therefore come
+    to stand beside the old class's leaves -- a checkpoint labelled as a class
+    it is not, which every reader then accepts. After a kill at the rename the
+    record beside the surviving checkpoint must still be the surviving
+    checkpoint's own, or absent (absent is the legacy class, which an anchored
+    skeleton refuses).
+    """
+    from xcquinox.alec.train import _serialise_trained_model
+
+    _write_resume_set(tmp_path, _legacy_arch())
+    ckpt = os.path.join(str(tmp_path), "resume_model.eqx")
+    with open(ckpt, "rb") as f:
+        leaves_before = f.read()
+    assert read_class_record(ckpt)["descriptor_coordinates"] == "legacy"
+
+    _kill_the_rename_of(monkeypatch, "resume_model.eqx")
+    other = _anchored_dfs_arch()
+    with pytest.raises(_KilledInTheRename):
+        _serialise_trained_model(ckpt, _model(other, seed=3), other, atomic=True)
+    monkeypatch.undo()
+
+    with open(ckpt, "rb") as f:
+        assert f.read() == leaves_before, "the previous leaves did not survive"
+    record = read_class_record(ckpt)
+    assert record is None or (record["parent_anchor"] is False
+                              and record["descriptor_coordinates"] == "legacy"), (
+        "the record was renamed into place while the leaves beside it are "
+        f"still the previous class's: {record}")
+
+
+def test_the_non_atomic_write_still_puts_the_record_down_first(tmp_path,
+                                                               monkeypatch):
+    """The other half of the same invariant, pinned so the two branches are
+    not unified into one order by mistake.
+
+    ``eqx.tree_serialise_leaves`` truncates its target, so its leaves cannot
+    survive a kill and the record may safely precede them. The order the
+    atomic branch needs would, here, leave a COMPLETE checkpoint of this class
+    with no record beside it -- which a legacy skeleton accepts and reads as
+    legacy, the load this module exists to refuse.
+    """
+    from xcquinox.alec import train
+
+    ckpt = str(tmp_path / "model.eqx")
+    arch = _anchored_dfs_arch()
+
+    def _die(*args, **kwargs):
+        raise _KilledInTheRename(ckpt)
+
+    monkeypatch.setattr(train.eqx, "tree_serialise_leaves", _die)
+    with pytest.raises(_KilledInTheRename):
+        train._serialise_trained_model(ckpt, _model(arch), arch)
+    monkeypatch.undo()
+
+    assert not os.path.isfile(ckpt), "the leaves were written after all"
+    assert read_class_record(ckpt)["descriptor_coordinates"] == "dfs"
+
+
+def test_a_refused_set_then_a_killed_write_does_not_resume_the_other_class(
+        tmp_path, monkeypatch):
+    """The sequence the record exists to make impossible, end to end.
+
+    A run of class A leaves its resume set behind; a restart configured as
+    class B is refused, as it must be; class B's first periodic checkpoint is
+    killed inside the atomic write; class B starts again. Whatever the last
+    step loads, it must not be class A's weights -- either the set is gone and
+    the run starts fresh, or the load is refused. Resuming from them is the
+    silent cross-class load this module exists to prevent.
+    """
+    from xcquinox.alec.train import (_has_resume_checkpoint,
+                                     _load_resume_checkpoint,
+                                     _write_resume_checkpoint)
+
+    class_a_arch, class_b = _legacy_arch(), _anchored_dfs_arch()
+    _model_a, optimizer = _write_resume_set(tmp_path, class_a_arch)
+    class_a_leaves = [_arrays(_model(class_a_arch, seed=s)) for s in (0, 1, 2)]
+    skeleton = _model(class_b, seed=9)
+    opt_skeleton = optimizer.init(eqx.filter(skeleton, eqx.is_array))
+
+    with pytest.raises(ValueError):
+        _load_resume_checkpoint(str(tmp_path), model_skeleton=skeleton,
+                                opt_state_skeleton=opt_skeleton)
+
+    # The class B run's first periodic checkpoint, killed at the LAST model
+    # file it writes: the snapshots before it are class B's throughout, and the
+    # validation-best file is the one left holding class A's leaves.
+    _kill_the_rename_of(monkeypatch, "resume_val_best.eqx")
+    with pytest.raises(_KilledInTheRename):
+        _write_resume_checkpoint(
+            str(tmp_path), model=_model(class_b, seed=3), opt_state=opt_skeleton,
+            rng_state=np.random.RandomState(0).get_state(), order=[0, 1],
+            train_best_loss=0.4, train_recent=[0.4], train_window=2,
+            train_best_model=_model(class_b, seed=4), val_present=True,
+            val_best_mae=0.9, val_finite_metrics=[0.9],
+            val_best_model=_model(class_b, seed=5), epoch=2, update=4,
+            losses=[0.4], aux_log=[], early_stopped=False, arch=class_b)
+    monkeypatch.undo()
+
+    resumed = []
+    if _has_resume_checkpoint(str(tmp_path)):
+        try:
+            out = _load_resume_checkpoint(str(tmp_path), model_skeleton=skeleton,
+                                          opt_state_skeleton=opt_skeleton)
+        except Exception:  # noqa: BLE001 -- refused: the fail-safe outcome
+            pass
+        else:
+            resumed = [out["model"], out["train_tracker"].best_model,
+                       out["val_tracker"].best_model]
+    for loaded in resumed:
+        if loaded is None:
+            continue
+        got = _arrays(loaded)
+        for wrote in class_a_leaves:
+            assert not all(np.array_equal(x, y) for x, y in zip(wrote, got)), (
+                "the class B restart resumed from class A's weights")
+
+
+def test_a_refused_resume_load_removes_the_stale_set_with_its_records(tmp_path):
+    """A refused set is discarded, not left for a later write to re-label.
+
+    The refusal is permanent -- the configuration's class will not change back
+    within the run that was just refused -- and the run starts fresh, so the
+    set is superseded either way. Leaving it is what makes the sequence above
+    reachable: its records and its leaves can afterwards be updated
+    independently. The message states the removal, so the caller's warning
+    reports it.
+    """
+    from xcquinox.alec.train import _load_resume_checkpoint
+
+    _written, optimizer = _write_resume_set(tmp_path, _anchored_dfs_arch())
+    skeleton = _model(_legacy_arch(), seed=9)
+    opt_skeleton = optimizer.init(eqx.filter(skeleton, eqx.is_array))
+
+    with pytest.raises(ValueError) as excinfo:
+        _load_resume_checkpoint(str(tmp_path), model_skeleton=skeleton,
+                                opt_state_skeleton=opt_skeleton)
+    assert "removed" in str(excinfo.value).lower(), str(excinfo.value)
+    left = sorted(name for name in os.listdir(str(tmp_path))
+                  if name.startswith("resume_"))
+    assert left == [], left
+
+
 def test_completion_deletes_the_resume_records_with_their_checkpoints(tmp_path):
     """No record outlives the checkpoint it describes: completion clears the
     resume set and its records together, so the next run in the same directory
@@ -442,6 +615,14 @@ def test_an_unreadable_record_is_refused_rather_than_read_as_legacy(tmp_path):
 def test_the_class_of_an_arch_and_of_the_model_it_builds_agree():
     """``create_network_pair`` carries the configuration's class into the
     built networks' static fields, so the two readings the loaders use --
-    from the spec's arch, and from the skeleton itself -- answer the same."""
-    for arch in (_legacy_arch(), _anchored_arch(), _anchored_dfs_arch()):
+    from the spec's arch, and from the skeleton itself -- answer the same.
+
+    All FOUR reachable classes: the anchor and the coordinates are independent
+    fields, so unanchored ``dfs`` is a class of its own and is checked here
+    with the other three."""
+    classes = set()
+    for arch in (_legacy_arch(), _anchored_arch(), _anchored_dfs_arch(),
+                 _dfs_arch()):
         assert model_class_of_arch(arch) == model_class_of_model(_model(arch))
+        classes.add(tuple(sorted(model_class_of_arch(arch).items())))
+    assert len(classes) == 4, classes
