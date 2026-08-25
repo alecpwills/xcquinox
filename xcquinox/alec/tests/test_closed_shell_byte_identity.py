@@ -307,8 +307,10 @@ def _pinned_cpu():
         return None
     allowed = os.sched_getaffinity(0)
     recorded = _fixture_pins().get("cpu_index")
-    if recorded in allowed:
+    if shutil.which("taskset") is not None and recorded in allowed:
         return recorded
+    # Without taskset the recorder confines itself, to the lowest CPU of the
+    # set it inherits, which is this one.
     return min(allowed)
 
 
@@ -357,10 +359,10 @@ def _record(arch_name):
         assert {name: pins.get(name) for name in PINS} == PINS, (
             f"the recorder ran without its pins: {pins} != {PINS}")
         expected_cpu = _pinned_cpu()
-        if shutil.which("taskset") is not None and expected_cpu is not None:
+        if expected_cpu is not None:
             assert pins.get("cpu_index") == expected_cpu, (
                 f"the recorder was pinned to CPU {pins.get('cpu_index')}, "
-                f"not the CPU {expected_cpu} it was started on")
+                f"not the CPU {expected_cpu} this comparison selected")
         _RECORDS[arch_name] = record
         _LIVE_PINS[arch_name] = pins
     return _RECORDS[arch_name]
@@ -380,8 +382,8 @@ def pin_differences():
     for fixture in _FIXTURES:
         recorded = _fixture_pins(fixture).get("cpu_index")
         if recorded != live:
-            found.append(f"recorder confined to CPU {live} here, {recorded} "
-                         f"when {Path(fixture).name} was recorded")
+            found.append(f"confined to CPU {live} here, {recorded} when "
+                         f"{Path(fixture).name} was recorded")
     return found
 
 
@@ -462,12 +464,21 @@ def _assert_bitwise(arch_name, got, reference, archived):
 
 def _assert_within_the_cross_platform_floor(arch_name, got, reference,
                                             archived, differences):
-    """The same comparison off the recording platform, at the documented
-    floor, with the density matrix's digest reported instead of asserted."""
+    """The same comparison off the recording platform -- or on it, with the
+    recorder confined to another CPU -- at the documented floor, with the
+    density matrix's digest reported instead of asserted."""
+    if platform_differences():
+        cause = (f"This is not the platform the fixture was recorded on "
+                 f"({'; '.join(differences)}), so the record's last digits "
+                 "are a different machine's")
+        label = "platform"
+    else:
+        cause = (f"This is the recording platform, but the recorder was "
+                 f"confined to another CPU ({'; '.join(differences)}), so "
+                 "the record's last digits may be another core's")
+        label = "recorder"
     note = (
-        f"[{CROSS_PLATFORM}] This is not the platform the fixture was "
-        f"recorded on ({'; '.join(differences)}), so the record's last digits "
-        f"are a different machine's and the comparison is held to "
+        f"[{CROSS_PLATFORM}] {cause} and the comparison is held to "
         f"{CROSS_PLATFORM_REL_TOL:.0e} relative per key rather than bitwise. "
         f"Recorded on: {_platform_summary(_fixture_platform())}. Running on: "
         f"{_platform_summary(_live_platform())}.")
@@ -523,7 +534,7 @@ def _assert_within_the_cross_platform_floor(arch_name, got, reference,
     return (f"[O3] {arch_name}: {CROSS_PLATFORM} at "
             f"{CROSS_PLATFORM_REL_TOL:.0e} relative per key; worst "
             f"{relative:.2e} relative ({gap:.3e} on {key} against the "
-            f"{against}); {digest}; platform {'; '.join(differences)}")
+            f"{against}); {digest}; {label} {'; '.join(differences)}")
 
 
 #: Reports already printed in this process. The workflow matrix runs one
