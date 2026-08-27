@@ -154,6 +154,15 @@ def _config_to_raw_dict(cfg) -> dict:
         # get its tolerances, so a dropped block would silently certify at the
         # defaults instead of at the run's documented override.
         "fidelity": dataclasses.asdict(cfg.fidelity),
+        # model MUST round-trip for the same reason: every stage rebuilds its
+        # architectures from this file, so a dropped block silently resolves
+        # the run to the pre-anchor class -- unanchored, legacy coordinates --
+        # whatever the source YAML states. Found 2026-08-27 against the first
+        # v6 group: all four architectures pretrained unanchored (phase X from
+        # loss 1.1e-2 rather than from round-off) and the certificate refused
+        # them at 0.8 to 3.0 mHa; pretrain_metadata.json and the certificate
+        # both recorded parent_anchor false beside a source file stating true.
+        "model": dataclasses.asdict(cfg.model),
         "cluster": dataclasses.asdict(cfg.cluster),
         "domain_profile": cfg.domain_profile,
         "on_precompute_failure": cfg.on_precompute_failure,

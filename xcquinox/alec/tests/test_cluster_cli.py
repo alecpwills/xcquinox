@@ -1561,6 +1561,55 @@ def test_submit_defer_eval_flag_override_and_roundtrip():
     assert cli._config_to_raw_dict(on)["defer_eval"] is True
 
 
+def test_the_model_block_round_trips_through_the_resolved_config():
+    """The v6 model class survives ``submit``'s serialization.
+
+    Every stage rebuilds its architectures from ``resolved_config.yaml``, so a
+    block missing from ``_config_to_raw_dict`` resolves the run to the field
+    defaults whatever the source YAML states. The first v6 group ran that way
+    on 2026-08-27: a source file stating ``parent_anchor: true`` produced four
+    pretrained architectures whose metadata and certificate both recorded
+    ``parent_anchor: false``, refused at 0.8 to 3.0 mHa against the parent.
+    """
+    import yaml
+    cfg = cli.load_grid_config(
+        "hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g1_size.yaml")
+    assert cfg.model.parent_anchor is True
+    assert cfg.model.descriptor_coordinates == "dfs"
+    raw = cli._config_to_raw_dict(cfg)
+    assert raw["model"] == {"parent_anchor": True,
+                            "descriptor_coordinates": "dfs"}, raw.get("model")
+    back = cli.load_grid_config_from_raw(yaml.safe_load(yaml.safe_dump(raw))) \
+        if hasattr(cli, "load_grid_config_from_raw") else None
+    if back is not None:
+        assert back.model == cfg.model
+
+
+def test_every_grid_config_block_round_trips(tmp_path):
+    """``_config_to_raw_dict`` carries EVERY field of the loaded configuration.
+
+    The serializer is written key by key, so a block added to ``GridConfig``
+    after it is silently dropped -- the failure mode that reverted
+    ``ae_as_reactions`` in 2026-08 and the model class in 2026-08-27. Rather
+    than pin one key per incident, the whole dataclass is compared after a
+    write-and-reload of a configuration whose blocks are all non-default.
+    """
+    import dataclasses
+    import yaml
+    cfg = cli.load_grid_config(
+        "hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g1_size.yaml")
+    raw = cli._config_to_raw_dict(cfg)
+    path = tmp_path / "resolved_config.yaml"
+    with open(path, "w") as fh:
+        yaml.safe_dump(raw, fh)
+    back = cli.load_grid_config(str(path))
+    for field in dataclasses.fields(cfg):
+        name = field.name
+        assert getattr(back, name) == getattr(cfg, name), (
+            f"{name} did not survive the resolved-config round trip: "
+            f"{getattr(cfg, name)!r} -> {getattr(back, name)!r}")
+
+
 def test_submit_eval_subcommand_parses():
     """The `submit-eval` subcommand parses run_dir + --force and binds the
     cmd_submit_eval handler."""
