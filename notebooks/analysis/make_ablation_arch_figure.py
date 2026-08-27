@@ -540,14 +540,23 @@ def collect_insample_ae_rows(run_dir: Path) -> List[Dict[str, Any]]:
 
 
 def trained_spec_count(run_dir: Path,
-                       eval_subdir: str = "eval_holdout") -> int:
+                       eval_subdir: str = "eval_holdout",
+                       archs=None) -> int:
     """Number of specs that ran training -- evidenced by a materialized
     ``model.eqx`` OR any eval output (``<eval_subdir>/per_reaction.json`` or
     ``eval/per_molecule.json``). Eval output implies the spec trained even when
     its weights were not pulled (eval-only sync), so the figure's coverage count
-    is not understated to ``1/48`` when only one model.eqx came down."""
+    is not understated to ``1/48`` when only one model.eqx came down.
+
+    ``archs`` counts only the specs whose manifest cell names one of those
+    architectures, so the count stated on a restricted figure is the count of
+    what it draws."""
+    cells = ccp._read_manifest_cells(run_dir) if archs is not None else {}
+    keep = set(archs) if archs is not None else None
     n = 0
     for _idx, spec_dir in ccp._spec_dirs(run_dir):
+        if keep is not None and cells.get(_idx, {}).get("arch") not in keep:
+            continue
         if ((spec_dir / "model.eqx").is_file()
                 or (spec_dir / eval_subdir / "per_reaction.json").is_file()
                 or (spec_dir / "eval" / "per_molecule.json").is_file()):
@@ -758,6 +767,134 @@ def fidelity_summary(run_dir: Path,
             "max_dAE_kcalmol": max(ae_devs) if ae_devs else None}
 
 
+# ---------------------------------------------------------------------------
+# Architecture restriction
+# ---------------------------------------------------------------------------
+# A figure set is sometimes wanted for a NAMED subset of the run's
+# architectures -- the PBE-parented rungs alone, say, when the meta-GGA rung of
+# that run is not comparable with its parent. The restriction is applied to the
+# COLLECTED ROWS, immediately after collection, so every downstream reduction,
+# arch axis, per-cell anchor, coverage count and CSV narrows from ONE place.
+# Dropping panels out of finished images instead leaves pooled anchors,
+# coverage counts and footers describing architectures the figure no longer
+# carries.
+
+
+def _validate_archs(archs) -> Optional[Tuple[str, ...]]:
+    """Normalize an architecture restriction to an ordered, deduplicated tuple.
+
+    ``None`` passes through as ``None`` (no restriction). Every name must be in
+    :data:`ARCH_ORDER`: the per-arch plots order and colour by it, so a name
+    outside it renders nothing at all, and an unchecked typo would produce a
+    silently empty figure set rather than a refusal. An empty restriction is
+    refused for the same reason."""
+    if archs is None:
+        return None
+    ordered: List[str] = []
+    for a in archs:
+        name = str(a)
+        if name not in ordered:
+            ordered.append(name)
+    if not ordered:
+        raise ValueError(
+            "archs is empty: an architecture restriction must name at least "
+            "one architecture (archs=None is the unrestricted set).")
+    unknown = [a for a in ordered if a not in ARCH_ORDER]
+    if unknown:
+        raise ValueError(
+            f"unknown architecture name(s) in archs: {unknown}; the per-arch "
+            "figures order and colour by ARCH_ORDER, so a name outside it "
+            "renders nothing. Known names: " + ", ".join(ARCH_ORDER))
+    return tuple(ordered)
+
+
+def filter_rows_by_arch(rows: List[Dict[str, Any]], archs
+                        ) -> List[Dict[str, Any]]:
+    """``rows`` restricted to the architectures named in ``archs``.
+
+    Returns the input list itself when ``archs`` is ``None``, so an
+    unrestricted build is byte-for-byte the pre-restriction one. Applied to
+    every collected row set the builders read -- held-out reactions, in-sample
+    AE, in-sample and held-out density, training losses -- which is what makes
+    each figure's ``present``-derived architecture axis narrow consistently."""
+    if archs is None:
+        return rows
+    keep = set(archs)
+    return [r for r in rows if r.get("arch") in keep]
+
+
+def order_archs(archs) -> List[str]:
+    """``archs`` in canonical :data:`ARCH_ORDER` order, unknown names last."""
+    present = set(archs or ())
+    return ([a for a in ARCH_ORDER if a in present]
+            + sorted(present - set(ARCH_ORDER)))
+
+
+def arch_restriction_note(archs, withheld=None) -> str:
+    """The on-figure sentence stating an architecture restriction: which
+    architectures the panels carry, and which of the run's remaining ones are
+    withheld from them. Empty string for ``archs=None`` -- an unrestricted
+    figure has no restriction to state, so its footers are unchanged."""
+    if archs is None:
+        return ""
+    s = "Architectures rendered: " + ", ".join(order_archs(archs)) + "."
+    left = [a for a in order_archs(withheld) if a not in set(archs)]
+    if left:
+        s += (" Withheld from every panel, baseline and CSV here: "
+              + ", ".join(left) + ".")
+    return s
+
+
+def scan_comparator_applies(archs) -> bool:
+    """Whether the SCAN comparator legs may be drawn under restriction ``archs``.
+
+    SCAN is on these figures as the nonempirical parent of the meta-GGA
+    architectures. With every meta-GGA architecture withheld, no rendered
+    architecture is parented by SCAN, and a SCAN line beside GGA and rung-3.5
+    bars states a comparison none of them makes. The caches are then dropped
+    at the source, so every SCAN line, ED leg, CSV column and footer sentence
+    goes with them -- the same state as a run with no SCAN cache beside it --
+    rather than a line being drawn and relabelled. ``archs=None`` leaves the
+    caches in force, so an unrestricted build is unchanged.
+
+    Note that :func:`arch_reference_kinds` holds the rung-3.5 families to SCAN
+    for the green beats marker (they have no same-rung nonempirical
+    reference). With the comparator withdrawn those bars carry no beats mark
+    at all, which is the same conservative outcome as a run whose SCAN cache
+    was never computed -- a beats claim is not silently re-pointed at PBE."""
+    if archs is None:
+        return True
+    return any(arch_style.rung_of(a) in (arch_style.RUNG_MGGA,
+                                         arch_style.RUNG_R35_MGGA)
+               for a in archs)
+
+
+def _report_missing_archs(archs, rows: List[Dict[str, Any]]) -> None:
+    """Print the restriction's architectures the collected rows do not carry.
+    A valid name with no data in this run renders empty panels, and an
+    unannounced empty set is indistinguishable from a name that was meant to
+    have data."""
+    if archs is None:
+        return
+    present = {r.get("arch") for r in rows}
+    absent = [a for a in archs if a not in present]
+    if absent:
+        print(f"  (architecture restriction: no held-out rows for "
+              f"{', '.join(absent)} in this run)")
+
+
+def manifest_cell_count(run_dir: Path, archs=None) -> int:
+    """Grid cells of the run: manifest cells, falling back to the spec dirs on
+    disk when the manifest carries none. Restricted to ``archs`` when given, so
+    a restricted figure's coverage count describes the cells it draws rather
+    than the whole grid."""
+    cells = ccp._read_manifest_cells(run_dir)
+    if archs is not None:
+        keep = set(archs)
+        return sum(1 for c in cells.values() if c.get("arch") in keep)
+    return len(cells) or len(ccp._spec_dirs(run_dir))
+
+
 def arch_coverage(run_dir: Path,
                   eval_subdir: str = "eval_holdout") -> Dict[str, List[str]]:
     """Per-arch coverage of this (partial) run, computed from disk.
@@ -823,13 +960,32 @@ def arch_coverage(run_dir: Path,
     }
 
 
-def coverage_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
+def coverage_note(run_dir: Path, eval_subdir: str = "eval_holdout",
+                  archs=None) -> str:
     """One-line human summary of arch coverage for figure footers -- makes the
     partial-run gaps explicit (no silent truncation). An arch whose only
     on-disk evidence is a resume checkpoint reads IN PROGRESS, not NOT
-    TRAINED -- a running array is not an absent one."""
+    TRAINED -- a running array is not an absent one.
+
+    Under an architecture restriction (``archs``) every clause is scoped to
+    the rendered architectures -- the counts, the not-trained and uncertified
+    lists -- and a closing sentence names what is rendered and what of this
+    run is withheld, so the note describes the figure it sits on rather than
+    the run behind it."""
+    archs = _validate_archs(archs)
     cov = arch_coverage(run_dir, eval_subdir=eval_subdir)
-    parts = [f"Held-out reactions: {len(cov['holdout'])}/{len(ARCH_ORDER)} archs "
+    withheld: List[str] = []
+    n_ref = len(ARCH_ORDER)
+    if archs is not None:
+        keep = set(archs)
+        grid = (set(cov["trained"]) | set(cov["holdout"])
+                | set(cov["insample"]) | set(cov["untrained"]))
+        withheld = order_archs(grid - keep)
+        cov = {k: ([a for a in v if a in keep] if isinstance(v, list)
+                   else {kk: vv for kk, vv in v.items() if kk in keep})
+               for k, v in cov.items()}
+        n_ref = len(archs)
+    parts = [f"Held-out reactions: {len(cov['holdout'])}/{n_ref} archs "
              f"({', '.join(cov['holdout']) or 'none'})."]
     if cov["untrained"]:
         inprog = [a for a in cov["untrained"]
@@ -858,6 +1014,9 @@ def coverage_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
                           for a in cov["uncertified"])
         parts.append("UNCERTIFIED (no PASS fidelity certificate): "
                      f"{named}.")
+    restriction = arch_restriction_note(archs, withheld)
+    if restriction:
+        parts.append(restriction)
     return "  ".join(parts)
 
 
@@ -3387,20 +3546,29 @@ def plot_parity_grid_by_subset(rows: List[Dict[str, Any]], out_path: Path,
 
 
 def build_parity_variants(run_dir: Path, outdir: Path,
-                          eval_subdir: str = "eval_holdout") -> List[Path]:
-    """Render all five parity-layout candidates into ``outdir`` for comparison."""
+                          eval_subdir: str = "eval_holdout",
+                          archs=None) -> List[Path]:
+    """Render all five parity-layout candidates into ``outdir`` for comparison.
+    ``archs`` restricts them to the named architectures, as in
+    :func:`build_all`."""
+    archs = _validate_archs(archs)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
+    rows = filter_rows_by_arch(
+        collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir), archs)
+    _report_missing_archs(archs, rows)
     run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
-    note = coverage_note(run_dir, eval_subdir=eval_subdir)
+    note = coverage_note(run_dir, eval_subdir=eval_subdir, archs=archs)
     try:
         baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:  # pool unavailable
         print(f"  (PBE baseline unavailable: {exc})")
         baseline = {"bh76": float("nan"), "w411": float("nan"),
                     "combined": float("nan")}
-    prov = provenance_footer(baseline, None, fidelity_summary(run_dir))
+    prov = provenance_footer(baseline, None, fidelity_summary(run_dir, archs))
+    restriction = arch_restriction_note(archs)
+    if restriction:
+        prov = prov + " " + restriction
     caveat = nn_vs_pbe_caveat(rows, baseline)
     ds_e = _holdout_eval_note(rows, [])
     variants = [
@@ -7604,7 +7772,8 @@ def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
 
 
 def build_density_energy_figures(run_dir: Path, outdir: Path,
-                                 eval_subdir: str = "eval_holdout") -> List[Path]:
+                                 eval_subdir: str = "eval_holdout",
+                                 archs=None) -> List[Path]:
     """Render the held-out energy (MAE + 2-subset WTMAD-2) figure and the
     in-sample density-vs-CCSD diagnostic, kept SEPARATE. The in-sample density
     panel always reads ``eval/`` (the final-checkpoint in-sample eval); only the
@@ -7633,14 +7802,23 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     density/energy composites. ``ablation_rung_summary.png`` is NOT one of
     them: its bars are two per-rung series, not per-cell, and it keeps its
     single linear file (as ``ablation_mae_by_arch.png``, written by
-    :func:`build_all`, keeps its single log file). The CSVs are unaffected."""
+    :func:`build_all`, keeps its single log file). The CSVs are unaffected.
+
+    ``archs`` restricts every figure and CSV of this builder to the named
+    architectures, exactly as in :func:`build_all`: the four collected row
+    sets are filtered on read, the coverage/fidelity clauses are scoped, and
+    the SCAN comparator legs (energy, density and both ED legs) are withdrawn
+    when no rendered architecture is parented by SCAN."""
+    archs = _validate_archs(archs)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
-    drows = collect_insample_density_rows(run_dir)
-    ae_rows = collect_insample_ae_rows(run_dir)
+    rows = filter_rows_by_arch(
+        collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir), archs)
+    drows = filter_rows_by_arch(collect_insample_density_rows(run_dir), archs)
+    ae_rows = filter_rows_by_arch(collect_insample_ae_rows(run_dir), archs)
+    _report_missing_archs(archs, rows)
     run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
-    note = coverage_note(run_dir, eval_subdir=eval_subdir)
+    note = coverage_note(run_dir, eval_subdir=eval_subdir, archs=archs)
     # A mid-run density-reference swap makes cells on either side incomparable
     # on the density axis; stamp it on every figure this builder renders (all
     # carry a density or ED panel). Empty for runs without a swap, so their
@@ -7682,12 +7860,24 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     except Exception as exc:
         print(f"  (SCAN reaction errors unavailable: {exc})")
         scan_errs = {}
+    if not scan_comparator_applies(archs):
+        # See scan_comparator_applies: the comparator is dropped, not
+        # relabelled, so no SCAN line, ED leg or CSV column survives.
+        scan_baseline = _nan_baseline()
+        scan_dens_recs = {}
+        scan_errs = {}
+        print("  (SCAN comparator withdrawn: no meta-GGA architecture is "
+              "rendered under this architecture restriction)")
     _report_scan_density(
-        scan_density_baseline(collect_holdout_density_rows(
-            run_dir, eval_subdir=eval_subdir), run_dir,
+        scan_density_baseline(filter_rows_by_arch(
+            collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir),
+            archs), run_dir,
             _records=scan_dens_recs) if scan_dens_recs else None)
     prov = provenance_footer(baseline, scan_baseline,
-                             fidelity_summary(run_dir))
+                             fidelity_summary(run_dir, archs))
+    restriction = arch_restriction_note(archs)
+    if restriction:
+        prov = prov + " " + restriction
     caveat = nn_vs_pbe_caveat(rows, baseline)
     dens_prov = ("In-sample density vs CCSD: grid weighted-mean RMSE/L1 on trained "
                  "species (atoms excluded).")
@@ -7733,7 +7923,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     # densities exist (eval_holdout density columns and/or the run-level
     # pbe_density_errors.json from a --pbe-density-only re-eval); skipped with
     # a note otherwise so current refs-free runs are unchanged.
-    hd_rows = collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir)
+    hd_rows = filter_rows_by_arch(
+        collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir), archs)
     pbe_table = load_pbe_density_table(run_dir)
     if hd_rows or pbe_table:
         hd_prov = ("Held-out density vs CCSD: benchmark reference densities "
@@ -8239,18 +8430,22 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
 
 def build_per_run_diagnostics(run_dir: Path, outdir: Path,
                               basis_label: Optional[str] = None,
-                              eval_subdir: str = "eval_holdout") -> List[Path]:
+                              eval_subdir: str = "eval_holdout",
+                              archs=None) -> List[Path]:
     """Per-run diagnostics kept in each basis's own ``figures_<alias>/`` dir: the
     size-consistency (additivity) diagnostic over the capacity ladder at the
     smallest subset_size (where overfitting -- and the per-atom error it produces
     -- is worst), and the single-run training-loss trajectories. Wired into
     :func:`build_bh76w411_suite` so a fresh pull refreshes them too (they were
-    previously generated by hand and went stale)."""
+    previously generated by hand and went stale). ``archs`` restricts both to
+    the named architectures, as in :func:`build_all`."""
+    archs = _validate_archs(archs)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
-    note = coverage_note(run_dir, eval_subdir=eval_subdir)
-    rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
+    note = coverage_note(run_dir, eval_subdir=eval_subdir, archs=archs)
+    rows = filter_rows_by_arch(
+        collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir), archs)
     ecw = _energy_cell_coverage_warning(rows)
     if ecw:
         print(f"  ({ecw})")
@@ -8267,8 +8462,8 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
         written.append(plot_size_consistency_diagnostic(
             rows, outdir / "diagnostic_size_consistency.png", run_id, sc_cells,
             note=note, dataset=_holdout_eval_note(rows, [])))
-    loss_rows = collect_training_losses(
-        run_dir, basis_label=basis_label or run_basis_label(run_dir))
+    loss_rows = filter_rows_by_arch(collect_training_losses(
+        run_dir, basis_label=basis_label or run_basis_label(run_dir)), archs)
     written.append(plot_training_losses(
         loss_rows, outdir / "diagnostic_training_losses.png", run_id, note=note,
         highlight=[("deep_attn", 6)]))
@@ -8296,16 +8491,31 @@ def _resolve_run_dir(run_dir: Optional[str]) -> Path:
 
 
 def build_all(run_dir: Path, outdir: Path,
-              eval_subdir: str = "eval_holdout") -> List[Path]:
-    """Collect once, render every figure. Returns the written PNG paths."""
+              eval_subdir: str = "eval_holdout",
+              archs=None) -> List[Path]:
+    """Collect once, render every figure. Returns the written PNG paths.
+
+    ``archs`` (an ordered iterable of :data:`ARCH_ORDER` names, or ``None``)
+    restricts the whole set to those architectures. The restriction is applied
+    to the collected rows immediately after collection, so every figure's
+    architecture axis, every per-cell anchor, the coverage counts, the
+    fidelity bound and the footers narrow together; the SCAN comparator is
+    withdrawn when no rendered architecture is parented by it
+    (:func:`scan_comparator_applies`). ``archs=None`` is the unrestricted
+    pipeline, byte for byte."""
+    archs = _validate_archs(archs)
     outdir.mkdir(parents=True, exist_ok=True)
     run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
-    reaction_rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
-    insample_rows = collect_insample_ae_rows(run_dir)
-    n_trained = trained_spec_count(run_dir, eval_subdir=eval_subdir)
-    n_total = len(ccp._read_manifest_cells(run_dir)) or len(ccp._spec_dirs(run_dir))
+    reaction_rows = filter_rows_by_arch(
+        collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir), archs)
+    insample_rows = filter_rows_by_arch(
+        collect_insample_ae_rows(run_dir), archs)
+    _report_missing_archs(archs, reaction_rows)
+    n_trained = trained_spec_count(run_dir, eval_subdir=eval_subdir,
+                                   archs=archs)
+    n_total = manifest_cell_count(run_dir, archs)
     n_holdout = len({r["idx"] for r in reaction_rows})
-    note = coverage_note(run_dir, eval_subdir=eval_subdir)
+    note = coverage_note(run_dir, eval_subdir=eval_subdir, archs=archs)
     print(f"  coverage: {note}")
     ecw = _energy_cell_coverage_warning(reaction_rows)
     if ecw:
@@ -8335,8 +8545,19 @@ def build_all(run_dir: Path, outdir: Path,
     except Exception as exc:
         print(f"  (SCAN per-reaction errors unavailable: {exc})")
         scan_errs = {}
+    scan_withdrawn = not scan_comparator_applies(archs)
+    if scan_withdrawn:
+        # No rendered architecture is parented by SCAN: drop the comparator
+        # at the source rather than draw it beside bars it does not describe.
+        scan_baseline = _nan_baseline()
+        scan_errs = {}
+        print("  (SCAN comparator withdrawn: no meta-GGA architecture is "
+              "rendered under this architecture restriction)")
     prov = provenance_footer(baseline, scan_baseline,
-                             fidelity_summary(run_dir))
+                             fidelity_summary(run_dir, archs))
+    restriction = arch_restriction_note(archs)
+    if restriction:
+        prov = prov + " " + restriction
     # These five figures stamp their footers with bespoke fig.text stacks (no
     # _stamp_parity_footer dataset slot), so the dataset sentence rides the
     # grey provenance line instead of a dedicated line.
@@ -8348,7 +8569,10 @@ def build_all(run_dir: Path, outdir: Path,
           f"W4-11 {_fmt_mae(baseline['w411'])} / "
           f"combined {_fmt_mae(baseline['combined'])}"
           f"{_pool_cov_bracket(baseline)}")
-    _report_scan_coverage(scan_baseline)
+    if not scan_withdrawn:
+        # A withdrawn comparator is already reported above; the absent-cache
+        # wording would state the wrong reason for the missing line.
+        _report_scan_coverage(scan_baseline)
 
     written: List[Path] = []
     written.append(plot_parity(
@@ -8404,15 +8628,20 @@ def _newest_run_per_basis(results_root: Path,
 
 
 def figure_cell_coverage(run_dir: Path,
-                         eval_subdir: str = "eval_holdout") -> Dict[str, Any]:
+                         eval_subdir: str = "eval_holdout",
+                         archs=None) -> Dict[str, Any]:
     """What the figures will actually render for a run: every held-out (arch,
     subset_size) cell, plus a guard list ``archs_not_in_order`` of archs present
     in the data but absent from ``ARCH_ORDER`` (the per-arch plots cannot
-    order/colour those, so they would be silently dropped)."""
-    mae = reaction_mae_by_arch_subset(
-        collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir))
+    order/colour those, so they would be silently dropped). ``archs``
+    restricts the report to the architectures a restricted build renders."""
+    restriction = _validate_archs(archs)
+    mae = reaction_mae_by_arch_subset(filter_rows_by_arch(
+        collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir),
+        restriction))
     cells = sorted(mae.keys())
     archs = sorted({a for a, _ in cells})
+    ladder = list(restriction) if restriction is not None else list(ARCH_ORDER)
     return {
         "run": run_dir.name,
         "n_cells": len(cells),
@@ -8423,7 +8652,7 @@ def figure_cell_coverage(run_dir: Path,
         "archs_not_in_order": [a for a in archs if a not in ARCH_ORDER],
         # ARCH_ORDER archs with NO held-out eval cell yet (run still in progress);
         # judged by eval coverage, not model.eqx (weights are often not pulled)
-        "archs_missing": [a for a in ARCH_ORDER if a not in archs],
+        "archs_missing": [a for a in ladder if a not in archs],
         "coverage": arch_coverage(run_dir, eval_subdir=eval_subdir),
     }
 
@@ -8432,8 +8661,8 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                          outroot: Optional[Path] = None,
                          bases: Tuple[str, ...] = _BH76W411_BASES,
                          domain: str = "bh76w411_repr",
-                         comparison_archs: Optional[Tuple[str, ...]] = None
-                         ) -> List[Path]:
+                         comparison_archs: Optional[Tuple[str, ...]] = None,
+                         archs=None) -> List[Path]:
     """Regenerate EVERY figure family for ``domain`` from the newest run per
     basis, so a fresh spec pull lands on all figures in one call. Per basis: the
     arch-aware ablation set (:func:`build_all`), the held-out energy/density set
@@ -8463,7 +8692,12 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     Prints a per-run coverage report and FAILS LOUD if a run carries an arch
     outside ``ARCH_ORDER`` (which the per-arch plots would drop); incomplete runs
     (archs not yet eval'd) are reported, not masked. Returns every written path.
-    Figures are regenerated outputs -- callers do not version-control them."""
+    Figures are regenerated outputs -- callers do not version-control them.
+
+    ``archs`` restricts every rendered figure to the named architectures (see
+    :func:`build_all`); the certificate refusal is then scoped to them too, a
+    withheld architecture's certificate bearing on no figure of the set."""
+    archs = _validate_archs(archs)
     results_root = Path(results_root) if results_root else _DEFAULT_LOCAL_ROOT
     outroot = Path(outroot) if outroot else Path(__file__).resolve().parent
     prefix = "" if domain == "bh76w411_repr" else f"{domain}_"
@@ -8475,7 +8709,8 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
         ordered_runs: List[Path] = []
         for basis in bases:
             run = runs[basis]
-            cov = figure_cell_coverage(run, eval_subdir=eval_subdir)
+            cov = figure_cell_coverage(run, eval_subdir=eval_subdir,
+                                       archs=archs)
             if is_val_best and cov["n_cells"] == 0:
                 continue  # no val-best eval pulled for this basis yet
             ordered_runs.append(run)
@@ -8488,6 +8723,8 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                     "ARCH_COLOR (and the per-arch F_x/F_c forms) before "
                     "regenerating, else they are dropped from the figures.")
             uncertified = cov["coverage"]["uncertified"]
+            if archs is not None:
+                uncertified = [a for a in uncertified if a in set(archs)]
             if uncertified:
                 # Named with the status, as merge_v4_arms names it: MISSING is
                 # a certificate to run, FAIL is physics to fix, waived FAIL is
@@ -8509,12 +8746,16 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                 print(f"   (incomplete -- ARCH_ORDER archs with no held-out eval "
                       f"cell yet: {cov['archs_missing']})")
             fdir = outroot / f"figures_{prefix}{_basis_fig_alias(basis)}{suffix}"
-            written += build_all(run, fdir, eval_subdir=eval_subdir)
+            written += build_all(run, fdir, eval_subdir=eval_subdir,
+                                 archs=archs)
             written += build_density_energy_figures(run, fdir,
-                                                    eval_subdir=eval_subdir)
-            written += build_parity_variants(run, fdir, eval_subdir=eval_subdir)
+                                                    eval_subdir=eval_subdir,
+                                                    archs=archs)
+            written += build_parity_variants(run, fdir, eval_subdir=eval_subdir,
+                                             archs=archs)
             written += build_per_run_diagnostics(run, fdir, run_basis_label(run),
-                                                 eval_subdir=eval_subdir)
+                                                 eval_subdir=eval_subdir,
+                                                 archs=archs)
         if not ordered_runs:
             if is_val_best:
                 print("   (no eval_holdout_val_best/ data found -- skipping the "
@@ -8566,12 +8807,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--outroot", default=None,
                    help="directory the figures_* dirs are written under for "
                         "--suite (default: next to this script)")
+    p.add_argument("--archs", default=None,
+                   help="comma-separated architecture names; when given, EVERY "
+                        "rendered figure and CSV is restricted to them (rows "
+                        "are filtered on collection, so the arch axes, "
+                        "anchors, coverage counts and footers narrow "
+                        "together, and the SCAN comparator is withdrawn "
+                        "unless a meta-GGA architecture is among them)")
     p.add_argument("--comparison-archs", default=None,
                    help="comma-separated arch names; when given, --suite ALSO "
                         "writes a basis_comparison_focus* trio restricted to "
                         "these archs (readable column count when the full "
                         "union of arch x subset cells is wide)")
     args = p.parse_args(argv)
+    archs = (tuple(a.strip() for a in args.archs.split(",") if a.strip())
+             if args.archs else None)
 
     if args.suite:
         bases = tuple(b.strip() for b in args.bases.split(",") if b.strip())
@@ -8582,7 +8832,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                        outroot=args.outroot,
                                        bases=bases,
                                        domain=args.domain,
-                                       comparison_archs=cmp_archs)
+                                       comparison_archs=cmp_archs,
+                                       archs=archs)
         for pth in written:
             print(f"  wrote {pth}")
         return 0
@@ -8590,7 +8841,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     run_dir = _resolve_run_dir(args.run_dir)
     outdir = Path(args.outdir).expanduser().resolve()
     print(f"run_dir: {run_dir}")
-    written = build_all(run_dir, outdir)
+    written = build_all(run_dir, outdir, archs=archs)
     for pth in written:
         print(f"  wrote {pth}")
     return 0

@@ -6436,3 +6436,132 @@ def test_build_parity_variants_stamps_the_certificate_numbers(tmp_path,
     assert seen[0] is not None
     assert seen[0]["max_atom_mHa"] == pytest.approx(0.31)
     assert seen[0]["max_dAE_kcalmol"] == pytest.approx(0.62)
+
+
+# ---------------------------------------------------------------------------
+# Architecture restriction (``archs=``)
+# ---------------------------------------------------------------------------
+
+def test_build_all_signature_carries_arch_restriction():
+    """The restriction is a pipeline argument, not an after-the-fact edit of
+    the rendered images."""
+    import inspect
+    params = inspect.signature(fig.build_all).parameters
+    assert "archs" in params, sorted(params)
+    assert params["archs"].default is None
+
+
+def test_filter_rows_by_arch_narrows_and_passes_none_through():
+    rows = [{"arch": "deep", "x": 1}, {"arch": "deep_attn", "x": 2},
+            {"arch": None, "x": 3}]
+    assert fig.filter_rows_by_arch(rows, None) is rows
+    assert fig.filter_rows_by_arch(rows, ("deep",)) == [{"arch": "deep", "x": 1}]
+
+
+def _capture_mae_by_arch(monkeypatch):
+    """Record what ``plot_mae_by_arch`` is handed, and still render."""
+    seen = {}
+    real = fig.plot_mae_by_arch
+
+    def _spy(reaction_rows, insample_rows, out_path, run_id, **kw):
+        seen["archs"] = fig._archs_present(reaction_rows)
+        seen["insample_archs"] = fig._archs_present(insample_rows)
+        seen["note"] = kw.get("note") or ""
+        seen["provenance"] = kw.get("provenance") or ""
+        seen["scan_baseline"] = kw.get("scan_baseline")
+        seen["scan_errors"] = kw.get("scan_errors")
+        return real(reaction_rows, insample_rows, out_path, run_id, **kw)
+
+    monkeypatch.setattr(fig, "plot_mae_by_arch", _spy)
+    return seen
+
+
+def test_arch_restriction_narrows_rendered_archs(tmp_path, monkeypatch):
+    run = _make_run_dir(tmp_path)
+    seen = _capture_mae_by_arch(monkeypatch)
+    fig.build_all(run, tmp_path / "all")
+    assert seen["archs"] == ["deep", "deep_notransform"]
+    seen.clear()
+    fig.build_all(run, tmp_path / "gga", archs=("deep",))
+    assert seen["archs"] == ["deep"]
+    assert seen["insample_archs"] == ["deep"]
+
+
+def test_arch_restriction_refuses_unknown_name(tmp_path):
+    run = _make_run_dir(tmp_path)
+    with pytest.raises(ValueError, match="deep_nonesuch"):
+        fig.build_all(run, tmp_path / "bad", archs=("deep", "deep_nonesuch"))
+
+
+def test_arch_restriction_none_renders_byte_identical(tmp_path):
+    """``archs=None`` is the pre-restriction pipeline, to the byte."""
+    run = _make_run_dir(tmp_path)
+    plain = fig.build_all(run, tmp_path / "plain")
+    explicit = fig.build_all(run, tmp_path / "explicit", archs=None)
+    assert [p.name for p in plain] == [p.name for p in explicit]
+    for a, b in zip(plain, explicit):
+        assert a.read_bytes() == b.read_bytes(), a.name
+
+
+def test_coverage_note_states_the_restriction(tmp_path):
+    run = _make_run_dir(tmp_path)
+    note = fig.coverage_note(run, archs=("deep",))
+    assert "Held-out reactions: 1/1 archs (deep)." in note
+    assert "Architectures rendered: deep." in note
+    assert ("Withheld from every panel, baseline and CSV here: "
+            "deep_attn, deep_notransform." in note)
+    assert "Withheld" not in fig.coverage_note(run)
+
+
+def test_scan_comparator_applies_only_with_a_meta_gga_arch():
+    assert fig.scan_comparator_applies(None) is True
+    assert fig.scan_comparator_applies(("deep_3x16", "deep_rung35_3x16",
+                                        "deep_rung35_attn_3x16")) is False
+    assert fig.scan_comparator_applies(("deep_3x16", "deep_mgga_3x16")) is True
+    assert fig.scan_comparator_applies(("deep_rung35_mgga_3x16",)) is True
+
+
+def test_no_scan_line_when_no_meta_gga_arch_is_rendered(tmp_path, monkeypatch):
+    """SCAN is the meta-GGA parent. With the meta-GGA rung withheld no
+    rendered architecture is parented by it, so the comparator is dropped
+    rather than drawn beside bars it does not describe."""
+    run = _make_run_dir(tmp_path)
+    live = {"bh76": 5.0, "w411": 4.0, "combined": 4.5,
+            "coverage": {k: {"used": 3, "reference": 3}
+                         for k in ("bh76", "w411", "combined")}}
+    monkeypatch.setattr(fig, "scan_pool_baseline", lambda *a, **k: dict(live))
+    monkeypatch.setattr(fig, "scan_reaction_errors",
+                        lambda *a, **k: {"bh76_a": 1.0, "w411_b": 2.0})
+    seen = _capture_mae_by_arch(monkeypatch)
+    fig.build_all(run, tmp_path / "unrestricted")
+    assert fig.scan_line_value(seen["scan_baseline"])[0] == pytest.approx(4.5)
+    assert "SCAN (full pool)" in seen["provenance"]
+    seen.clear()
+    fig.build_all(run, tmp_path / "gga", archs=("deep",))
+    assert fig.scan_line_value(seen["scan_baseline"])[0] is None
+    assert not seen["scan_errors"]
+    assert "SCAN" not in seen["provenance"]
+
+
+def test_provenance_footer_states_the_restriction(tmp_path, monkeypatch):
+    run = _make_run_dir(tmp_path)
+    seen = _capture_mae_by_arch(monkeypatch)
+    fig.build_all(run, tmp_path / "gga", archs=("deep",))
+    assert "Architectures rendered: deep." in seen["provenance"]
+    assert "Architectures rendered:" in seen["note"]
+
+
+def test_density_energy_builder_takes_the_restriction(tmp_path, monkeypatch):
+    run = _make_run_dir(tmp_path)
+    seen = {}
+    real = fig.plot_energy_wtmad_mae
+
+    def _spy(rows, out_path, run_id, **kw):
+        seen.setdefault("archs", fig._archs_present(rows))
+        seen["note"] = kw.get("note") or ""
+        return real(rows, out_path, run_id, **kw)
+
+    monkeypatch.setattr(fig, "plot_energy_wtmad_mae", _spy)
+    fig.build_density_energy_figures(run, tmp_path / "de", archs=("deep",))
+    assert seen["archs"] == ["deep"]
+    assert "Architectures rendered: deep." in seen["note"]
