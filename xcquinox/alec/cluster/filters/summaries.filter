@@ -70,6 +70,10 @@
 + /pretrain/
 + /pretrain/*/
 + /pretrain/*/pretrain_metadata.json
+# The per-arch fidelity certificate (fidelity.CERTIFICATE_FILENAME): the figure
+# suite refuses to render an arch whose pulled run has no readable certificate,
+# so the default pull must carry it (small JSON beside the metadata).
++ /pretrain/*/fidelity_certificate.json
 + /pretrain/*/losses_*.npy
 
 # --- drop everything else -------------------------------------------------

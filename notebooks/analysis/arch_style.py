@@ -34,6 +34,10 @@ ARCH_ORDER: Tuple[str, ...] = (
     "deep", "deep_attn", "deep_cusp", "deep_dm",
     "deep_combined", "deep_combined_attn",
     "deep_notransform", "deep_notransform_attn",
+    # v6 size-ladder archs (registered base names, no width-twin suffix):
+    # ascending capacity, attention twin after its base, ahead of the
+    # production-width _3x16 block they are compared against.
+    "shallow", "shallow_attn", "medium", "medium_attn",
     "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16", "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
@@ -62,7 +66,19 @@ ARCH_COLOR["deep_rung35_mgga"] = "#7b4173"
 ARCH_COLOR["deep_rung35ms"] = "#6b6ecf"
 ARCH_COLOR["deep_cusp_mgga"] = "#bd9e39"
 ARCH_COLOR["deep_rung35ms_mgga"] = "#a55194"
+# v6 size-ladder archs: the greens, a hue family no other rung or descriptor
+# family uses; each attention twin is the lighter shade of its base.
+ARCH_COLOR["shallow"] = "#637939"
+ARCH_COLOR["shallow_attn"] = "#8ca252"
+ARCH_COLOR["medium"] = "#31a354"
+ARCH_COLOR["medium_attn"] = "#74c476"
 for _small in ARCH_ORDER[8:]:
+    # Only width-twin names inherit by suffix-strip; a base name in the tail
+    # (the size ladder) keeps its explicit entry above -- the unguarded strip
+    # would resolve "medium" via ARCH_COLOR.get("m") and clobber it with the
+    # unknown-base default.
+    if not _small.endswith("_3x16"):
+        continue
     ARCH_COLOR[_small] = ARCH_COLOR.get(_small[: -len("_3x16")], "#333333")
 
 SUBSET_SIZES: Tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18)

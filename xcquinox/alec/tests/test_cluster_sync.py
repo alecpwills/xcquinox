@@ -293,6 +293,42 @@ def test_spec_indices_canary_against_real_rsync(tmp_path):
     assert (local_root / GOOD_STAMP / "manifest.json").is_file()
 
 
+def test_summaries_canary_pretrain_certificate_transfers(tmp_path):
+    """End-to-end: the summaries profile carries the per-arch fidelity
+    certificate (the figure suite refuses to render an arch whose pulled run
+    holds no readable certificate) beside pretrain_metadata.json and the loss
+    curves, while the .eqx network blobs beside them stay remote."""
+    remote_root = tmp_path / "remote"
+    arch_dir = remote_root / GOOD_STAMP / "pretrain" / "deep_3x16"
+    arch_dir.mkdir(parents=True)
+    (arch_dir / "fidelity_certificate.json").write_text('{"verdict": "PASS"}\n')
+    (arch_dir / "pretrain_metadata.json").write_text('{"arch": "deep_3x16"}\n')
+    (arch_dir / "losses_x.npy").write_bytes(b"\x93NUMPY_FAKE")
+    (arch_dir / "xnet.eqx").write_bytes(b"FAKE_NET_BLOB" * 100)
+
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    (local_root / GOOD_STAMP).mkdir()
+
+    argv = sync.build_rsync_command(
+        host="", remote_root=str(remote_root), local_root=str(local_root),
+        run_id=GOOD_STAMP, profile="summaries",
+    )
+    completed = subprocess.run(
+        argv, check=False, capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    dest = local_root / GOOD_STAMP / "pretrain" / "deep_3x16"
+    assert (dest / "fidelity_certificate.json").is_file(), (
+        "the summaries filter dropped the fidelity certificate; the figure "
+        "suite then refuses every arch of a default pull as uncertified"
+    )
+    assert (dest / "pretrain_metadata.json").is_file()
+    assert (dest / "losses_x.npy").is_file()
+    assert not (dest / "xnet.eqx").exists()
+
+
 def test_build_rsync_command_extra_flags_inserted_before_paths():
     argv = sync.build_rsync_command(
         host="h", remote_root="/r", local_root="/l", run_id=GOOD_STAMP,

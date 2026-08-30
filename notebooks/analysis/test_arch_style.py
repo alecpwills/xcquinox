@@ -191,6 +191,71 @@ def test_v4_campaign_archs_all_in_arch_order_with_distinct_colors():
     assert "#333333" not in cols  # nothing fell through to the unknown-base default
 
 
+def test_v6_campaign_archs_all_in_arch_order_with_distinct_colors():
+    """Every arch of the five v6 group files must be figure-renderable.
+
+    Same guard as the v4 roster test above, but read from the group YAMLs
+    themselves (hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g*.yaml) so an
+    edit to a group's arch axis cannot drift past the palette. The union is
+    the campaign's 20 architectures; the four G1 size-ladder base names
+    (shallow/shallow_attn/medium/medium_attn) are the entries the palette
+    gained for v6 -- registered GGA archs with no width-twin suffix.
+    """
+    import glob
+
+    import yaml
+
+    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    files = sorted(glob.glob(os.path.join(
+        repo, "hpcjobs", "configs", "dfs_step7.dfs6311_grid3_v6g*.yaml")))
+    assert len(files) == 5, files
+    union: set = set()
+    for path in files:
+        with open(path) as fh:
+            cfg = yaml.safe_load(fh)
+        archs = cfg["sweep"]["arch"]
+        assert archs, path
+        union.update(archs)
+        # Each group renders its own figures, so distinctness is required
+        # within a group's axis (across groups the palette deliberately
+        # repeats: a width twin reuses its 4x32 base's color, and G4's
+        # deep/deep_attn are the bases of G2's deep_3x16/deep_attn_3x16).
+        group_cols = [A.ARCH_COLOR[a] for a in archs if a in A.ARCH_COLOR]
+        assert len(set(group_cols)) == len(archs), (path, group_cols)
+    assert len(union) == 20, sorted(union)
+    for a in sorted(union):
+        assert a in A.ARCH_ORDER, a
+        assert a in A.ARCH_COLOR, a
+    cols = [A.ARCH_COLOR[a] for a in sorted(union)]
+    assert "#333333" not in cols  # nothing fell through to the unknown-base default
+    # the only union-level repeats are the two by-design base/twin pairs
+    assert len(set(cols)) == len(cols) - 2, cols
+    assert A.ARCH_COLOR["deep"] == A.ARCH_COLOR["deep_3x16"]
+    assert A.ARCH_COLOR["deep_attn"] == A.ARCH_COLOR["deep_attn_3x16"]
+    # the size ladder is registered and classifies GGA off the registry
+    for a in ("shallow", "shallow_attn", "medium", "medium_attn"):
+        assert A.rung_of(a) == A.RUNG_GGA, a
+
+
+def test_size_ladder_colors_explicit_not_suffix_stripped():
+    """Base names in the ARCH_ORDER tail keep their explicit palette entries.
+
+    The width-twin inheritance strips the last five characters of every tail
+    entry; unguarded, it resolved "medium" through ``ARCH_COLOR.get("m")`` and
+    replaced the explicit entry with the unknown-base default. The guard skips
+    names without the ``_3x16`` suffix while leaving the twin inheritance
+    intact.
+    """
+    ladder = ("shallow", "shallow_attn", "medium", "medium_attn")
+    cols = [A.ARCH_COLOR[a] for a in ladder]
+    assert len(set(cols)) == len(cols), cols
+    assert "#333333" not in cols
+    # width-twin inheritance unchanged
+    assert A.ARCH_COLOR["deep_3x16"] == A.ARCH_COLOR["deep"]
+    assert A.ARCH_COLOR["deep_rung35_3x16"] == A.ARCH_COLOR["deep_rung35"]
+    assert A.ARCH_COLOR["deep_mgga_3x16"] == A.ARCH_COLOR["deep_mgga"]
+
+
 def test_rung_bands_contiguous_and_cover_all_indices():
     archs = A.sort_by_rung(["deep_3x16", "deep_cusp_3x16", "deep_mgga_3x16",
                             "deep_rung35_3x16", "deep_rung35_mgga_3x16"])
