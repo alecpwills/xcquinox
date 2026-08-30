@@ -293,18 +293,33 @@ def run_workers(
     return [results[i] for i in range(len(jobs))]
 
 
-def _thread_env(threads: int) -> dict[str, str]:
-    """Build the XLA_FLAGS + BLAS thread count dict that every worker
-    inherits as part of its subprocess environment.
+def _thread_env(threads: int, *, eigen_multi: bool) -> dict[str, str]:
+    """Build the XLA_FLAGS + BLAS thread count dict a worker subprocess
+    inherits as part of its environment.
+
+    ``eigen_multi`` states the XLA CPU backend's Eigen intra-op pool policy,
+    and the keyword is required because the OMP/MKL/OPENBLAS variables below
+    do NOT bound that pool: it sizes to the node's hardware concurrency
+    regardless of them, so a pool of N single-BLAS-thread workers still
+    carries N node-wide Eigen pools that spin-wait between the small dense
+    operations of an SCF loop. Measured: the inline train-eval task
+    2138032_15 ran its held-out eval tier (40 workers x 1 BLAS thread on a
+    40-core node) at a 442 percent node load (HPC operations report,
+    2026-08-29), the same spin-wait class that cost the workflow-matrix job
+    2134488 about ten minutes per molecule at 40 threads against 8 s at four.
+    Pool workers therefore run single-thread Eigen (``eigen_multi=False``) --
+    the pool's process-level parallelism is the intended use of the node --
+    while the preflight compile-smoke probe keeps multi-thread Eigen
+    (``eigen_multi=True``) so it stays representative of the train array's
+    environment, which exports the same flag from its sbatch template.
     """
     return {
         # Compile-memory trims (results-neutral: they cut LLVM codegen peak RSS
-        # and time for large-basis kernels) plus eigen threading. The old
+        # and time for large-basis kernels) plus the eigen pool policy. The old
         # ``intra_op_parallelism_threads=<n>`` token was mis-prefixed (no
-        # ``--xla_`` prefix) so XLA silently ignored it -- dropped; intra-op
-        # width is bounded by the OMP/MKL/OPENBLAS caps below.
+        # ``--xla_`` prefix) so XLA silently ignored it -- dropped.
         "XLA_FLAGS": (
-            "--xla_cpu_multi_thread_eigen=true "
+            f"--xla_cpu_multi_thread_eigen={'true' if eigen_multi else 'false'} "
             "--xla_llvm_disable_expensive_passes=true "
             "--xla_backend_optimization_level=1"
         ),
@@ -410,7 +425,7 @@ def build_pretrain_jobs(
     BEFORE calling this function.
     """
     worker_py = worker_script_path("pretrain_worker")
-    env = _thread_env(threads)
+    env = _thread_env(threads, eigen_multi=False)
     built_jobs = []
     for spec in specs:
         arch_name = spec.arch.name
@@ -450,7 +465,7 @@ def build_training_jobs(
     BEFORE calling this function.
     """
     worker_py = worker_script_path("train_worker")
-    env = _thread_env(threads)
+    env = _thread_env(threads, eigen_multi=False)
     built_jobs = []
     for spec in specs:
         arch_name = spec.arch.name

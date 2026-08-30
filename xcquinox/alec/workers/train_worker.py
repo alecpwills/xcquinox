@@ -25,7 +25,7 @@ def main(args=None):
     # the OMP/MKL/OPENBLAS caps below.
     os.environ.setdefault(
         "XLA_FLAGS",
-        "--xla_cpu_multi_thread_eigen=true "
+        "--xla_cpu_multi_thread_eigen=false "
         "--xla_llvm_disable_expensive_passes=true "
         "--xla_backend_optimization_level=1",
     )

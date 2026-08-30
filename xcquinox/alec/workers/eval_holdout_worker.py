@@ -95,11 +95,13 @@ def main(args=None):
     # compile-memory trims); only fall back here when unset -- unconditional
     # assignment would clobber the launcher value, and the old
     # ``intra_op_parallelism_threads=<n>`` token was mis-prefixed (no ``--xla_``)
-    # so XLA silently ignored it -- dropped; intra-op width is bounded by the
-    # OMP/MKL/OPENBLAS caps below.
+    # so XLA silently ignored it -- dropped. The BLAS caps below do not
+    # bound the Eigen intra-op pool (it sizes to the node), so a pool
+    # member runs single-thread Eigen; the launcher env wins via
+    # setdefault either way.
     os.environ.setdefault(
         "XLA_FLAGS",
-        "--xla_cpu_multi_thread_eigen=true "
+        "--xla_cpu_multi_thread_eigen=false "
         "--xla_llvm_disable_expensive_passes=true "
         "--xla_backend_optimization_level=1",
     )

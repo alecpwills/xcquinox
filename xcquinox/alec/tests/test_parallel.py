@@ -115,9 +115,10 @@ def test_build_pretrain_jobs_argv(tmp_path, monkeypatch):
     assert j.progress_file == os.path.join(
         "/ckpt", "01_pretrain", "shallow", "progress.json"
     )
-    # thread_env populated
+    # thread_env populated; a pool member runs single-thread Eigen
     assert "OMP_NUM_THREADS" in j.thread_env
     assert j.thread_env["OMP_NUM_THREADS"] == "2"
+    assert "--xla_cpu_multi_thread_eigen=false" in j.thread_env["XLA_FLAGS"]
 
 
 def test_build_training_jobs_argv(tmp_path, monkeypatch):
@@ -148,6 +149,65 @@ def test_build_training_jobs_argv(tmp_path, monkeypatch):
         "/ckpt", "02_train", "deep", "mae", "progress.json"
     )
     assert j.thread_env["OMP_NUM_THREADS"] == "4"
+    assert "--xla_cpu_multi_thread_eigen=false" in j.thread_env["XLA_FLAGS"]
+
+
+# ---------------------------------------------------------------------------
+# (2b) _thread_env states the Eigen intra-op policy explicitly
+# ---------------------------------------------------------------------------
+
+def test_thread_env_requires_and_encodes_eigen_policy():
+    """The BLAS caps do not bound XLA's Eigen intra-op pool (it sizes to the
+    node's hardware concurrency), so the pool policy is a required keyword.
+    Anchor: inline train-eval task 2138032_15 ran its held-out eval tier
+    (40 workers x 1 BLAS thread, 40-core node) at a 442 percent node load with
+    every worker carrying a node-wide Eigen pool; single-thread Eigen per pool
+    member is the remedy, while the preflight compile-smoke probe keeps the
+    train array's multi-thread setting to stay representative of it."""
+    with pytest.raises(TypeError):
+        _thread_env(4)  # the policy must be stated at the call site
+    worker = _thread_env(4, eigen_multi=False)
+    assert "--xla_cpu_multi_thread_eigen=false" in worker["XLA_FLAGS"]
+    probe = _thread_env(4, eigen_multi=True)
+    assert "--xla_cpu_multi_thread_eigen=true" in probe["XLA_FLAGS"]
+    for env in (worker, probe):
+        assert env["OMP_NUM_THREADS"] == "4"
+        assert env["MKL_NUM_THREADS"] == "4"
+        assert env["OPENBLAS_NUM_THREADS"] == "4"
+        assert "--xla_llvm_disable_expensive_passes=true" in env["XLA_FLAGS"]
+
+
+def test_eigen_policy_at_every_thread_env_call_site():
+    """Every _thread_env caller states the policy the overload analysis
+    assigned it: the three pool launchers single-thread, the preflight probe
+    multi-thread (it mirrors the train array's sbatch environment)."""
+    import xcquinox.alec.cluster._holdout_parallel as hp
+    import xcquinox.alec.cluster._preflight as pf
+    import inspect
+    src_parallel = inspect.getsource(sys.modules[_thread_env.__module__])
+    assert src_parallel.count("_thread_env(threads, eigen_multi=False)") == 2
+    assert ("parallel._thread_env(threads, eigen_multi=False)"
+            in inspect.getsource(hp))
+    assert ("parallel._thread_env(blas_threads, eigen_multi=True)"
+            in inspect.getsource(pf))
+    # no caller leaves the policy implicit
+    for mod in (sys.modules[_thread_env.__module__], hp, pf):
+        for line in inspect.getsource(mod).splitlines():
+            if "_thread_env(" in line and "def _thread_env" not in line:
+                assert "eigen_multi=" in line, line
+
+
+def test_worker_scripts_fall_back_to_single_thread_eigen():
+    """The worker scripts' setdefault fallback (used only when launched
+    without the pool env) matches the pool policy."""
+    import xcquinox.alec.workers as workers_pkg
+    base = os.path.dirname(workers_pkg.__file__)
+    for name in ("eval_holdout_worker.py", "train_worker.py",
+                 "test_worker.py", "pretrain_worker.py"):
+        with open(os.path.join(base, name)) as fh:
+            src = fh.read()
+        assert "--xla_cpu_multi_thread_eigen=false" in src, name
+        assert "--xla_cpu_multi_thread_eigen=true" not in src, name
 
 
 # ---------------------------------------------------------------------------

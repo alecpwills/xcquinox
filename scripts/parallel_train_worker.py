@@ -42,7 +42,11 @@ def main():
     args = parser.parse_args()
 
     # Set thread limits BEFORE importing JAX
-    os.environ['XLA_FLAGS'] = f'--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads={args.threads}'
+    # Single-thread Eigen: this worker is one member of a process pool; the
+    # BLAS caps do not bound the Eigen intra-op pool, and the old
+    # intra_op_parallelism_threads token was mis-prefixed (no --xla_) so XLA
+    # ignored it.
+    os.environ['XLA_FLAGS'] = '--xla_cpu_multi_thread_eigen=false'
     os.environ['OMP_NUM_THREADS'] = str(args.threads)
     os.environ['MKL_NUM_THREADS'] = str(args.threads)
     os.environ['OPENBLAS_NUM_THREADS'] = str(args.threads)

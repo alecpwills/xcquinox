@@ -113,7 +113,7 @@ def run_holdout_with_escalation(
                 # would report a "stall" every STALL_WARN_SEC for the whole run.
                 progress_file=None,
                 log_file=str(shard_dir / f"worker_t{tier_no}_s{si}.log"),
-                thread_env=parallel._thread_env(threads)))
+                thread_env=parallel._thread_env(threads, eigen_multi=False)))
 
         _log(f"tier {tier_no}: {k} workers x {threads} thread(s) over "
              f"{len(remaining)} molecules")

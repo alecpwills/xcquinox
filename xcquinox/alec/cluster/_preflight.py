@@ -220,7 +220,7 @@ def _compile_smoke_impl(specs, paths, run_dir) -> bool:
     # count and /12 slice mirror the train template exactly.
     cores = int(os.environ.get("SLURM_CPUS_ON_NODE") or os.cpu_count() or 12)
     blas_threads = max(1, cores // 12)
-    probe_env = {**os.environ, **parallel._thread_env(blas_threads)}
+    probe_env = {**os.environ, **parallel._thread_env(blas_threads, eigen_multi=True)}
 
     proc = subprocess.run(
         [
