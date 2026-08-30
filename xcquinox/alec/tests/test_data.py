@@ -2043,3 +2043,263 @@ def test_locked_oxygen_fallback_rescues_a_cut_diis_stage(monkeypatch):
     mf.kernel()
     assert mf.converged
     assert abs(float(md["E_pbe"]) - float(mf.e_tot)) < 1e-8
+
+
+# --------------------------------------------------------------------------- #
+# Second-order rescue from the trajectory-best DIIS density
+# --------------------------------------------------------------------------- #
+
+def _locked_li_mean_field(xc):
+    """The mean-field object ``precompute_fixed_density_data`` builds for the
+    Li atom of the v6 pretraining set at the production identity: UKS (2S = 1),
+    ``6-311++G(3df,2pd)``, grid level 3, ``h_core`` biased by the 3e-5
+    orientation lock before the first kernel call, integral path and XC block
+    size pinned. Written here in the same order as the precompute so the
+    driver under test sees exactly the object the data generation hands it."""
+    from pyscf import dft, gto
+    from xcquinox.alec.orientation_lock import orientation_lock_bias
+    from xcquinox.alec.pyscf_determinism import pin_reference_scf
+    mol = gto.M(atom="Li 0 0 0", basis="6-311++G(3df,2pd)", charge=0, spin=1,
+                verbose=0)
+    mf = dft.UKS(mol)
+    mf.xc = xc
+    mf.grids.level = 3
+    locked = np.asarray(mf.get_hcore()) + orientation_lock_bias(mol, 3e-5)
+    mf.get_hcore = lambda *a, **k: locked
+    pin_reference_scf(mf)
+    return mf
+
+
+def test_li_scan_reference_is_rescued_from_the_best_diis_point():
+    """The Li atom at SCAN / 6-311++G(3df,2pd) / grid level 3 under the 3e-5
+    orientation lock -- the system the v6 meta-GGA data generation refused
+    (job 2138034, ReferenceSCFNotConverged). DIIS reaches the solution basin
+    at cycle 5 (E=-7.478697644723, |g|=7.5e-4), the extrapolation then throws
+    the density to an unphysical state (E~-4.07 at |g|~1.0) and stays there to
+    the cycle cap. Started from that end point -- the start the second stage
+    used before the trajectory-best rescue -- it stalls at |g|~4e-3 for all 50
+    macro-iterations and the driver returns unconverged, which is the state
+    that refused the record. Started from the lowest-gradient density it
+    converges in 2 macro-iterations: 102 cycles in total, E=-7.4786979415
+    (measured, reproduced to 1.7e-11 Ha through the full precompute), whose
+    plain-Fock orbital gradient is 5.97e-6, a factor 5.3 under pyscf's
+    sqrt(1e-9) bar. The returned energy is checked against the physical basin
+    as well as against the anchor: the pre-fix end point sits 3.4 Ha above it.
+    """
+    from pyscf import scf
+    mf = _locked_li_mean_field("scan")
+    # A caller-set callback stands in as a probe: the driver takes ownership of
+    # mf.callback for the DIIS stage, so this one must never fire, and the
+    # recorder that replaces it must be detached before the return.
+    probe_calls = []
+    mf.callback = lambda envs: probe_calls.append(int(envs.get("cycle", -1)))
+
+    out, cycles, solver = data_mod._converge_reference_scf(mf)
+
+    assert out.converged is True
+    assert solver == "diis+newton"
+    assert abs(float(out.e_tot) - (-7.4786979415)) <= 5e-7, float(out.e_tot)
+    # The physical basin, not the unphysical DIIS end point of the defect.
+    assert float(out.e_tot) < -7.4
+    # The DIIS cap plus the macro-iterations of the rescue (2 measured).
+    assert data_mod._REFERENCE_SCF_MAX_CYCLE < cycles \
+        <= data_mod._REFERENCE_SCF_MAX_CYCLE \
+        + data_mod._REFERENCE_SCF_NEWTON_MAX_CYCLE
+    # pyscf's own criterion on the returned density, not just its flag.
+    g = float(np.linalg.norm(out.get_grad(out.mo_coeff, out.mo_occ)))
+    assert g < float(np.sqrt(scf.hf.SCF.conv_tol)), g
+    # Callback hygiene on the rescue path: the recorder and its density copy
+    # are gone from the DIIS object, and the caller's probe never ran.
+    assert probe_calls == []
+    assert getattr(mf, "callback", None) is None
+    # The returned SOSCF wrapper carries only the stage's macro-iteration
+    # counter (a list of ints); no density copy and no recorder reach it.
+    cb = getattr(out, "callback", None)
+    assert getattr(cb, "__name__", "") != "_record_best"
+    cells = [c.cell_contents
+             for c in (getattr(cb, "__closure__", None) or ())]
+    assert not any(isinstance(v, np.ndarray) for v in cells), cells
+    assert not any(isinstance(v, dict) and "dm" in v for v in cells), cells
+
+
+def test_li_pbe_diis_converged_path_is_unchanged_by_the_recorder():
+    """The same atom, basis, grid and lock under PBE, where DIIS converges on
+    its own: recording the trajectory must not perturb the first stage or its
+    early return. Measured before and after the recorder: 5 DIIS cycles,
+    solver "diis", E=-7.4600641060 (3e-11 Ha through the full precompute),
+    |g|=1.39e-7. The object returned is the DIIS object itself, and it comes
+    back with its callback cleared -- before the recorder existed a
+    caller-installed callback survived the call and was invoked on every
+    cycle."""
+    mf = _locked_li_mean_field("pbe")
+    probe_calls = []
+    mf.callback = lambda envs: probe_calls.append(int(envs.get("cycle", -1)))
+
+    out, cycles, solver = data_mod._converge_reference_scf(mf)
+
+    assert solver == "diis"
+    assert out is mf and out.converged is True
+    assert abs(float(out.e_tot) - (-7.4600641060)) <= 1e-8, float(out.e_tot)
+    assert 3 <= cycles <= 8, cycles          # 5 measured
+    assert probe_calls == []
+    assert getattr(out, "callback", None) is None
+
+
+class _TrajectoryStubSCF:
+    """A stand-in for the DIIS object of ``_converge_reference_scf``.
+
+    It reproduces the parts of the pyscf contract the driver uses: the kernel
+    invokes ``callback(locals())`` once per cycle when one is callable (as
+    ``scf.hf.kernel`` does), the envs carry ``mf``, ``cycle``, ``norm_gorb``,
+    ``mo_coeff`` and ``mo_occ``, and ``make_rdm1`` builds the density from the
+    orbitals it is given, or from the end point when called with none. Each
+    cycle's orbitals are a distinct rotation, so the trajectory's densities are
+    distinguishable and the density handed to the second stage identifies the
+    cycle it came from.
+    """
+
+    def __init__(self, gradients, fire_callback=True):
+        self.gradients = list(gradients)
+        self.fire_callback = fire_callback
+        self.callback = None
+        self.converged = False
+        self.cycles = len(self.gradients)
+        self.max_cycle = None
+        self.conv_tol = None
+        # UKS-shaped occupancies with one occupied-virtual pair per channel,
+        # so the empty-rotation-space refusal does not fire.
+        self.mo_occ = np.array([[1.0, 0.0], [1.0, 0.0]])
+        self.mo_coeff = self.orbitals(len(self.gradients) - 1)
+        self.second_order = _SecondOrderStub()
+
+    @staticmethod
+    def orbitals(cycle):
+        theta = 0.1 * (cycle + 1)
+        rot = np.array([[np.cos(theta), -np.sin(theta)],
+                        [np.sin(theta), np.cos(theta)]])
+        return np.array([rot, rot])
+
+    def make_rdm1(self, mo_coeff=None, mo_occ=None):
+        if mo_coeff is None:
+            mo_coeff, mo_occ = self.mo_coeff, self.mo_occ
+        return np.array([(c[:, o > 0] * o[o > 0]) @ c[:, o > 0].T
+                         for c, o in zip(np.asarray(mo_coeff),
+                                         np.asarray(mo_occ))])
+
+    def kernel(self):
+        for cycle, gorb in enumerate(self.gradients):
+            if not self.fire_callback:
+                continue
+            if callable(self.callback):
+                self.callback({"mf": self, "cycle": cycle,
+                               "norm_gorb": gorb,
+                               "mo_coeff": self.orbitals(cycle),
+                               "mo_occ": self.mo_occ})
+
+    def newton(self):
+        return self.second_order
+
+
+class _SecondOrderStub:
+    """The second-order stage as the driver drives it: it records the ``dm0``
+    it is started from, reports one macro-iteration through its callback, and
+    converges."""
+
+    def __init__(self):
+        self.dm0 = None
+        self.callback = None
+        self.converged = False
+        self.max_cycle = None
+        self.conv_tol = None
+        self.e_tot = -1.0
+
+    def kernel(self, dm0=None):
+        self.dm0 = np.array(dm0)
+        self.converged = True
+        if callable(self.callback):
+            self.callback({"imacro": 0})
+        return self.e_tot
+
+
+def test_second_stage_starts_from_the_lowest_gradient_density_of_the_trajectory():
+    """The selection rule, pinned deterministically. A DIIS trajectory shaped
+    like the Li case -- the gradient falls to its minimum at an intermediate
+    cycle and the extrapolation then leaves the basin -- must hand the second
+    stage the density of the lowest-gradient cycle, not the last one, which is
+    what the stage was started from before the rescue. The minimum is repeated
+    at the final cycle here, so the strict comparison is pinned too: the first
+    cycle to reach it wins and the end point does not displace it on a tie.
+    The fallback is pinned in the same place: a first stage that never invokes
+    the callback (nothing recorded) falls back to the end-point density,
+    reproducing the earlier behavior exactly. The real-path anchor of this rule
+    is the Li atom above, where the two starts differ by 3.4 Ha in the
+    converged result and by convergence itself."""
+    gradients = [1.0, 5.0e-2, 7.5e-4, 0.9, 7.5e-4]
+    stub = _TrajectoryStubSCF(gradients)
+    probe_calls = []
+    stub.callback = lambda envs: probe_calls.append(envs)
+
+    out, cycles, solver = data_mod._converge_reference_scf(stub)
+
+    assert solver == "diis+newton" and out is stub.second_order
+    best = stub.make_rdm1(stub.orbitals(2), stub.mo_occ)
+    end = stub.make_rdm1()
+    assert np.allclose(stub.second_order.dm0, best), stub.second_order.dm0
+    assert not np.allclose(stub.second_order.dm0, end)
+    # The cycle is identified uniquely: no other cycle's density matches.
+    for cycle in range(len(gradients)):
+        matches = bool(np.allclose(stub.second_order.dm0,
+                                   stub.make_rdm1(stub.orbitals(cycle),
+                                                  stub.mo_occ)))
+        assert matches == (cycle == 2), cycle
+    # The DIIS cycles plus the one macro-iteration the stage reported.
+    assert cycles == len(gradients) + 1
+    # The driver owns the callback for the stage and detaches it afterwards.
+    assert probe_calls == []
+    assert stub.callback is None
+
+    silent = _TrajectoryStubSCF(gradients, fire_callback=False)
+    out2, _, solver2 = data_mod._converge_reference_scf(silent)
+    assert solver2 == "diis+newton"
+    assert np.allclose(silent.second_order.dm0, silent.make_rdm1())
+
+
+def test_the_best_point_recorder_is_detached_before_the_rescue_returns(
+        monkeypatch):
+    """Neither object the rescue path touches may leave the driver holding a
+    density copy: the recorder is a closure over a full density matrix, and
+    the DIIS object outlives the call (the precompute reads its grids and
+    integrals afterwards, and the record is memoized). The cheap forced rescue
+    of the module's H2O / SCAN identity is used -- the DIIS cap cut to two
+    cycles, five cycles in total, E=-75.2917089278 measured -- so the property
+    is pinned without paying for the Li identity, where the same assertions
+    are made on the real stall. After the call the DIIS object's callback is
+    None (before the recorder existed, a caller-installed callback survived
+    the call and fired on every cycle), and the returned second-order wrapper
+    carries only its own macro-iteration counter, whose closure holds a list of
+    ints and no array."""
+    from pyscf import dft, gto
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_MAX_CYCLE", 2)
+    spec = _h2o_spec()
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.RKS(mol)
+    mf.xc = "scan"
+    mf.grids.level = spec.grid_level
+    probe_calls = []
+    mf.callback = lambda envs: probe_calls.append(int(envs.get("cycle", -1)))
+
+    out, cycles, solver = data_mod._converge_reference_scf(mf)
+
+    assert solver == "diis+newton" and out.converged is True
+    assert out is not mf
+    assert 2 < cycles <= 2 + data_mod._REFERENCE_SCF_NEWTON_MAX_CYCLE  # 5
+    assert probe_calls == []
+    assert getattr(mf, "callback", None) is None
+    for obj in (mf, out):
+        cb = getattr(obj, "callback", None)
+        assert getattr(cb, "__name__", "") != "_record_best"
+        cells = [c.cell_contents
+                 for c in (getattr(cb, "__closure__", None) or ())]
+        assert not any(isinstance(v, np.ndarray) for v in cells), cells
+        assert not any(isinstance(v, dict) and "dm" in v for v in cells), cells

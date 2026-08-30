@@ -414,7 +414,8 @@ _REFERENCE_SCF_CONV_TOL = 1e-9
 
 def _converge_reference_scf(mf, label="the reference SCF"):
     """Run ``mf`` to pyscf's convergence criterion: DIIS first, then the
-    second-order solver (SOSCF) from the DIIS end point if DIIS stalls.
+    second-order solver (SOSCF) from the best-gradient point of the DIIS
+    trajectory if DIIS stalls.
 
     Returns ``(mf_out, cycles, solver)``: the object whose ``e_tot``,
     ``make_rdm1()`` and ``get_veff`` hold the solution -- ``mf`` itself after a
@@ -446,18 +447,61 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     (the minao start reached the minimum in 9 of 9), unlocked it stalled in 1
     of 3 processes itself, and it changes the pruned grid (9088 -> 9080
     points on H2O / sto-3g) unless the grid is pre-initialized with the minao
-    guess. The second stage starts from the DIIS end point, not from the
-    guess, for the same reason: SOSCF from the minao guess converged the
-    locked SCAN O atom to a point 8e-5 Ha above the DIIS solution, whereas
-    from the DIIS end point it reproduces the DIIS energy to 2e-10 Ha (SCAN,
-    converged case) and lands within 1e-6 Ha of converged DIIS attempts
-    (PBE stall: 4e-9 Ha on one draw, 2.3e-8 to 9.8e-7 Ha over five further
-    rescued draws -- the flat-direction slack the 3.2e-5 gradient criterion
-    leaves).
+    guess. The second stage starts from the lowest-gradient density of the
+    DIIS trajectory, not from the guess, for the same reason and one more.
+    Against the guess the case was measured on the O atom: SOSCF from the
+    minao guess converged the locked SCAN O atom to a point 8e-5 Ha above
+    the DIIS solution, whereas from the DIIS end point -- which for a stall
+    that stays in the solution basin is itself near-best -- it reproduces
+    the DIIS energy to 2e-10 Ha (SCAN, converged case) and lands within
+    1e-6 Ha of converged DIIS attempts (PBE stall: 4e-9 Ha on one draw,
+    2.3e-8 to 9.8e-7 Ha over five further rescued draws -- the
+    flat-direction slack the 3.2e-5 gradient criterion leaves). Against the
+    end point the case was measured on the Li atom at SCAN /
+    6-311++G(3df,2pd) / grid level 3, where DIIS leaves the basin after
+    reaching it: the best point comes at cycle 5 (E=-7.478697644723,
+    |g|=7.5e-4), then the extrapolation throws the density into an
+    unphysical state and the final DIIS point is E~-4.07 at |g|~1.0; SOSCF
+    from that final point stalls at |g|~4e-3 over 50 macro-iterations
+    (unconverged), while from the best point it converges in 2
+    macro-iterations to E=-7.4786979415. A level shift (0.25 / 0.5),
+    damping (0.5), a finer grid and removing the orientation lock were each
+    measured on that case and none converges it. The best point is recorded
+    by an ``mf.callback`` on the first stage -- a plain numpy copy of the
+    cycle's density, kept with its |g| and cycle index whenever the cycle's
+    |g| is strictly below the best seen -- and the callback is detached
+    before any return, so the returned object carries no trace. For a
+    system this rescue previously started from the end point, the second
+    stage's start -- and with it the converged endpoint -- may move within
+    the flat-direction slack quantified above (2.3e-8 to 9.8e-7 Ha).
     """
     mf.max_cycle = _REFERENCE_SCF_MAX_CYCLE
     mf.conv_tol = _REFERENCE_SCF_CONV_TOL
+    # Trajectory-best density of the DIIS stage, for the rescue below: DIIS
+    # can reach the solution basin and then leave it (the Li case in the
+    # docstring -- best at cycle 5, unphysical from cycle 7, chaotic to the
+    # cycle cap), so the density handed to the second stage is the
+    # lowest-gradient one seen, not the last. scf.hf.kernel calls the
+    # callback with its locals once per cycle (and once more in the extra
+    # cycle of a converged run); norm_gorb there is the plain-Fock orbital
+    # gradient of that cycle's density, the quantity both stages converge
+    # on, and make_rdm1(mo_coeff, mo_occ) holds for RKS and UKS alike.
+    best = {"dm": None, "gorb": np.inf, "cycle": -1}
+
+    def _record_best(envs):
+        gorb = float(envs.get("norm_gorb", np.inf))
+        if gorb < best["gorb"]:
+            best["gorb"] = gorb
+            best["cycle"] = int(envs.get("cycle", -1))
+            best["dm"] = np.array(
+                envs["mf"].make_rdm1(envs["mo_coeff"], envs["mo_occ"]))
+
+    mf.callback = _record_best
     mf.kernel()
+    # Detached before every return so neither the returned object nor the
+    # SOSCF wrapper (whose constructor copies mf's instance attributes)
+    # carries the recording closure and its density copy.
+    mf.callback = None
     cycles = int(mf.cycles)
     if mf.converged:
         return mf, cycles, "diis"
@@ -496,7 +540,11 @@ def _converge_reference_scf(mf, label="the reference SCF"):
         # macro-iteration and once more after the loop; the last imacro is
         # the count minus one.
         so.callback = lambda envs: macro.append(int(envs["imacro"]))
-        so.kernel(dm0=mf.make_rdm1())
+        # The trajectory-best density; the DIIS end point only if the
+        # recorder never fired (defensive -- the kernel invokes the
+        # callback on every cycle it runs).
+        so.kernel(dm0=best["dm"] if best["dm"] is not None
+                  else mf.make_rdm1())
     except Exception as exc:
         raise ReferenceSCFNotConverged(
             f"{label}: the second-order stage raised "
@@ -755,7 +803,8 @@ def precompute_fixed_density_data(
     entry, one SCF and one recorded name. Pure semilocal functionals only: a
     hybrid or a non-local-correlation (VV10) functional is refused, see
     below. The reference SCF must converge: DIIS from the minao guess first,
-    the second-order solver from the DIIS end point if DIIS stalls
+    the second-order solver from the best-gradient point of the DIIS
+    trajectory if DIIS stalls
     (:func:`_converge_reference_scf`), and an SCF unconverged after both
     raises :class:`ReferenceSCFNotConverged` instead of producing a record.
     The record's ``mol_metadata`` carries ``reference_xc``,
