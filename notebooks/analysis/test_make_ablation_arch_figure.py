@@ -5792,8 +5792,107 @@ def test_model_fx_curve_alpha_moves_the_curve():
         assert np.all(np.isfinite(c))
     assert not np.allclose(curves[0.0], curves[1.0])
     assert not np.allclose(curves[1.0], curves[100.0])
-    # alpha=None reproduces the historical zero-descriptor slice exactly
+    # alpha=None stays the historical raw zero-column cut; alpha=0.0 is the
+    # exact encoded slice (the column carries the smooth-positive-part
+    # encoding, 5e-6 at alpha=0), so on this legacy checkpoint the two agree
+    # to the floor-level input shift rather than bitwise (measured 1.4e-7 on
+    # deep_mgga_3x16 and 9.4e-7 on deep_mgga_attn_3x16, the run's worst
+    # case; both inside allclose's 1e-5 relative band).
     assert np.allclose(ef.model_fx_curve(model, s), curves[0.0])
+
+
+def test_model_fc_curve_alpha_is_the_true_scan_slice():
+    """F_c through the shared helper at an encoded alpha slice: the anchored
+    fresh model IS parents.scan_fc pointwise, so the alpha=0 curve must land
+    on it (the raw zero-column cut is recovered as alpha ~ 1 and sits up to
+    0.669 away at r_s=0.5, measured)."""
+    import numpy as np
+    from xcquinox.alec import parents
+    model = _fresh_anchored_mgga_model("deep_cusp_mgga_3x16")
+    s = np.linspace(1e-3, 3.0, 25)
+    rs = 2.0
+    rho = ef.rs_to_rho(rs)
+    sigma = ef.s_to_sigma(np.full(25, rho), s)
+    got = ef.model_fc_curve(model, s, rs, alpha=0.0)
+    ref = np.asarray(parents.parent_fc("scan", np.full(25, rho), sigma,
+                                       0.0, np.zeros(25)))
+    assert np.max(np.abs(got - ref)) < 1e-10
+    # alpha=None keeps the historical zero-column cut (byte-compatible path).
+    base = ef.model_fc_curve(model, s, rs)
+    assert np.max(np.abs(base - ref)) > 1e-2
+
+
+def test_model_curves_refuse_a_gga_net_with_an_alpha_request():
+    """A GGA net WITH extra descriptors carries metagga_alpha_index = -1;
+    writing the encoded value there would silently land in the LAST
+    descriptor column, so an alpha request on such a model is refused.
+    (A no-extras GGA net skips the branch entirely: nothing to miswrite.)"""
+    import numpy as np
+    import pytest as _pytest
+    import dataclasses
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.networks import create_network_pair
+    arch = dataclasses.replace(get_architecture("deep_cusp_3x16"),
+                               parent_anchor=True,
+                               use_polarized_correlation=True,
+                               descriptor_coordinates="dfs")
+    xnet, cnet = create_network_pair(arch, seed=0)
+    model = AlecGGAModel(xnet=xnet, cnet=cnet)
+    s = np.linspace(1e-3, 1.0, 5)
+    with _pytest.raises(ValueError):
+        ef.model_fx_curve(model, s, alpha=0.0)
+    with _pytest.raises(ValueError):
+        ef.model_fc_curve(model, s, 2.0, alpha=0.0)
+
+
+def _fresh_anchored_mgga_model(arch_name):
+    """A SCAN-anchored fresh build (zero-initialized final layer): under the
+    pre-image anchor it IS ``parents.scan_*`` pointwise, so it is the
+    executable oracle for the alpha-column contract of ``model_fx_curve``."""
+    import dataclasses
+
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.networks import create_network_pair
+    arch = dataclasses.replace(get_architecture(arch_name),
+                               parent_anchor=True,
+                               descriptor_coordinates="dfs",
+                               use_polarized_correlation=True)
+    xnet, cnet = create_network_pair(arch, seed=0)
+    return AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+
+@pytest.mark.parametrize("arch_name",
+                         ["deep_mgga_3x16", "deep_cusp_mgga_3x16"])
+def test_model_fx_curve_alpha_is_the_true_scan_slice(arch_name):
+    """``alpha=a`` must select the slice at the EXACT raw indicator ``a``.
+
+    The descriptor column the networks read is the smooth-positive-part
+    encoding of the raw indicator (``metagga.compute_alpha``, the storage
+    convention), and the anchored model class inverts it
+    (``networks._raw_indicator``): writing the raw value into the column is
+    misread -- a raw 0.0 is read back as alpha ~ 1 through the inverse's
+    positivity guard, so the alpha=0 panel would draw the alpha ~ 1 slice,
+    1.74e-1 off SCAN(alpha=0) (measured). ``deep_cusp_mgga_3x16``
+    additionally holds the alpha column at index 2, so a helper that
+    hardcodes index 0 fails on it.
+    """
+    import numpy as np
+
+    import jax.numpy as jnp
+    from xcquinox.alec import parents
+    model = _fresh_anchored_mgga_model(arch_name)
+    s = np.linspace(0.0, 6.0, 121)
+    rho = np.ones_like(s)
+    sigma = ef.s_to_sigma(rho, s)
+    for alpha in (0.0, 1.0):
+        fx = ef.model_fx_curve(model, s, alpha=alpha)
+        ref = np.asarray(parents.parent_fx(
+            "scan", jnp.asarray(rho), jnp.asarray(sigma),
+            jnp.asarray(np.full_like(s, alpha))), dtype=float)
+        worst = float(np.max(np.abs(fx - ref)))
+        assert worst < 1e-10, (arch_name, alpha, worst)
 
 
 def test_gga_arch_is_not_meta_gga_and_ignores_alpha():

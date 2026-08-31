@@ -5,11 +5,12 @@ Two load-bearing pins:
 
   * the anchored identity. A parent-anchored network with a zero-initialized
     final layer IS the parent (F = F_parent + T(g), g = 0 at init), so a
-    checkpoint written straight from a fresh build must reproduce the PBE
+    checkpoint written straight from a fresh build must reproduce the parent
     baselines to round-off once it has travelled through the production
-    writer, the class record, the discovery and the render. An unanchored
-    build fails the same assertion by more than 1e-2, which is what makes the
-    pin discriminating rather than vacuous.
+    writer, the class record, the discovery and the render -- PBE for the
+    GGA rung, SCAN at the exact alpha slices for the meta-GGA rung. An
+    unanchored build fails the same assertion by more than 1e-2, which is
+    what makes the pin discriminating rather than vacuous.
   * the class record. The parent anchor and the descriptor coordinates change
     no parameter shape, so leaves of another class deserialize into this
     skeleton with nothing raising -- the test asserts exactly that (a bare
@@ -82,12 +83,11 @@ def _make_run(tmp_path, cells, *, arch="deep_3x16"):
 
 
 def _fresh_arch(arch_name, *, parent_anchor):
-    from xcquinox.alec.config import ArchitectureConfig, anchored, get_architecture
+    from xcquinox.alec.config import anchored, get_architecture
     arch = dataclasses.replace(get_architecture(arch_name),
                                use_polarized_correlation=True)
     if parent_anchor:
         return anchored(dataclasses.replace(arch, descriptor_coordinates="dfs"))
-    assert not ArchitectureConfig.is_meta_gga(arch)
     return dataclasses.replace(arch, parent_anchor=False,
                                descriptor_coordinates="legacy")
 
@@ -325,20 +325,71 @@ def test_the_selection_reads_the_channel_its_own_weights_came_from(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Meta-GGA refusal, discovery, shading
+# Meta-GGA routing, discovery, shading
 # ---------------------------------------------------------------------------
 
-def test_meta_gga_is_refused_by_name(tmp_path):
-    assert T.meta_gga_archs(["deep_3x16", "deep_mgga_3x16", "medium"]) == [
-        "deep_mgga_3x16"]
+def test_seam_renders_an_anchored_mgga_checkpoint_at_round_off(tmp_path):
+    """End to end on a synthetic meta-GGA run: the arch routes to its SCAN
+    parent, the alpha-sliced figure and the alpha-columned CSV land, and the
+    anchored checkpoint reproduces ``parents.scan_*`` to round-off at BOTH
+    alpha slices. ``deep_cusp_mgga_3x16`` holds the alpha column at index 2,
+    so a curve helper that hardcodes index 0 fails here: the anchored parent
+    would read the zeroed true column as alpha ~ 1."""
+    run = _make_run(tmp_path, {0: 4}, arch="deep_cusp_mgga_3x16")
+    _write_checkpoint(run / "checkpoints" / "spec_0000" / "model_val_best.eqx",
+                      "deep_cusp_mgga_3x16")
+    _write_test_set(run, 0, 7.0)
+    outdir = tmp_path / "figs"
+
+    assert T.build_all(run, outdir, eval_channel="val_best") == 0
+    assert (outdir
+            / "trained_fx_fc_deep_cusp_mgga_3x16.png").stat().st_size > 0
+    assert (outdir / "trained_fx_fc_delta_best.png").stat().st_size > 0
+
+    rows = _csv_rows(outdir)
+    assert set(rows[0]) == {"arch", "subset_size", "channel", "rs", "alpha",
+                            "s", "f_model", "f_parent", "eval_channel"}
+    n_scan = len(T.S_GRID) * len(T.ALPHA_VALUES) * (1 + len(T.RS_VALUES))
+    assert len(rows) == n_scan
+    fx = [r for r in rows if r["channel"] == "fx"]
+    assert sorted({r["alpha"] for r in fx}) == ["0", "1"]
+    worst = max(abs(float(r["f_model"]) - float(r["f_parent"])) for r in fx)
+    assert worst < 1e-10, worst
+    fc0 = [r for r in rows if r["channel"] == "fc" and r["alpha"] == "0"
+           and r["rs"] == "2"]
+    assert len(fc0) == len(T.S_GRID)
+    assert max(abs(float(r["f_model"]) - float(r["f_parent"]))
+               for r in fc0) < 1e-10
+    fc = [r for r in rows if r["channel"] == "fc"]
+    assert max(abs(float(r["f_model"]) - float(r["f_parent"]))
+               for r in fc) < 1e-8
+
+
+def test_an_unanchored_mgga_checkpoint_is_far_from_scan(tmp_path):
+    """The SCAN identity pin is discriminating: the unanchored twin sits at
+    F = 1 (zero-initialized final layer), 0.174 under SCAN's alpha=0 ceiling
+    at s=0, so a module drawing the parent against itself could not pass
+    both tests."""
     run = _make_run(tmp_path, {0: 4}, arch="deep_mgga_3x16")
-    with pytest.raises(ValueError, match="meta-GGA"):
-        T.build_all(run, tmp_path / "figs", archs=("deep_mgga_3x16",))
+    with open(run / "resolved_config.yaml", "w") as fh:
+        yaml.safe_dump(_raw_config(["deep_mgga_3x16"], parent_anchor=False,
+                                   coordinates="legacy"), fh)
+    _write_checkpoint(run / "checkpoints" / "spec_0000" / "model_val_best.eqx",
+                      "deep_mgga_3x16", parent_anchor=False)
+    outdir = tmp_path / "figs"
+
+    assert T.build_all(run, outdir, eval_channel="val_best") == 0
+    fx0 = [r for r in _csv_rows(outdir)
+           if r["channel"] == "fx" and r["alpha"] == "0"]
+    worst = max(abs(float(r["f_model"]) - float(r["f_parent"])) for r in fx0)
+    assert worst > 1e-2, worst
 
 
-def test_a_meta_gga_arch_is_dropped_from_a_mixed_run(tmp_path, capsys):
-    """A run holding both rungs renders its GGA architectures and states the
-    refusal; the PBE curves here are the wrong baseline for the other rung."""
+def test_a_mixed_run_routes_each_arch_to_its_own_parent(tmp_path):
+    """A run holding both rungs renders BOTH architectures in one invocation,
+    the GGA one against PBE and the meta-GGA one against SCAN -- no refusal,
+    no cross-parent draw: each family's parent column matches its own
+    baseline to round-off while the two baselines differ by more than 1e-2."""
     run = _make_run(tmp_path, {0: 4})
     with open(run / "manifest.json", "w") as fh:
         json.dump({"width": 4, "n_specs": 2, "specs": [
@@ -348,15 +399,31 @@ def test_a_meta_gga_arch_is_dropped_from_a_mixed_run(tmp_path, capsys):
     (run / "checkpoints" / "spec_0001").mkdir()
     _write_checkpoint(run / "checkpoints" / "spec_0000" / "model_val_best.eqx",
                       "deep_3x16")
-    (run / "checkpoints" / "spec_0001"
-     / "model_val_best.eqx").write_bytes(b"x")
+    _write_checkpoint(run / "checkpoints" / "spec_0001" / "model_val_best.eqx",
+                      "deep_mgga_3x16")
     outdir = tmp_path / "figs"
 
     assert T.build_all(run, outdir, eval_channel="val_best") == 0
-    assert "meta-GGA" in capsys.readouterr().out
     assert (outdir / "trained_fx_fc_deep_3x16.png").is_file()
-    assert not (outdir / "trained_fx_fc_deep_mgga_3x16.png").exists()
-    assert {r["arch"] for r in _csv_rows(outdir)} == {"deep_3x16"}
+    assert (outdir / "trained_fx_fc_deep_mgga_3x16.png").is_file()
+    rows = _csv_rows(outdir)
+    gga_fx = [r for r in rows if r["arch"] == "deep_3x16"
+              and r["channel"] == "fx"]
+    scan_fx0 = [r for r in rows if r["arch"] == "deep_mgga_3x16"
+                and r["channel"] == "fx" and r["alpha"] == "0"]
+    assert {r["alpha"] for r in gga_fx} == {""}
+    assert len(gga_fx) == len(T.S_GRID)
+    assert len(scan_fx0) == len(T.S_GRID)
+    for family in (gga_fx, scan_fx0):
+        worst = max(abs(float(r["f_model"]) - float(r["f_parent"]))
+                    for r in family)
+        assert worst < 1e-10, worst
+    # No cross-parent draw: each family matched its own baseline to round-off
+    # above, and the two baselines are far apart (both row lists are in
+    # S_GRID order, so the zip compares equal-s points).
+    gap = max(abs(float(g["f_parent"]) - float(m["f_parent"]))
+              for g, m in zip(gga_fx, scan_fx0))
+    assert gap > 1e-2, gap
 
 
 def test_an_arch_restriction_matching_nothing_says_what_the_run_holds(

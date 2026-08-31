@@ -212,15 +212,19 @@ def scan_fx(s: float, alpha: float, rho: float = 1.0) -> float:
 
 
 def model_fx(model, s: float, alpha: float, rho: float = 1.0) -> float:
-    """``F_x(s, alpha)`` from a loaded model, alpha placed in the descriptor
-    column the meta-GGA reads."""
+    """``F_x(s, alpha)`` from a loaded model, the ENCODED alpha placed in the
+    descriptor column the meta-GGA reads (``alpha_column_value``: the stored
+    smooth-positive-part convention; a raw value is inverted by the model
+    classes and a raw 0.0 recovers as alpha ~ 1, 1.74e-1 off at s = 0)."""
     import jax.numpy as jnp
+
+    from enhancement_factors import alpha_column_value
 
     k_f = (3.0 * np.pi ** 2 * rho) ** (1.0 / 3.0)
     sigma = (s * 2.0 * k_f * rho) ** 2
     n_extra = int(getattr(model.xnet, "n_extra_features", 0)) or 1
     feats = np.zeros((1, n_extra), dtype=float)
-    feats[0, int(getattr(model.xnet, "metagga_alpha_index", 0))] = alpha
+    feats[0, int(model.xnet.metagga_alpha_index)] = alpha_column_value(alpha)
     fx = model.eval_Fx(jnp.asarray([rho]), jnp.asarray([sigma]),
                        jnp.asarray(feats))
     return float(np.asarray(fx)[0])

@@ -7,18 +7,29 @@ fit added), this one draws the network the TRAINING stage produced, cell by
 cell, so the learned correction can be read against the same parent curves and
 against the training-set size that produced it.
 
-Slices (the conventions of ``enhancement_factors.py``, whose curve helpers are
-reused verbatim):
-  * ``F_x(s)`` at rho = 1, zero extra descriptors.
-  * ``F_c(s; r_s)`` at zeta = 0; the figures draw r_s = 2, the CSV carries
+The parent is resolved PER ARCHITECTURE from its own rung
+(``parents.parent_for_arch``): PBE for the GGA rungs, SCAN for the meta-GGA
+ones. A run mixing rungs draws each arch against ITS parent, and every figure
+states which parent each panel uses.
+
+Slices, by parent (the conventions of ``enhancement_factors.py`` and
+``pretrain_fx_fc.py``, whose curve helpers are reused verbatim):
+  * PBE archs:  ``F_x(s)`` at rho = 1, zero extra descriptors;
+    ``F_c(s; r_s)`` at zeta = 0; the figures draw r_s = 2, the CSV carries
     every r_s of ``pretrain_fx_fc.RS_VALUES``.
+  * SCAN archs: the same curves at the fixed iso-orbital slices
+    ``pretrain_fx_fc.ALPHA_VALUES`` (alpha = 0 and alpha = 1, the SCAN
+    Fig. 1 convention), one panel column per slice; alpha is the EXACT raw
+    indicator, carried into the network as the stored-column encoding the
+    shared curve helpers apply.
 
 The baselines are the anchor's OWN parent functions (``parents.pbe_fx`` /
-``parents.pbe_fc``, libxc constants), imported from ``pretrain_fx_fc`` so the
-pretrained and trained figures are drawn against one baseline: with the
-pre-image anchor the model IS that parent plus the learned correction, and any
-other PBE implementation reads as a spurious correction (the rounded-constant
-analytic helper differs by 4.553e-6 in F_x on this grid).
+``parents.pbe_fc`` and ``parents.scan_fx`` / ``parents.scan_fc``, libxc
+constants), imported from ``pretrain_fx_fc`` so the pretrained and trained
+figures are drawn against one baseline: with the pre-image anchor the model
+IS that parent plus the learned correction, and any other implementation of
+the parent reads as a spurious correction (the rounded-constant analytic PBE
+helper differs by 4.553e-6 in F_x on this grid).
 
 Loading. The run's own ``resolved_config.yaml`` supplies the model class (the
 parent anchor, the descriptor coordinates, the polarized correlation network),
@@ -38,18 +49,18 @@ checkpoints; it is not reused here because it reads the pickled
 ``specs/spec_NNNN.spec`` (which the default pull profile does not carry) and
 names ``model.eqx`` literally, while these figures select a channel.
 
-Meta-GGA architectures are refused by name: their parent is SCAN and the PBE
-curves drawn here are the wrong baseline for them.
-
 Outputs, into ``--outdir``:
-  * ``trained_fx_fc_<arch>.png``     per-arch 2x2, one curve per completed
+  * ``trained_fx_fc_<arch>.png``     per-arch panels, one curve per completed
                                      subset-size cell (light -> dark) with
-                                     difference panels
+                                     difference panels (2x2 for a PBE arch,
+                                     2x4 with one column per alpha slice for
+                                     a SCAN arch)
   * ``trained_fx_fc_delta_best.png`` cross-arch differences, each arch at its
-                                     best held-out cell
+                                     best held-out cell against its own parent
   * ``trained_fx_fc_curves.csv``     long-form curves (arch, subset_size,
                                      channel, rs, s, f_model, f_parent,
-                                     eval_channel)
+                                     eval_channel; an alpha column is added
+                                     when a SCAN arch is drawn)
 
 The ``eval_channel`` column states the channel each row's weights actually came
 from, so a row reading ``final`` under ``--eval-channel val_best`` is a cell
@@ -82,10 +93,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arch_style import ARCH_COLOR, arch_color  # noqa: E402
 from enhancement_factors import model_fc_curve, model_fx_curve  # noqa: E402
 from pretrain_fx_fc import (  # noqa: E402
+    ALPHA_LINESTYLE,
+    ALPHA_VALUES,
     RS_VALUES,
     S_GRID,
+    model_fc_curve_mgga,
+    model_fx_curve_mgga,
     parent_fc_curve,
+    parent_fc_curve_scan,
     parent_fx_curve,
+    parent_fx_curve_scan,
 )
 
 #: Checkpoint filename per evaluation channel. ``val_best`` is the held-out
@@ -216,32 +233,6 @@ def held_out_mae(run_dir: Path, index: int, width: int,
     return None
 
 
-def meta_gga_archs(archs: Sequence[str]) -> List[str]:
-    """Those of ``archs`` carrying the meta-GGA iso-orbital ingredient.
-
-    Read from the architecture registry (``xcquinox.alec.rungs``), with the
-    name-token fallback the shared palette uses for names the registry does
-    not hold.
-    """
-    from xcquinox.alec.rungs import arch_ingredients
-    out = []
-    for arch in archs:
-        try:
-            meta, _r35 = arch_ingredients(arch)
-        except Exception:  # noqa: BLE001 - an unregistered name still classifies
-            meta = ("mgga" in arch) or ("metagga" in arch)
-        if meta:
-            out.append(arch)
-    return out
-
-
-def _meta_gga_refusal(names: Sequence[str]) -> str:
-    return (f"{', '.join(names)} {'is a' if len(names) == 1 else 'are'} "
-            "meta-GGA architecture" + ("" if len(names) == 1 else "s")
-            + "; their parent is SCAN and the PBE curves drawn here are the "
-              "wrong baseline for them.")
-
-
 def missing_checkpoints_message(run_dir: Path, eval_channel: str,
                                 missing: Sequence[Tuple[int, str, int]],
                                 width: int) -> str:
@@ -319,14 +310,12 @@ def load_trained_model(cfg, arch_name: str, checkpoint_path: Path):
     ``checkpoint_class.load_trained_checkpoint``, which refuses a checkpoint
     the record beside it does not describe (``ClassRecordStale``) and one
     written as another model class (``ModelClassMismatch``). Both refusals
-    propagate.
+    propagate. Every rung loads here; the parent the curves are drawn
+    against is resolved per arch downstream (``parents.parent_for_arch``).
     """
     from xcquinox.alec.checkpoint_class import load_trained_checkpoint
-    from xcquinox.alec.config import ArchitectureConfig
     from xcquinox.alec.models import AlecGGAModel
     arch = arch_from_config(cfg, arch_name)
-    if ArchitectureConfig.is_meta_gga(arch):
-        raise ValueError(_meta_gga_refusal([arch_name]))
     skeleton = AlecGGAModel.from_arch(arch, seed=0)
     model = load_trained_checkpoint(checkpoint_path, skeleton,
                                     what="trained checkpoint")
@@ -338,15 +327,28 @@ def load_trained_model(cfg, arch_name: str, checkpoint_path: Path):
 # ---------------------------------------------------------------------------
 
 def parent_curves() -> dict:
-    """The parent baselines on the plotted grid, computed once per run."""
+    """The PBE baselines on the plotted grid, computed once per run."""
     return {
         "fx": parent_fx_curve(S_GRID),
         "fc": {rs: parent_fc_curve(S_GRID, rs) for rs in RS_VALUES},
     }
 
 
+def parent_curves_scan() -> dict:
+    """The SCAN baselines on the plotted grid at each alpha slice, computed
+    once per run (the meta-GGA counterpart of :func:`parent_curves`)."""
+    return {
+        "fx_alpha": {alpha: parent_fx_curve_scan(S_GRID, alpha)
+                     for alpha in ALPHA_VALUES},
+        "fc_alpha": {alpha: {rs: parent_fc_curve_scan(S_GRID, rs, alpha)
+                             for rs in RS_VALUES}
+                     for alpha in ALPHA_VALUES},
+    }
+
+
 def compute_curves(model, parents: dict) -> dict:
-    """All plotted curves for one trained model, against cached parents.
+    """All plotted curves for one trained PBE-parent model, against cached
+    parents.
 
     Same shape as ``pretrain_fx_fc.compute_curves``; the parent curves are
     passed in rather than recomputed because a size sweep evaluates dozens of
@@ -365,7 +367,32 @@ def compute_curves(model, parents: dict) -> dict:
     return curves
 
 
+def compute_curves_scan(model, parents_scan: dict) -> dict:
+    """All plotted curves for one trained SCAN-parent (meta-GGA) model,
+    against cached parents; same shape as
+    ``pretrain_fx_fc.compute_curves_scan``. The model curves carry the
+    stored-column alpha encoding through the shared helpers."""
+    curves = {"fx_alpha": {}, "fc_alpha": {}}
+    for alpha in ALPHA_VALUES:
+        curves["fx_alpha"][alpha] = {
+            "model": model_fx_curve_mgga(model, S_GRID, alpha),
+            "parent": parents_scan["fx_alpha"][alpha],
+        }
+        curves["fc_alpha"][alpha] = {}
+        for rs in RS_VALUES:
+            curves["fc_alpha"][alpha][rs] = {
+                "model": model_fc_curve_mgga(model, S_GRID, rs, alpha),
+                "parent": parents_scan["fc_alpha"][alpha][rs],
+            }
+    return curves
+
+
 def max_abs_dfx(curves: dict) -> float:
+    """max|F_x^NN - F_x^parent| over every drawn F_x slice."""
+    if "fx_alpha" in curves:
+        return max(
+            float(np.max(np.abs(pair["model"] - pair["parent"])))
+            for pair in curves["fx_alpha"].values())
     return float(np.max(np.abs(curves["fx_model"] - curves["fx_parent"])))
 
 
@@ -388,14 +415,24 @@ def subset_shades(color: str, n: int) -> List[str]:
             for t in np.linspace(SHADE_LIGHTEST, 1.0, n)]
 
 
+def _cell_label(cell: Cell) -> str:
+    return (f"{cell.subset_size} mol"
+            + ("" if cell.subset_size == 1 else "s")
+            + (" [final]" if cell.fallback else ""))
+
+
 def render_arch_figure(arch_name: str, cells: Sequence[Cell],
                        curves_by_index: Dict[int, dict], outdir: Path,
                        footer: str) -> Path:
-    """Per-arch 2x2: F_x family | delta F_x / F_c family | delta F_c.
+    """Per-arch panels against the arch's parent: the 2x2 PBE layout, or the
+    2x4 SCAN layout (one column per alpha slice) for a meta-GGA arch.
 
     One curve per completed subset-size cell, ascending, light -> dark.
     """
     ordered = sorted(cells, key=lambda c: (c.subset_size, c.index))
+    if "fx_alpha" in curves_by_index[ordered[0].index]:
+        return _render_arch_figure_scan(arch_name, ordered, curves_by_index,
+                                        outdir, footer)
     shades = subset_shades(ARCH_COLOR.get(arch_name, arch_color(arch_name)),
                            len(ordered))
     fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.6))
@@ -446,9 +483,77 @@ def render_arch_figure(arch_name: str, cells: Sequence[Cell],
     return out
 
 
+def _render_arch_figure_scan(arch_name: str, ordered: Sequence[Cell],
+                             curves_by_index: Dict[int, dict], outdir: Path,
+                             footer: str) -> Path:
+    """Per-arch 2x4 against the SCAN parent: one column per (channel, alpha)
+    -- [F_x a=0 | F_x a=1 | F_c a=0 | F_c a=1], overlays on the top row and
+    differences below, so every panel is a single-alpha family of cell curves
+    exactly like the PBE panels. ``ordered`` is the cell list already sorted
+    by (subset_size, index)."""
+    shades = subset_shades(ARCH_COLOR.get(arch_name, arch_color(arch_name)),
+                           len(ordered))
+    fig, axes = plt.subplots(2, 4, figsize=(18.0, 7.6))
+    top, bottom = axes
+    first = curves_by_index[ordered[0].index]
+
+    for j, alpha in enumerate(ALPHA_VALUES):
+        ax, axd = top[j], bottom[j]
+        ax.plot(S_GRID, first["fx_alpha"][alpha]["parent"],
+                label=rf"SCAN parent, $\alpha={alpha:g}$", **_PARENT_STYLE)
+        for shade, cell in zip(shades, ordered):
+            pair = curves_by_index[cell.index]["fx_alpha"][alpha]
+            ax.plot(S_GRID, pair["model"], color=shade, linewidth=2.0,
+                    label=_cell_label(cell), zorder=2)
+            axd.plot(S_GRID, pair["model"] - pair["parent"], color=shade,
+                     linewidth=2.0, label=_cell_label(cell))
+        ax.set_ylabel(rf"$F_x(s)$  ($\alpha={alpha:g}$)")
+        axd.set_ylabel(rf"$F_x^{{\mathrm{{NN}}}} - F_x^{{\mathrm{{SCAN}}}}$"
+                       rf"  ($\alpha={alpha:g}$)")
+
+    for j, alpha in enumerate(ALPHA_VALUES):
+        ax, axd = top[2 + j], bottom[2 + j]
+        ax.plot(S_GRID, first["fc_alpha"][alpha][RS_FIGURE]["parent"],
+                label=rf"SCAN parent, $r_s={RS_FIGURE:g}$, "
+                      rf"$\alpha={alpha:g}$",
+                **_PARENT_STYLE)
+        for shade, cell in zip(shades, ordered):
+            pair = curves_by_index[cell.index]["fc_alpha"][alpha][RS_FIGURE]
+            ax.plot(S_GRID, pair["model"], color=shade, linewidth=2.0,
+                    label=_cell_label(cell), zorder=2)
+            axd.plot(S_GRID, pair["model"] - pair["parent"], color=shade,
+                     linewidth=2.0, label=_cell_label(cell))
+        ax.set_ylabel(rf"$F_c(s;\,r_s={RS_FIGURE:g})$"
+                      rf"  ($\zeta=0,\ \alpha={alpha:g}$)")
+        axd.set_ylabel(rf"$F_c^{{\mathrm{{NN}}}} - F_c^{{\mathrm{{SCAN}}}}$"
+                       rf"  ($\alpha={alpha:g}$)")
+
+    for ax in bottom:
+        ax.axhline(0.0, color="0.7", linewidth=1.0)
+    for ax in axes.ravel():
+        ax.set_xlabel(r"reduced gradient $s$")
+        ax.grid(True, color="0.92", linewidth=0.8)
+        ax.set_axisbelow(True)
+        ax.legend(fontsize=7, ncol=2, title="training subset", frameon=True,
+                  framealpha=0.85, edgecolor="0.85").get_title().set_fontsize(7)
+    fig.suptitle(f"{arch_name}: trained networks against the SCAN parent",
+                 fontsize=12)
+    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
+             color="0.35", wrap=True)
+    fig.tight_layout(rect=(0.0, 0.045, 1.0, 0.97))
+    out = outdir / f"trained_fx_fc_{arch_name}.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
 def render_best_figure(best: Sequence[Tuple[Cell, dict, Optional[float]]],
                        outdir: Path, footer: str) -> Path:
-    """Cross-arch differences, each arch at its best held-out cell."""
+    """Cross-arch differences, each arch at its best held-out cell, drawn
+    against its OWN parent (a SCAN arch contributes one curve per alpha
+    slice, separated by linestyle, with the parent named per curve)."""
+    if any("fx_alpha" in curves for _cell, curves, _mae in best):
+        return _render_best_figure_with_scan(best, outdir, footer)
     fig, (ax_dfx, ax_dfc) = plt.subplots(1, 2, figsize=(11.0, 4.4))
     for cell, curves, mae in best:
         color = ARCH_COLOR.get(cell.arch, arch_color(cell.arch))
@@ -482,13 +587,75 @@ def render_best_figure(best: Sequence[Tuple[Cell, dict, Optional[float]]],
     return out
 
 
+def _render_best_figure_with_scan(
+        best: Sequence[Tuple[Cell, dict, Optional[float]]],
+        outdir: Path, footer: str) -> Path:
+    """The best-cell difference panels when at least one SCAN arch is drawn:
+    each SCAN arch appears once per alpha slice (linestyle-separated) against
+    parents.scan_*, each PBE arch once against parents.pbe_*, with the parent
+    named per curve in the legend."""
+    has_pbe = any("fx_model" in curves for _cell, curves, _mae in best)
+    parent_tag = r"\mathrm{parent}" if has_pbe else r"\mathrm{SCAN}"
+    fig, (ax_dfx, ax_dfc) = plt.subplots(1, 2, figsize=(11.0, 4.4))
+    for cell, curves, mae in best:
+        color = ARCH_COLOR.get(cell.arch, arch_color(cell.arch))
+        stem = (f"{cell.arch} ({cell.subset_size} mol"
+                + ("" if cell.subset_size == 1 else "s")
+                + (f", {mae:.2f} kcal/mol" if mae is not None else "")
+                + (", final" if cell.fallback else ""))
+        if "fx_alpha" in curves:
+            for alpha in ALPHA_VALUES:
+                label = stem + rf", vs SCAN, $\alpha={alpha:g}$)"
+                pair = curves["fx_alpha"][alpha]
+                ax_dfx.plot(S_GRID, pair["model"] - pair["parent"],
+                            color=color, linestyle=ALPHA_LINESTYLE[alpha],
+                            linewidth=2.0, label=label)
+                pair = curves["fc_alpha"][alpha][RS_FIGURE]
+                ax_dfc.plot(S_GRID, pair["model"] - pair["parent"],
+                            color=color, linestyle=ALPHA_LINESTYLE[alpha],
+                            linewidth=2.0, label=label)
+        else:
+            label = stem + ", vs PBE)"
+            ax_dfx.plot(S_GRID, curves["fx_model"] - curves["fx_parent"],
+                        color=color, linewidth=2.0, label=label)
+            pair = curves["fc"][RS_FIGURE]
+            ax_dfc.plot(S_GRID, pair["model"] - pair["parent"], color=color,
+                        linewidth=2.0, label=label)
+    for ax, ylabel in (
+            (ax_dfx, rf"$F_x^{{\mathrm{{NN}}}} - F_x^{{{parent_tag}}}$"),
+            (ax_dfc, rf"$F_c^{{\mathrm{{NN}}}} - F_c^{{{parent_tag}}}$"
+                     rf"  ($r_s={RS_FIGURE:g}$)")):
+        ax.axhline(0.0, color="0.7", linewidth=1.0)
+        ax.set_xlabel(r"reduced gradient $s$")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, color="0.92", linewidth=0.8)
+        ax.set_axisbelow(True)
+        ax.legend(frameon=False, fontsize=7)
+    fig.suptitle(
+        "Trained corrections to each architecture's own parent at its best "
+        "held-out cell (PBE for GGA, SCAN for meta-GGA)" if has_pbe else
+        "Trained corrections to the SCAN parent, each architecture at its "
+        "best held-out cell", fontsize=12)
+    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
+             color="0.35", wrap=True)
+    fig.tight_layout(rect=(0.0, 0.06, 1.0, 0.95))
+    out = outdir / "trained_fx_fc_delta_best.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
 def write_curves_csv(cells: Sequence[Cell], curves_by_index: Dict[int, dict],
                      outdir: Path) -> Path:
     """Long-form curves; ``eval_channel`` is the channel each row was read
     from, so a ``final`` row under ``--eval-channel val_best`` is a fallback
-    cell."""
+    cell. When at least one SCAN arch is drawn the schema gains an ``alpha``
+    column, which PBE-arch rows leave empty exactly as fx rows leave ``rs``
+    empty."""
     out = outdir / "trained_fx_fc_curves.csv"
     ordered = sorted(cells, key=lambda c: (c.arch, c.subset_size, c.index))
+    if any("fx_alpha" in curves_by_index[c.index] for c in ordered):
+        return _write_curves_csv_with_alpha(ordered, curves_by_index, out)
     with open(out, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["arch", "subset_size", "channel", "rs", "s", "f_model",
@@ -506,6 +673,52 @@ def write_curves_csv(cells: Sequence[Cell], curves_by_index: Dict[int, dict],
                     w.writerow([cell.arch, cell.subset_size, "fc", f"{rs:g}",
                                 f"{s:.6f}", repr(float(fm)), repr(float(fp)),
                                 cell.channel])
+    return out
+
+
+def _write_curves_csv_with_alpha(ordered: Sequence[Cell],
+                                 curves_by_index: Dict[int, dict],
+                                 out: Path) -> Path:
+    """The long-form CSV when at least one SCAN arch is drawn (``ordered`` is
+    the cell list already sorted by (arch, subset_size, index))."""
+    with open(out, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["arch", "subset_size", "channel", "rs", "alpha", "s",
+                    "f_model", "f_parent", "eval_channel"])
+        for cell in ordered:
+            curves = curves_by_index[cell.index]
+            if "fx_alpha" in curves:
+                for alpha in ALPHA_VALUES:
+                    pair = curves["fx_alpha"][alpha]
+                    for s, fm, fp in zip(S_GRID, pair["model"],
+                                         pair["parent"]):
+                        w.writerow([cell.arch, cell.subset_size, "fx", "",
+                                    f"{alpha:g}", f"{s:.6f}",
+                                    repr(float(fm)), repr(float(fp)),
+                                    cell.channel])
+                for alpha in ALPHA_VALUES:
+                    for rs in RS_VALUES:
+                        pair = curves["fc_alpha"][alpha][rs]
+                        for s, fm, fp in zip(S_GRID, pair["model"],
+                                             pair["parent"]):
+                            w.writerow([cell.arch, cell.subset_size, "fc",
+                                        f"{rs:g}", f"{alpha:g}", f"{s:.6f}",
+                                        repr(float(fm)), repr(float(fp)),
+                                        cell.channel])
+            else:
+                for s, fm, fp in zip(S_GRID, curves["fx_model"],
+                                     curves["fx_parent"]):
+                    w.writerow([cell.arch, cell.subset_size, "fx", "", "",
+                                f"{s:.6f}", repr(float(fm)), repr(float(fp)),
+                                cell.channel])
+                for rs in RS_VALUES:
+                    pair = curves["fc"][rs]
+                    for s, fm, fp in zip(S_GRID, pair["model"],
+                                         pair["parent"]):
+                        w.writerow([cell.arch, cell.subset_size, "fc",
+                                    f"{rs:g}", "", f"{s:.6f}",
+                                    repr(float(fm)), repr(float(fp)),
+                                    cell.channel])
     return out
 
 
@@ -556,10 +769,6 @@ def best_cells(run_dir: Path, cells: Sequence[Cell], width: int
 def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
               archs: Optional[Sequence[str]] = None) -> int:
     """Render every figure and the CSV for ``run_dir``. Returns an exit code."""
-    if archs is not None:
-        refused = meta_gga_archs(archs)
-        if refused:
-            raise ValueError(_meta_gga_refusal(refused))
     try:
         width, manifest_cells = read_manifest(run_dir)
     except (OSError, ValueError) as exc:
@@ -579,22 +788,24 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
                                           width))
         return 2
 
-    refused = meta_gga_archs(sorted({c.arch for c in cells}))
-    if refused:
-        print("refusing " + _meta_gga_refusal(refused))
-        cells = [c for c in cells if c.arch not in refused]
-    if not cells:
-        print("every architecture of this run is a meta-GGA; nothing to draw "
-              "against the PBE parent.")
-        return 2
-
     outdir.mkdir(parents=True, exist_ok=True)
     cfg = load_run_config(run_dir)
+    from xcquinox.alec.parents import parent_for_arch
     parents = parent_curves()
+    parents_scan: Optional[dict] = None  # built on the first SCAN arch
+    parent_by_arch: Dict[str, str] = {}
     curves_by_index: Dict[int, dict] = {}
     for cell in sorted(cells, key=lambda c: (c.arch, c.subset_size)):
-        _arch, model = load_trained_model(cfg, cell.arch, cell.path)
-        curves_by_index[cell.index] = compute_curves(model, parents)
+        arch, model = load_trained_model(cfg, cell.arch, cell.path)
+        parent = parent_for_arch(arch)
+        parent_by_arch[cell.arch] = parent
+        if parent == "scan":
+            if parents_scan is None:
+                parents_scan = parent_curves_scan()
+            curves_by_index[cell.index] = compute_curves_scan(model,
+                                                              parents_scan)
+        else:
+            curves_by_index[cell.index] = compute_curves(model, parents)
         print(f"loaded spec {cell.index} {cell.arch} ss={cell.subset_size} "
               f"[{cell.channel}] max|dF_x| "
               f"{max_abs_dfx(curves_by_index[cell.index]):.3e}", flush=True)
@@ -608,12 +819,23 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
     for arch_name in sorted(by_arch):
         arch_cells = by_arch[arch_name]
         worst = max(max_abs_dfx(curves_by_index[c.index]) for c in arch_cells)
-        footer = (f"run {run_dir.name}; {channel_note}; slices: F_x at rho=1, "
-                  f"zero extra descriptors; F_c at zeta=0, r_s={RS_FIGURE:g}; "
-                  f"{len(arch_cells)} completed cell(s); max|dF_x| "
-                  f"{worst:.2e}; parent curves parents.pbe_fx / parents.pbe_fc "
-                  "(libxc constants)." + _fallback_note(arch_cells,
-                                                        eval_channel))
+        if parent_by_arch[arch_name] == "scan":
+            footer = (f"run {run_dir.name}; {channel_note}; parent SCAN; "
+                      "slices: F_x at rho=1 at the exact iso-orbital "
+                      "indicator alpha in {0, 1}, zero other descriptors; "
+                      f"F_c at zeta=0, r_s={RS_FIGURE:g}, same alpha slices; "
+                      f"{len(arch_cells)} completed cell(s); max|dF_x| "
+                      f"{worst:.2e}; parent curves parents.scan_fx / "
+                      "parents.scan_fc (libxc constants)."
+                      + _fallback_note(arch_cells, eval_channel))
+        else:
+            footer = (f"run {run_dir.name}; {channel_note}; slices: F_x at "
+                      "rho=1, "
+                      f"zero extra descriptors; F_c at zeta=0, r_s={RS_FIGURE:g}; "
+                      f"{len(arch_cells)} completed cell(s); max|dF_x| "
+                      f"{worst:.2e}; parent curves parents.pbe_fx / parents.pbe_fc "
+                      "(libxc constants)." + _fallback_note(arch_cells,
+                                                            eval_channel))
         out = render_arch_figure(arch_name, arch_cells, curves_by_index,
                                  outdir, footer)
         print(f"wrote {out} ({len(arch_cells)} cells, max|dF_x| {worst:.3e})")
@@ -626,12 +848,20 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
                         for cell, mae in selected if mae is not None})
     score_src = "/".join(used_dirs) if used_dirs else \
         CHANNEL_EVAL_DIR[eval_channel]
+    if any(p == "scan" for p in parent_by_arch.values()):
+        parent_note = ("each arch drawn against its own parent: "
+                       "parents.pbe_fx / parents.pbe_fc (GGA archs), "
+                       "parents.scan_fx / parents.scan_fc at alpha in {0, 1} "
+                       "(meta-GGA archs); libxc constants.")
+    else:
+        parent_note = ("parent curves parents.pbe_fx / parents.pbe_fc "
+                       "(libxc constants).")
     footer = (f"run {run_dir.name}; {channel_note}; one cell per architecture, "
               f"selected by the smallest {BEST_CELL_COLUMN} of the "
               f"{BEST_CELL_SET} row of "
               f"checkpoints/spec_*/{score_src}/test_set.csv -- each cell "
-              "scored on the channel its drawn weights came from; parent "
-              "curves parents.pbe_fx / parents.pbe_fc (libxc constants).")
+              "scored on the channel its drawn weights came from; "
+              + parent_note)
     if unranked:
         footer += (f"  No held-out evaluation on disk for {', '.join(unranked)}"
                    " -- drawn at the largest completed subset size instead.")

@@ -31,6 +31,31 @@ ev = _load("mgga_diagnosis_evidence")
 # saturation
 # ---------------------------------------------------------------------------
 
+def test_model_fx_alpha_zero_sits_on_the_scan_ceiling():
+    """The script's own F_x probe must place an anchored model AT SCAN's
+    alpha = 0 ceiling (F_x(s=0, alpha=0) = 1.174): the descriptor column
+    carries the smooth-positive-part ENCODING of alpha, and a raw 0.0 in
+    the column is recovered as alpha ~ 1 by the inverting classes, which
+    made this probe report a lost ceiling for a model sitting exactly on
+    it (measured 1.000000 vs 1.174000)."""
+    import dataclasses
+
+    import numpy as np
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.networks import create_network_pair
+    arch = dataclasses.replace(get_architecture("deep_mgga_3x16"),
+                               parent_anchor=True,
+                               use_polarized_correlation=True,
+                               descriptor_coordinates="dfs")
+    xnet, cnet = create_network_pair(arch, seed=0)
+    model = AlecGGAModel(xnet=xnet, cnet=cnet)
+    got = ev.model_fx(model, s=0.0, alpha=0.0)
+    ref = ev.scan_fx(s=0.0, alpha=0.0)
+    assert abs(ref - 1.174) < 1e-9
+    assert abs(got - ref) < 1e-8, (got, ref)
+
+
 def test_saturation_refuses_fewer_than_three_points():
     """Two points are trivially 0% and 100% of the span between them -- a
     shape read off them is an artifact of having two points, which is exactly

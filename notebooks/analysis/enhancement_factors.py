@@ -82,8 +82,10 @@ def _provenance(run_dir: Path, mgga_alpha: bool) -> str:
         parts.append("Pre-dm_entropy-fix run (2026-05-29).")
     parts.append("Descriptor archs shown at the zero-descriptor slice "
                  "(extras=0)")
-    parts.append("except the meta-GGA archs, whose alpha column is swept in "
-                 "the alpha panel (their extras=0 curve IS the alpha=0 slice)."
+    parts.append("except the meta-GGA archs: their F_x AND F_c curves are "
+                 "drawn at the encoded alpha=0 slice (a raw zero column is "
+                 "misread as alpha ~ 1 by the model classes that invert the "
+                 "stored encoding), and the alpha panel sweeps the indicator."
                  if mgga_alpha else ".")
     return " ".join(parts).replace(" .", ".")
 
@@ -103,6 +105,34 @@ def s_to_sigma(rho: np.ndarray, s: np.ndarray) -> np.ndarray:
 def rs_to_rho(rs: float) -> float:
     """Wigner-Seitz radius -> uniform density ``rho = 3/(4 pi rs^3)``."""
     return 3.0 / (4.0 * np.pi * rs ** 3)
+
+
+def alpha_column_value(alpha: float) -> float:
+    """The stored ``metagga`` column that encodes the EXACT raw indicator
+    ``alpha``.
+
+    The descriptor column the networks read is ``min(p(alpha_raw), 100)``
+    with ``p`` the smooth positive part of width 1e-5 (``metagga.
+    compute_alpha``; the pretraining mesh's own alpha column is produced by
+    the same helper, ``pretrain_data_gen._mesh_columns``), and
+    ``networks._raw_indicator`` inverts it exactly below the ceiling.
+    Passing the raw ``alpha`` itself as the column would be misread: the
+    inverse maps a column value c to ``c - w^2/(4c)`` (alpha = 1 would land
+    2.5e-11 low), and its positivity guard sends a column of exactly 0.0 to
+    alpha ~ 1 -- the wrong end of the indicator range, 1.74e-1 off in F_x
+    (measured). Encoding through ``smooth_positive_part`` makes the
+    recovered indicator, and therefore the SCAN parent inside an anchored
+    network, sit at exactly the requested slice ``alpha`` (measured: an
+    anchored fresh model matches ``parents.scan_fx`` to 2.2e-16 at the
+    alpha = 0 and alpha = 1 slices).
+    """
+    import jax.numpy as jnp
+
+    from xcquinox.alec import metagga
+    return float(jnp.minimum(
+        metagga.smooth_positive_part(jnp.asarray(float(alpha)),
+                                     metagga._ALPHA_SMOOTHING_WIDTH),
+        metagga._ALPHA_MAX))
 
 
 # ---------------------------------------------------------------------------
@@ -162,15 +192,22 @@ def model_fx_curve(model, s_grid: np.ndarray, rho: float = 1.0,
                    alpha: Optional[float] = None) -> np.ndarray:
     """``F_x(s)`` from a loaded model at fixed rho, zero extra descriptors.
 
-    ``alpha`` (meta-GGA archs only) places that value in the descriptor column
-    the X-net reads as the iso-orbital indicator instead of leaving it at 0.
-    Left None the behaviour is the historical zero-descriptor slice.
+    ``alpha`` (meta-GGA archs only) selects the slice at that EXACT raw
+    iso-orbital indicator: the descriptor column receives the stored-column
+    encoding of ``alpha`` (:func:`alpha_column_value`), which is what
+    ``metagga.compute_alpha`` writes and what every model class reads -- the
+    anchored/DFS classes invert the column exactly, so writing the raw value
+    instead is misread there (a raw 0.0 is recovered as alpha ~ 1 through
+    the inverse's positivity guard, 1.74e-1 off in F_x, measured). Left None
+    the behaviour is the historical zero-descriptor slice: every extra
+    column 0, a value no ``compute_alpha`` output can produce (its floor is
+    width/2 = 5e-6) and which the inverting classes read as alpha ~ 1.
 
-    Why the alpha argument exists: for a meta-GGA, "zero extra descriptors"
-    means alpha = 0 -- the SINGLE-ORBITAL corner, where F_x sits at its
-    Lieb-Oxford ceiling. That is the least representative point of the domain,
-    not a neutral cut, so a meta-GGA plotted only there says nothing about the
-    functional where molecules actually sample it (alpha ~ 0-2).
+    Why the alpha argument exists: a meta-GGA cut at any single alpha says
+    nothing about the functional where molecules actually sample the
+    indicator (alpha ~ 0-2), and the single-orbital corner alpha = 0 --
+    where F_x sits at its ceiling -- is the least representative point of
+    the domain, so the alpha panel sweeps the indicator instead.
     """
     import jax.numpy as jnp
     n = s_grid.shape[0]
@@ -179,8 +216,14 @@ def model_fx_curve(model, s_grid: np.ndarray, rho: float = 1.0,
     n_extra = int(getattr(model.xnet, "n_extra_features", 0))
     feats = np.zeros((n, n_extra), dtype=float)
     if alpha is not None and n_extra > 0:
-        idx = int(getattr(model.xnet, "metagga_alpha_index", 0))
-        feats[:, idx] = float(alpha)
+        idx = int(model.xnet.metagga_alpha_index)
+        if idx < 0:
+            raise ValueError(
+                "model_fx_curve: alpha was requested but the exchange "
+                "network carries no meta-GGA alpha column "
+                f"(metagga_alpha_index={idx}); a negative index would "
+                "silently write the last descriptor column")
+        feats[:, idx] = alpha_column_value(alpha)
     fx = model.eval_Fx(jnp.asarray(rho_arr), jnp.asarray(sigma),
                        jnp.asarray(feats))
     return np.asarray(fx, dtype=float)
@@ -217,8 +260,16 @@ def scan_fx_curve(s_grid: np.ndarray, alpha: float,
 
 
 def model_fc_curve(model, s_grid: np.ndarray, rs: float,
-                   zeta: float = 0.0) -> np.ndarray:
-    """``F_c(s; r_s, zeta)`` from a loaded model (zero extra descriptors)."""
+                   zeta: float = 0.0, *, alpha=None) -> np.ndarray:
+    """``F_c(s; r_s, zeta)`` from a loaded model.
+
+    ``alpha=None`` keeps the historical zero-extra-descriptor cut. A float
+    ``alpha`` writes the STORED-COLUMN encoding of that indicator value
+    (:func:`alpha_column_value`) into the correlation network's alpha
+    column, exactly as :func:`model_fx_curve` does for exchange -- a raw
+    value is misread by the inverting model classes (a raw 0.0 recovers as
+    alpha ~ 1, up to 0.669 off in F_c at r_s = 0.5, measured).
+    """
     import jax.numpy as jnp
     n = s_grid.shape[0]
     rho = rs_to_rho(rs)
@@ -226,6 +277,15 @@ def model_fc_curve(model, s_grid: np.ndarray, rs: float,
     sigma = s_to_sigma(rho_arr, s_grid)
     n_extra = int(getattr(model.cnet, "n_extra_features", 0))
     feats = np.zeros((n, n_extra), dtype=float)
+    if alpha is not None and n_extra > 0:
+        idx = int(model.cnet.metagga_alpha_index)
+        if idx < 0:
+            raise ValueError(
+                "model_fc_curve: alpha was requested but the correlation "
+                "network carries no meta-GGA alpha column "
+                f"(metagga_alpha_index={idx}); a negative index would "
+                "silently write the last descriptor column")
+        feats[:, idx] = alpha_column_value(alpha)
     fc = model.eval_Fc(jnp.asarray(rho_arr), jnp.asarray(sigma),
                        jnp.asarray(feats), zeta=zeta)
     return np.asarray(fc, dtype=float)
@@ -282,9 +342,12 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
     # Load each arch once; compute its Fx + Fc(rs) curves.
     fx_curves: Dict[str, np.ndarray] = {}
     fc_curves: Dict[str, Dict[float, np.ndarray]] = {}
-    # meta-GGA archs additionally get an alpha family. Their zero-descriptor
-    # curve IS the alpha=0 slice, which is the single-orbital corner -- shown
-    # alone it misrepresents the functional everywhere molecules sample it.
+    # meta-GGA archs additionally get an alpha family, and their F_x-panel
+    # curve is drawn at the TRUE alpha=0 slice through the encoded column
+    # (extras=0 is NOT that slice: the model classes that invert the stored
+    # encoding read a zero column as alpha ~ 1). The single-orbital corner
+    # shown alone misrepresents the functional everywhere molecules sample
+    # it, hence the sweep.
     mgga_alpha: Dict[str, Dict[float, np.ndarray]] = {}
     for arch in archs:
         try:
@@ -293,12 +356,21 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
             print(f"  [warn] could not load {arch} "
                   f"(spec {reps[arch]}): {exc}", flush=True)
             continue
-        fx_curves[arch] = model_fx_curve(model, s_grid)
-        fc_curves[arch] = {rs: model_fc_curve(model, s_grid, rs)
-                           for rs in _RS_PANELS}
         if is_meta_gga(model):
+            fx_curves[arch] = model_fx_curve(model, s_grid, alpha=0.0)
             mgga_alpha[arch] = {a: model_fx_curve(model, s_grid, alpha=a)
                                 for a in _ALPHA_PANELS}
+            # The F_c panels sit on the SAME alpha = 0 slice as the F_x
+            # panel: the zero-column cut is recovered as alpha ~ 1 by the
+            # inverting classes, which drew one figure at two different
+            # indicator values (up to 0.669 apart in F_c, measured).
+            fc_curves[arch] = {rs: model_fc_curve(model, s_grid, rs,
+                                                  alpha=0.0)
+                               for rs in _RS_PANELS}
+        else:
+            fx_curves[arch] = model_fx_curve(model, s_grid)
+            fc_curves[arch] = {rs: model_fc_curve(model, s_grid, rs)
+                               for rs in _RS_PANELS}
 
     with plt.rc_context(sib._STYLE):
         # A meta-GGA arch earns a fifth panel (its alpha sweep). Without one the
@@ -314,8 +386,10 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
             fc_axes = [axes[0, 1], axes[1, 0], axes[1, 1]]
 
         # Panel 1: F_x(s) ---------------------------------------------------
-        # NOTE the meta-GGA curves here are the alpha=0 slice (zero extra
-        # descriptors) -- the single-orbital corner. Their representative
+        # NOTE the meta-GGA curves here are the TRUE alpha=0 slice, drawn
+        # through the encoded column (a raw zero column is NOT that slice:
+        # the model classes that invert the stored encoding read it as
+        # alpha ~ 1) -- the single-orbital corner. Their representative
         # behaviour is in the alpha panel; this one is kept so all archs
         # appear on one axis, and the caption says which slice it is.
         for arch in archs:
