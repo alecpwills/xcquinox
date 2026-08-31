@@ -12,6 +12,19 @@
 # tests/test_cluster_sync.py drives rsync against a fixture tree and will fail
 # loudly if this filter omits an artifact it lists or includes a *.eqx blob it
 # is not supposed to.
+#
+# The NETWORK WEIGHTS this profile carries (2026-08-30). The profile used to
+# skip every *.eqx; it now carries the four the enhancement-factor figures read
+# -- the trained model.eqx / model_val_best.eqx per spec with their .class.json
+# records, and the pretrained xnet.eqx / cnet.eqx per architecture with the
+# val-best pair beside them. Those figures (notebooks/analysis/trained_fx_fc.py
+# and pretrain_fx_fc.py) forward-evaluate the networks themselves, which no
+# summary table can stand in for, and the model class the loaders check is
+# stated only by the .class.json record. They are small: the 1259 model*.eqx
+# checkpoints on disk here measure 11.8 KB to 129 KB (median 32 KB), so a
+# 100-cell run adds a few MB to a profile budgeted at under 100 MB -- the bulk
+# of a `--profile full` pull is the logs/ tree and the per-step snapshots, not
+# these. What stays remote is set out at the bottom of this file.
 
 # --- top-level metadata (small, always wanted) -----------------------------
 + /manifest.json
@@ -66,6 +79,23 @@
 + /checkpoints/spec_*/eval_holdout_coldstart/
 + /checkpoints/spec_*/eval_holdout_coldstart/***
 
+# --- trained network weights (2026-08-30) ----------------------------------
+# The final-step and validation-best checkpoints, each with the model-class
+# record beside it. The enhancement-factor figures (trained_fx_fc.py) build the
+# skeleton from resolved_config.yaml and forward-evaluate these weights, and
+# the loaders refuse an anchored or `dfs` checkpoint that arrives without its
+# record (checkpoint_class.require_matching_class), so the .eqx and the
+# .class.json must travel together or neither is usable.
++ /checkpoints/spec_*/model.eqx
++ /checkpoints/spec_*/model.eqx.class.json
++ /checkpoints/spec_*/model_val_best.eqx
++ /checkpoints/spec_*/model_val_best.eqx.class.json
+# model_best.eqx (minimum TRAINING loss) is deliberately NOT here: it selects
+# the most-overfit step on the overfit-prone archs and no figure reads it, so
+# it stays remote to keep the default pull lean. Its held-out EVAL
+# (eval_holdout_best/) still comes, as above. resume_*.eqx (the in-flight
+# resume set, opt_state included) is mid-run state with no analysis use.
+
 # --- pretrain metadata + loss curves (small, useful for diagnostics) -------
 + /pretrain/
 + /pretrain/*/
@@ -75,9 +105,27 @@
 # so the default pull must carry it (small JSON beside the metadata).
 + /pretrain/*/fidelity_certificate.json
 + /pretrain/*/losses_*.npy
+# The pretrained networks themselves (2026-08-30), read by pretrain_fx_fc.py
+# and by any local rebuild of a certified model: the final pair at the top
+# level, the validated pair in the per-network subdirs pretrain.py writes
+# (<arch>/xnet/xnet_val_best.eqx, <arch>/cnet/cnet_val_best.eqx), and any
+# .class.json record standing beside one. 1.7 to 16 KB each. The periodic
+# `xc.eqx.<step>` trajectory snapshots in those same subdirs are NOT included
+# -- one per serialize interval per network, of no analysis use.
++ /pretrain/*/xnet.eqx
++ /pretrain/*/cnet.eqx
++ /pretrain/*/*.eqx.class.json
++ /pretrain/*/xnet/
++ /pretrain/*/xnet/xnet_val_best.eqx
++ /pretrain/*/xnet/xnet_val_best.eqx.class.json
++ /pretrain/*/cnet/
++ /pretrain/*/cnet/cnet_val_best.eqx
++ /pretrain/*/cnet/cnet_val_best.eqx.class.json
 
 # --- drop everything else -------------------------------------------------
-# This includes: /logs/, /scripts/, /specs/, every *.eqx model checkpoint,
-# every per-spec *.gen<N> archived artifact, and any future top-level dir
-# the harness gains (must be opted in explicitly above).
+# This includes: /logs/, /scripts/, /specs/, every *.eqx NOT named above
+# (model_best.eqx, the resume_*.eqx set, the pretrain `xc.eqx.<step>`
+# snapshots, and any stray .eqx elsewhere in the tree), every per-spec
+# *.gen<N> archived artifact, and any future top-level dir the harness gains
+# (must be opted in explicitly above).
 - *

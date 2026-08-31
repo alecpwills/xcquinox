@@ -48,6 +48,20 @@ def test_filter_file_path_summaries_exists():
     # spot-check critical rules
     assert "+ /manifest.json" in body
     assert "+ /checkpoints/spec_*/eval_df.csv" in body
+    # The weights tier the enhancement-factor figures read, and the records
+    # without which their loaders refuse an anchored checkpoint.
+    for rule in ("+ /checkpoints/spec_*/model.eqx",
+                 "+ /checkpoints/spec_*/model.eqx.class.json",
+                 "+ /checkpoints/spec_*/model_val_best.eqx",
+                 "+ /checkpoints/spec_*/model_val_best.eqx.class.json",
+                 "+ /pretrain/*/xnet.eqx",
+                 "+ /pretrain/*/cnet.eqx",
+                 "+ /pretrain/*/xnet/xnet_val_best.eqx",
+                 "+ /pretrain/*/cnet/cnet_val_best.eqx"):
+        assert rule in body, rule
+    assert "+ /checkpoints/spec_*/model_best.eqx" not in body, (
+        "model_best.eqx (minimum TRAINING loss) is deliberately excluded: no "
+        "figure reads it, and the default pull stays lean without it")
     assert body.rstrip().endswith("- *"), "the final catch-all exclude must be last"
 
 
@@ -261,9 +275,8 @@ def test_spec_indices_canary_against_real_rsync(tmp_path):
     for idx in (0, 1, 36):
         spec = src_run / "checkpoints" / f"spec_{idx:04d}"
         spec.mkdir(parents=True)
-        # A model.eqx that --profile=summaries would drop but --profile=full
-        # keeps, making this a real exercise of the spec filter on the bulky
-        # tier.
+        # A model.eqx, exercising the spec filter on the weights tier (both
+        # profiles carry this name; --specs is what must restrict it here).
         (spec / "model.eqx").write_bytes(b"FAKE_MODEL_BLOB" * 1000)
         (spec / "eval_df.csv").write_text("set,mae\ntraining_subset,1.0\n")
 
@@ -296,8 +309,8 @@ def test_spec_indices_canary_against_real_rsync(tmp_path):
 def test_summaries_canary_pretrain_certificate_transfers(tmp_path):
     """End-to-end: the summaries profile carries the per-arch fidelity
     certificate (the figure suite refuses to render an arch whose pulled run
-    holds no readable certificate) beside pretrain_metadata.json and the loss
-    curves, while the .eqx network blobs beside them stay remote."""
+    holds no readable certificate) beside pretrain_metadata.json, the loss
+    curves and the pretrained networks the enhancement-factor figures read."""
     remote_root = tmp_path / "remote"
     arch_dir = remote_root / GOOD_STAMP / "pretrain" / "deep_3x16"
     arch_dir.mkdir(parents=True)
@@ -326,7 +339,11 @@ def test_summaries_canary_pretrain_certificate_transfers(tmp_path):
     )
     assert (dest / "pretrain_metadata.json").is_file()
     assert (dest / "losses_x.npy").is_file()
-    assert not (dest / "xnet.eqx").exists()
+    assert (dest / "xnet.eqx").is_file(), (
+        "the summaries filter dropped the pretrained exchange network; "
+        "pretrain_fx_fc.py forward-evaluates it, and no summary table stands "
+        "in for the network itself"
+    )
 
 
 def test_build_rsync_command_extra_flags_inserted_before_paths():
@@ -659,8 +676,20 @@ def _materialize_fake_run(root: Path) -> Path:
     (spec / "eval_df.csv").write_text("set,mae\nbh76,4.2\n")
     (spec / "failure.json").write_text('{"classification": "ok"}\n')
     (spec / "losses.npy").write_bytes(b"\x93NUMPY")  # bytes header is enough
+    # Trained weights + their model-class records: the enhancement-factor
+    # figures forward-evaluate these, and the loaders refuse an anchored
+    # checkpoint whose record did not travel with it.
     (spec / "model.eqx").write_bytes(b"FAKE_MODEL_CHECKPOINT_BLOB" * 100)
+    (spec / "model.eqx.class.json").write_text('{"parent_anchor": true}\n')
+    (spec / "model_val_best.eqx").write_bytes(b"FAKE_VAL_BEST_BLOB" * 100)
+    (spec / "model_val_best.eqx.class.json").write_text(
+        '{"parent_anchor": true}\n')
     (spec / "model_best.eqx").write_bytes(b"FAKE_BEST_CHECKPOINT_BLOB" * 100)
+    (spec / "model_best.eqx.class.json").write_text('{"parent_anchor": true}\n')
+    # The in-flight resume set (mid-run state, no analysis use).
+    (spec / "resume_model.eqx").write_bytes(b"FAKE_RESUME_BLOB" * 100)
+    (spec / "resume_val_best.eqx").write_bytes(b"FAKE_RESUME_VB_BLOB" * 100)
+    (spec / "resume_opt_state.eqx").write_bytes(b"FAKE_RESUME_OPT_BLOB" * 100)
     (spec / "eval" / "per_molecule.json").write_text("[]\n")
     # Held-out (BH76 + W4-11) reaction eval -- the "beats PBE?" headline dir.
     (spec / "eval_holdout").mkdir()
@@ -702,7 +731,18 @@ def _materialize_fake_run(root: Path) -> Path:
     (pre / "losses_c.npy").write_bytes(b"\x93NUMPY")
     (pre / "xnet.eqx").write_bytes(b"FAKE_XNET_BLOB" * 100)
     (pre / "cnet.eqx").write_bytes(b"FAKE_CNET_BLOB" * 100)
+    (pre / "xnet.eqx.class.json").write_text('{"parent_anchor": true}\n')
+    (pre / "cnet.eqx.class.json").write_text('{"parent_anchor": true}\n')
+    # The per-network subdirs pretrain.py writes: the validated best pair, and
+    # the periodic xc.eqx.<step> trajectory snapshots that must stay remote.
+    (pre / "xnet").mkdir()
+    (pre / "cnet").mkdir()
+    (pre / "xnet" / "xnet_val_best.eqx").write_bytes(b"FAKE_XVB_BLOB" * 100)
+    (pre / "cnet" / "cnet_val_best.eqx").write_bytes(b"FAKE_CVB_BLOB" * 100)
+    (pre / "xnet" / "xc.eqx.500").write_bytes(b"FAKE_SNAPSHOT_BLOB" * 100)
+    (pre / "cnet" / "xc.eqx.500").write_bytes(b"FAKE_SNAPSHOT_BLOB" * 100)
     # Junk that must NOT be pulled by summaries
+    (run / "stray.eqx").write_bytes(b"STRAY_BLOB" * 100)
     (run / "logs").mkdir()
     (run / "logs" / "train_42_0.out").write_text("chatty slurm log\n" * 50)
     (run / "scripts").mkdir()
@@ -776,6 +816,18 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "pretrain/deep_combined_attn/pretrain_metadata.json",
         "pretrain/deep_combined_attn/losses_x.npy",
         "pretrain/deep_combined_attn/losses_c.npy",
+        # The network weights the enhancement-factor figures read, each with
+        # the model-class record the loaders require beside it.
+        "checkpoints/spec_0000/model.eqx",
+        "checkpoints/spec_0000/model.eqx.class.json",
+        "checkpoints/spec_0000/model_val_best.eqx",
+        "checkpoints/spec_0000/model_val_best.eqx.class.json",
+        "pretrain/deep_combined_attn/xnet.eqx",
+        "pretrain/deep_combined_attn/cnet.eqx",
+        "pretrain/deep_combined_attn/xnet.eqx.class.json",
+        "pretrain/deep_combined_attn/cnet.eqx.class.json",
+        "pretrain/deep_combined_attn/xnet/xnet_val_best.eqx",
+        "pretrain/deep_combined_attn/cnet/cnet_val_best.eqx",
     ]
     for rel in must_have:
         assert (dest / rel).is_file(), (
@@ -784,12 +836,18 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         )
 
     # --- must NOT be present (excluded tier) -----------------------------
+    # The *.eqx tier is now split rather than excluded wholesale: what the
+    # figures read comes, what only a re-run would read stays remote.
     must_not_have = [
-        "checkpoints/spec_0000/model.eqx",
         "checkpoints/spec_0000/model_best.eqx",
+        "checkpoints/spec_0000/model_best.eqx.class.json",
+        "checkpoints/spec_0000/resume_model.eqx",
+        "checkpoints/spec_0000/resume_val_best.eqx",
+        "checkpoints/spec_0000/resume_opt_state.eqx",
         "checkpoints/spec_0000/model.eqx.gen1",
-        "pretrain/deep_combined_attn/xnet.eqx",
-        "pretrain/deep_combined_attn/cnet.eqx",
+        "pretrain/deep_combined_attn/xnet/xc.eqx.500",
+        "pretrain/deep_combined_attn/cnet/xc.eqx.500",
+        "stray.eqx",
         "logs",
         "logs/train_42_0.out",
         "scripts",
@@ -899,8 +957,9 @@ def test_summaries_filter_canary_with_category(tmp_path):
     # Category-mirrored path is populated...
     assert (dest / "manifest.json").is_file()
     assert (dest / "checkpoints/spec_0000/eval_df.csv").is_file()
+    assert (dest / "checkpoints/spec_0000/model_val_best.eqx").is_file()
     # ...and the summaries filter still excludes the big stuff.
-    assert not (dest / "checkpoints/spec_0000/model.eqx").exists()
+    assert not (dest / "checkpoints/spec_0000/model_best.eqx").exists()
     assert not (dest / "logs").exists()
     # The un-categorized local root must NOT have been touched.
     assert not (local_root / GOOD_STAMP).exists(), (

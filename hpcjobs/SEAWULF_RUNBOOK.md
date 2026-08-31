@@ -297,16 +297,24 @@ collide.
 
 - **`summaries`** (default) -- manifest, resolved config, every per-spec
   `eval_df.csv` / `failure.json` / `losses.npy` / `eval/per_molecule.json`,
-  and pretrain metadata + loss curves. **No `*.eqx`, no `logs/`.** Typically
-  **< 100 MB / 40-spec run**, so this is the right default for driving
-  `analyze.collect_results()` and the notebook figures.
-- **`full`** -- mirrors the run dir minus `logs/`. **~11-12 MB / 40-spec
-  run** for the current `deep_combined_attn` arch (each `model.eqx` is
-  ~126 KB; xnet+cnet pretrain nets ~64 KB each). Use this when you need
-  the actual trained `model.eqx` or pretrain `xnet.eqx` / `cnet.eqx`
-  checkpoints locally for the local re-eval workflow (§10.5). The full
-  profile is small enough that surgical `--specs` filtering is rarely
-  necessary; pull whole categories in seconds.
+  pretrain metadata + loss curves + fidelity certificate, and (since
+  2026-08-30) the network weights the figures forward-evaluate: per spec
+  `model.eqx` / `model_val_best.eqx` with their `.class.json` records, per
+  arch `xnet.eqx` / `cnet.eqx` and the val-best pair under `xnet/` / `cnet/`.
+  **No `logs/`**, and of the `*.eqx` tier no `model_best.eqx`, no
+  `resume_*.eqx`, no `*.gen<N>`, no pretrain `xc.eqx.<step>` snapshots.
+  Typically **< 100 MB / 40-spec run** (the weights add a few MB: the
+  checkpoints measured here run 11.8-129 KB each), so this stays the right
+  default for driving `analyze.collect_results()`, the notebook figures and
+  the enhancement-factor figures.
+- **`full`** -- mirrors the run dir, `logs/` included. **~11-12 MB / 40-spec
+  run** of artifacts for the current `deep_combined_attn` arch (each
+  `model.eqx` is ~126 KB; xnet+cnet pretrain nets ~64 KB each) plus the log
+  tree. Use this when you need the excluded tier -- `model_best.eqx`, the
+  resume set, the pretrain trajectory snapshots -- or the SLURM logs to
+  diagnose a failed run off-cluster. The full profile is small enough that
+  surgical `--specs` filtering is rarely necessary; pull whole categories in
+  seconds.
 
 ### One-time setup
 

@@ -2250,10 +2250,13 @@ def _build_parser() -> argparse.ArgumentParser:
              "literal 'latest' (resolved via `ssh <host> ls -1tr <remote-root>`)")
     p_pull.add_argument(
         "--profile", choices=list(_sync.VALID_PROFILES), default="summaries",
-        help="which artifacts to pull. 'summaries' (default) skips every "
-             "*.eqx and the logs/ tree (<100 MB / 40-spec run); 'full' mirrors "
-             "the entire run dir including the logs/ SLURM output tree "
-             "(tens of GB / 40-spec run)")
+        help="which artifacts to pull. 'summaries' (default) carries the "
+             "summary tables plus the weights the figures read (model.eqx / "
+             "model_val_best.eqx and their .class.json records, the pretrained "
+             "xnet/cnet pair), and skips model_best.eqx, the resume_*.eqx set, "
+             "the pretrain trajectory snapshots and the logs/ tree "
+             "(<100 MB / 40-spec run); 'full' mirrors the entire run dir "
+             "including the logs/ SLURM output tree (tens of GB / 40-spec run)")
     p_pull.add_argument(
         "--category",
         default=os.environ.get("XCQUINOX_CLUSTER_CATEGORY", ""),

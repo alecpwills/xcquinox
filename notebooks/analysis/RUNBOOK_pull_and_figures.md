@@ -104,9 +104,13 @@ python -m xcquinox.alec.cluster pull latest --category <CATEGORY>
 - **Profile (default is correct for figures):** the default `--profile summaries`
   pulls all the JSON/npy the figures read -- `eval_holdout/**`,
   `eval_holdout_best/**`, `eval_holdout_val_best/**`, `eval/per_molecule.json`, `losses.npy`,
-  `train_metadata.json`, `resolved_config.yaml` -- and **skips** the big
-  `model.eqx` weights. Only add `--profile full` if you need the weights for a
-  LOCAL re-eval (Step 3); figures do **not** need it.
+  `train_metadata.json`, `resolved_config.yaml` -- and, since 2026-08-30, the
+  weights the enhancement-factor figures forward-evaluate: `model.eqx` /
+  `model_val_best.eqx` per spec with their `.class.json` records, and the
+  pretrained `xnet.eqx` / `cnet.eqx` (plus the val-best pair under `xnet/` /
+  `cnet/`) per arch. It still **skips** `model_best.eqx`, the `resume_*.eqx`
+  set and the pretrain trajectory snapshots. Add `--profile full` only for
+  those or for the SLURM logs.
 - Add `--dry-run` first if you want to see what rsync would transfer.
 
 ### See what's on the cluster before pulling
