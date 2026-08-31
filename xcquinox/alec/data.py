@@ -461,19 +461,28 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     6-311++G(3df,2pd) / grid level 3, where DIIS leaves the basin after
     reaching it: the best point comes at cycle 5 (E=-7.478697644723,
     |g|=7.5e-4), then the extrapolation throws the density into an
-    unphysical state and the final DIIS point is E~-4.07 at |g|~1.0; SOSCF
-    from that final point stalls at |g|~4e-3 over 50 macro-iterations
-    (unconverged), while from the best point it converges in 2
-    macro-iterations to E=-7.4786979415. A level shift (0.25 / 0.5),
-    damping (0.5), a finer grid and removing the orientation lock were each
-    measured on that case and none converges it. The best point is recorded
-    by an ``mf.callback`` on the first stage -- a plain numpy copy of the
-    cycle's density, kept with its |g| and cycle index whenever the cycle's
-    |g| is strictly below the best seen -- and the callback is detached
-    before any return, so the returned object carries no trace. For a
-    system this rescue previously started from the end point, the second
-    stage's start -- and with it the converged endpoint -- may move within
-    the flat-direction slack quantified above (2.3e-8 to 9.8e-7 Ha).
+    unphysical state and wanders chaotically to the cycle cap (the
+    post-explosion trajectory is draw-dependent: end points E -4.07 and
+    -3.845 and SOSCF-stall gradients 1.2e-3 to 4e-3 were observed across
+    draws; the pre-explosion basin numbers above reproduce); SOSCF from
+    that final point runs its 50 macro-iterations unconverged, while from
+    the best point it converges in 2 macro-iterations to E=-7.4786979415.
+    A level shift (0.25 / 0.5), damping (0.5), a finer grid and removing
+    the orientation lock were each measured on that case and none
+    converges it. The best point is recorded by an ``mf.callback`` on the
+    first stage -- a plain numpy copy of the cycle's density, kept with
+    its |g| whenever the cycle's |g| is strictly below the best seen; a
+    callback the caller had already installed keeps firing (the recorder
+    chains to it) and is restored before any return, so the returned
+    object carries the caller's callback and no trace of the recorder.
+    The best-by-|g| selection is measured at the reference path's own
+    solver settings; under caller-modified settings it is not universally
+    the better start (measured: with a level shift, damping, or an all-ones
+    guess, 7 of 27 differing rescues favoured the end point by up to
+    3.09e-5 Ha), and this path sets its own settings above. For a system
+    this rescue previously started from the end point, the second stage's
+    start -- and with it the converged endpoint -- may move within the
+    flat-direction slack quantified above (2.3e-8 to 9.8e-7 Ha).
     """
     mf.max_cycle = _REFERENCE_SCF_MAX_CYCLE
     mf.conv_tol = _REFERENCE_SCF_CONV_TOL
@@ -482,26 +491,29 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     # docstring -- best at cycle 5, unphysical from cycle 7, chaotic to the
     # cycle cap), so the density handed to the second stage is the
     # lowest-gradient one seen, not the last. scf.hf.kernel calls the
-    # callback with its locals once per cycle (and once more in the extra
-    # cycle of a converged run); norm_gorb there is the plain-Fock orbital
+    # callback with its locals once per cycle (exactly ``mf.cycles`` times
+    # in pyscf 2.11.0, converged or not); norm_gorb there is the plain-Fock orbital
     # gradient of that cycle's density, the quantity both stages converge
     # on, and make_rdm1(mo_coeff, mo_occ) holds for RKS and UKS alike.
-    best = {"dm": None, "gorb": np.inf, "cycle": -1}
+    best = {"dm": None, "gorb": np.inf}
+    caller_callback = getattr(mf, "callback", None)
 
     def _record_best(envs):
         gorb = float(envs.get("norm_gorb", np.inf))
         if gorb < best["gorb"]:
             best["gorb"] = gorb
-            best["cycle"] = int(envs.get("cycle", -1))
             best["dm"] = np.array(
                 envs["mf"].make_rdm1(envs["mo_coeff"], envs["mo_occ"]))
+        if callable(caller_callback):
+            caller_callback(envs)
 
     mf.callback = _record_best
     mf.kernel()
-    # Detached before every return so neither the returned object nor the
-    # SOSCF wrapper (whose constructor copies mf's instance attributes)
-    # carries the recording closure and its density copy.
-    mf.callback = None
+    # Restored (not nulled) before every return so neither the returned
+    # object nor the SOSCF wrapper (whose constructor copies mf's instance
+    # attributes) carries the recording closure and its density copy, and a
+    # callback the caller installed survives the call.
+    mf.callback = caller_callback
     cycles = int(mf.cycles)
     if mf.converged:
         return mf, cycles, "diis"

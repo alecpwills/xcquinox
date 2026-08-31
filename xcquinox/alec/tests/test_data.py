@@ -2098,7 +2098,10 @@ def test_li_scan_reference_is_rescued_from_the_best_diis_point():
 
     assert out.converged is True
     assert solver == "diis+newton"
-    assert abs(float(out.e_tot) - (-7.4786979415)) <= 5e-7, float(out.e_tot)
+    # Band 2e-6: the pinned value plus the documented flat-direction slack
+    # a rescued endpoint may move within (2.3e-8 to 9.8e-7 Ha), with margin;
+    # three independent convergence routes agree on the value to 3.8e-11 Ha.
+    assert abs(float(out.e_tot) - (-7.4786979415)) <= 2e-6, float(out.e_tot)
     # The physical basin, not the unphysical DIIS end point of the defect.
     assert float(out.e_tot) < -7.4
     # The DIIS cap plus the macro-iterations of the rescue (2 measured).
@@ -2109,9 +2112,11 @@ def test_li_scan_reference_is_rescued_from_the_best_diis_point():
     g = float(np.linalg.norm(out.get_grad(out.mo_coeff, out.mo_occ)))
     assert g < float(np.sqrt(scf.hf.SCF.conv_tol)), g
     # Callback hygiene on the rescue path: the recorder and its density copy
-    # are gone from the DIIS object, and the caller's probe never ran.
-    assert probe_calls == []
-    assert getattr(mf, "callback", None) is None
+    # are gone from the DIIS object; the caller's probe fired through the
+    # recorder's chain on every DIIS cycle and is restored.
+    assert len(probe_calls) == data_mod._REFERENCE_SCF_MAX_CYCLE
+    assert getattr(mf, "callback", None) is not None
+    assert getattr(mf.callback, "__name__", "") != "_record_best"
     # The returned SOSCF wrapper carries only the stage's macro-iteration
     # counter (a list of ints); no density copy and no recorder reach it.
     cb = getattr(out, "callback", None)
@@ -2141,8 +2146,10 @@ def test_li_pbe_diis_converged_path_is_unchanged_by_the_recorder():
     assert out is mf and out.converged is True
     assert abs(float(out.e_tot) - (-7.4600641060)) <= 1e-8, float(out.e_tot)
     assert 3 <= cycles <= 8, cycles          # 5 measured
-    assert probe_calls == []
-    assert getattr(out, "callback", None) is None
+    # The caller's probe fired once per DIIS cycle (chained) and is restored.
+    assert len(probe_calls) == cycles
+    assert getattr(out, "callback", None) is not None
+    assert getattr(out.callback, "__name__", "") != "_record_best"
 
 
 class _TrajectoryStubSCF:
@@ -2231,13 +2238,16 @@ def test_second_stage_starts_from_the_lowest_gradient_density_of_the_trajectory(
     cycle to reach it wins and the end point does not displace it on a tie.
     The fallback is pinned in the same place: a first stage that never invokes
     the callback (nothing recorded) falls back to the end-point density,
-    reproducing the earlier behavior exactly. The real-path anchor of this rule
-    is the Li atom above, where the two starts differ by 3.4 Ha in the
-    converged result and by convergence itself."""
+    reproducing the earlier behavior exactly. A callback the caller had
+    installed keeps firing through the recorder (chained) and is restored
+    afterwards. The real-path anchor of this rule is the Li atom above, where
+    the two starts differ by 3.4 Ha in the converged result and by
+    convergence itself."""
     gradients = [1.0, 5.0e-2, 7.5e-4, 0.9, 7.5e-4]
     stub = _TrajectoryStubSCF(gradients)
     probe_calls = []
-    stub.callback = lambda envs: probe_calls.append(envs)
+    probe = lambda envs: probe_calls.append(envs)  # noqa: E731
+    stub.callback = probe
 
     out, cycles, solver = data_mod._converge_reference_scf(stub)
 
@@ -2254,9 +2264,10 @@ def test_second_stage_starts_from_the_lowest_gradient_density_of_the_trajectory(
         assert matches == (cycle == 2), cycle
     # The DIIS cycles plus the one macro-iteration the stage reported.
     assert cycles == len(gradients) + 1
-    # The driver owns the callback for the stage and detaches it afterwards.
-    assert probe_calls == []
-    assert stub.callback is None
+    # The caller's callback fired on every recorded cycle through the
+    # recorder's chain and is restored afterwards.
+    assert len(probe_calls) == len(gradients)
+    assert stub.callback is probe
 
     silent = _TrajectoryStubSCF(gradients, fire_callback=False)
     out2, _, solver2 = data_mod._converge_reference_scf(silent)
@@ -2274,10 +2285,10 @@ def test_the_best_point_recorder_is_detached_before_the_rescue_returns(
     cycles, five cycles in total, E=-75.2917089278 measured -- so the property
     is pinned without paying for the Li identity, where the same assertions
     are made on the real stall. After the call the DIIS object's callback is
-    None (before the recorder existed, a caller-installed callback survived
-    the call and fired on every cycle), and the returned second-order wrapper
-    carries only its own macro-iteration counter, whose closure holds a list of
-    ints and no array."""
+    the caller's own (the recorder chains to it while the stage runs and
+    restores it before returning), and the returned second-order wrapper
+    carries only its own macro-iteration counter, whose closure holds a list
+    of ints and no array."""
     from pyscf import dft, gto
     monkeypatch.setattr(data_mod, "_REFERENCE_SCF_MAX_CYCLE", 2)
     spec = _h2o_spec()
@@ -2287,15 +2298,17 @@ def test_the_best_point_recorder_is_detached_before_the_rescue_returns(
     mf.xc = "scan"
     mf.grids.level = spec.grid_level
     probe_calls = []
-    mf.callback = lambda envs: probe_calls.append(int(envs.get("cycle", -1)))
+    probe = lambda envs: probe_calls.append(int(envs.get("cycle", -1)))  # noqa: E731
+    mf.callback = probe
 
     out, cycles, solver = data_mod._converge_reference_scf(mf)
 
     assert solver == "diis+newton" and out.converged is True
     assert out is not mf
     assert 2 < cycles <= 2 + data_mod._REFERENCE_SCF_NEWTON_MAX_CYCLE  # 5
-    assert probe_calls == []
-    assert getattr(mf, "callback", None) is None
+    # The caller's callback fired during the DIIS stage and is restored.
+    assert len(probe_calls) == 2
+    assert getattr(mf, "callback", None) is probe
     for obj in (mf, out):
         cb = getattr(obj, "callback", None)
         assert getattr(cb, "__name__", "") != "_record_best"
