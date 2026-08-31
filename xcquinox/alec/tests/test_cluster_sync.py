@@ -1045,16 +1045,20 @@ def test_ssh_remote_command_quotes_globs_and_scripts(tmp_path):
 
 
 def test_ssh_control_opts_shape_and_persist_validation():
-    opts = sync.ssh_control_opts("/home/u/.ssh", 3600)
+    opts = sync.ssh_control_opts(3600)
     assert opts == ("-o", "ControlMaster=auto",
-                    "-o", "ControlPath=/home/u/.ssh/xcq-cm-%C",
+                    "-o", "ControlPath=%d/.ssh/xcq-cm-%C",
                     "-o", "ControlPersist=3600")
+    # The words are folded into rsync's -e "ssh ..." value, which rsync
+    # word-splits: none may contain whitespace (a $HOME with a space broke
+    # the transport when the path was expanded locally).
+    assert not any(" " in w for w in opts)
     # ssh defines ControlPersist=0 as "persist forever", the opposite of
     # disable, so 0 (and negatives) must be refused here.
     with pytest.raises(ValueError):
-        sync.ssh_control_opts("/home/u/.ssh", 0)
+        sync.ssh_control_opts(0)
     with pytest.raises(ValueError):
-        sync.ssh_control_opts("/home/u/.ssh", -5)
+        sync.ssh_control_opts(-5)
 
 
 def test_run_stamp_datetime_display_only():
@@ -1379,6 +1383,60 @@ def test_cmd_pull_single_mode_control_master(monkeypatch, tmp_path):
     (argv,) = [a for a in calls if a[0] == "rsync"]
     assert "-e" not in argv
     assert [a for a in calls if a[0] == "ssh"] == []
+
+
+def test_cmd_pull_auto_pulls_every_active_run_in_a_category(monkeypatch,
+                                                             tmp_path):
+    # Two ACTIVE runs in ONE category: both must be pulled -- never
+    # latest-only, a dead-or-stale newer launch must not mask other work.
+    find_lines = [f"A /scr/root/catA/runs/{GOOD_STAMP}",
+                  f"A /scr/root/catA/runs/{SECOND_STAMP}"]
+    calls = []
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=find_lines)
+    assert cm_mod.cmd_pull(_auto_args(tmp_path)) == 0
+    (argv,) = [a for a in calls if a[0] == "rsync"]
+    assert f"hpc:/scr/root/./catA/runs/{GOOD_STAMP}" in argv
+    assert f"hpc:/scr/root/./catA/runs/{SECOND_STAMP}" in argv
+
+
+def test_cmd_pull_auto_sanity_gate_boundary(monkeypatch, tmp_path):
+    # Exactly the gate value passes without --yes; one more requires it.
+    calls = []
+    at_gate = [f"A /scr/root/c{i}/runs/{GOOD_STAMP}" for i in range(15)]
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=at_gate)
+    assert cm_mod.cmd_pull(_auto_args(tmp_path)) == 0
+    assert len([a for a in calls if a[0] == "rsync"]) == 1
+
+
+def test_cmd_pull_single_mode_rc24_stays_a_failure(monkeypatch, tmp_path):
+    # The vanished-files mapping is an AUTO-mode semantic only; single-run
+    # pulls keep rsync's own exit code.
+    calls = []
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=[],
+                               rsync_rc=24)
+    args = _auto_args(tmp_path, run_id=GOOD_STAMP, category="catA/runs")
+    assert cm_mod.cmd_pull(args) == 24
+
+
+def test_cmd_pull_auto_depth_and_filter_refusals(monkeypatch, tmp_path,
+                                                 capsys):
+    calls = []
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=[])
+    assert cm_mod.cmd_pull(_auto_args(tmp_path, depth=0)) == 1
+    assert "--depth" in capsys.readouterr().out
+    assert calls == []
+    # A packaged filter gaining a non-conforming rule surfaces as the CLI
+    # error line, not a traceback.
+    find_lines = [f"A /scr/root/catA/runs/{GOOD_STAMP}"]
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=find_lines)
+    monkeypatch.setattr(
+        cm_mod._sync, "build_multi_filter",
+        lambda *a, **k: (_ for _ in ()).throw(
+            ValueError("unsupported filter rule at line 1")))
+    assert cm_mod.cmd_pull(_auto_args(tmp_path)) == 1
+    out = capsys.readouterr().out
+    assert "unsupported filter rule" in out
+    assert [a for a in calls if a[0] == "rsync"] == []
 
 
 def test_pull_parser_accepts_auto_flags():

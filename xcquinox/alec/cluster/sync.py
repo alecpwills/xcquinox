@@ -425,15 +425,21 @@ def run_stamp_datetime(run_id: str):
         return None
 
 
-def ssh_control_opts(socket_dir: str, persist_seconds: int) -> tuple[str, ...]:
+def ssh_control_opts(persist_seconds: int) -> tuple[str, ...]:
     """SSH option words enabling connection multiplexing.
 
     The first connection (discovery) authenticates and becomes the master;
     every later connection in the batch rides its socket, so an N-run pull
-    costs ONE interactive verification. ``%C`` expands to a fixed-length
-    hash of the connection identity (65-char path, inside the sockaddr_un
-    limit), and ``ControlMaster=auto`` composes with any user config: it
-    reuses an existing master or becomes one.
+    costs ONE interactive verification. The socket path is expressed with
+    ssh's OWN tokens -- ``%d`` (local user's home directory) and ``%C`` (a
+    fixed-length hash of the connection identity; the expanded path is 65
+    chars, inside the sockaddr_un limit) -- so the option string never
+    contains a space even when ``$HOME`` does: these words also travel
+    inside rsync's ``-e "ssh ..."`` value, which rsync word-splits.
+    ``ControlMaster=auto`` composes with any user config: it reuses an
+    existing master or becomes one. The caller is responsible for the
+    ``~/.ssh`` mkdir (ssh silently skips multiplexing when the socket dir
+    cannot be opened).
 
     ``persist_seconds`` must be >= 1: ssh defines ``ControlPersist=0`` as
     "persist forever", the OPPOSITE of disable, so 0 is refused here --
@@ -444,9 +450,8 @@ def ssh_control_opts(socket_dir: str, persist_seconds: int) -> tuple[str, ...]:
         raise ValueError(
             f"persist_seconds must be >= 1 (ssh treats ControlPersist=0 as "
             f"'persist forever'), got {persist_seconds!r}")
-    sock = str(socket_dir).rstrip("/")
     return ("-o", "ControlMaster=auto",
-            "-o", f"ControlPath={sock}/xcq-cm-%C",
+            "-o", "ControlPath=%d/.ssh/xcq-cm-%C",
             "-o", f"ControlPersist={persist}")
 
 
@@ -472,9 +477,11 @@ def discover_runs_with_activity(
                         | grep -q . ; then echo "A $1"; \
                         else echo "I $1"; fi' _ {} ;
 
-    The inner ``find`` short-circuits at the first in-window file, so an
-    active run costs one stat; a dead run pays one full metadata walk per
-    invocation (1e4-1e5 entries for a large training run). The ``grep -q``
+    The inner ``find`` short-circuits at the first in-window file in
+    traversal order -- an active run usually stops within a few entries,
+    though a run whose only fresh writes sit deep in the tree is walked up
+    to that point; a dead run pays one full metadata walk per invocation
+    (1e4-1e5 entries for a large training run). The ``grep -q``
     is load-bearing: ``find`` exits 0 whether or not anything matched. The
     cutoff travels as ``@<epoch>`` (GNU find), immune to remote-timezone
     interpretation. NOTE the payload reaches the remote shell only through

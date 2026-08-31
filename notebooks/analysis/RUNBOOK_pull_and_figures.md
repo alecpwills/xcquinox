@@ -123,7 +123,7 @@ python -m xcquinox.alec.cluster pull latest --category <CATEGORY>
 ### See what's on the cluster before pulling
 
 ```bash
-python -m xcquinox.alec.cluster list-runs --category dfs_step7/svp_grid2_v3/runs
+python -m xcquinox.alec.cluster list-runs   # groups every run by category
 ```
 
 ### Verify the pull worked (figures need held-out eval JSON)
@@ -358,7 +358,7 @@ training.
 
 | Task | Command |
 |---|---|
-| list cluster runs | `python -m xcquinox.alec.cluster list-runs --category dfs_step7/<basis>/runs` |
+| list cluster runs | `python -m xcquinox.alec.cluster list-runs` (grouped by category) |
 | pull (all active runs) | `python -m xcquinox.alec.cluster pull auto --category dfs_step7` |
 | pull (figures, one run) | `python -m xcquinox.alec.cluster pull latest --category dfs_step7/<basis>/runs` |
 | pull (weights too) | `... pull latest --category ... --profile full` |

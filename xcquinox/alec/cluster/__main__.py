@@ -2007,10 +2007,10 @@ def _pull_cm_opts(args):
         return None
     sock_dir = Path.home() / ".ssh"
     sock_dir.mkdir(mode=0o700, exist_ok=True)
-    return _sync.ssh_control_opts(str(sock_dir), args.ssh_persist)
+    return _sync.ssh_control_opts(args.ssh_persist)
 
 
-def _report_multiplexing(host: str, cm_opts) -> None:
+def _report_multiplexing(host: str, cm_opts, label: str = "pull") -> None:
     """State whether the SSH master is live (``ssh -O check``: socket probe,
     no connection, no authentication). ssh's own fallback to per-connection
     auth is silent and its warning is swallowed by ``capture_output``, so
@@ -2021,11 +2021,11 @@ def _report_multiplexing(host: str, cm_opts) -> None:
     check = subprocess.run(["ssh", *cm_opts, "-O", "check", host],
                            capture_output=True, text=True)
     if check.returncode == 0:
-        _log("pull: ssh multiplexing active (connections in the persist "
+        _log(f"{label}: ssh multiplexing active (connections in the persist "
              "window reuse this authentication)")
     else:
-        _log("pull: ssh multiplexing NOT active (master exited or socket "
-             "unavailable); each connection may prompt")
+        _log(f"{label}: ssh multiplexing NOT active (master exited or "
+             "socket unavailable); each connection may prompt")
 
 
 def _pull_inventory(run_dir: Path) -> str:
@@ -2062,6 +2062,9 @@ def _cmd_pull_auto(args, spec_indices) -> int:
         return 1
     if args.days < 0:
         _log(f"pull auto: --days must be >= 0, got {args.days:g}")
+        return 1
+    if args.depth < 1:
+        _log(f"pull auto: --depth must be >= 1, got {args.depth}")
         return 1
     cm_opts = _pull_cm_opts(args)
     if cm_opts is None:
@@ -2109,17 +2112,25 @@ def _cmd_pull_auto(args, spec_indices) -> int:
         return 1
     Path(local_root).mkdir(parents=True, exist_ok=True)
     packaged = _sync.filter_file_path(args.profile).read_text()
-    generated = _sync.build_multi_filter(packaged, selected)
+    try:
+        generated = _sync.build_multi_filter(packaged, selected)
+    except ValueError as exc:
+        _log(f"pull auto: {exc}")
+        return 1
     fd, tmp_filter = tempfile.mkstemp(prefix=".xcq_pull_auto_",
                                       suffix=".rules", dir=local_root)
     try:
         with os.fdopen(fd, "w") as fh:
             fh.write(generated)
         extra = ("-e", "ssh " + " ".join(cm_opts)) if cm_opts else ()
-        argv = _sync.build_multi_rsync_command(
-            host=host, remote_root=remote_root, local_root=local_root,
-            run_paths=selected, filter_path=tmp_filter,
-            dry_run=args.dry_run, extra_flags=extra)
+        try:
+            argv = _sync.build_multi_rsync_command(
+                host=host, remote_root=remote_root, local_root=local_root,
+                run_paths=selected, filter_path=tmp_filter,
+                dry_run=args.dry_run, extra_flags=extra)
+        except ValueError as exc:
+            _log(f"pull auto: {exc}")
+            return 1
         _log(f"pull auto: pulling {len(selected)} run(s) in one rsync")
         _log(f"pull auto: running: {' '.join(argv)}")
         rc = subprocess.run(argv).returncode
@@ -2135,7 +2146,7 @@ def _cmd_pull_auto(args, spec_indices) -> int:
         rc = 0
     if rc != 0:
         _log(f"pull auto: rsync exited rc={rc}")
-    _report_multiplexing(host, cm_opts)
+    _report_multiplexing(host, cm_opts, label="pull auto")
     if not args.dry_run:
         for rel in selected:
             _log(f"pull auto: {rel}: "
