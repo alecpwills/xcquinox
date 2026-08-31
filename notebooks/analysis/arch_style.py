@@ -73,7 +73,8 @@ ARCH_COLOR["deep_rung35ms_mgga"] = "#a55194"
 # distance against every colour a same-figure architecture or rung accent can
 # carry -- tab10[2] #2ca02c (deep_cusp, its 3x16 twin, and the rung-3.5
 # accent) is itself a green, so proximity to it is the binding constraint.
-# shallow pair (tab20b[4]/[5]): worst cross-family separation 15.91.
+# shallow pair (tab20b[4]/[5]): worst cross-family separation 13.22
+# (shallow_attn against the same tab10 green).
 # medium pair (tab20[5]/tab20c[11]): worst 16.90 (the tab20c[8] value first
 # chosen here sat at 5.79 from #2ca02c, half the palette's own twin gap).
 # Each attention twin is the lighter shade of its base.
