@@ -457,6 +457,15 @@ time.
    shell loop:
 
    ```bash
+   python -m xcquinox.alec.cluster pull auto --days 0 --profile full --yes
+   ```
+
+   (`pull auto` discovers every run in one ssh shot and pulls the selection
+   in one rsync over the same authenticated connection; `--days 0` lifts the
+   30-day activity horizon and `--yes` confirms a >15-run batch. The
+   per-category loop it replaces:)
+
+   ```bash
    for cat in alpha_on/runs alpha_off/runs polarized/alpha_off/runs; do
      python -m xcquinox.alec.cluster pull latest --category "$cat" --profile full
    done

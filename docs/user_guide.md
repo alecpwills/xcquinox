@@ -252,7 +252,11 @@ python -m xcquinox.alec.cluster status <run_dir>
 python -m xcquinox.alec.cluster resubmit <run_dir> --submit
 #   (for a failed pretrain/preflight instead, use resubmit-preflight)
 
-# Pull results to your laptop (preview with --dry-run; summaries is under ~100 MB):
+# Pull results to your laptop (preview with --dry-run; summaries is under ~100 MB).
+# The standard refresh pulls EVERY recently active run in one ssh discovery
+# shot + one rsync (one authentication), with a per-run artifact inventory:
+python -m xcquinox.alec.cluster pull auto
+# Single runs still pull by stamp or 'latest' per category:
 python -m xcquinox.alec.cluster pull latest --category bh76w411_repr/svp_grid2/runs
 #   lands under ~/Documents/Research/xcquinox-results/runs/<category>/run_<UTC>Z/
 

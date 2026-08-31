@@ -38,10 +38,12 @@ import argparse
 import dataclasses
 import json
 import os
+import posixpath
+import shlex
 import socket
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from xcquinox.alec.cluster import analyze
@@ -1948,21 +1950,200 @@ def _pull_default_local_root() -> str:
     return str(Path.home() / "Documents/Research/xcquinox-results/runs")
 
 
-def _make_ssh_lines(host: str):
+def _ssh_remote_command(argv) -> str:
+    """The remote command as ONE shell-quoted string.
+
+    ssh concatenates its command words with spaces and the remote login
+    shell re-parses the result, so an unquoted glob like ``run_*Z`` expands
+    against the remote CWD (one stray matching file silently corrupts the
+    ``find`` sweep) and a ``sh -c`` payload cannot survive at all. Quoting
+    every word defers all interpretation to the intended program.
+    """
+    return " ".join(shlex.quote(str(a)) for a in argv)
+
+
+def _make_ssh_lines(host: str, ssh_opts: tuple = ()):
     """Factory for an SSH-wrapping ``ssh_runner`` matching
     :func:`sync.resolve_run_id` / :func:`sync.discover_runs`. Shared by
     ``cmd_pull`` and ``cmd_list_runs`` so the subprocess invocation does not
-    diverge between them. Raises :class:`subprocess.CalledProcessError` on
-    nonzero exit, the caller is expected to format its stderr via
-    :func:`sync.format_ssh_stderr_tail` to strip the SBU banner.
+    diverge between them. ``ssh_opts`` (e.g. :func:`sync.ssh_control_opts`)
+    are inserted BEFORE the host -- after it they would join the remote
+    command -- and the remote command travels as one quoted string
+    (:func:`_ssh_remote_command`). Raises
+    :class:`subprocess.CalledProcessError` on nonzero exit, the caller is
+    expected to format its stderr via :func:`sync.format_ssh_stderr_tail`
+    to strip the SBU banner.
     """
     def _runner(argv):
         completed = subprocess.run(
-            ["ssh", host, *argv],
+            ["ssh", *ssh_opts, host, _ssh_remote_command(list(argv))],
             check=True, capture_output=True, text=True,
         )
         return completed.stdout.splitlines()
     return _runner
+
+
+#: ``pull auto`` refuses to pull more runs than this in one invocation
+#: without ``--yes`` (or ``--dry-run``): ``--days 0 --profile full`` would
+#: otherwise transfer tens of GB with no gate.
+_AUTO_RUN_GATE = 15
+
+
+def _pull_cm_opts(args):
+    """ControlMaster option words for this pull.
+
+    ``()`` when multiplexing is disabled (``--no-control-master`` or a local
+    ``host=""`` source); ``None`` AFTER logging a refusal (invalid
+    ``--ssh-persist``). Creates the socket directory: ssh silently falls
+    back to per-connection authentication when the ControlPath cannot be
+    opened, which would cost the batch its one-verification property.
+    """
+    if not args.host or args.no_control_master:
+        return ()
+    if args.ssh_persist < 1:
+        _log("pull: --ssh-persist must be >= 1 second (ssh defines "
+             "ControlPersist=0 as 'persist forever'); disable multiplexing "
+             "with --no-control-master instead")
+        return None
+    sock_dir = Path.home() / ".ssh"
+    sock_dir.mkdir(mode=0o700, exist_ok=True)
+    return _sync.ssh_control_opts(str(sock_dir), args.ssh_persist)
+
+
+def _report_multiplexing(host: str, cm_opts) -> None:
+    """State whether the SSH master is live (``ssh -O check``: socket probe,
+    no connection, no authentication). ssh's own fallback to per-connection
+    auth is silent and its warning is swallowed by ``capture_output``, so
+    this is the one place the operator learns multiplexing is not working.
+    """
+    if not (host and cm_opts):
+        return
+    check = subprocess.run(["ssh", *cm_opts, "-O", "check", host],
+                           capture_output=True, text=True)
+    if check.returncode == 0:
+        _log("pull: ssh multiplexing active (connections in the persist "
+             "window reuse this authentication)")
+    else:
+        _log("pull: ssh multiplexing NOT active (master exited or socket "
+             "unavailable); each connection may prompt")
+
+
+def _pull_inventory(run_dir: Path) -> str:
+    """One-line count of the figure-critical artifacts under a pulled run."""
+    def n(pattern: str) -> int:
+        return len(sorted(run_dir.glob(pattern)))
+    return (f"val-best weights {n('checkpoints/*/model_val_best.eqx')} | "
+            f"val-best evals {n('checkpoints/*/eval_holdout_val_best')} | "
+            f"holdout evals {n('checkpoints/*/eval_holdout')} | "
+            f"pretrain xnets {n('pretrain/*/xnet.eqx')} | "
+            f"certificates {n('pretrain/*/fidelity_certificate.json')}")
+
+
+def _cmd_pull_auto(args, spec_indices) -> int:
+    """``pull auto``: ONE ssh discovery shot, ONE rsync for every active run.
+
+    Discovery lists every ``run_<UTC>Z`` dir under
+    ``--remote-root[/--category]`` tagged active/inactive by file activity
+    within ``--days`` (:func:`sync.discover_runs_with_activity`); ALL active
+    runs are pulled -- never latest-only, so a dead newer launch cannot mask
+    a live older one -- in a single multi-source ``rsync -R`` whose filter
+    is the packaged profile prefix-expanded per run
+    (:func:`sync.build_multi_filter`). With multiplexing on, the discovery
+    connection authenticates once and the rsync rides its socket.
+    """
+    host = args.host
+    remote_root = args.remote_root.rstrip("/")
+    local_root = args.local_root.rstrip("/")
+    scope = args.category.strip("/")
+    if spec_indices:
+        _log("pull auto: --specs is not supported with 'auto' (surgical "
+             "per-spec pulls are a single-run workflow); rerun with an "
+             "explicit run id")
+        return 1
+    if args.days < 0:
+        _log(f"pull auto: --days must be >= 0, got {args.days:g}")
+        return 1
+    cm_opts = _pull_cm_opts(args)
+    if cm_opts is None:
+        return 1
+    ssh_runner = _make_ssh_lines(host, cm_opts)
+    scan_root = remote_root + (f"/{scope}" if scope else "")
+    epoch = None
+    if args.days > 0:
+        epoch = int((datetime.now(timezone.utc)
+                     - timedelta(days=args.days)).timestamp())
+    try:
+        groups = _sync.discover_runs_with_activity(
+            ssh_runner=ssh_runner, remote_root=scan_root,
+            active_within_epoch=epoch, max_depth=args.depth)
+    except subprocess.CalledProcessError as exc:
+        _log(f"pull auto: ssh discovery failed (rc={exc.returncode}): "
+             f"{_sync.format_ssh_stderr_tail(exc.stderr or '')}")
+        return 1
+    now = datetime.now(timezone.utc)
+    selected: list[str] = []
+    n_total = 0
+    _log(f"pull auto: scanned {scan_root} (depth {args.depth}, "
+         f"horizon {args.days:g} d)")
+    for cat in sorted(groups):
+        for run_id, active in groups[cat]:
+            n_total += 1
+            rel = posixpath.join(*(p for p in (scope, cat, run_id) if p))
+            stamp = _sync.run_stamp_datetime(run_id)
+            age = (f"stamp {(now - stamp).total_seconds() / 86400.0:.1f} d"
+                   if stamp else "stamp unreadable")
+            if active:
+                selected.append(rel)
+                _log(f"  {rel}  ACTIVE ({age})")
+            else:
+                _log(f"  {rel}  skipped (no file newer than {args.days:g} d; "
+                     f"{age})")
+    if not selected:
+        _log(f"pull auto: no active runs among {n_total} discovered; "
+             "nothing to pull")
+        return 0
+    if len(selected) > _AUTO_RUN_GATE and not args.yes and not args.dry_run:
+        _log(f"pull auto: {len(selected)} runs selected "
+             f"(> {_AUTO_RUN_GATE}); pass --yes to pull them all, or narrow "
+             "with --days / --category")
+        return 1
+    Path(local_root).mkdir(parents=True, exist_ok=True)
+    packaged = _sync.filter_file_path(args.profile).read_text()
+    generated = _sync.build_multi_filter(packaged, selected)
+    fd, tmp_filter = tempfile.mkstemp(prefix=".xcq_pull_auto_",
+                                      suffix=".rules", dir=local_root)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(generated)
+        extra = ("-e", "ssh " + " ".join(cm_opts)) if cm_opts else ()
+        argv = _sync.build_multi_rsync_command(
+            host=host, remote_root=remote_root, local_root=local_root,
+            run_paths=selected, filter_path=tmp_filter,
+            dry_run=args.dry_run, extra_flags=extra)
+        _log(f"pull auto: pulling {len(selected)} run(s) in one rsync")
+        _log(f"pull auto: running: {' '.join(argv)}")
+        rc = subprocess.run(argv).returncode
+    finally:
+        try:
+            os.unlink(tmp_filter)
+        except OSError:
+            pass
+    if rc == 24:
+        _log("pull auto: rsync rc=24 (source files vanished during the "
+             "transfer -- expected while a run is actively training); "
+             "treated as success")
+        rc = 0
+    if rc != 0:
+        _log(f"pull auto: rsync exited rc={rc}")
+    _report_multiplexing(host, cm_opts)
+    if not args.dry_run:
+        for rel in selected:
+            _log(f"pull auto: {rel}: "
+                 f"{_pull_inventory(Path(local_root) / rel)}")
+    if rc == 0:
+        verb = "dry-run complete for" if args.dry_run else "synced"
+        _log(f"pull auto: {verb} {len(selected)} run(s) -> {local_root}")
+    return rc
 
 
 def cmd_pull(args) -> int:
@@ -1997,7 +2178,13 @@ def cmd_pull(args) -> int:
                 _log(f"pull: --specs entries must be integers, got {tok!r}")
                 return 1
 
-    ssh_runner = _make_ssh_lines(host)
+    if args.run_id == "auto":
+        return _cmd_pull_auto(args, spec_indices)
+
+    cm_opts = _pull_cm_opts(args)
+    if cm_opts is None:
+        return 1
+    ssh_runner = _make_ssh_lines(host, cm_opts)
 
     try:
         run_id = _sync.resolve_run_id(
@@ -2021,11 +2208,12 @@ def cmd_pull(args) -> int:
     local_dest = local_dest / run_id
     local_dest.mkdir(parents=True, exist_ok=True)
 
+    extra = ("-e", "ssh " + " ".join(cm_opts)) if cm_opts else ()
     argv = _sync.build_rsync_command(
         host=host, remote_root=remote_root, local_root=local_root,
         run_id=run_id, category=category,
         profile=args.profile, dry_run=args.dry_run,
-        spec_indices=tuple(spec_indices),
+        spec_indices=tuple(spec_indices), extra_flags=extra,
     )
     _log(f"pull: running: {' '.join(argv)}")
     rc = subprocess.run(argv).returncode
@@ -2037,6 +2225,7 @@ def cmd_pull(args) -> int:
             _log(f"pull: synced -> {local_dest}")
     else:
         _log(f"pull: rsync exited rc={rc}")
+    _report_multiplexing(host, cm_opts)
     return rc
 
 
@@ -2246,8 +2435,12 @@ def _build_parser() -> argparse.ArgumentParser:
              "for post-processing (default profile: summaries, < 100 MB)")
     p_pull.add_argument(
         "run_id",
-        help="run id to pull: a UTC stamp 'run_YYYYmmddTHHMMSSZ' or the "
-             "literal 'latest' (resolved via `ssh <host> ls -1tr <remote-root>`)")
+        help="run id to pull: a UTC stamp 'run_YYYYmmddTHHMMSSZ', the "
+             "literal 'latest' (resolved via `ssh <host> ls -1tr "
+             "<remote-root>`), or 'auto' (ONE ssh shot discovers every run "
+             "with file activity within --days under "
+             "--remote-root/--category, then ONE rsync pulls them all over "
+             "the same multiplexed connection: one authentication total)")
     p_pull.add_argument(
         "--profile", choices=list(_sync.VALID_PROFILES), default="summaries",
         help="which artifacts to pull. 'summaries' (default) carries the "
@@ -2298,6 +2491,32 @@ def _build_parser() -> argparse.ArgumentParser:
     p_pull.add_argument(
         "--dry-run", action="store_true",
         help="pass --dry-run to rsync: report what would transfer, copy nothing")
+    p_pull.add_argument(
+        "--days", type=float, default=30.0,
+        help="('auto' only) activity horizon in days: a run is pulled when "
+             "ANY file under it was modified within this window (0 = no "
+             "horizon, every discovered run). Selection is by file "
+             "activity, never the run-name stamp, so a long-running "
+             "campaign cannot age out while it is still writing")
+    p_pull.add_argument(
+        "--depth", type=int, default=5,
+        help="('auto' only) find depth below the scanned root "
+             "(--remote-root/--category), matching list-runs --depth")
+    p_pull.add_argument(
+        "--yes", action="store_true",
+        help=f"('auto' only) confirm pulling more than {_AUTO_RUN_GATE} "
+             "runs in one invocation (the gate keeps --days 0 --profile "
+             "full from transferring tens of GB unconfirmed)")
+    p_pull.add_argument(
+        "--no-control-master", action="store_true",
+        help="disable SSH connection multiplexing; every ssh/rsync "
+             "connection then authenticates separately")
+    p_pull.add_argument(
+        "--ssh-persist", type=int, default=3600,
+        help="seconds the multiplexed SSH master stays alive after the "
+             "last connection (ControlPersist). Must be >= 1: ssh defines "
+             "0 as 'persist forever', so 0 is refused; disable with "
+             "--no-control-master")
     p_pull.set_defaults(func=cmd_pull)
 
     p_list_runs = sub.add_parser(

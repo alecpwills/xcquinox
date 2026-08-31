@@ -32,7 +32,14 @@ conda activate xcq
 cd ~/Documents/Research/xcquinox
 export XCQUINOX_CLUSTER_HOST=seawulf          # your ~/.ssh/config Host alias
 
-# 1. PULL the runs you want figures for (latest run per category):
+# 1. PULL the runs you want figures for. The standard refresh is ONE command:
+#    one ssh shot discovers every run with file activity in the last 30 days
+#    under --remote-root (scope with --category, tune with --days), then ONE
+#    rsync pulls them all over the same authenticated connection and prints a
+#    per-run inventory of the figure-critical artifacts.
+python -m xcquinox.alec.cluster pull auto --category dfs_step7
+
+#    Single runs still pull by stamp or 'latest' per category:
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/svp_grid2_v3/runs
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/svp_grid2_v3_full25/runs
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v3/runs
@@ -352,7 +359,8 @@ training.
 | Task | Command |
 |---|---|
 | list cluster runs | `python -m xcquinox.alec.cluster list-runs --category dfs_step7/<basis>/runs` |
-| pull (figures) | `python -m xcquinox.alec.cluster pull latest --category dfs_step7/<basis>/runs` |
+| pull (all active runs) | `python -m xcquinox.alec.cluster pull auto --category dfs_step7` |
+| pull (figures, one run) | `python -m xcquinox.alec.cluster pull latest --category dfs_step7/<basis>/runs` |
 | pull (weights too) | `... pull latest --category ... --profile full` |
 | verify pull | `ls .../runs/dfs_step7/<basis>/runs/*/checkpoints/spec_*/eval_holdout/per_reaction.json` |
 | figures | `python notebooks/analysis/make_ablation_arch_figure.py --suite --domain dfs_step7 --bases <...> --outroot notebooks/analysis` |

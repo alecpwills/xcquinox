@@ -1015,3 +1015,399 @@ def test_spec_indices_canary_width5_grid(tmp_path):
         "width-5 spec dir did not land; the :04d-only include regressed"
     # The unrequested neighbor must stay out.
     assert not (dest / "spec_00049").exists()
+
+
+# ---------------------------------------------------------------------------
+# pull auto: quoted ssh transport, activity discovery, multi-run filter/argv
+# ---------------------------------------------------------------------------
+
+SECOND_STAMP = "run_20260831T011905Z"
+
+
+def test_ssh_remote_command_quotes_globs_and_scripts(tmp_path):
+    from xcquinox.alec.cluster.__main__ import _ssh_remote_command
+    root = tmp_path / "root" / "cat" / "runs" / GOOD_STAMP
+    root.mkdir(parents=True)
+    argv = ["find", str(tmp_path / "root"), "-mindepth", "1", "-maxdepth", "5",
+            "-type", "d", "-name", "run_*Z", "-prune", "-print"]
+    cmd = _ssh_remote_command(argv)
+    assert "'run_*Z'" in cmd
+    # Remote-shell round trip with a decoy glob match in the CWD: the pattern
+    # must reach find as a literal, not be expanded by the shell first.
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "run_DECOYZ").write_text("")
+    completed = subprocess.run(["sh", "-c", cmd], cwd=cwd,
+                               capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    lines = [ln for ln in completed.stdout.splitlines() if ln.strip()]
+    assert lines == [str(root)]
+
+
+def test_ssh_control_opts_shape_and_persist_validation():
+    opts = sync.ssh_control_opts("/home/u/.ssh", 3600)
+    assert opts == ("-o", "ControlMaster=auto",
+                    "-o", "ControlPath=/home/u/.ssh/xcq-cm-%C",
+                    "-o", "ControlPersist=3600")
+    # ssh defines ControlPersist=0 as "persist forever", the opposite of
+    # disable, so 0 (and negatives) must be refused here.
+    with pytest.raises(ValueError):
+        sync.ssh_control_opts("/home/u/.ssh", 0)
+    with pytest.raises(ValueError):
+        sync.ssh_control_opts("/home/u/.ssh", -5)
+
+
+def test_run_stamp_datetime_display_only():
+    from datetime import timezone
+    dt = sync.run_stamp_datetime(SECOND_STAMP)
+    assert dt is not None and dt.tzinfo == timezone.utc
+    assert (dt.year, dt.month, dt.day, dt.hour) == (2026, 8, 31, 1)
+    assert sync.run_stamp_datetime("not_a_run") is None
+    # Regex-valid but calendar-invalid stamps must yield None, not raise.
+    assert sync.run_stamp_datetime("run_20260230T120000Z") is None
+
+
+class _RecordingRunner:
+    def __init__(self, lines):
+        self.lines = list(lines)
+        self.calls = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        return list(self.lines)
+
+
+def test_discover_runs_with_activity_argv_and_parsing():
+    lines = [
+        "A /r/catA/runs/run_20260830T000000Z",
+        "I /r/catA/runs/run_20260101T000000Z",
+        "A /r/run_20260829T000000Z",
+        "X /r/catA/runs/run_20260828T000000Z",   # unknown tag: skipped
+        "A /r/catA/runs/runs.tar.gz",            # non-stamp basename: skipped
+        "",
+    ]
+    runner = _RecordingRunner(lines)
+    groups = sync.discover_runs_with_activity(
+        ssh_runner=runner, remote_root="/r", active_within_epoch=1785000000)
+    (argv,) = runner.calls
+    assert argv[:10] == ["find", "/r", "-mindepth", "1", "-maxdepth", "5",
+                         "-type", "d", "-name", "run_*Z"]
+    assert argv[10] == "-prune"
+    assert argv[11:14] == ["-exec", "sh", "-c"]
+    script = argv[14]
+    assert "-newermt @1785000000" in script
+    assert '"A $1"' in script and '"I $1"' in script
+    assert "-print -quit" in script and "| grep -q ." in script
+    assert argv[15:] == ["_", "{}", ";"]
+    assert groups == {
+        "catA/runs": [("run_20260101T000000Z", False),
+                      ("run_20260830T000000Z", True)],
+        "": [("run_20260829T000000Z", True)],
+    }
+
+
+def test_discover_runs_with_activity_no_epoch_is_plain_listing():
+    lines = ["/r/catA/runs/run_20260830T000000Z"]
+    runner = _RecordingRunner(lines)
+    groups = sync.discover_runs_with_activity(
+        ssh_runner=runner, remote_root="/r", active_within_epoch=None)
+    runner_plain = _RecordingRunner(lines)
+    sync.discover_runs(ssh_runner=runner_plain, remote_root="/r")
+    # Byte-identical find argv to the plain discovery when no horizon is set.
+    assert runner.calls[0] == runner_plain.calls[0]
+    assert groups == {"catA/runs": [("run_20260830T000000Z", True)]}
+
+
+def test_build_multi_filter_summaries_prefix_expansion():
+    text = sync.filter_file_path("summaries").read_text()
+    p1 = f"catA/runs/{GOOD_STAMP}"
+    p2 = f"catB/deep/runs/{SECOND_STAMP}"
+    out = sync.build_multi_filter(text, [p1, p2])
+    lines = out.splitlines()
+    for anc in ("+ /catA/", "+ /catA/runs/", f"+ /{p1}/",
+                "+ /catB/", "+ /catB/deep/", "+ /catB/deep/runs/", f"+ /{p2}/"):
+        assert anc in lines, anc
+    assert f"+ /{p1}/manifest.json" in lines
+    assert f"+ /{p2}/checkpoints/spec_*/eval_holdout_val_best/***" in lines
+    assert lines[-1] == "- *" and lines.count("- *") == 1
+    # Packaged rule order is preserved within each run's expansion.
+    assert lines.index(f"+ /{p1}/manifest.json") \
+        < lines.index(f"+ /{p1}/checkpoints/")
+
+
+def test_build_multi_filter_full_profile_and_rule_refusals():
+    full_text = sync.filter_file_path("full").read_text()
+    p1 = f"catA/runs/{GOOD_STAMP}"
+    out = sync.build_multi_filter(full_text, [p1])
+    lines = out.splitlines()
+    assert f"+ /{p1}/***" in lines
+    assert lines[-1] == "- *"
+    with pytest.raises(ValueError, match="unsupported filter rule"):
+        sync.build_multi_filter("+ checkpoints/\n- *\n", [p1])
+    with pytest.raises(ValueError, match="terminal"):
+        sync.build_multi_filter("- *\n+ /manifest.json\n", [p1])
+    with pytest.raises(ValueError, match="unsupported filter rule"):
+        sync.build_multi_filter("- /logs/\n- *\n", [p1])
+    with pytest.raises(ValueError):
+        sync.build_multi_filter("+ /x\n- *\n", ["bad path/with space/run"])
+    with pytest.raises(ValueError):
+        sync.build_multi_filter("+ /x\n- *\n", [])
+
+
+def test_build_multi_rsync_command_argv_shape():
+    p1 = f"catA/runs/{GOOD_STAMP}"
+    p2 = f"catB/runs/{SECOND_STAMP}"
+    argv = sync.build_multi_rsync_command(
+        host="hpc", remote_root="/scratch/root/", local_root="/tmp/dest",
+        run_paths=[p1, p2], filter_path="/tmp/f.rules",
+        dry_run=True, extra_flags=("-e", "ssh -o X=1"))
+    single = sync.build_rsync_command(
+        host="hpc", remote_root="/scratch/root", local_root="/tmp/dest",
+        run_id=GOOD_STAMP)
+    # Both builders share the same base-flag prefix (drift pin).
+    n_base = 1 + len(sync._BASE_FLAGS)
+    assert argv[:n_base] == single[:n_base] == ["rsync", *sync._BASE_FLAGS]
+    assert argv[n_base] == "-R"
+    assert "--filter=. /tmp/f.rules" in argv
+    assert "--dry-run" in argv
+    i_e = argv.index("-e")
+    assert argv[i_e + 1] == "ssh -o X=1"
+    assert argv[-3:] == [f"hpc:/scratch/root/./{p1}",
+                         f"hpc:/scratch/root/./{p2}", "/tmp/dest/"]
+    with pytest.raises(ValueError):
+        sync.build_multi_rsync_command(
+            host="h", remote_root="/r", local_root="/l",
+            run_paths=["cat/runs/not_a_stamp"], filter_path="/f")
+    argv_local = sync.build_multi_rsync_command(
+        host="", remote_root="/r", local_root="/l",
+        run_paths=[p1], filter_path="/f")
+    assert argv_local[-2] == f"/r/./{p1}"
+
+
+def test_multi_run_canary_against_real_rsync(tmp_path):
+    if shutil.which("rsync") is None:
+        pytest.skip("rsync executable not available")
+    remote = tmp_path / "remote"
+    p1 = f"catA/runs/{GOOD_STAMP}"
+    p2 = f"catB/deep/runs/{SECOND_STAMP}"
+    run_a = remote / p1
+    spec = run_a / "checkpoints" / "spec_0000"
+    (spec / "eval_holdout_val_best").mkdir(parents=True)
+    (spec / "eval_holdout_val_best" / "test_set.csv").write_text("x")
+    (spec / "model_val_best.eqx").write_bytes(b"W")
+    (spec / "model_val_best.eqx.class.json").write_text("{}")
+    (spec / "model_best.eqx").write_bytes(b"EXCLUDED")
+    pre = run_a / "pretrain" / "arch"
+    (pre / "xnet").mkdir(parents=True)
+    (pre / "xnet.eqx").write_bytes(b"X")
+    (pre / "fidelity_certificate.json").write_text("{}")
+    (pre / "xnet" / "xc.eqx.100").write_bytes(b"SNAP")
+    (run_a / "manifest.json").write_text("{}")
+    (run_a / "logs").mkdir()
+    (run_a / "logs" / "big.out").write_text("L")
+    run_b = remote / p2
+    run_b.mkdir(parents=True)
+    (run_b / "manifest.json").write_text("{}")
+    sibling = remote / "catA" / "runs" / "run_20260101T000000Z"
+    sibling.mkdir(parents=True)
+    (sibling / "manifest.json").write_text("{}")
+
+    generated = sync.build_multi_filter(
+        sync.filter_file_path("summaries").read_text(), [p1, p2])
+    fpath = tmp_path / "gen.rules"
+    fpath.write_text(generated)
+    local = tmp_path / "local"
+    local.mkdir()
+    argv = sync.build_multi_rsync_command(
+        host="", remote_root=str(remote), local_root=str(local),
+        run_paths=[p1, p2], filter_path=str(fpath))
+    completed = subprocess.run(argv, capture_output=True, text=True,
+                               check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert (local / p1 / "manifest.json").is_file()
+    assert (local / p1 / "checkpoints/spec_0000/model_val_best.eqx").is_file()
+    assert (local / p1 /
+            "checkpoints/spec_0000/eval_holdout_val_best/test_set.csv").is_file()
+    assert (local / p1 / "pretrain/arch/xnet.eqx").is_file()
+    assert (local / p1 / "pretrain/arch/fidelity_certificate.json").is_file()
+    assert (local / p2 / "manifest.json").is_file()
+    assert not (local / p1 / "checkpoints/spec_0000/model_best.eqx").exists()
+    assert not (local / p1 / "pretrain/arch/xnet/xc.eqx.100").exists()
+    assert not (local / p1 / "logs").exists()
+    assert not (local / "catA/runs/run_20260101T000000Z").exists()
+
+
+# ---------------------------------------------------------------------------
+# cmd_pull auto orchestration (subprocess.run recorded, nothing executed)
+# ---------------------------------------------------------------------------
+
+class _FakeCompleted:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = ""
+
+
+def _auto_args(tmp_path, **overrides):
+    import argparse
+    ns = argparse.Namespace(
+        run_id="auto", profile="summaries", category="", host="hpc",
+        remote_root="/scr/root", local_root=str(tmp_path / "local"),
+        specs=None, dry_run=False, days=30.0, depth=5, yes=False,
+        no_control_master=False, ssh_persist=3600)
+    for key, val in overrides.items():
+        setattr(ns, key, val)
+    return ns
+
+
+def _install_fake_run(monkeypatch, calls, *, find_lines, rsync_rc=0):
+    from xcquinox.alec.cluster import __main__ as cm_mod
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[0] == "ssh" and "-O" in argv:
+            return _FakeCompleted(0)
+        if argv[0] == "ssh":
+            return _FakeCompleted(0, stdout="\n".join(find_lines) + "\n")
+        if argv[0] == "rsync":
+            return _FakeCompleted(rsync_rc)
+        raise AssertionError(f"unexpected subprocess argv: {argv}")
+
+    monkeypatch.setattr(cm_mod.subprocess, "run", fake_run)
+    return cm_mod
+
+
+def test_cmd_pull_auto_one_ssh_one_rsync(monkeypatch, tmp_path):
+    calls = []
+    find_lines = [f"A /scr/root/catA/runs/{GOOD_STAMP}",
+                  "I /scr/root/catA/runs/run_20260101T000000Z"]
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=find_lines)
+    rc = cm_mod.cmd_pull(_auto_args(tmp_path))
+    assert rc == 0
+    discovery = [a for a in calls if a[0] == "ssh" and "-O" not in a]
+    rsyncs = [a for a in calls if a[0] == "rsync"]
+    assert len(discovery) == 1, "discovery must be ONE ssh shot"
+    assert len(rsyncs) == 1, "the pull must be ONE rsync invocation"
+    (ssh_argv,) = discovery
+    # Options before the host; the remote command as one quoted string.
+    assert ssh_argv[0] == "ssh" and ssh_argv[1] == "-o"
+    assert ssh_argv[-2] == "hpc"
+    assert "'run_*Z'" in ssh_argv[-1]
+    (argv,) = rsyncs
+    assert "-R" in argv
+    i_e = argv.index("-e")
+    assert "ControlMaster=auto" in argv[i_e + 1]
+    assert f"hpc:/scr/root/./catA/runs/{GOOD_STAMP}" in argv
+    assert not any("run_20260101T000000Z" in a for a in argv)
+    assert argv[-1] == str(tmp_path / "local") + "/"
+
+
+def test_cmd_pull_auto_scope_composition(monkeypatch, tmp_path):
+    calls = []
+    find_lines = [f"A /scr/root/dfs_step7/catA/runs/{GOOD_STAMP}"]
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=find_lines)
+    rc = cm_mod.cmd_pull(_auto_args(tmp_path, category="dfs_step7"))
+    assert rc == 0
+    (ssh_argv,) = [a for a in calls if a[0] == "ssh" and "-O" not in a]
+    assert "/scr/root/dfs_step7" in ssh_argv[-1]
+    (argv,) = [a for a in calls if a[0] == "rsync"]
+    src = f"hpc:/scr/root/./dfs_step7/catA/runs/{GOOD_STAMP}"
+    assert src in argv
+    # The -R mirror (dest + path after /./) equals the single-mode dest.
+    single = sync.build_rsync_command(
+        host="hpc", remote_root="/scr/root",
+        local_root=str(tmp_path / "local"), run_id=GOOD_STAMP,
+        category="dfs_step7/catA/runs")
+    assert single[-1] == (str(tmp_path / "local")
+                          + f"/dfs_step7/catA/runs/{GOOD_STAMP}/")
+    assert argv[-1] == str(tmp_path / "local") + "/"
+
+
+def test_cmd_pull_auto_refusals(monkeypatch, tmp_path, capsys):
+    calls = []
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=[])
+    assert cm_mod.cmd_pull(_auto_args(tmp_path, specs="0,1")) == 1
+    assert "--specs" in capsys.readouterr().out
+    assert cm_mod.cmd_pull(_auto_args(tmp_path, days=-1.0)) == 1
+    assert "--days" in capsys.readouterr().out
+    assert cm_mod.cmd_pull(_auto_args(tmp_path, ssh_persist=0)) == 1
+    assert "--ssh-persist" in capsys.readouterr().out
+    assert calls == [], "refusals must fire before any subprocess"
+
+
+def test_cmd_pull_auto_sanity_gate(monkeypatch, tmp_path):
+    find_lines = [f"A /scr/root/c{i}/runs/{GOOD_STAMP}" for i in range(16)]
+    calls = []
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=find_lines)
+    assert cm_mod.cmd_pull(_auto_args(tmp_path)) == 1
+    assert [a for a in calls if a[0] == "rsync"] == []
+    calls.clear()
+    assert cm_mod.cmd_pull(_auto_args(tmp_path, yes=True)) == 0
+    assert len([a for a in calls if a[0] == "rsync"]) == 1
+    calls.clear()
+    assert cm_mod.cmd_pull(_auto_args(tmp_path, dry_run=True)) == 0
+    assert len([a for a in calls if a[0] == "rsync"]) == 1
+
+
+def test_cmd_pull_auto_rc24_maps_to_success(monkeypatch, tmp_path):
+    find_lines = [f"A /scr/root/catA/runs/{GOOD_STAMP}"]
+    calls = []
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=find_lines,
+                               rsync_rc=24)
+    assert cm_mod.cmd_pull(_auto_args(tmp_path)) == 0
+    calls.clear()
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=find_lines,
+                               rsync_rc=23)
+    assert cm_mod.cmd_pull(_auto_args(tmp_path)) == 23
+
+
+def test_cmd_pull_single_mode_control_master(monkeypatch, tmp_path):
+    calls = []
+    cm_mod = _install_fake_run(monkeypatch, calls, find_lines=[])
+    args = _auto_args(tmp_path, run_id=GOOD_STAMP, category="catA/runs")
+    (tmp_path / "local").mkdir(exist_ok=True)
+    assert cm_mod.cmd_pull(args) == 0
+    # Explicit stamp: no discovery ssh; the rsync carries the CM transport.
+    assert [a for a in calls if a[0] == "ssh" and "-O" not in a] == []
+    (argv,) = [a for a in calls if a[0] == "rsync"]
+    i_e = argv.index("-e")
+    assert "ControlMaster=auto" in argv[i_e + 1]
+    calls.clear()
+    args = _auto_args(tmp_path, run_id=GOOD_STAMP, category="catA/runs",
+                      no_control_master=True)
+    assert cm_mod.cmd_pull(args) == 0
+    (argv,) = [a for a in calls if a[0] == "rsync"]
+    assert "-e" not in argv
+    assert [a for a in calls if a[0] == "ssh"] == []
+
+
+def test_pull_parser_accepts_auto_flags():
+    from xcquinox.alec.cluster.__main__ import _build_parser
+    parser = _build_parser()
+    args = parser.parse_args(
+        ["pull", "auto", "--days", "10", "--ssh-persist", "600",
+         "--depth", "6", "--yes", "--no-control-master"])
+    assert args.run_id == "auto"
+    assert args.days == 10.0
+    assert args.ssh_persist == 600
+    assert args.depth == 6
+    assert args.yes is True
+    assert args.no_control_master is True
+
+
+def test_pull_inventory_counts(tmp_path):
+    from xcquinox.alec.cluster.__main__ import _pull_inventory
+    run = tmp_path / "run"
+    for i in range(2):
+        spec = run / "checkpoints" / f"spec_{i:04d}"
+        spec.mkdir(parents=True)
+        (spec / "model_val_best.eqx").write_bytes(b"W")
+    (run / "checkpoints/spec_0000/eval_holdout_val_best").mkdir()
+    (run / "checkpoints/spec_0000/eval_holdout").mkdir()
+    pre = run / "pretrain" / "arch"
+    pre.mkdir(parents=True)
+    (pre / "xnet.eqx").write_bytes(b"X")
+    (pre / "fidelity_certificate.json").write_text("{}")
+    line = _pull_inventory(run)
+    assert line == ("val-best weights 2 | val-best evals 1 | holdout evals 1 "
+                    "| pretrain xnets 1 | certificates 1")
