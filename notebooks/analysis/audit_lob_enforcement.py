@@ -32,12 +32,12 @@ from pathlib import Path
 os.environ.setdefault("JAX_ENABLE_X64", "1")
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
-import equinox as eqx  # noqa: E402
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 
 import xcquinox.alec as alec  # noqa: E402
+from xcquinox.alec.checkpoint_class import load_trained_checkpoint  # noqa: E402
 from xcquinox.alec.descriptors import assemble_descriptor_features  # noqa: E402
 from xcquinox.alec.models import AlecGGAModel  # noqa: E402
 
@@ -94,10 +94,20 @@ def build_ch4_grid(arch_name: str):
 
 
 def fx_for_checkpoint(ckpt_path: str, rho, sigma, features, arch_name: str):
-    """Load one model.eqx and return F_x on every grid point as a numpy array."""
+    """Load one model.eqx and return F_x on every grid point as a numpy array.
+
+    Through ``load_trained_checkpoint``, so the checkpoint's model class -- the
+    parent anchor and the descriptor coordinates, neither of which changes a
+    parameter shape -- is held to the skeleton's before the leaves are read. A
+    bare deserialise loads the other class's weights here with every array
+    equal and nothing raising, and what this function then reports is an F_x
+    curve for a model that is neither: the parent plus a correction trained as
+    the whole factor. A checkpoint with no record is the legacy class and
+    loads into a legacy skeleton as before.
+    """
     arch_cfg = alec.get_architecture(arch_name)
     model = AlecGGAModel.from_arch(arch_cfg, seed=0)
-    model = eqx.tree_deserialise_leaves(ckpt_path, model)
+    model = load_trained_checkpoint(ckpt_path, model)
     rho_j, sigma_j, feat_j = jnp.asarray(rho), jnp.asarray(sigma), jnp.asarray(features)
 
     def _fx_one(r, sg, f):

@@ -79,13 +79,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import tempfile
+import time
 
 #: Appended to a checkpoint's own path to give its class record's path.
 CLASS_RECORD_SUFFIX = ".class.json"
 
-#: Appended to a class record's path to give the path a record is STAGED at
-#: while the checkpoint it describes is still being written. Nothing reads it.
-STAGED_RECORD_SUFFIX = ".tmp"
+#: Ends the name of every temporary this module and the training writer put
+#: down beside a file they are about to replace. The name in between is drawn
+#: by :func:`new_temporary` and is unique per write, so two writers in one
+#: directory never share one. Nothing reads a temporary.
+TEMPORARY_SUFFIX = ".tmp"
 
 #: Read size for :func:`file_digest`. The whole checkpoint is never held in
 #: memory, and one chunk covers every checkpoint this project writes.
@@ -130,10 +135,111 @@ def class_record_path(checkpoint_path) -> str:
     return f"{os.fspath(checkpoint_path)}{CLASS_RECORD_SUFFIX}"
 
 
-def staged_class_record_path(checkpoint_path) -> str:
-    """Where a record for ``checkpoint_path`` is staged before it is committed
-    (:func:`stage_class_record`)."""
-    return f"{class_record_path(checkpoint_path)}{STAGED_RECORD_SUFFIX}"
+def _temporary_pattern(target_path):
+    """Matches the basenames of the temporaries belonging to ``target_path``.
+
+    ``<name>.<drawn>.tmp`` for the ones :func:`new_temporary` draws, and the
+    bare ``<name>.tmp`` a writer from before the names were drawn left behind.
+    The drawn part is ``mkstemp``'s alphabet, which carries no ``.``, so the
+    pattern for ``model.eqx`` does NOT match ``model.eqx.class.json.X.tmp``:
+    the leaves' temporaries and the record's are swept separately, each by its
+    own target.
+    """
+    base = os.path.basename(os.fspath(target_path))
+    return re.compile(r"\A" + re.escape(base) + r"(\.[A-Za-z0-9_]+)?"
+                      + re.escape(TEMPORARY_SUFFIX) + r"\Z")
+
+
+def new_temporary(target_path) -> str:
+    """An empty temporary beside ``target_path``, under a name no other write
+    can be using, and return its path.
+
+    ``tempfile.mkstemp`` in ``target_path``'s OWN directory, so the rename
+    that commits it stays within one filesystem and is therefore atomic. The
+    name matters because the temporary is not private to one process: two
+    generations of the same training task write the same checkpoint directory
+    (``cluster.__main__.cmd_resubmit`` re-submits a retryable index into the
+    run directory it was classified in), and under one fixed name per
+    checkpoint the later writer would serialise into the earlier writer's
+    half-written file and each would rename the other's bytes into place. With
+    a drawn name each writer commits its own leaves under its own record, and
+    the interleavings that remain are the two renames crossing, which the
+    record's digest refuses (:func:`require_matching_digest`).
+    """
+    target = os.fspath(target_path)
+    directory = os.path.dirname(os.path.abspath(target)) or "."
+    fd, path = tempfile.mkstemp(dir=directory,
+                                prefix=os.path.basename(target) + ".",
+                                suffix=TEMPORARY_SUFFIX)
+    os.close(fd)
+    return path
+
+
+def _temporaries_of(target_path):
+    """Every temporary of ``target_path`` on disk now, as paths. A directory
+    that cannot be listed yields none."""
+    target = os.fspath(target_path)
+    directory = os.path.dirname(os.path.abspath(target)) or "."
+    pattern = _temporary_pattern(target)
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return ()
+    return tuple(os.path.join(directory, name)
+                 for name in sorted(names) if pattern.match(name))
+
+
+#: How old a temporary must be before a write treats it as abandoned. A
+#: temporary a LIVE write is still holding is at most as old as that write:
+#: the whole sequence -- serialise, fsync, digest, record, two renames, the
+#: directory fsync -- costs 22 ms per checkpoint measured on this workstation,
+#: essentially all of it the three fsyncs, and the serialise of the largest
+#: ``.eqx`` in the tree is 0.9 ms. Sixty seconds is over three orders above
+#: that, so nothing this old is being written; and since a temporary is inert
+#: (no reader globs for one), leaving a recent one for the write after this
+#: one costs nothing while deleting a live writer's staging file would cost
+#: that writer its rename.
+TEMPORARY_GRACE_SECONDS = 60.0
+
+
+def stale_temporaries(target_path, *,
+                      grace: float = TEMPORARY_GRACE_SECONDS) -> tuple:
+    """The temporaries of ``target_path`` that no live write can be holding:
+    those already older than ``grace`` at the moment this is called.
+
+    Read at the START of a write and removed when it succeeds
+    (``train._serialise_trained_model``), so the set can contain nothing the
+    write itself, or anything that began after it, drew. That ordering is what
+    makes the sweep safe against a second writer in the same directory; the
+    age bound is what makes it safe against one that started moments earlier.
+    File timestamps come from the kernel's coarse clock and can read a few
+    milliseconds BEFORE the wall clock at the instant the file was created, so
+    a bound tighter than that clock's granularity would not hold.
+    """
+    now = time.time()
+    out = []
+    for path in _temporaries_of(target_path):
+        try:
+            if now - os.stat(path).st_mtime > float(grace):
+                out.append(path)
+        except OSError:
+            pass
+    return tuple(out)
+
+
+def discard_temporaries(target_path) -> None:
+    """Remove EVERY temporary of ``target_path``, whatever drew it; absent is
+    fine.
+
+    For the caller that is deleting ``target_path`` itself
+    (``train._remove_resume_set``): nothing that belongs to the file can
+    matter once the file is gone.
+    """
+    for path in _temporaries_of(target_path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def file_digest(path) -> tuple:
@@ -283,8 +389,12 @@ def stage_class_record(checkpoint_path, arch, *, sha256, size) -> str:
     leaves this record is being committed for; the reader compares them
     against the ``.eqx`` it finds, which is what tells it whether the two
     files are the pair they claim to be.
+
+    The staged path is DRAWN (:func:`new_temporary`) rather than derived from
+    the checkpoint's name, so it belongs to this write alone; the caller hands
+    the returned path back to :func:`commit_class_record`.
     """
-    staged = staged_class_record_path(checkpoint_path)
+    staged = new_temporary(class_record_path(checkpoint_path))
     with open(staged, "w") as f:
         json.dump(class_record(arch, sha256=sha256, size=size), f, indent=2)
         f.flush()
@@ -292,11 +402,15 @@ def stage_class_record(checkpoint_path, arch, *, sha256, size) -> str:
     return staged
 
 
-def commit_class_record(checkpoint_path) -> str:
-    """Move the record staged for ``checkpoint_path`` into place, atomically
-    (``os.replace``), and return the record's path."""
+def commit_class_record(checkpoint_path, staged) -> str:
+    """Move the record ``staged`` for ``checkpoint_path`` into place, atomically
+    (``os.replace``), and return the record's path.
+
+    ``staged`` is what :func:`stage_class_record` returned for this write; no
+    other write's temporary is named by any path this function derives.
+    """
     path = class_record_path(checkpoint_path)
-    os.replace(staged_class_record_path(checkpoint_path), path)
+    os.replace(os.fspath(staged), path)
     return path
 
 
@@ -317,20 +431,29 @@ def write_class_record(checkpoint_path, arch) -> str:
     state the digest can name.
     """
     sha256, size = file_digest(checkpoint_path)
-    stage_class_record(checkpoint_path, arch, sha256=sha256, size=size)
-    path = commit_class_record(checkpoint_path)
+    staged = stage_class_record(checkpoint_path, arch, sha256=sha256, size=size)
+    path = commit_class_record(checkpoint_path, staged)
     fsync_dir_of(path)
     return path
 
 
-def discard_staged_record(checkpoint_path) -> None:
+def discard_staged_record(checkpoint_path, staged=None) -> None:
     """Remove a staged record whose checkpoint never landed; absent is fine.
+
+    ``staged`` is the path :func:`stage_class_record` returned, and is what a
+    failed write passes so that it discards its OWN temporary and no other
+    writer's. With no argument every record temporary of ``checkpoint_path``
+    goes, which is what the caller that is deleting the checkpoint itself
+    means (``train._remove_resume_set``).
 
     The record on disk is left exactly as it was, which is what keeps a failed
     write from re-labelling the checkpoint that survived it.
     """
+    if staged is None:
+        discard_temporaries(class_record_path(checkpoint_path))
+        return
     try:
-        os.remove(staged_class_record_path(checkpoint_path))
+        os.remove(os.fspath(staged))
     except FileNotFoundError:
         pass
 
@@ -490,3 +613,33 @@ def require_matching_class(checkpoint_path, want_class, *,
             "classes with identical parameter shapes; loading across them "
             "would silently produce a model that is neither.")
     return got_class
+
+
+def load_trained_checkpoint(checkpoint_path, skeleton, *,
+                            what: str = "trained checkpoint"):
+    """Fill ``skeleton`` from the TRAINED checkpoint at ``checkpoint_path``,
+    with the record checked first, and return the filled model.
+
+    The one call every reader of a trained checkpoint outside this package's
+    own loaders makes: :func:`require_matching_class` against the class the
+    skeleton itself carries (:func:`model_class_of_model`), then
+    ``eqx.tree_deserialise_leaves``. A bare deserialise is what the record
+    cannot guard -- the anchor and the descriptor coordinates change no
+    parameter shape, so another class's leaves land in this skeleton with
+    every array equal and nothing raising -- and the analysis scripts and
+    notebook cells that read ``model.eqx``, ``model_best.eqx`` and
+    ``model_val_best.eqx`` are exactly where such a load is not noticed,
+    because what comes out of it is a plausible curve.
+
+    A checkpoint with no record beside it is the legacy class and is accepted
+    by a legacy skeleton, so the campaigns written before the anchor read as
+    they did before.
+
+    ``equinox`` is imported here rather than at module scope: this module is
+    read by callers that only want the record.
+    """
+    import equinox as eqx
+
+    require_matching_class(checkpoint_path, model_class_of_model(skeleton),
+                           what=what)
+    return eqx.tree_deserialise_leaves(os.fspath(checkpoint_path), skeleton)

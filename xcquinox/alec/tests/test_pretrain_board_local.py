@@ -122,7 +122,7 @@ def test_the_anchored_architecture_pretrains_within_the_certificate(
     """
     row = _run(arch_name, True, board_data)
     passed, reasons = board.verdict(row)
-    row["verdict"] = "PASS" if passed else "FAIL"
+    row["verdict"] = board.verdict_label(row, passed)
     with capsys.disabled():
         print()
         print(board.format_table([row]))
@@ -154,7 +154,7 @@ def test_the_unanchored_architecture_in_the_same_coordinates(
     """
     row = _run(arch_name, False, board_data)
     passed, reasons = board.verdict(row)
-    row["verdict"] = "PASS" if passed else "FAIL"
+    row["verdict"] = board.verdict_label(row, passed)
     with capsys.disabled():
         print()
         print(board.format_table([row]))
@@ -190,7 +190,7 @@ def test_the_anchored_meta_gga_architecture_pretrains_within_the_certificate(
                          work_dir=work_dir, steps=BOARD_STEPS,
                          seed=BOARD_SEED, coordinates="dfs")
     passed, reasons = board.verdict(row)
-    row["verdict"] = "PASS" if passed else "FAIL"
+    row["verdict"] = board.verdict_label(row, passed)
     with capsys.disabled():
         print()
         print(board.format_table([row]))
@@ -221,7 +221,7 @@ def test_the_unanchored_meta_gga_architecture_in_the_same_coordinates(
                          work_dir=work_dir, steps=BOARD_STEPS,
                          seed=BOARD_SEED, coordinates="dfs")
     passed, reasons = board.verdict(row)
-    row["verdict"] = "PASS" if passed else "FAIL"
+    row["verdict"] = board.verdict_label(row, passed)
     with capsys.disabled():
         print()
         print(board.format_table([row]))
@@ -356,6 +356,67 @@ def test_the_board_gates_the_anchored_rows_and_reports_the_others():
                   max_atom_mHa=99.0, max_dAE_kcal=99.0)
     passed, reasons = board.verdict(unheld)
     assert passed is True and any("no recorded value" in r for r in reasons)
+
+
+def test_the_control_rows_are_labelled_reported_and_not_pass():
+    """The verdict column separates the two gates it reports.
+
+    An anchored row is held to the initialization floor and the certificate,
+    so PASS there is a target met. A control row is the measurement of what
+    the coordinates alone deliver and sits outside the certificate by
+    construction -- 7.8 to 19.9 mHa on the worst free atom in the recorded set
+    -- so PASS beside those numbers states the opposite of what the row says.
+    A control that has not regressed reads REPORTED; one that has drifted past
+    its recorded value still reads FAIL, which is the only thing these rows
+    are held to.
+    """
+    anchored_row = dict(arch="deep_3x16", anchored=True, init_max_atom_mHa=1e-9,
+                        init_max_dAE_kcal=1e-9, max_atom_mHa=0.2,
+                        max_dAE_kcal=0.3)
+    assert board.verdict_label(anchored_row, True) == "PASS"
+    assert board.verdict_label(anchored_row, False) == "FAIL"
+
+    control = dict(arch="deep_mgga_3x16", anchored=False,
+                   max_atom_mHa=19.8748, max_dAE_kcal=8.6720)
+    passed, _reasons = board.verdict(control)
+    assert passed is True
+    assert board.verdict_label(control, passed) == "REPORTED"
+
+    regressed = dict(control, max_atom_mHa=19.8748 * 2.5)
+    passed, reasons = board.verdict(regressed)
+    assert passed is False and any("is more than" in r for r in reasons)
+    assert board.verdict_label(regressed, passed) == "FAIL"
+
+
+def test_the_board_prints_reported_for_the_control_rows(monkeypatch):
+    """``run_board`` puts the label in the row the table is formatted from,
+    so the printed board carries it.
+
+    Driven with the dataset generator and the cell runner stubbed: the
+    labelling is a property of the board's bookkeeping and needs no
+    pretraining to state. The exit-status accumulator is unchanged -- both
+    rows here clear their gate, so ``ok`` is True with a REPORTED row in the
+    table.
+    """
+    monkeypatch.setattr(board, "_load_probe", lambda: None)
+    monkeypatch.setattr(
+        board, "ensure_board_data",
+        lambda data_dir, **kw: f"{data_dir}/{kw.get('reference_xc')}.npz")
+
+    def _cell(name, *, anchor, data_path, **kw):
+        return {"arch": name, "anchored": anchor, "init_max_atom_mHa": 0.0,
+                "init_max_dAE_kcal": 0.0,
+                "max_atom_mHa": 0.0 if anchor else 6.6742,
+                "max_dAE_kcal": 0.0 if anchor else 2.4636, "wall_s": 0.0}
+
+    monkeypatch.setattr(board, "run_cell", _cell)
+    rows, ok = board.run_board(archs=("deep_3x16",), work_dir="/tmp/board_label",
+                               log=lambda message: None)
+    assert ok is True
+    by_state = {row["anchored"]: row["verdict"] for row in rows}
+    assert by_state == {True: "PASS", False: "REPORTED"}
+    text = board.format_table(rows)
+    assert "REPORTED" in text and "PASS" in text
 
 
 def test_the_board_table_carries_the_gated_columns():

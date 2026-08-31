@@ -18,7 +18,11 @@ its rung resolves, twice, for a short schedule:
   gated: they are the measurement of what the coordinates alone deliver, which
   is what the anchor has to be read against. They are held only to a loose
   factor-of-two band around what was measured, so a regression shows without
-  the board turning into a fit of the training noise.
+  the board turning into a fit of the training noise. Their verdict column
+  therefore reads REPORTED, not PASS: these rows sit one to four orders
+  outside the certificate by construction, and a PASS beside 19.9 mHa would
+  read as a target met. A control that has drifted past its recorded value
+  still reads FAIL.
 
 The energy errors are the ones the fidelity certificate bounds -- per-system
 ``E_xc^NN - E_xc^parent``, summed over exchange and correlation, folded into
@@ -329,6 +333,25 @@ def verdict(row):
                     for r in reasons)), reasons
 
 
+def verdict_label(row, passed) -> str:
+    """What the verdict column prints for one row.
+
+    ``PASS`` / ``FAIL`` for an ANCHORED row, which is held to the
+    initialization floor and to the certificate. An unanchored row is a
+    CONTROL: it is the measurement of what the coordinates alone deliver, and
+    it sits one to four orders outside the certificate by construction
+    (7.8 to 19.9 mHa on the worst free atom in the recorded set). Printing
+    ``PASS`` beside those numbers reads as a target met, which is the opposite
+    of what the row says, so a control that has not regressed prints
+    ``REPORTED``. ``FAIL`` is kept for a control that has drifted past its
+    recorded value (:data:`UNANCHORED_MARGIN`), which is a regression in the
+    coordinates and is the one thing these rows are held to.
+    """
+    if not passed:
+        return "FAIL"
+    return "PASS" if row.get("anchored") else "REPORTED"
+
+
 _COLUMNS = (
     ("arch", 26, "s"),
     ("anchored", 8, "s"),
@@ -404,7 +427,7 @@ def run_board(*, archs=None, steps=300, seed=0, work_dir, data_dir=None,
                            work_dir=work_dir, steps=steps, seed=seed,
                            coordinates=coordinates, probe=probe)
             passed, reasons = verdict(row)
-            row["verdict"] = "PASS" if passed else "FAIL"
+            row["verdict"] = verdict_label(row, passed)
             row["reasons"] = reasons
             row["parent"] = parents[name]
             ok = ok and passed
@@ -478,7 +501,10 @@ def main(argv=None):
     print(format_table(rows))
     failed = [r for r in rows if r["verdict"] == "FAIL"]
     print()
-    print(f"{len(rows) - len(failed)}/{len(rows)} rows pass; "
+    # Anchored rows clear the certificate; control rows clear their recorded
+    # value. The two gates differ, which is why the column reads PASS for the
+    # first and REPORTED for the second.
+    print(f"{len(rows) - len(failed)}/{len(rows)} rows clear their gate; "
           f"total wall {time.time() - started:.1f} s"
           + (f"; work dir {work_dir}" if tmp is None else ""))
     for row in failed:

@@ -1924,6 +1924,8 @@ def build_cell_26b_baseline_evals():
 # random-init. Both are per-arch; neither depends on a TrainingSpec.
 # Produces per_molecule.json aligned with the main eval schema so the
 # plot cells can overlay baselines on trained-NN bars.
+from xcquinox.alec.train import save_trained_checkpoint
+
 _baseline_mol_specs = (H2O_spec, C2H2_spec, H_spec, O_spec, C_spec)
 _baseline_ae_ref = {"H2O": H2O_AE_REF_KCALMOL, "C2H2": C2H2_AE_REF_KCALMOL}
 _baseline_metrics = ("total_energy", "atomization_energy", "density_rmse",
@@ -1941,13 +1943,18 @@ def _eval_baseline_model(model, arch_name, kind):
     # Serializes the model to a scratch file, builds a TestSpec that points
     # at it, then calls run_test. Output dir is
     # {CHECKPOINT_BASE}/eval_baseline_{kind}/{arch_name}/.
+    #
+    # Written through the training stage's own writer: run_test compares the
+    # checkpoint's recorded model class with the spec's arch before it reads
+    # the leaves, so a baseline written with a bare serialise stands with no
+    # record and is refused for every arch but the legacy class.
     _out = os.path.join(RUN_DIR, f"eval_baseline_{kind}", arch_name)
     _agg = os.path.join(_out, "aggregate.json")
     if not RERUN_EVAL and os.path.isfile(_agg):
         return
     os.makedirs(_out, exist_ok=True)
     _ckpt_path = os.path.join(_out, "_baseline_model.eqx")
-    eqx.tree_serialise_leaves(_ckpt_path, model)
+    save_trained_checkpoint(_ckpt_path, model, alec.get_architecture(arch_name))
     _spec = alec.TestSpec.from_dicts(
         arch=alec.get_architecture(arch_name),
         model_checkpoint=_ckpt_path,
@@ -2875,10 +2882,15 @@ def build_cell_37_drift_panel_b():
     {pretrain_dir}/{arch}/xnet.eqx + cnet.eqx combined via
     ``AlecGGAModel.from_arch(arch, xnet=..., cnet=...)``.
 
-    API fix: the plan's ``load_model_checkpoint`` symbol does not exist
-    on ``xcquinox.alec.models``; the canonical pattern (verified at
-    ``xcquinox/alec/evaluation.py:215-218``) is
-    ``eqx.tree_deserialise_leaves(ckpt_path, AlecGGAModel.from_arch(arch_cfg, seed=0))``.
+    API: a trained checkpoint is read through
+    ``checkpoint_class.load_trained_checkpoint(ckpt_path,
+    AlecGGAModel.from_arch(arch_cfg, seed=0))``, which is the record check
+    ``evaluation.run_test`` and ``eval_holdout.load_trained_model`` make
+    before they deserialise. A bare ``eqx.tree_deserialise_leaves`` was what
+    this cell did until the record existed, and it accepts a checkpoint of
+    another model class without raising -- the anchor and the descriptor
+    coordinates change no parameter shape, so the F_x curves this panel draws
+    would be a model's that is neither.
     """
     source = r"""# F_x(s) drift Panel B: CH4 (transfer ref) + C2H2 (in-training). Samples
 # F_x on each molecule's PBE grid for all 72 trained models + per-arch
@@ -2886,16 +2898,21 @@ def build_cell_37_drift_panel_b():
 # the molecule using the SAME descriptor features (cusp + dm_statistics)
 # the network sees during a real SCF -- evaluating with zero-extras gives
 # fictional curves for archs whose F_x depends on the descriptors.
+from xcquinox.alec.checkpoint_class import load_trained_checkpoint
 from xcquinox.alec.models import AlecGGAModel
 from xcquinox.alec.networks import create_network_pair
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
 
 def _load_full_model_from_ckpt(_ckpt_path, _arch_name):
-    # Canonical pattern (matches run_test @ evaluation.py:215-218).
+    # The checkpoint's recorded model class is held to the skeleton's before
+    # the leaves are read, which is what run_test and load_trained_model do;
+    # a bare deserialise reads another class's weights into this skeleton with
+    # every array equal and nothing raising. A checkpoint with no record is the
+    # legacy class and loads into a legacy skeleton as before.
     _arch_cfg = alec.get_architecture(_arch_name)
     _skel = AlecGGAModel.from_arch(_arch_cfg, seed=0)
-    return eqx.tree_deserialise_leaves(_ckpt_path, _skel)
+    return load_trained_checkpoint(_ckpt_path, _skel)
 
 
 def _load_pretrain_model(_pretrain_dir, _arch_name):

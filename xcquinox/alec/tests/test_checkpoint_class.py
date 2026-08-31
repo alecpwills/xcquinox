@@ -25,6 +25,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import time
 
 import equinox as eqx
 import jax.tree_util as jtu
@@ -32,8 +33,10 @@ import numpy as np
 import pytest
 
 from xcquinox.alec.checkpoint_class import (CLASS_RECORD_SUFFIX,
+                                            TEMPORARY_GRACE_SECONDS,
                                             ClassRecordStale,
                                             class_record_path,
+                                            load_trained_checkpoint,
                                             model_class_of_arch,
                                             model_class_of_model,
                                             read_class_record,
@@ -560,7 +563,7 @@ def test_a_record_committed_over_no_checkpoint_is_refused(tmp_path,
     assert not os.path.isfile(ckpt), (
         "the leaves landed: this is not the state a kill at the rename leaves")
     assert killed is not None, "the leaves' rename was never reached"
-    assert not os.path.isfile(ckpt + ".tmp"), "the leaves' temporary was left"
+    assert _temporaries_in(tmp_path) == [], "the write left a temporary behind"
     assert read_class_record(ckpt)["descriptor_coordinates"] == "dfs"
 
     with pytest.raises(ValueError) as excinfo:
@@ -599,7 +602,7 @@ def test_a_kill_before_the_record_commit_leaves_the_previous_checkpoint(
     assert killed is not None, "the record's rename was never reached"
     assert read_class_record(ckpt) is None, (
         "a record was left behind by a write that committed neither file")
-    assert not os.path.isfile(ckpt + ".tmp"), "the leaves' temporary was left"
+    assert _temporaries_in(tmp_path) == [], "the write left a temporary behind"
 
     loaded = load_trained_model(_SpecStub(_legacy_arch()), ckpt)
     a, b = _arrays(legacy_model), _arrays(loaded)
@@ -765,6 +768,177 @@ def test_the_resume_loader_refuses_a_record_that_describes_other_leaves(tmp_path
                                 opt_state_skeleton=opt_skeleton)
     assert isinstance(excinfo.value, ClassRecordStale), excinfo.value
     assert _sha256_of(ckpt) in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# The write temporaries: one name per write, not one per checkpoint
+# ---------------------------------------------------------------------------
+
+def _temporaries_in(directory):
+    """Every temporary sibling left in ``directory``, whatever drew it."""
+    return sorted(name for name in os.listdir(os.fspath(directory))
+                  if name.endswith(".tmp"))
+
+
+def test_two_writers_of_one_checkpoint_do_not_share_a_temporary(tmp_path):
+    """Two writes of the same checkpoint, one nested inside the other, both
+    complete and the pair left on disk is consistent.
+
+    The state is reachable by operator action: ``cluster.__main__.cmd_resubmit``
+    re-submits an index classified ``no_evidence`` into the SAME run directory
+    without establishing that the earlier task has stopped, so one spec
+    directory can hold two live writers of ``model.eqx``. Under one temporary
+    name per checkpoint the second writer serialises INTO the first writer's
+    half-written file and renames it away, and the first writer then fails on
+    a file that is no longer there. Here each write draws its own name
+    (``checkpoint_class.new_temporary``), so the writer that renames last puts
+    down its own leaves under its own record.
+
+    The inner write runs immediately after the outer one has serialised its
+    leaves, which is the widest window between a writer's temporary and its
+    own rename.
+    """
+    from xcquinox.alec import train
+
+    ckpt = str(tmp_path / "model.eqx")
+    outer_arch, inner_arch = _anchored_dfs_arch(), _legacy_arch()
+    outer_model, inner_model = _model(outer_arch, seed=3), _model(inner_arch, seed=8)
+
+    real_serialise = eqx.tree_serialise_leaves
+    nested = []
+
+    def _serialise(path, pytree, *args, **kwargs):
+        out = real_serialise(path, pytree, *args, **kwargs)
+        if not nested:
+            nested.append(True)
+            # The whole second write, between the first writer's serialise and
+            # its own rename.
+            train._serialise_trained_model(ckpt, inner_model, inner_arch)
+        return out
+
+    monkeypatched = pytest.MonkeyPatch()
+    monkeypatched.setattr(train.eqx, "tree_serialise_leaves", _serialise)
+    try:
+        train._serialise_trained_model(ckpt, outer_model, outer_arch)
+    finally:
+        monkeypatched.undo()
+    assert nested, "the second write never ran"
+
+    assert sorted(os.listdir(str(tmp_path))) == [
+        "model.eqx", "model.eqx" + CLASS_RECORD_SUFFIX], os.listdir(str(tmp_path))
+    record = read_class_record(ckpt)
+    assert record["sha256"] == _sha256_of(ckpt), (
+        "the record on disk does not describe the leaves on disk: the two "
+        "writers crossed")
+    # The outer write renamed last, so what stands is its pair, not a record
+    # of one class over the other's leaves.
+    assert record["descriptor_coordinates"] == "dfs", record
+    loaded = load_trained_checkpoint(ckpt, _model(outer_arch, seed=1))
+    a, b = _arrays(outer_model), _arrays(loaded)
+    assert a and all(np.array_equal(x, y) for x, y in zip(a, b))
+
+
+def test_a_successful_write_clears_the_temporaries_a_killed_one_left(tmp_path):
+    """A write killed between its temporary and its own rename leaves that
+    temporary behind, and the next COMPLETED write of the same checkpoint
+    removes it.
+
+    With the names drawn, the next write no longer reuses the abandoned one,
+    so without the sweep one file would accumulate per kill. Nothing reads a
+    temporary -- the eval task picks its three checkpoint names literally --
+    but a spec directory that is repeatedly resubmitted would otherwise fill
+    with them.
+
+    The kill is modelled as a SIGKILL rather than an exception: the writer's
+    own ``except`` clause is suppressed for the killed write, so nothing runs
+    after the failure, which is what a signal leaves.
+    """
+    from xcquinox.alec import train
+
+    ckpt = str(tmp_path / "model.eqx")
+    arch = _anchored_dfs_arch()
+
+    monkeypatched = pytest.MonkeyPatch()
+    monkeypatched.setattr(train, "_discard", lambda path: None)
+    monkeypatched.setattr(train, "discard_staged_record",
+                          lambda path, staged=None: None)
+    _kill_the_rename_onto(monkeypatched, "model.eqx" + CLASS_RECORD_SUFFIX)
+    killed = _run_to_the_kill(train._serialise_trained_model, ckpt,
+                              _model(arch, seed=3), arch)
+    monkeypatched.undo()
+    assert killed is not None, "the record's rename was never reached"
+
+    left = _temporaries_in(tmp_path)
+    assert len(left) == 2, left
+    assert "model.eqx.tmp" not in left, (
+        "the killed write's temporary is the name the next write would use: "
+        "the two writes share one temporary per checkpoint")
+    assert "model.eqx" + CLASS_RECORD_SUFFIX + ".tmp" not in left, left
+
+    # Dated past the grace the sweep applies. In a run the killed write and
+    # the one that follows it are separated by a resubmission; here they are
+    # milliseconds apart, and a temporary that recent is deliberately spared
+    # (it could belong to a writer that has just started).
+    aged = time.time() - 10.0 * TEMPORARY_GRACE_SECONDS
+    for name in left:
+        os.utime(os.path.join(str(tmp_path), name), (aged, aged))
+
+    train._serialise_trained_model(ckpt, _model(arch, seed=4), arch)
+    assert sorted(os.listdir(str(tmp_path))) == [
+        "model.eqx", "model.eqx" + CLASS_RECORD_SUFFIX], os.listdir(str(tmp_path))
+    assert read_class_record(ckpt)["sha256"] == _sha256_of(ckpt)
+
+
+def test_a_live_writers_temporary_is_left_alone_by_the_sweep(tmp_path):
+    """The sweep removes only what a live write cannot be holding: the set is
+    read BEFORE this write draws anything, and every member of it is already
+    older than any write can run for.
+
+    Two ways a temporary escapes it, both tested here: drawn AFTER this write
+    began (it is not in the set), and drawn moments before (it is in the
+    directory but not old enough). Without both, the cleanup would delete a
+    concurrent writer's staging file and cost that writer its rename. The
+    second is not a theoretical margin -- a file's timestamp comes from the
+    kernel's coarse clock and can read milliseconds BEFORE the wall clock at
+    the instant it was created, so "older than the moment this write started"
+    is a test a just-created file can fail.
+    """
+    from xcquinox.alec import train
+    from xcquinox.alec.checkpoint_class import new_temporary
+
+    ckpt = str(tmp_path / "model.eqx")
+    arch = _anchored_dfs_arch()
+    abandoned = new_temporary(ckpt)
+    with open(abandoned, "wb") as f:
+        f.write(b"an abandoned write")
+    old = time.time() - 3600.0
+    os.utime(abandoned, (old, old))
+    just_started = new_temporary(ckpt)
+
+    later = []
+    real_serialise = eqx.tree_serialise_leaves
+
+    def _serialise(path, pytree, *args, **kwargs):
+        if not later:
+            later.append(new_temporary(ckpt))
+        return real_serialise(path, pytree, *args, **kwargs)
+
+    monkeypatched = pytest.MonkeyPatch()
+    monkeypatched.setattr(train.eqx, "tree_serialise_leaves", _serialise)
+    try:
+        train._serialise_trained_model(ckpt, _model(arch, seed=3), arch)
+    finally:
+        monkeypatched.undo()
+
+    assert not os.path.exists(abandoned), "the abandoned temporary was not swept"
+    assert os.path.exists(just_started), (
+        "a temporary drawn moments before this write began was swept: a "
+        "writer that had just started would have lost its staging file")
+    assert os.path.exists(later[0]), (
+        "a temporary drawn after this write began was swept: a concurrent "
+        "writer would have lost its staging file")
+    os.remove(just_started)
+    os.remove(later[0])
 
 
 def test_completion_deletes_the_resume_records_with_their_checkpoints(tmp_path):

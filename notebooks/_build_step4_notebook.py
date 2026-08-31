@@ -1403,6 +1403,11 @@ def build_cell_26_dm_heatmaps():
     """Section 7 Cell 26 -- 2x2 DM heatmaps (PBE-HF, best-B, best-D1, best-D2)."""
     source = """# Per-loop template rebuild: different archs have different PyTree layouts,
 # so the template must match the specific checkpoint being deserialised.
+# load_trained_checkpoint holds the checkpoint's recorded model class to the
+# template's before the leaves are read; a checkpoint with no record beside it
+# is the legacy class, which is what this run's checkpoints are.
+from xcquinox.alec.checkpoint_class import load_trained_checkpoint
+
 model_bindings = {}
 for loss_name in ("B_atomization_plus_dm", "D1_delta_ae", "D2_delta_ae_plus_dm"):
     if loss_name not in best_idx.index:
@@ -1412,7 +1417,7 @@ for loss_name in ("B_atomization_plus_dm", "D1_delta_ae", "D2_delta_ae_plus_dm")
     arch_config = alec.get_architecture(best_arch)
     model_template = alec.AlecGGAModel.from_arch(arch_config)
     ckpt_path = f"{CHECKPOINT_BASE}/train/{best_arch}/{loss_name}/model.eqx"
-    model_bindings[loss_name] = eqx.tree_deserialise_leaves(ckpt_path, model_template)
+    model_bindings[loss_name] = load_trained_checkpoint(ckpt_path, model_template)
 model_B = model_bindings["B_atomization_plus_dm"] if "B_atomization_plus_dm" in model_bindings else None
 model_D1 = model_bindings["D1_delta_ae"] if "D1_delta_ae" in model_bindings else None
 model_D2 = model_bindings["D2_delta_ae_plus_dm"] if "D2_delta_ae_plus_dm" in model_bindings else None
@@ -1485,7 +1490,9 @@ else:
 
 def build_cell_27_density_histograms():
     """Section 7 Cell 27 -- grid density difference histograms for C/D3 best models."""
-    source = """_c_d3_losses = ("C_atomization_plus_grid", "D3_delta_ae_plus_grid")
+    source = """from xcquinox.alec.checkpoint_class import load_trained_checkpoint
+
+_c_d3_losses = ("C_atomization_plus_grid", "D3_delta_ae_plus_grid")
 _c_d3_losses_present = [ln for ln in _c_d3_losses if ln in best_idx.index]
 
 if not _c_d3_losses_present:
@@ -1498,7 +1505,7 @@ else:
         arch_config = alec.get_architecture(best_arch)
         model_template = alec.AlecGGAModel.from_arch(arch_config)
         ckpt_path = f"{CHECKPOINT_BASE}/train/{best_arch}/{loss_name}/model.eqx"
-        model = eqx.tree_deserialise_leaves(ckpt_path, model_template)
+        model = load_trained_checkpoint(ckpt_path, model_template)
 
         rho_nn = alec.oneshot_grid_density(model, mol_data_list[2])
         rho_ref = mol_data_list[2]["rho_ref_grid"]

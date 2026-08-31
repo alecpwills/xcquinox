@@ -34,15 +34,19 @@ import numpy as np
 import optax
 
 from xcquinox.alec.checkpoint_class import (ModelClassMismatch,
+                                            class_record_path,
                                             commit_class_record,
                                             discard_staged_record,
+                                            discard_temporaries,
                                             file_digest,
                                             fsync_dir_of,
                                             fsync_file,
                                             model_class_of_model,
+                                            new_temporary,
                                             remove_class_record,
                                             require_matching_class,
-                                            stage_class_record)
+                                            stage_class_record,
+                                            stale_temporaries)
 from xcquinox.alec.config import TrainingSpec, ArchitectureConfig
 from xcquinox.alec.solver import SolverConfig, SolverMode
 from xcquinox.alec.data import precompute_fixed_density_data
@@ -742,12 +746,6 @@ def _validation_reaction_mae(model, val_mol_data, val_reactions,
     return float(mae)
 
 
-#: Appended to a checkpoint's path to give the sibling the leaves are
-#: serialised to before they are renamed into place. Same directory, so the
-#: rename is within one filesystem and is therefore atomic.
-_CHECKPOINT_TMP_SUFFIX = ".tmp"
-
-
 def _discard(path) -> None:
     """Remove ``path`` if it is there; absent is fine."""
     try:
@@ -776,17 +774,31 @@ def _serialise_trained_model(path, model, arch) -> None:
     two renames -- so the order below is chosen so that every intermediate is
     a state a reader can NAME rather than one it has to guess at:
 
-      1. serialise the leaves to ``<name>.eqx.tmp``, in the same directory;
+      1. serialise the leaves to ``<name>.eqx.<drawn>.tmp``, in the same
+         directory;
       2. fsync that temporary and take its SHA-256 (chunked);
       3. write the record, carrying that digest, to
-         ``<name>.eqx.class.json.tmp``, and fsync it;
+         ``<name>.eqx.class.json.<drawn>.tmp``, and fsync it;
       4. commit the RECORD  (``os.replace`` onto ``<name>.eqx.class.json``);
       5. commit the LEAVES  (``os.replace`` onto ``<name>.eqx``);
       6. fsync the directory, so both renames are durable and not only the
-         bytes they point at.
+         bytes they point at;
+      7. remove the temporaries of this checkpoint that were already abandoned
+         when step 1 began, which is what a write killed before its own rename
+         left behind (``checkpoint_class.stale_temporaries``: read before this
+         write draws anything and older than any live write can be, so a
+         second writer's staging file is out of reach).
 
     Any failure discards both temporaries and leaves what is on disk exactly
     as it was found.
+
+    Both temporary names are DRAWN (``checkpoint_class.new_temporary``), not
+    derived from the checkpoint's path: two generations of one training task
+    can share a checkpoint directory, and under one fixed name per checkpoint
+    the second writer serialises into the first writer's half-written file.
+    With drawn names each writer commits its own leaves under its own record,
+    and what is left is the two renames crossing, which step 4 to 5 below
+    already covers.
 
     Kill points, and how a reader answers the state each one leaves::
 
@@ -833,26 +845,57 @@ def _serialise_trained_model(path, model, arch) -> None:
     checkpoint with no record as the legacy class, so that form is for the
     optimizer state and for legacy callers only.
     """
-    tmp = path + _CHECKPOINT_TMP_SUFFIX
+    # Read BEFORE this write draws anything, so it can hold nothing this write
+    # or a later one created: what a killed earlier write of this checkpoint
+    # left, removed once this one has completed.
+    abandoned = stale_temporaries(path)
+    if arch is not None:
+        abandoned += stale_temporaries(class_record_path(path))
+    tmp = new_temporary(path)
+    staged = None
     try:
         eqx.tree_serialise_leaves(tmp, model)
         fsync_file(tmp)
         if arch is not None:
             sha256, size = file_digest(tmp)
-            stage_class_record(path, arch, sha256=sha256, size=size)
-            commit_class_record(path)
+            staged = stage_class_record(path, arch, sha256=sha256, size=size)
+            commit_class_record(path, staged)
+            staged = None
         os.replace(tmp, path)
     except BaseException:
         # Neither file moved into place, or only the record did. Leave the
         # checkpoint and the record on disk as they were found: a record that
         # committed without its leaves describes bytes that are not there and
         # is refused by every reader, which is the failure-visible state, not
-        # a silent one.
-        if arch is not None:
-            discard_staged_record(path)
+        # a silent one. Only THIS write's temporaries are discarded -- the
+        # names are drawn, so no other writer's can be named here.
+        if staged is not None:
+            discard_staged_record(path, staged)
         _discard(tmp)
         raise
     fsync_dir_of(path)
+    # A write killed after step 1 and before its own rename leaves its
+    # temporary behind. Nothing reads one -- no reader globs for an .eqx, the
+    # eval task picks the three names literally -- but one accumulates per
+    # kill, so the next write of the same checkpoint that COMPLETES clears
+    # them.
+    for abandoned_tmp in abandoned:
+        _discard(abandoned_tmp)
+
+
+def save_trained_checkpoint(path, model, arch) -> None:
+    """Write one TRAINED checkpoint of ``arch``'s class to ``path``: the public
+    name for :func:`_serialise_trained_model`.
+
+    For the writers outside this module that produce a file the evaluation
+    loaders will later read as a trained model -- the notebook builders'
+    pretrained and random baselines, the pretrained held-out re-evaluation --
+    so that those files carry the record their readers now require. Writing
+    one with a bare ``eqx.tree_serialise_leaves`` leaves a checkpoint with no
+    record, which reads as the legacy class and is refused by an anchored or
+    ``dfs`` skeleton (``checkpoint_class``).
+    """
+    _serialise_trained_model(path, model, arch)
 
 
 def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
@@ -1003,12 +1046,14 @@ def _remove_resume_set(checkpoint_dir) -> None:
     for fn in _RESUME_FILES:
         path = os.path.join(checkpoint_dir, fn)
         remove_class_record(path)
+        # Every temporary of this file, whatever write drew it: the file the
+        # temporaries belong to is itself being deleted.
         discard_staged_record(path)
-        for candidate in (path, path + ".tmp"):
-            try:
-                os.remove(candidate)
-            except FileNotFoundError:
-                pass
+        discard_temporaries(path)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
 
 
 def _atomic_serialise(path, pytree) -> None:

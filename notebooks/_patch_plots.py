@@ -7,8 +7,12 @@ with open(NB_PATH) as f:
     nb = json.load(f)
 
 # ── Cell 28 (id=5f70bc63): Fix pretrain_dst path (baseline_pretrain → baseline_pretrained) ──
-CELL_28_SOURCE = r'''# Generate pretrained and random baseline model.eqx for all architectures
+CELL_28_SOURCE = r'''# Generate pretrained and random baseline model.eqx for all architectures.
+# The baselines are full AlecGGAModel checkpoints read back by the same loaders
+# the trained cells are, so they go through the training stage's own writer and
+# carry the model-class record those loaders require.
 from xcquinox.alec.networks import create_network_pair
+from xcquinox.alec.train import save_trained_checkpoint
 
 BASELINE_LABELS = []  # populated below
 
@@ -29,7 +33,7 @@ for arch_name in ARCH_NAMES:
             f"{pretrain_src}/cnet.eqx", cnet_skel)
         model = alec.AlecGGAModel.from_arch(
             arch, xnet=loaded_xnet, cnet=loaded_cnet)
-        eqx.tree_serialise_leaves(pretrain_model_path, model)
+        save_trained_checkpoint(pretrain_model_path, model, arch)
 
     # --- Random baseline ---
     random_dst = f"{CHECKPOINT_BASE}/baseline_random/{arch_name}"
@@ -37,7 +41,7 @@ for arch_name in ARCH_NAMES:
     if not os.path.isfile(random_model_path):
         os.makedirs(random_dst, exist_ok=True)
         model = alec.AlecGGAModel.from_arch(arch, seed=42)
-        eqx.tree_serialise_leaves(random_model_path, model)
+        save_trained_checkpoint(random_model_path, model, arch)
 
 BASELINE_LABELS = ['pretrained', 'random']
 baseline_colors = {'pretrained': '#888888', 'random': '#CCCCCC'}

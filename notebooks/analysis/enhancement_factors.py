@@ -9,10 +9,10 @@ reduced density gradient ``s = |grad rho| / (2 (3 pi^2)^{1/3} rho^{4/3})``.
 
 For each architecture we load the most-trained representative checkpoint
 (largest subset_size with a materialized ``model.eqx``), reusing the canonical
-loader :func:`xcquinox.alec.eval_holdout.load_trained_model`
-(``AlecGGAModel.from_arch(spec.arch) -> eqx.tree_deserialise_leaves``), and
-forward-evaluate ``model.eval_Fx`` / ``model.eval_Fc`` on a synthetic
-descriptor grid.
+loader :func:`xcquinox.alec.eval_holdout.load_trained_model` (the skeleton from
+``AlecGGAModel.from_arch(spec.arch)``, the checkpoint's recorded model class
+held to the spec's arch, then the leaves), and forward-evaluate
+``model.eval_Fx`` / ``model.eval_Fc`` on a synthetic descriptor grid.
 
 Definitions used (consistent with ``AlecGGAModel`` and ``pbe_anchor``):
   * F_x reference  : analytic PBE, ``pbe_anchor._fx_pbe_analytic(s)``

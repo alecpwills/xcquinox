@@ -96,8 +96,8 @@ def main(argv=None) -> int:
     )
     _route_jax_env()
 
-    import equinox as eqx
     from xcquinox.alec.cluster.grid_config import load_grid_config
+    from xcquinox.alec.train import save_trained_checkpoint
 
     run_dir = os.path.abspath(args.run_dir)
     idx = args.spec
@@ -129,8 +129,14 @@ def main(argv=None) -> int:
     # Serialize to a DISTINCT filename: the shard workers reload the checkpoint
     # by basename, and this must never be mistaken for (or overwrite) the
     # trained model.eqx sitting beside it.
+    #
+    # Through the training stage's own writer, so the model-class record is
+    # written beside it: the shard workers read this file with
+    # ``eval_holdout.load_trained_model``, which compares the record's class
+    # with the spec's arch and refuses a checkpoint that carries none for any
+    # class but the legacy one.
     model_path = os.path.join(checkpoint_dir, "model_pretrained.eqx")
-    eqx.tree_serialise_leaves(model_path, model)
+    save_trained_checkpoint(model_path, model, training_spec.arch)
     _log(idx, f"wrote {model_path}")
 
     _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,

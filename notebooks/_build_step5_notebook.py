@@ -1746,8 +1746,13 @@ print(f"V_xc eval complete (RERUN_EVAL={RERUN_EVAL})")
 
 def build_cell_27_baseline_gen():
     """Section 5 Cell 27 -- generate pretrained + random baseline model.eqx files."""
-    source = """# Generate pretrained and random baseline model.eqx for all architectures
+    source = """# Generate pretrained and random baseline model.eqx for all architectures.
+# The two baselines are written through the training stage's own writer, so
+# each model.eqx carries the model-class record its readers require: they are
+# full AlecGGAModel checkpoints and are read back by the same loaders the
+# trained cells are.
 from xcquinox.alec.networks import create_network_pair
+from xcquinox.alec.train import save_trained_checkpoint
 
 BASELINE_LABELS = []  # populated below
 
@@ -1768,7 +1773,7 @@ for arch_name in ARCH_NAMES:
             f"{pretrain_src}/cnet.eqx", cnet_skel)
         model = alec.AlecGGAModel.from_arch(
             arch, xnet=loaded_xnet, cnet=loaded_cnet)
-        eqx.tree_serialise_leaves(pretrain_model_path, model)
+        save_trained_checkpoint(pretrain_model_path, model, arch)
 
     # --- Random baseline ---
     random_dst = f"{baseline_dir}/random/{arch_name}"
@@ -1776,7 +1781,7 @@ for arch_name in ARCH_NAMES:
     if not os.path.isfile(random_model_path):
         os.makedirs(random_dst, exist_ok=True)
         model = alec.AlecGGAModel.from_arch(arch, seed=42)
-        eqx.tree_serialise_leaves(random_model_path, model)
+        save_trained_checkpoint(random_model_path, model, arch)
 
 BASELINE_LABELS = ['pretrained', 'random']
 baseline_colors = {'pretrained': '#888888', 'random': '#CCCCCC'}
@@ -2629,12 +2634,13 @@ else:
     _per_group_curves = {k: [] for k in _groups}
     _n_total = sum(len(g['ckpts']) for g in _groups.values())
     _n_done = 0
+    from xcquinox.alec.checkpoint_class import load_trained_checkpoint
     from xcquinox.alec.descriptors import assemble_descriptor_features as _asm_feat
     for _gname, _ginfo in _groups.items():
         for _arch, _ckpt in _ginfo['ckpts']:
             _arch_cfg = alec.get_architecture(_arch)
             try:
-                _model = eqx.tree_deserialise_leaves(
+                _model = load_trained_checkpoint(
                     _ckpt, alec.AlecGGAModel.from_arch(_arch_cfg),
                 )
             except Exception as _e:
@@ -3225,7 +3231,9 @@ affects the learned density matrix.
 
 def build_cell_29_dm_heatmaps():
     """Section 6 Cell 29 -- DM heatmaps: loss B, best arch, 3 solver configs."""
-    source = """_loss_b = "B_atomization_plus_dm"
+    source = """from xcquinox.alec.checkpoint_class import load_trained_checkpoint
+
+_loss_b = "B_atomization_plus_dm"
 if _loss_b not in LOSS_NAMES:
     print("[Cell 29] loss B not in config -- skipping DM heatmaps")
 else:
@@ -3245,7 +3253,7 @@ else:
             _dm_panels.append(None)
             continue
         _arch_config = alec.get_architecture(_best_arch)
-        _model = eqx.tree_deserialise_leaves(ckpt, alec.AlecGGAModel.from_arch(_arch_config))
+        _model = load_trained_checkpoint(ckpt, alec.AlecGGAModel.from_arch(_arch_config))
         _dm_nn = alec.oneshot_dm_prediction_fast(_model, mol_data_list[2])
         _delta = _dm_nn - dm_hf
         _dm_panels.append(_delta)
@@ -3290,7 +3298,9 @@ density prediction.
 
 def build_cell_31_density_histograms():
     """Section 6 Cell 31 -- overlaid density residual histograms."""
-    source = """_loss_c = "C_atomization_plus_grid"
+    source = """from xcquinox.alec.checkpoint_class import load_trained_checkpoint
+
+_loss_c = "C_atomization_plus_grid"
 if _loss_c not in LOSS_NAMES:
     print("[Cell 31] loss C not in config -- skipping density histograms")
 else:
@@ -3315,7 +3325,7 @@ else:
         if not os.path.isfile(ckpt):
             continue
         _arch_config = alec.get_architecture(_best_arch)
-        _model = eqx.tree_deserialise_leaves(ckpt, alec.AlecGGAModel.from_arch(_arch_config))
+        _model = load_trained_checkpoint(ckpt, alec.AlecGGAModel.from_arch(_arch_config))
         _rho_nn = alec.oneshot_grid_density(_model, mol_data_list[2])
         _delta = np.asarray(_rho_nn - rho_ref)
         ax.hist(_delta, bins=_bins, alpha=0.4, color=solver_colors[solver_label],
@@ -3364,7 +3374,8 @@ def build_cell_33_convergence_diagnostic():
     combinations so the convergence signature of each mode is visible with
     uncertainty bands rather than a single representative curve.
     """
-    source = """from xcquinox.alec.solver import run_scf
+    source = """from xcquinox.alec.checkpoint_class import load_trained_checkpoint
+from xcquinox.alec.solver import run_scf
 
 _DIAG_MAX_CYCLES = 10
 _diag_configs = {
@@ -3397,7 +3408,7 @@ for _arch_name in ARCH_NAMES:
             continue
         _n_attempted += 1
         try:
-            _model = eqx.tree_deserialise_leaves(_ckpt, alec.AlecGGAModel.from_arch(_arch_cfg))
+            _model = load_trained_checkpoint(_ckpt, alec.AlecGGAModel.from_arch(_arch_cfg))
         except Exception as _e:
             print(f"  skip {_arch_name}/{_loss_name}: could not load ({_e})")
             continue

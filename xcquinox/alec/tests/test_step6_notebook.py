@@ -834,7 +834,15 @@ def test_drift_panel_b_cell():
     # over a precomputed mol_data.
     assert "assemble_descriptor_features" in src
     assert "precompute_fixed_density_data" in src
+    # The pretrained baselines are xnet.eqx / cnet.eqx, whose class is stated
+    # by pretrain_metadata.json, so they are read directly; the TRAINED
+    # checkpoints go through load_trained_checkpoint, which holds the
+    # checkpoint's recorded model class to the skeleton before the leaves are
+    # read. A bare deserialise there loads another class's weights with every
+    # array equal and nothing raising, and this panel's curves would be a
+    # model's that is neither.
     assert "tree_deserialise_leaves" in src
+    assert "load_trained_checkpoint(_ckpt_path, _skel)" in src
     assert "fx_drift_panel_B.png" in src
 
 
