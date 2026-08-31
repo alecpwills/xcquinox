@@ -161,3 +161,9 @@ CLAUDE.md
 notebooks/notebooks/
 /testmakenet/
 notebooks/analysis/bh76w411_representative_subsets/
+
+# Session scratch: diagnostic pulls, one-off helper scripts handed to the
+# operator (pull_refs.sh and kin), repro drivers and their logs. Never
+# committed; the durable record of any finding lives in HISTORY.md and the
+# committed tests.
+/scratch/
