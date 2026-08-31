@@ -95,19 +95,25 @@ def main(args=None):
     # compile-memory trims); only fall back here when unset -- unconditional
     # assignment would clobber the launcher value, and the old
     # ``intra_op_parallelism_threads=<n>`` token was mis-prefixed (no ``--xla_``)
-    # so XLA silently ignored it -- dropped. The BLAS caps below do not
-    # bound the Eigen intra-op pool (it sizes to the node), so a pool
-    # member runs single-thread Eigen; the launcher env wins via
-    # setdefault either way.
+    # so XLA silently ignored it -- dropped. The eigen token is dropped:
+    # measured inert on jaxlib 0.7.0 (thunk runtime), and the pool
+    # bound is the CPU affinity applied below, not an XLA flag.
     os.environ.setdefault(
         "XLA_FLAGS",
-        "--xla_cpu_multi_thread_eigen=false "
         "--xla_llvm_disable_expensive_passes=true "
         "--xla_backend_optimization_level=1",
     )
     os.environ["OMP_NUM_THREADS"] = str(parsed.threads)
     os.environ["MKL_NUM_THREADS"] = str(parsed.threads)
     os.environ["OPENBLAS_NUM_THREADS"] = str(parsed.threads)
+
+    # CPU bind BEFORE the JAX import: TSL sizes the XLA intra-op pool from
+    # sched_getaffinity, so this -- not any XLA flag -- is what confines a
+    # pool member to its share of the node (see parallel.apply_worker_cpu_bind
+    # for the measurements; a worker launched by hand carries no bind request
+    # and stays unbound).
+    from xcquinox.alec.parallel import apply_worker_cpu_bind
+    apply_worker_cpu_bind()
     os.environ["JAX_ENABLE_X64"] = "1"
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
 

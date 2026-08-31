@@ -140,6 +140,12 @@ def run_workers(
     results: list[WorkerResult | None] = [None] * len(jobs)
     pending: deque[tuple[int, WorkerJob]] = deque(enumerate(jobs))
     running: dict[int, dict] = {}
+    # Pool slots for the worker CPU bind: a job whose thread_env carries
+    # WORKER_BIND_CPUS_ENV gets WORKER_SLOT_ENV stamped from this pool, so
+    # apply_worker_cpu_bind() in the worker pins slot-disjoint CPU slices.
+    # Slots are recycled as workers finish (popped lowest-first so a
+    # non-full pool stays packed at the low CPUs).
+    free_cpu_slots: list[int] = list(range(max_parallel))[::-1]
 
     def _drain(stream, lines: list[str]) -> None:
         """Background drainer: append each line as it arrives. BOTH pipes are
@@ -154,6 +160,10 @@ def run_workers(
     def _start(idx: int, job: WorkerJob) -> None:
         env = os.environ.copy()
         env.update(job.thread_env)
+        cpu_slot = None
+        if WORKER_BIND_CPUS_ENV in env and free_cpu_slots:
+            cpu_slot = free_cpu_slots.pop()
+            env[WORKER_SLOT_ENV] = str(cpu_slot)
         try:
             proc = subprocess.Popen(
                 job.cmd,
@@ -163,6 +173,8 @@ def run_workers(
                 env=env,
             )
         except (FileNotFoundError, PermissionError, OSError) as e:
+            if cpu_slot is not None:
+                free_cpu_slots.append(cpu_slot)
             results[idx] = WorkerResult(
                 job=job,
                 status="failed",
@@ -185,6 +197,7 @@ def run_workers(
         running[idx] = {
             "proc": proc,
             "job": job,
+            "cpu_slot": cpu_slot,
             "start": time.time(),
             "last_progress": None,
             "last_progress_time": time.time(),
@@ -284,6 +297,8 @@ def run_workers(
                 )
                 finished_indices.append(idx)
         for idx in finished_indices:
+            if running[idx].get("cpu_slot") is not None:
+                free_cpu_slots.append(running[idx]["cpu_slot"])
             del running[idx]
             if pending:
                 next_idx, next_job = pending.popleft()
@@ -293,40 +308,104 @@ def run_workers(
     return [results[i] for i in range(len(jobs))]
 
 
-def _thread_env(threads: int, *, eigen_multi: bool) -> dict[str, str]:
-    """Build the XLA_FLAGS + BLAS thread count dict a worker subprocess
-    inherits as part of its environment.
+#: Environment keys of the worker CPU bind: the pool launcher writes the
+#: per-worker thread budget and run_workers stamps the pool slot; the worker
+#: applies both through apply_worker_cpu_bind() before its first JAX import.
+WORKER_BIND_CPUS_ENV = "XCQUINOX_WORKER_BIND_CPUS"
+WORKER_SLOT_ENV = "XCQUINOX_WORKER_SLOT"
 
-    ``eigen_multi`` states the XLA CPU backend's Eigen intra-op pool policy,
-    and the keyword is required because the OMP/MKL/OPENBLAS variables below
-    do NOT bound that pool: it sizes to the node's hardware concurrency
-    regardless of them, so a pool of N single-BLAS-thread workers still
-    carries N node-wide Eigen pools that spin-wait between the small dense
-    operations of an SCF loop. Measured: the inline train-eval task
-    2138032_15 ran its held-out eval tier (40 workers x 1 BLAS thread on a
-    40-core node) at a 442 percent node load (HPC operations report,
-    2026-08-29), the same spin-wait class that cost the workflow-matrix job
-    2134488 about ten minutes per molecule at 40 threads against 8 s at four.
-    Pool workers therefore run single-thread Eigen (``eigen_multi=False``) --
-    the pool's process-level parallelism is the intended use of the node --
-    while the preflight compile-smoke probe keeps multi-thread Eigen
-    (``eigen_multi=True``) so it stays representative of the train array's
-    environment, which exports the same flag from its sbatch template.
+
+def apply_worker_cpu_bind() -> int | None:
+    """Pin this pool worker's CPU affinity BEFORE the first JAX import.
+
+    Reads :data:`WORKER_BIND_CPUS_ENV` (the thread budget the pool launcher
+    granted this worker) and :data:`WORKER_SLOT_ENV` (the launcher's pool
+    slot) and pins the process to a slot-strided slice of the currently
+    allowed CPUs, so concurrent pool members occupy disjoint CPU sets when
+    slots x threads covers the allowance (the eval ladder's tiers are built
+    to: n_workers x threads_per_worker = total_cpus).
+
+    The affinity is what bounds XLA's CPU intra-op pool: TSL sizes it from
+    NumSchedulableCPUs, i.e. sched_getaffinity. Measured on jaxlib 0.7.0
+    (the version environment-cluster-parity.yml pins), a 900x900 jitted
+    matmul loop runs at 733 percent load / 93 OS threads unbounded on a
+    20-core host, against 100 / 196 / 279 percent at affinity 1 / 2 / 4;
+    the ``--xla_cpu_multi_thread_eigen`` flag is INERT in that version's
+    thunk runtime (outputs bit-identical and load unchanged at either
+    value), so an XLA flag cannot impose this bound. The BLAS pools are
+    bounded separately by the OMP/MKL/OPENBLAS variables; the affinity
+    additionally confines them to the slice.
+
+    Returns the number of CPUs pinned, or None when unbound: no bind
+    request in the environment, no slot, a budget at or above the current
+    allowance (nothing to bound), or a platform without sched_setaffinity.
+    A worker launched by hand (no pool env) is deliberately unbound.
     """
-    return {
-        # Compile-memory trims (results-neutral: they cut LLVM codegen peak RSS
-        # and time for large-basis kernels) plus the eigen pool policy. The old
-        # ``intra_op_parallelism_threads=<n>`` token was mis-prefixed (no
-        # ``--xla_`` prefix) so XLA silently ignored it -- dropped.
-        "XLA_FLAGS": (
-            f"--xla_cpu_multi_thread_eigen={'true' if eigen_multi else 'false'} "
-            "--xla_llvm_disable_expensive_passes=true "
-            "--xla_backend_optimization_level=1"
-        ),
+    budget = os.environ.get(WORKER_BIND_CPUS_ENV)
+    slot = os.environ.get(WORKER_SLOT_ENV)
+    if not budget or slot is None or not hasattr(os, "sched_setaffinity"):
+        return None
+    k = int(budget)
+    s = int(slot)
+    if k <= 0 or s < 0:
+        return None
+    allowed = sorted(os.sched_getaffinity(0))
+    n = len(allowed)
+    if k >= n:
+        return None
+    start = (s * k) % n
+    cpus = {allowed[(start + j) % n] for j in range(k)}
+    os.sched_setaffinity(0, cpus)
+    return len(cpus)
+
+
+def _thread_env(threads: int, *, bound_worker: bool) -> dict[str, str]:
+    """Build the env dict a worker subprocess inherits: XLA compile trims,
+    BLAS thread caps, and -- for pool members -- the CPU-bind request.
+
+    ``bound_worker`` is required because the two callers need opposite
+    things. A POOL MEMBER (``True``: the held-out eval shards, the local
+    pretrain/train job builders) must be confined to its share of the node:
+    the OMP/MKL/OPENBLAS variables bound only the BLAS pools, while XLA's
+    CPU intra-op pool sizes to the node's schedulable CPUs regardless, so a
+    tier of N single-BLAS-thread workers still carries N node-wide pools
+    that spin-wait between the small dense operations of an SCF loop --
+    measured: the inline train-eval task 2138032_15 ran its held-out eval
+    tier (40 workers x 1 BLAS thread on a 40-core node) at a 442 percent
+    node load (HPC operations report, 2026-08-29), one worker alone
+    measuring 4.2-4.8x at OMP_NUM_THREADS=1, and the workflow-matrix job
+    2134488 paid the same spin-wait class at about ten minutes per molecule
+    against 8 s. The bound that works is the CPU affinity the worker
+    applies to itself through :func:`apply_worker_cpu_bind` (TSL sizes the
+    pool from sched_getaffinity), requested here via
+    :data:`WORKER_BIND_CPUS_ENV`; the ``--xla_cpu_multi_thread_eigen``
+    token is dropped from the pool env because it is measured inert on the
+    pinned jaxlib 0.7.0 thunk runtime -- the same reason the mis-prefixed
+    ``intra_op_parallelism_threads=<n>`` token went earlier.
+
+    The PREFLIGHT COMPILE-SMOKE PROBE (``False``) keeps the historical flag
+    string verbatim and carries no bind request: it exists to mirror the
+    train array's own sbatch environment (which exports that flag string)
+    and must stay representative of it, byte for byte.
+    """
+    if bound_worker:
+        xla_flags = ("--xla_llvm_disable_expensive_passes=true "
+                     "--xla_backend_optimization_level=1")
+    else:
+        xla_flags = ("--xla_cpu_multi_thread_eigen=true "
+                     "--xla_llvm_disable_expensive_passes=true "
+                     "--xla_backend_optimization_level=1")
+    env = {
+        # Compile-memory trims (results-neutral: they cut LLVM codegen peak
+        # RSS and time for large-basis kernels).
+        "XLA_FLAGS": xla_flags,
         "OMP_NUM_THREADS": str(threads),
         "MKL_NUM_THREADS": str(threads),
         "OPENBLAS_NUM_THREADS": str(threads),
     }
+    if bound_worker:
+        env[WORKER_BIND_CPUS_ENV] = str(threads)
+    return env
 
 
 # The thread budget of each pool that serves PySCF -- its own OpenMP pool
@@ -425,7 +504,7 @@ def build_pretrain_jobs(
     BEFORE calling this function.
     """
     worker_py = worker_script_path("pretrain_worker")
-    env = _thread_env(threads, eigen_multi=False)
+    env = _thread_env(threads, bound_worker=True)
     built_jobs = []
     for spec in specs:
         arch_name = spec.arch.name
@@ -465,7 +544,7 @@ def build_training_jobs(
     BEFORE calling this function.
     """
     worker_py = worker_script_path("train_worker")
-    env = _thread_env(threads, eigen_multi=False)
+    env = _thread_env(threads, bound_worker=True)
     built_jobs = []
     for spec in specs:
         arch_name = spec.arch.name

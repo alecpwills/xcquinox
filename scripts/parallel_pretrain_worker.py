@@ -40,11 +40,11 @@ def main():
     args = parser.parse_args()
 
     # Set thread limits BEFORE importing JAX
-    # Single-thread Eigen: this worker is one member of a process pool; the
-    # BLAS caps do not bound the Eigen intra-op pool, and the old
+    # Compile trim only: the eigen token is measured inert on jaxlib 0.7.0, the
+    # pool bound is the launcher-side CPU affinity, and the old
     # intra_op_parallelism_threads token was mis-prefixed (no --xla_) so XLA
     # ignored it.
-    os.environ['XLA_FLAGS'] = '--xla_cpu_multi_thread_eigen=false'
+    os.environ['XLA_FLAGS'] = '--xla_llvm_disable_expensive_passes=true'
     os.environ['OMP_NUM_THREADS'] = str(args.threads)
     os.environ['MKL_NUM_THREADS'] = str(args.threads)
     os.environ['OPENBLAS_NUM_THREADS'] = str(args.threads)

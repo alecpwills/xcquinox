@@ -8,12 +8,14 @@ processes, no jax/equinox/optax imports.
 """
 import json
 import os
+import subprocess
 import sys
 import textwrap
 import time
 
 import pytest
 
+import xcquinox.alec.parallel as parallel
 from xcquinox.alec.parallel import (
     STALL_WARN_SEC,
     WorkerJob,
@@ -118,7 +120,7 @@ def test_build_pretrain_jobs_argv(tmp_path, monkeypatch):
     # thread_env populated; a pool member runs single-thread Eigen
     assert "OMP_NUM_THREADS" in j.thread_env
     assert j.thread_env["OMP_NUM_THREADS"] == "2"
-    assert "--xla_cpu_multi_thread_eigen=false" in j.thread_env["XLA_FLAGS"]
+    assert j.thread_env[parallel.WORKER_BIND_CPUS_ENV] == j.thread_env["OMP_NUM_THREADS"]
 
 
 def test_build_training_jobs_argv(tmp_path, monkeypatch):
@@ -149,65 +151,146 @@ def test_build_training_jobs_argv(tmp_path, monkeypatch):
         "/ckpt", "02_train", "deep", "mae", "progress.json"
     )
     assert j.thread_env["OMP_NUM_THREADS"] == "4"
-    assert "--xla_cpu_multi_thread_eigen=false" in j.thread_env["XLA_FLAGS"]
+    assert j.thread_env[parallel.WORKER_BIND_CPUS_ENV] == j.thread_env["OMP_NUM_THREADS"]
 
 
 # ---------------------------------------------------------------------------
-# (2b) _thread_env states the Eigen intra-op policy explicitly
+# (2b) the worker CPU bound: env request, slot assignment, and the pin itself
 # ---------------------------------------------------------------------------
 
-def test_thread_env_requires_and_encodes_eigen_policy():
-    """The BLAS caps do not bound XLA's Eigen intra-op pool (it sizes to the
-    node's hardware concurrency), so the pool policy is a required keyword.
-    Anchor: inline train-eval task 2138032_15 ran its held-out eval tier
-    (40 workers x 1 BLAS thread, 40-core node) at a 442 percent node load with
-    every worker carrying a node-wide Eigen pool; single-thread Eigen per pool
-    member is the remedy, while the preflight compile-smoke probe keeps the
-    train array's multi-thread setting to stay representative of it."""
+def test_thread_env_requires_and_encodes_the_bound():
+    """The pool/probe distinction is a required keyword. A pool member's env
+    carries the CPU-bind request and drops the eigen token (measured inert on
+    the pinned jaxlib 0.7.0 thunk runtime -- it bounds nothing); the preflight
+    probe keeps the historical flag string verbatim (it mirrors the train
+    array's sbatch environment) and carries no bind request."""
     with pytest.raises(TypeError):
         _thread_env(4)  # the policy must be stated at the call site
-    worker = _thread_env(4, eigen_multi=False)
-    assert "--xla_cpu_multi_thread_eigen=false" in worker["XLA_FLAGS"]
-    probe = _thread_env(4, eigen_multi=True)
-    assert "--xla_cpu_multi_thread_eigen=true" in probe["XLA_FLAGS"]
+    worker = _thread_env(4, bound_worker=True)
+    assert worker[parallel.WORKER_BIND_CPUS_ENV] == "4"
+    assert "--xla_cpu_multi_thread_eigen" not in worker["XLA_FLAGS"]
+    assert "--xla_llvm_disable_expensive_passes=true" in worker["XLA_FLAGS"]
+    probe = _thread_env(4, bound_worker=False)
+    assert parallel.WORKER_BIND_CPUS_ENV not in probe
+    assert probe["XLA_FLAGS"] == (
+        "--xla_cpu_multi_thread_eigen=true "
+        "--xla_llvm_disable_expensive_passes=true "
+        "--xla_backend_optimization_level=1"
+    )
     for env in (worker, probe):
         assert env["OMP_NUM_THREADS"] == "4"
         assert env["MKL_NUM_THREADS"] == "4"
         assert env["OPENBLAS_NUM_THREADS"] == "4"
-        assert "--xla_llvm_disable_expensive_passes=true" in env["XLA_FLAGS"]
 
 
-def test_eigen_policy_at_every_thread_env_call_site():
-    """Every _thread_env caller states the policy the overload analysis
-    assigned it: the three pool launchers single-thread, the preflight probe
-    multi-thread (it mirrors the train array's sbatch environment)."""
+def test_bound_policy_at_call_sites():
+    """The one launcher that must stay unbound is the preflight compile-smoke
+    probe (representative of the train array); every pool launcher binds."""
+    import inspect
+
     import xcquinox.alec.cluster._holdout_parallel as hp
     import xcquinox.alec.cluster._preflight as pf
-    import inspect
-    src_parallel = inspect.getsource(sys.modules[_thread_env.__module__])
-    assert src_parallel.count("_thread_env(threads, eigen_multi=False)") == 2
-    assert ("parallel._thread_env(threads, eigen_multi=False)"
-            in inspect.getsource(hp))
-    assert ("parallel._thread_env(blas_threads, eigen_multi=True)"
-            in inspect.getsource(pf))
-    # no caller leaves the policy implicit
-    for mod in (sys.modules[_thread_env.__module__], hp, pf):
-        for line in inspect.getsource(mod).splitlines():
-            if "_thread_env(" in line and "def _thread_env" not in line:
-                assert "eigen_multi=" in line, line
+    assert "bound_worker=True" in inspect.getsource(hp)
+    assert "bound_worker=False" in inspect.getsource(pf)
+    assert "bound_worker=True" not in inspect.getsource(pf)
 
 
-def test_worker_scripts_fall_back_to_single_thread_eigen():
-    """The worker scripts' setdefault fallback (used only when launched
-    without the pool env) matches the pool policy."""
+def _fake_affinity(monkeypatch, allowed, applied):
+    monkeypatch.setattr(os, "sched_getaffinity",
+                        lambda pid: set(allowed), raising=False)
+    monkeypatch.setattr(os, "sched_setaffinity",
+                        lambda pid, cpus: applied.append(sorted(cpus)),
+                        raising=False)
+
+
+def test_apply_worker_cpu_bind_pins_slot_disjoint_slices(monkeypatch):
+    """Slot-strided slices: with an 8-CPU allowance and 2 CPUs per worker,
+    slots 0..3 partition the allowance with no overlap (the eval ladder's
+    n_workers x threads = total_cpus design)."""
+    applied: list = []
+    _fake_affinity(monkeypatch, range(8), applied)
+    monkeypatch.setenv(parallel.WORKER_BIND_CPUS_ENV, "2")
+    seen = []
+    for slot in range(4):
+        monkeypatch.setenv(parallel.WORKER_SLOT_ENV, str(slot))
+        assert parallel.apply_worker_cpu_bind() == 2
+        seen.append(applied[-1])
+    flat = [c for cpus in seen for c in cpus]
+    assert sorted(flat) == list(range(8))          # disjoint cover
+    assert seen[0] == [0, 1] and seen[3] == [6, 7]  # strided placement
+
+
+def test_apply_worker_cpu_bind_noop_cases(monkeypatch):
+    """Unbound when: no request, no slot, or a budget covering the whole
+    allowance (nothing to bound). No sched_setaffinity call is made."""
+    applied: list = []
+    _fake_affinity(monkeypatch, range(4), applied)
+    monkeypatch.delenv(parallel.WORKER_BIND_CPUS_ENV, raising=False)
+    monkeypatch.delenv(parallel.WORKER_SLOT_ENV, raising=False)
+    assert parallel.apply_worker_cpu_bind() is None
+    monkeypatch.setenv(parallel.WORKER_BIND_CPUS_ENV, "2")
+    assert parallel.apply_worker_cpu_bind() is None  # no slot
+    monkeypatch.setenv(parallel.WORKER_SLOT_ENV, "0")
+    monkeypatch.setenv(parallel.WORKER_BIND_CPUS_ENV, "4")
+    assert parallel.apply_worker_cpu_bind() is None  # budget == allowance
+    assert applied == []
+
+
+@pytest.mark.skipif(not hasattr(os, "sched_setaffinity"),
+                    reason="platform without sched_setaffinity")
+@pytest.mark.skipif(hasattr(os, "sched_getaffinity")
+                    and len(os.sched_getaffinity(0)) < 3,
+                    reason="needs at least 3 allowed CPUs")
+def test_worker_process_affinity_is_bounded():
+    """BEHAVIORAL: a real subprocess under the pool env ends up pinned to
+    exactly its budget of CPUs -- the quantity TSL sizes the XLA intra-op
+    pool from (NumSchedulableCPUs = sched_getaffinity). This is the bound
+    the inert eigen flag never imposed."""
+    code = ("import os; "
+            "from xcquinox.alec.parallel import apply_worker_cpu_bind; "
+            "n = apply_worker_cpu_bind(); "
+            "print(n, len(os.sched_getaffinity(0)))")
+    env = dict(os.environ)
+    env.update(_thread_env(2, bound_worker=True))
+    env[parallel.WORKER_SLOT_ENV] = "1"
+    out = subprocess.run([sys.executable, "-c", code], env=env,
+                         capture_output=True, text=True, check=True)
+    n_pinned, n_affinity = out.stdout.split()
+    assert n_pinned == "2" and n_affinity == "2", out.stdout
+
+
+def test_run_workers_stamps_and_recycles_cpu_slots(tmp_path):
+    """run_workers hands each bound worker a distinct pool slot and recycles
+    slots as workers finish: 3 jobs through a 2-slot pool see slots {0,1}
+    only, and the two concurrent workers never share one."""
+    script = tmp_path / "slot_echo.py"
+    script.write_text(textwrap.dedent(f"""\
+        import json, os, time
+        time.sleep(0.4)
+        print(json.dumps({{'slot': os.environ.get('{parallel.WORKER_SLOT_ENV}')}}))
+    """))
+    env = _thread_env(1, bound_worker=True)
+    jobs = [WorkerJob(name=f"j{i}", cmd=[sys.executable, str(script)],
+                      progress_file=None, thread_env=dict(env))
+            for i in range(3)]
+    results = run_workers(jobs, max_parallel=2, poll_interval=0.1)
+    slots = [r.payload["slot"] for r in results]
+    assert all(s is not None for s in slots), slots
+    assert set(slots) <= {"0", "1"}, slots
+    assert set(slots[:2]) == {"0", "1"}, slots  # concurrent pair distinct
+
+
+def test_worker_scripts_bind_before_jax():
+    """Every worker script calls the affinity bind in its preamble and no
+    longer carries the inert eigen token."""
     import xcquinox.alec.workers as workers_pkg
     base = os.path.dirname(workers_pkg.__file__)
     for name in ("eval_holdout_worker.py", "train_worker.py",
                  "test_worker.py", "pretrain_worker.py"):
         with open(os.path.join(base, name)) as fh:
             src = fh.read()
-        assert "--xla_cpu_multi_thread_eigen=false" in src, name
-        assert "--xla_cpu_multi_thread_eigen=true" not in src, name
+        assert "apply_worker_cpu_bind()" in src, name
+        assert "--xla_cpu_multi_thread_eigen" not in src, name
 
 
 # ---------------------------------------------------------------------------
