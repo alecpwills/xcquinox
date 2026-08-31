@@ -159,6 +159,12 @@ def run_workers(
 
     def _start(idx: int, job: WorkerJob) -> None:
         env = os.environ.copy()
+        # Bind hygiene: a stale bind request or slot inherited from the
+        # PARENT's environment must never reach a child that did not ask for
+        # one (measured: two unbound jobs under an inherited slot both pinned
+        # to the same slice). The job's own thread_env is the only source.
+        env.pop(WORKER_BIND_CPUS_ENV, None)
+        env.pop(WORKER_SLOT_ENV, None)
         env.update(job.thread_env)
         cpu_slot = None
         if WORKER_BIND_CPUS_ENV in job.thread_env and free_cpu_slots:

@@ -35,12 +35,23 @@ def main(args=None):
     # pool member to its share of the node (see workers/_cpu_bind.py
     # for the measurements; a worker launched by hand carries no bind request
     # and stays unbound).
+    import sys as _sys
     try:
         import _cpu_bind  # sibling file; loads WITHOUT the package __init__
-    except ImportError:  # imported as a package module: the package (and its
-        # JAX backend) are already up, so the pin is best-effort there
+    except ImportError:
+        # Imported as a package module: the package (and its JAX backend)
+        # are already up, so the pin below binds the calling thread only.
+        # Said out loud -- a silently degraded bind ran at 10x the node
+        # share once.
+        print("[cpu-bind] WARNING: package-mediated import; the JAX pool "
+              "predates the pin", file=_sys.stderr, flush=True)
         from xcquinox.alec.workers import _cpu_bind
-    _cpu_bind.apply()
+    _bound = _cpu_bind.apply()
+    if _bound is None and os.environ.get(_cpu_bind.WORKER_BIND_CPUS_ENV):
+        print("[cpu-bind] WARNING: bind requested "
+              f"({os.environ.get(_cpu_bind.WORKER_BIND_CPUS_ENV)} CPUs) but "
+              "not applied (no slot, budget at or above the allowance, or no "
+              "sched_setaffinity)", file=_sys.stderr, flush=True)
 
     start = time.time()
     try:

@@ -205,8 +205,8 @@ def _fake_affinity(monkeypatch, allowed, applied):
 
 def test_apply_worker_cpu_bind_pins_slot_disjoint_slices(monkeypatch):
     """Slot-strided slices: with an 8-CPU allowance and 2 CPUs per worker,
-    slots 0..3 partition the allowance with no overlap (the eval ladder's
-    n_workers x threads = total_cpus design)."""
+    slots 0..3 partition the allowance with no overlap (the eval ladder keeps
+    n_workers x threads within the allowance)."""
     applied: list = []
     _fake_affinity(monkeypatch, range(8), applied)
     monkeypatch.setenv(parallel.WORKER_BIND_CPUS_ENV, "2")

@@ -55,7 +55,9 @@ def main():
     _cb_spec = _ilu.spec_from_file_location('_cpu_bind', _cb_path)
     _cb = _ilu.module_from_spec(_cb_spec)
     _cb_spec.loader.exec_module(_cb)
-    _cb.apply()
+    _cb.apply()  # no-op unless the caller exports the two bind
+    # variables: this superseded flow has no slot-assigning launcher,
+    # so it runs as unbounded as it always has unless bound by hand.
 
     os.environ['OMP_NUM_THREADS'] = str(args.threads)
     os.environ['MKL_NUM_THREADS'] = str(args.threads)

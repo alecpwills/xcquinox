@@ -220,7 +220,13 @@ def _compile_smoke_impl(specs, paths, run_dir) -> bool:
     # count and /12 slice mirror the train template exactly.
     cores = int(os.environ.get("SLURM_CPUS_ON_NODE") or os.cpu_count() or 12)
     blas_threads = max(1, cores // 12)
-    probe_env = {**os.environ, **parallel._thread_env(blas_threads, bound_worker=False)}
+    probe_env = {**os.environ,
+                 **parallel._thread_env(blas_threads, bound_worker=False)}
+    # The probe mirrors the train array's environment: strip any bind
+    # request or slot inherited from THIS process so the probe cannot be
+    # pinned to a slice the array would not be.
+    probe_env.pop(parallel.WORKER_BIND_CPUS_ENV, None)
+    probe_env.pop(parallel.WORKER_SLOT_ENV, None)
 
     proc = subprocess.run(
         [
