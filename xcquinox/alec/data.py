@@ -475,11 +475,13 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     callback the caller had already installed keeps firing (the recorder
     chains to it) and is restored before any return, so the returned
     object carries the caller's callback and no trace of the recorder.
-    The best-by-|g| selection is measured at the reference path's own
-    solver settings; under caller-modified settings it is not universally
-    the better start (measured: with a level shift, damping, or an all-ones
-    guess, 7 of 27 differing rescues favoured the end point by up to
-    3.09e-5 Ha), and this path sets its own settings above. For a system
+    The best-by-|g| selection is measured at the settings the reference
+    paths build their mean fields with (pyscf defaults: no level shift, no
+    damping, minao guess); under other settings it is not universally the
+    better start (measured: with a level shift, damping, or the
+    core-Hamiltonian ``1e`` guess, 7 of 27 differing rescues favoured the
+    end point by up to 3.09e-5 Ha, none of which any caller of this
+    function configures). For a system
     this rescue previously started from the end point, the second stage's
     start -- and with it the converged endpoint -- may move within the
     flat-direction slack quantified above (2.3e-8 to 9.8e-7 Ha).
@@ -508,12 +510,15 @@ def _converge_reference_scf(mf, label="the reference SCF"):
             caller_callback(envs)
 
     mf.callback = _record_best
-    mf.kernel()
-    # Restored (not nulled) before every return so neither the returned
-    # object nor the SOSCF wrapper (whose constructor copies mf's instance
-    # attributes) carries the recording closure and its density copy, and a
-    # callback the caller installed survives the call.
-    mf.callback = caller_callback
+    try:
+        mf.kernel()
+    finally:
+        # Restored (not nulled) on every path out -- including a raise
+        # inside the kernel -- so neither the returned object nor the SOSCF
+        # wrapper (whose constructor copies mf's instance attributes)
+        # carries the recording closure and its density copy, and a
+        # callback the caller installed survives the call.
+        mf.callback = caller_callback
     cycles = int(mf.cycles)
     if mf.converged:
         return mf, cycles, "diis"
