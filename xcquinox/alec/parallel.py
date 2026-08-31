@@ -161,7 +161,7 @@ def run_workers(
         env = os.environ.copy()
         env.update(job.thread_env)
         cpu_slot = None
-        if WORKER_BIND_CPUS_ENV in env and free_cpu_slots:
+        if WORKER_BIND_CPUS_ENV in job.thread_env and free_cpu_slots:
             cpu_slot = free_cpu_slots.pop()
             env[WORKER_SLOT_ENV] = str(cpu_slot)
         try:
@@ -318,45 +318,27 @@ WORKER_SLOT_ENV = "XCQUINOX_WORKER_SLOT"
 def apply_worker_cpu_bind() -> int | None:
     """Pin this pool worker's CPU affinity BEFORE the first JAX import.
 
-    Reads :data:`WORKER_BIND_CPUS_ENV` (the thread budget the pool launcher
-    granted this worker) and :data:`WORKER_SLOT_ENV` (the launcher's pool
-    slot) and pins the process to a slot-strided slice of the currently
-    allowed CPUs, so concurrent pool members occupy disjoint CPU sets when
-    slots x threads covers the allowance (the eval ladder's tiers are built
-    to: n_workers x threads_per_worker = total_cpus).
+    The logic lives in ``workers/_cpu_bind.py`` (stdlib-only, importable by
+    the path-launched workers WITHOUT executing the package __init__, which
+    stands up the JAX CPU backend and its thread pool -- a pin applied after
+    that binds the calling thread only; measured: 41-43 threads already
+    alive, a one-CPU worker at 694-990 percent load, against 100 / 195 / 334
+    percent at budgets 1 / 2 / 4 with the pin first). This parent-side
+    delegator loads that file by path for the same reason and exists for the
+    API and its tests; a WORKER must ``import _cpu_bind`` directly, before
+    anything else.
 
-    The affinity is what bounds XLA's CPU intra-op pool: TSL sizes it from
-    NumSchedulableCPUs, i.e. sched_getaffinity. Measured on jaxlib 0.7.0
-    (the version environment-cluster-parity.yml pins), a 900x900 jitted
-    matmul loop runs at 733 percent load / 93 OS threads unbounded on a
-    20-core host, against 100 / 196 / 279 percent at affinity 1 / 2 / 4;
-    the ``--xla_cpu_multi_thread_eigen`` flag is INERT in that version's
-    thunk runtime (outputs bit-identical and load unchanged at either
-    value), so an XLA flag cannot impose this bound. The BLAS pools are
-    bounded separately by the OMP/MKL/OPENBLAS variables; the affinity
-    additionally confines them to the slice.
-
-    Returns the number of CPUs pinned, or None when unbound: no bind
-    request in the environment, no slot, a budget at or above the current
-    allowance (nothing to bound), or a platform without sched_setaffinity.
-    A worker launched by hand (no pool env) is deliberately unbound.
+    Affinity is what bounds XLA's CPU intra-op pool: TSL sizes it from
+    NumSchedulableCPUs, i.e. sched_getaffinity (the ``--xla_cpu_multi_thread_
+    eigen`` flag is measured inert on the pinned jaxlib 0.7.0 thunk runtime).
+    Returns the number of CPUs pinned, or None when unbound.
     """
-    budget = os.environ.get(WORKER_BIND_CPUS_ENV)
-    slot = os.environ.get(WORKER_SLOT_ENV)
-    if not budget or slot is None or not hasattr(os, "sched_setaffinity"):
-        return None
-    k = int(budget)
-    s = int(slot)
-    if k <= 0 or s < 0:
-        return None
-    allowed = sorted(os.sched_getaffinity(0))
-    n = len(allowed)
-    if k >= n:
-        return None
-    start = (s * k) % n
-    cpus = {allowed[(start + j) % n] for j in range(k)}
-    os.sched_setaffinity(0, cpus)
-    return len(cpus)
+    import importlib.util
+    path = os.path.join(os.path.dirname(__file__), "workers", "_cpu_bind.py")
+    spec = importlib.util.spec_from_file_location("_xcq_cpu_bind", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.apply()
 
 
 def _thread_env(threads: int, *, bound_worker: bool) -> dict[str, str]:

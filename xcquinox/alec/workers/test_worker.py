@@ -32,11 +32,15 @@ def main(args=None):
 
     # CPU bind BEFORE the JAX import: TSL sizes the XLA intra-op pool from
     # sched_getaffinity, so this -- not any XLA flag -- is what confines a
-    # pool member to its share of the node (see parallel.apply_worker_cpu_bind
+    # pool member to its share of the node (see workers/_cpu_bind.py
     # for the measurements; a worker launched by hand carries no bind request
     # and stays unbound).
-    from xcquinox.alec.parallel import apply_worker_cpu_bind
-    apply_worker_cpu_bind()
+    try:
+        import _cpu_bind  # sibling file; loads WITHOUT the package __init__
+    except ImportError:  # imported as a package module: the package (and its
+        # JAX backend) are already up, so the pin is best-effort there
+        from xcquinox.alec.workers import _cpu_bind
+    _cpu_bind.apply()
 
     start = time.time()
     try:

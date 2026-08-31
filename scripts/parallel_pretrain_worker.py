@@ -45,6 +45,18 @@ def main():
     # intra_op_parallelism_threads token was mis-prefixed (no --xla_) so XLA
     # ignored it.
     os.environ['XLA_FLAGS'] = '--xla_llvm_disable_expensive_passes=true'
+
+    # CPU bind before the JAX import (see xcquinox/alec/workers/_cpu_bind.py):
+    # loaded by file path so nothing of the package -- whose __init__ stands
+    # up the JAX thread pool -- runs before the pin.
+    import importlib.util as _ilu
+    _cb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
+                            'xcquinox', 'alec', 'workers', '_cpu_bind.py')
+    _cb_spec = _ilu.spec_from_file_location('_cpu_bind', _cb_path)
+    _cb = _ilu.module_from_spec(_cb_spec)
+    _cb_spec.loader.exec_module(_cb)
+    _cb.apply()
+
     os.environ['OMP_NUM_THREADS'] = str(args.threads)
     os.environ['MKL_NUM_THREADS'] = str(args.threads)
     os.environ['OPENBLAS_NUM_THREADS'] = str(args.threads)

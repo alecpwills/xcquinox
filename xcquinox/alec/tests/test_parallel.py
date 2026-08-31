@@ -241,22 +241,107 @@ def test_apply_worker_cpu_bind_noop_cases(monkeypatch):
 @pytest.mark.skipif(hasattr(os, "sched_getaffinity")
                     and len(os.sched_getaffinity(0)) < 3,
                     reason="needs at least 3 allowed CPUs")
-def test_worker_process_affinity_is_bounded():
-    """BEHAVIORAL: a real subprocess under the pool env ends up pinned to
-    exactly its budget of CPUs -- the quantity TSL sizes the XLA intra-op
-    pool from (NumSchedulableCPUs = sched_getaffinity). This is the bound
-    the inert eigen flag never imposed."""
-    code = ("import os; "
-            "from xcquinox.alec.parallel import apply_worker_cpu_bind; "
-            "n = apply_worker_cpu_bind(); "
-            "print(n, len(os.sched_getaffinity(0)))")
+@pytest.mark.skipif(not os.path.isdir("/proc/self/task"),
+                    reason="needs /proc task introspection")
+def test_worker_thread_pool_is_bounded_by_the_bind():
+    """BEHAVIORAL: a subprocess that binds the way the workers do (path-local
+    ``_cpu_bind`` import BEFORE the first JAX import) has EVERY OS thread of
+    its process confined to the slice after the JAX backend spins up --
+    checked over /proc/self/task, the quantity that stayed unbounded when the
+    bind was reached through the package import (the package __init__ stands
+    up the JAX backend and its ~40-thread pool before the pin; measured
+    694-990 percent load at budget 1 in that arrangement)."""
+    workers_dir = os.path.join(
+        os.path.dirname(parallel.__file__), "workers")
+    code = (
+        "import os, sys\n"
+        f"sys.path.insert(0, {workers_dir!r})\n"
+        "import _cpu_bind\n"
+        "n = _cpu_bind.apply()\n"
+        "import jax.numpy as jnp\n"
+        "x = jnp.ones((256, 256))\n"
+        "(x @ x).block_until_ready()\n"
+        "slice_ = os.sched_getaffinity(0)\n"
+        "def cpus(spec):\n"
+        "    out = set()\n"
+        "    for part in spec.split(','):\n"
+        "        a, _, b = part.partition('-')\n"
+        "        out.update(range(int(a), int(b or a) + 1))\n"
+        "    return out\n"
+        "bad = 0\n"
+        "n_tasks = 0\n"
+        "for tid in os.listdir('/proc/self/task'):\n"
+        "    with open(f'/proc/self/task/{tid}/status') as fh:\n"
+        "        for line in fh:\n"
+        "            if line.startswith('Cpus_allowed_list'):\n"
+        "                n_tasks += 1\n"
+        "                if not cpus(line.split(':')[1].strip()) <= slice_:\n"
+        "                    bad += 1\n"
+        "print(n, len(slice_), n_tasks, bad)\n"
+    )
     env = dict(os.environ)
     env.update(_thread_env(2, bound_worker=True))
-    env[parallel.WORKER_SLOT_ENV] = "1"
+    env[parallel.WORKER_SLOT_ENV] = "0"
+    env["JAX_PLATFORMS"] = "cpu"
     out = subprocess.run([sys.executable, "-c", code], env=env,
-                         capture_output=True, text=True, check=True)
-    n_pinned, n_affinity = out.stdout.split()
+                         capture_output=True, text=True, check=True,
+                         timeout=120)
+    n_pinned, n_affinity, n_tasks, n_bad = out.stdout.split()
     assert n_pinned == "2" and n_affinity == "2", out.stdout
+    assert int(n_tasks) >= 2, out.stdout          # the pool actually spun up
+    assert n_bad == "0", (
+        f"{n_bad} of {n_tasks} OS threads escaped the 2-CPU slice: the JAX "
+        "pool predates the pin")
+
+
+def test_parent_side_delegator_matches_the_worker_module(monkeypatch):
+    """parallel.apply_worker_cpu_bind delegates to workers/_cpu_bind.py by
+    file path, and the two modules' env-variable names are pinned equal."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(parallel.__file__), "workers",
+                        "_cpu_bind.py")
+    spec = importlib.util.spec_from_file_location("_cpu_bind_pin_check", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.WORKER_BIND_CPUS_ENV == parallel.WORKER_BIND_CPUS_ENV
+    assert mod.WORKER_SLOT_ENV == parallel.WORKER_SLOT_ENV
+    applied: list = []
+    _fake_affinity(monkeypatch, range(8), applied)
+    monkeypatch.setenv(parallel.WORKER_BIND_CPUS_ENV, "2")
+    monkeypatch.setenv(parallel.WORKER_SLOT_ENV, "1")
+    assert parallel.apply_worker_cpu_bind() == 2
+    assert applied[-1] == [2, 3]
+
+
+def test_apply_worker_cpu_bind_wrap_overlap_is_the_documented_degradation(
+        monkeypatch):
+    """A slot pushed past the allowance wraps by modulo (documented, and
+    unreachable from the shipped ladders, which keep workers x threads within
+    the allowance): slot 2 at budget 2 on a 4-CPU allowance lands back on the
+    first slice rather than raising."""
+    applied: list = []
+    _fake_affinity(monkeypatch, range(4), applied)
+    monkeypatch.setenv(parallel.WORKER_BIND_CPUS_ENV, "2")
+    monkeypatch.setenv(parallel.WORKER_SLOT_ENV, "2")
+    assert parallel.apply_worker_cpu_bind() == 2
+    assert applied[-1] == [0, 1]
+
+
+def test_run_workers_slot_gating_reads_the_job_not_the_inherited_env(
+        tmp_path, monkeypatch):
+    """A job WITHOUT the bind request consumes no slot even when the parent
+    process environment happens to carry the variable (the gate reads
+    job.thread_env, not the merged env)."""
+    monkeypatch.setenv(parallel.WORKER_BIND_CPUS_ENV, "1")
+    script = tmp_path / "noslot_echo.py"
+    script.write_text(textwrap.dedent(f"""\
+        import json, os
+        print(json.dumps({{'slot': os.environ.get('{parallel.WORKER_SLOT_ENV}')}}))
+    """))
+    jobs = [WorkerJob(name="nobind", cmd=[sys.executable, str(script)],
+                      progress_file=None, thread_env={})]
+    results = run_workers(jobs, max_parallel=2, poll_interval=0.1)
+    assert results[0].payload["slot"] is None
 
 
 def test_run_workers_stamps_and_recycles_cpu_slots(tmp_path):
@@ -281,15 +366,19 @@ def test_run_workers_stamps_and_recycles_cpu_slots(tmp_path):
 
 
 def test_worker_scripts_bind_before_jax():
-    """Every worker script calls the affinity bind in its preamble and no
-    longer carries the inert eigen token."""
-    import xcquinox.alec.workers as workers_pkg
-    base = os.path.dirname(workers_pkg.__file__)
+    """Every worker script binds through the path-local ``_cpu_bind`` module
+    (never through ``parallel``, whose package import stands up the JAX pool
+    before the pin) in its preamble, and no longer carries the inert eigen
+    token."""
+    base = os.path.join(os.path.dirname(parallel.__file__), "workers")
     for name in ("eval_holdout_worker.py", "train_worker.py",
                  "test_worker.py", "pretrain_worker.py"):
         with open(os.path.join(base, name)) as fh:
             src = fh.read()
-        assert "apply_worker_cpu_bind()" in src, name
+        assert "_cpu_bind.apply()" in src, name
+        assert "import _cpu_bind" in src, name
+        assert "from xcquinox.alec.parallel import apply_worker_cpu_bind" \
+            not in src, name
         assert "--xla_cpu_multi_thread_eigen" not in src, name
 
 
