@@ -57,11 +57,12 @@
 # | THIS FILE IS THE STATEMENT OF THE METHOD, NOT THE SUBMISSION. The         |
 # | campaign is submitted as FIVE STANDALONE GROUP FILES, in this order:      |
 # |                                                                           |
-# |   1. dfs_step7.dfs6311_grid3_v6g1_size.yaml           GGA      44 cells   |
-# |   2. dfs_step7.dfs6311_grid3_v6g2_families.yaml       GGA      66 cells   |
-# |   3. dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml  meta-GGA 55 cells   |
-# |   4. dfs_step7.dfs6311_grid3_v6g3_dm.yaml             GGA      33 cells   |
-# |   5. dfs_step7.dfs6311_grid3_v6g4_ablations.yaml      GGA      22 cells   |
+# |   1. dfs_step7.dfs6311_grid3_v6g1_size.yaml             GGA      44 cells |
+# |   2. dfs_step7.dfs6311_grid3_v6g2a_families_core.yaml   GGA      33 cells |
+# |   3. dfs_step7.dfs6311_grid3_v6g2b_families_rung35.yaml GGA      33 cells |
+# |   4. dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml    meta-GGA 55 cells |
+# |   5. dfs_step7.dfs6311_grid3_v6g3_dm.yaml               GGA      33 cells |
+# |   6. dfs_step7.dfs6311_grid3_v6g4_ablations.yaml        GGA      22 cells |
 # |                                                                           |
 # | Each group is submitted on its own, into its own run directory, with its  |
 # | own pretraining data root and its own certificate gate; none waits on     |

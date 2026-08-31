@@ -1049,7 +1049,12 @@ EXCLUDED_FROM_V6 = (
 _V6_GROUPS = (
     ("dfs_step7.dfs6311_grid3_v6g1_size.yaml", 4, False,
      "dfs_step7.dfs6311_grid3_v4gga.yaml"),
-    ("dfs_step7.dfs6311_grid3_v6g2_families.yaml", 6, False,
+    # The 66-cell families file was split 2026-08-30 into two 33-cell trios:
+    # a 75-entry submission cannot sit beside a draining group under the
+    # 100-entry QOS submit cap, while each trio is 39 entries.
+    ("dfs_step7.dfs6311_grid3_v6g2a_families_core.yaml", 3, False,
+     "dfs_step7.dfs6311_grid3_v4gga.yaml"),
+    ("dfs_step7.dfs6311_grid3_v6g2b_families_rung35.yaml", 3, False,
      "dfs_step7.dfs6311_grid3_v4gga.yaml"),
     ("dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml", 5, True,
      "dfs_step7.dfs6311_grid3_v5.yaml"),
@@ -1059,7 +1064,7 @@ _V6_GROUPS = (
      "dfs_step7.dfs6311_grid3_v4gga.yaml"),
 )
 
-#: The five group files in submission order.
+#: The six group files in submission order.
 _V6_GROUP_FILES = tuple(row[0] for row in _V6_GROUPS)
 
 #: The reference and the five groups: the six files that must agree on the
@@ -1416,14 +1421,14 @@ def test_v6_group_cell_count(name):
     cells = expand_grid(cfg)
     assert len(set(cfg.sweep.subset_size)) == _V6_SUBSET_SIZES, path
     assert len(cells) == n_arch * _V6_SUBSET_SIZES, path
-    assert len(cells) == {4: 44, 6: 66, 5: 55, 3: 33, 2: 22}[n_arch], path
+    assert len(cells) == {4: 44, 5: 55, 3: 33, 2: 22}[n_arch], path
     assert f"{len(cells)} cells" in open(path).read(), (
         f"{path}: the header must state the cell count it expands to")
 
 
 def test_v6_group_cells_sum_to_the_submitted_campaign():
-    """44 + 66 + 55 + 33 + 22 = 220 cells submitted, out of the reference
-    sweep's 341.
+    """44 + 33 + 33 + 55 + 33 + 22 = 220 cells submitted, out of the
+    reference sweep's 341.
 
     The 121-cell gap is the eleven excluded architectures at eleven subset
     sizes, and it is arithmetic rather than a discrepancy: this asserts the
@@ -1434,7 +1439,7 @@ def test_v6_group_cells_sum_to_the_submitted_campaign():
     for name in _V6_GROUP_FILES:
         _path, cfg = _campaign_config(name)
         counts.append(len(expand_grid(cfg)))
-    assert counts == [44, 66, 55, 33, 22], counts
+    assert counts == [44, 33, 33, 55, 33, 22], counts
     assert sum(counts) == 220
     _refpath, ref = _campaign_config(_V6_REFERENCE)
     assert len(expand_grid(ref)) == 341
@@ -1589,7 +1594,7 @@ def test_v6_group_states_its_place_in_the_ladder(name):
     """The header names the group, its question, its position and the whole
     ladder, and says the submissions are independent.
 
-    An operator reads one file at a time; the ladder is a property of five, and
+    An operator reads one file at a time; the ladder is a property of six, and
     a group file that did not carry it would be submitted without any way of
     knowing what else the campaign is or whether something has to run first.
     """
@@ -1598,7 +1603,7 @@ def test_v6_group_states_its_place_in_the_ladder(name):
     order = _V6_GROUP_FILES.index(name) + 1
     assert "GROUP G" in text, path
     assert "THE QUESTION:" in text, path
-    assert f"submission {order} of 5" in text, path
+    assert f"submission {order} of 6" in text, path
     assert "SUBMISSION IS PER GROUP AND INDEPENDENT" in text, path
     for other in _V6_GROUP_FILES:
         assert other in text, (path, other)
@@ -1674,7 +1679,7 @@ def test_v6_group_retry_targets_admit_their_walls(name):
                 f"{wall_h:g} h above the {cap:g} h cap")
 
 
-def test_v6_reference_names_the_five_group_files_in_order():
+def test_v6_reference_names_the_six_group_files_in_order():
     """The reference file points at the ladder, in submission order, and says
     it is not itself the submission.
 
@@ -1688,7 +1693,7 @@ def test_v6_reference_names_the_five_group_files_in_order():
     positions = [text.index(name) for name in _V6_GROUP_FILES
                  if name in text]
     assert len(positions) == len(_V6_GROUP_FILES), (
-        f"{path} must name all five group files; missing "
+        f"{path} must name all six group files; missing "
         f"{[n for n in _V6_GROUP_FILES if n not in text]}")
     assert positions == sorted(positions), (
         f"{path} names the group files out of submission order")

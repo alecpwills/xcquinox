@@ -8,25 +8,27 @@
 # sizes -- medium (3x16) and shallow (2x8), each with and without
 # attention.
 #
-# ORDER: submission 1 of 5 in the v6 ladder --
+# ORDER: submission 1 of 6 in the v6 ladder --
 #   1. dfs_step7.dfs6311_grid3_v6g1_size.yaml
 #        GGA rung, 40core scheme, 4 architectures, 44 cells
-#   2. dfs_step7.dfs6311_grid3_v6g2_families.yaml
-#        GGA rung, 40core scheme, 6 architectures, 66 cells
-#   3. dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml
-#        meta-GGA rung, 96core scheme, 5 architectures, 55 cells
-#   4. dfs_step7.dfs6311_grid3_v6g3_dm.yaml
+#   2. dfs_step7.dfs6311_grid3_v6g2a_families_core.yaml
 #        GGA rung, 40core scheme, 3 architectures, 33 cells
-#   5. dfs_step7.dfs6311_grid3_v6g4_ablations.yaml
+#   3. dfs_step7.dfs6311_grid3_v6g2b_families_rung35.yaml
+#        GGA rung, 40core scheme, 3 architectures, 33 cells
+#   4. dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml
+#        meta-GGA rung, 96core scheme, 5 architectures, 55 cells
+#   5. dfs_step7.dfs6311_grid3_v6g3_dm.yaml
+#        GGA rung, 40core scheme, 3 architectures, 33 cells
+#   6. dfs_step7.dfs6311_grid3_v6g4_ablations.yaml
 #        GGA rung, 40core scheme, 2 architectures, 22 cells
 #
-# SUBMISSION IS PER GROUP AND INDEPENDENT. Each of the five files is submitted
+# SUBMISSION IS PER GROUP AND INDEPENDENT. Each of the six files is submitted
 # on its own and lands in its OWN run directory (`inputs.output_root` below),
 # with its own pretraining-data root, its own pretrain array and its own
 # fidelity certificate gate. No group waits on another: the order above is the
 # order the questions are worth answering in, not a dependency chain, and a
 # group that fails its certificate blocks its own train array and nothing else.
-# The 220 cells of the five groups are what the campaign submits; the reference
+# The 220 cells of the six groups are what the campaign submits; the reference
 # file dfs_step7.dfs6311_grid3_v6.yaml stays as the statement of the method and
 # is not itself submitted.
 #
@@ -107,14 +109,14 @@ sweep:
   #       22-32 are `shallow`,
   #       33-43 are `shallow_attn`.
   #
-  # THE FIVE GROUP AXES ARE PAIRWISE DISJOINT, and together with the eleven
+  # THE SIX GROUP AXES ARE PAIRWISE DISJOINT, and together with the eleven
   # architectures the campaign directive excludes from v6 they cover the
   # registry exactly. A NEW ARCHITECTURE ADDED TO THE REGISTRY MAKES THE GROUP
   # SET STALE: the pin `test_v6_groups_and_the_exclusions_partition_the_registry`
   # compares the union against sorted(ARCHITECTURES) and goes red naming the
   # new name, which is the intent -- an architecture may only be left out of
   # the campaign deliberately, in the exclusion list, never by falling through
-  # the gap between five files.
+  # the gap between six files.
   arch:
     - medium
     - medium_attn

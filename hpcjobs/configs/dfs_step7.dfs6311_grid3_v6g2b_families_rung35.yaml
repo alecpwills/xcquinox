@@ -1,13 +1,16 @@
 # =============================================================================
-# dfs_step7.dfs6311_grid3_v6g4_ablations.yaml
-# -- CAMPAIGN v6, GROUP G4 (WIDTH/DEPTH ABLATION):
+# dfs_step7.dfs6311_grid3_v6g2b_families_rung35.yaml
+# -- CAMPAIGN v6, GROUP G2b (DESCRIPTOR FAMILIES, RUNG-3.5 TRIO):
 #    GGA rung, 40core queue scheme,
-#    2 architectures x 11 subset sizes = 22 cells.
+#    3 architectures x 11 subset sizes = 33 cells.
+#    (Split 2026-08-30 from the 66-cell families file: a
+#    75-entry submission cannot sit beside a draining group
+#    under the 100-entry QOS submit cap; each trio is 39
+#    entries and submits independently.)
 #
-# THE QUESTION: does the baseline functional's behaviour persist at the
-# alternate width/depth, with and without attention.
+# THE QUESTION: which rung-3.5 form wins at the fixed 3x16 width -- cusp+rung-3.5, cusp+rung-3.5 with attention, or the multi-width rung-3.5 form.
 #
-# ORDER: submission 6 of 6 in the v6 ladder --
+# ORDER: submission 3 of 6 in the v6 ladder --
 #   1. dfs_step7.dfs6311_grid3_v6g1_size.yaml
 #        GGA rung, 40core scheme, 4 architectures, 44 cells
 #   2. dfs_step7.dfs6311_grid3_v6g2a_families_core.yaml
@@ -48,17 +51,6 @@
 # and the job mail. The reference file's
 # header carries the method and its measured 13-field diff against v5; this
 # file states only what it adds.
-#
-# THE ELEVEN EXCLUDED NAMES. The campaign directive cuts this group to
-# the baseline descriptors, plus or minus attention. `deep_cusp`,
-# `deep_cusp_attn`, `deep_dm`, `deep_dm_attn`, `deep_combined`,
-# `deep_combined_attn`, `deep_notransform`, `deep_notransform_3x16`,
-# `deep_notransform_attn`, `deep_notransform_attn_3x16` and
-# `deep_rung35only_3x16` are therefore NOT submitted in v6. They are
-# named in the pin's EXCLUDED_FROM_V6 list rather than dropped, so the
-# registry is still covered exactly and any one of them rejoins the
-# campaign by one line on the axis below plus the matching line in the
-# pin.
 #
 # QUEUE SCHEME: 40core, mirroring dfs_step7.dfs6311_grid3_v4gga.yaml. The
 # submit partition is chosen on the command line (`--partition`; the config
@@ -102,13 +94,14 @@
 # =============================================================================
 
 sweep:
-  # GROUP G4 (WIDTH/DEPTH ABLATION)'s axis: 2 of the 31 architectures of
+  # GROUP G2 (DESCRIPTOR FAMILIES, GGA)'s axis: 6 of the 31 architectures of
   # `xcquinox.alec.ARCHITECTURES`. Listed in the order expand_grid
   # canonicalizes to (`_canon_axis` = sorted(set(...))), so the arch axis reads
-  # in array-task order. With 11 subset sizes the grid is 2 x 1 x 1 x
-  # 11 x 1 = 22 cells: task index = arch_index * 11 + subset_index, i.e.
-  # tasks 0-10 are `deep`,
-  #       11-21 are `deep_attn`.
+  # in array-task order. With 11 subset sizes the grid is 3 x 1 x 1 x
+  # 11 x 1 = 33 cells: task index = arch_index * 11 + subset_index, i.e.
+  # tasks 0-10 are `deep_rung35_3x16`,
+  #       11-21 are `deep_rung35_attn_3x16`,
+  #       22-32 are `deep_rung35ms_3x16`.
   #
   # THE SIX GROUP AXES ARE PAIRWISE DISJOINT, and together with the eleven
   # architectures the campaign directive excludes from v6 they cover the
@@ -119,8 +112,9 @@ sweep:
   # the campaign deliberately, in the exclusion list, never by falling through
   # the gap between six files.
   arch:
-    - deep
-    - deep_attn
+    - deep_rung35_3x16
+    - deep_rung35_attn_3x16
+    - deep_rung35ms_3x16
   loss: [L5_gradnorm_vxc_step7]
   metric: [jsd]
   # v5's subset-size axis, unchanged (v5 line 35). 26 = the dfs_step7 pool
@@ -216,7 +210,7 @@ inputs:
   # level 1; a production copy must drop it, and this one has.
   # Per-rung SCF seeding (v5 protocol): auto = registry-derived rung baseline.
   # Every architecture on THIS axis is GGA-rung, so it resolves to PBE for all
-  # 2 of them and no task reads the SCAN cache below. It stays `auto`
+  # 6 of them and no task reads the SCAN cache below. It stays `auto`
   # rather than the literal `pbe` because it is the SAME predicate
   # `pretrain.parent_density: auto` resolves the pretraining density with: one
   # rung statement read by both, so no group file can seed its SCF from one
@@ -239,7 +233,7 @@ inputs:
   # THIS GROUP'S OWN output root: additive, every other run dir -- the other
   # four groups' included -- is untouched, and `status`, `validate_run` and the
   # figure suite each read one group's run at a time.
-  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v6g4_ablations
+  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v6g2b_families_rung35
 
 pretrain:
   # THIS GROUP'S OWN data_dir. `parent_density: auto` names its files after the
@@ -251,7 +245,7 @@ pretrain:
   # are value-identical by construction: the rows are a deterministic function
   # of the set, the footing, the objective and the run identity, all five of
   # which are the same in all five files.
-  data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v6g4_ablations
+  data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v6g2b_families_rung35
   # Pretraining schedule, byte-inherited from v5 (lines 134-140).
   n_steps: 2500
   lr_start: 0.01
@@ -380,11 +374,9 @@ cluster:
   # attention cells; 50.1 h is the reading to plan against, and the 40-core
   # class admits no wall above 48 h. Those cells are recovered rather than
   # prevented -- see QUEUE ADMISSIBILITY below.
-  # This group runs `deep_attn` at depth 4 / width 32: 4.40x the
-  # parameter count of the measured 3x16 cell (15138 against 3442,
-  # counted over both networks; 2.67x is the hidden-unit ratio, not
-  # the parameter one) and a size no campaign has run, so this is the
-  # group whose margin above 50.1 h carries real unmeasured load.
+  # This group's attention cells are `deep_attn_3x16` -- the measured
+  # cell itself -- and `deep_rung35_attn_3x16`, which adds four
+  # descriptor columns to it.
   # The corrected potential also adds a feature-response derivative per SCF
   # cycle, so no cell is faster than v3's.
   #
@@ -472,14 +464,15 @@ cluster:
   account: ""
   preflight_time: "12:00:00"
   # Compile-smoke gate: the preflight compiles the heaviest attention cell once
-  # (n_steps=1) on its exclusive node before the 22-task array; a
+  # (n_steps=1) on its exclusive node before the 66-task array; a
   # host-OOM there blocks the array via the afterok dep -- one cheap failure
-  # instead of 22. The selector orders the attention cells by subset
+  # instead of 66. The selector orders the attention cells by subset
   # size, then depth x width, then descriptor feature columns, then name
   # (`_preflight._select_smoke_cell`), so the choice reads only the cells' own
   # properties. On this axis that is
-  # `deep_attn` at subset 26 -- 4x32, the larger of this group's two
-  # shapes and the largest attention compile of the whole ladder.
+  # `deep_rung35_attn_3x16` at subset 26 -- the same 3x16 shape as
+  # `deep_attn_3x16` but with four descriptor columns, which is the
+  # heavier compile and the larger recorded parent offset.
   # The same preflight also sweeps every swept architecture's certificate with
   # no exemption, which is the second thing that fails cheap.
   preflight_compile_smoke: true
@@ -505,13 +498,11 @@ cluster:
   pretrain_time: "12:00:00"
   # STATED here although v5 left it unset (v5 had 3 distinct architectures).
   # Unset means every distinct architecture pretrains concurrently, i.e.
-  # 2 whole exclusive nodes at once for this group alone, with the
+  # 6 whole exclusive nodes at once for this group alone, with the
   # other groups possibly queued beside it. 4 is the reference file's value,
   # kept identical in all five so the five pretrain arrays are one etiquette
   # budget. The wall above is per task, so throttling costs queue time and
   # nothing else.
-  # With fewer than four architectures on this axis the throttle is not
-  # binding for this group on its own.
   pretrain_throttle: 4
   # Datagen builds this group's pretrain-data file and every later stage of
   # this group waits on it. v5 had no key here and inherited pretrain_time;

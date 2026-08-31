@@ -1,32 +1,36 @@
 # =============================================================================
-# dfs_step7.dfs6311_grid3_v6g2_families.yaml
-# -- CAMPAIGN v6, GROUP G2 (DESCRIPTOR FAMILIES, GGA):
+# dfs_step7.dfs6311_grid3_v6g2a_families_core.yaml
+# -- CAMPAIGN v6, GROUP G2a (DESCRIPTOR FAMILIES, GGA CORE TRIO):
 #    GGA rung, 40core queue scheme,
-#    6 architectures x 11 subset sizes = 66 cells.
+#    3 architectures x 11 subset sizes = 33 cells.
+#    (Split 2026-08-30 from the 66-cell families file: a
+#    75-entry submission cannot sit beside a draining group
+#    under the 100-entry QOS submit cap; each trio is 39
+#    entries and submits independently.)
 #
-# THE QUESTION: which descriptor family wins on the GGA rung at the fixed
-# 3x16 width -- none, attention, cusp, cusp+rung-3.5, cusp+rung-3.5 with
-# attention, and the multi-width rung-3.5 form.
+# THE QUESTION: which of the plain, attention and cusp forms wins on the GGA rung at the fixed 3x16 width.
 #
-# ORDER: submission 2 of 5 in the v6 ladder --
+# ORDER: submission 2 of 6 in the v6 ladder --
 #   1. dfs_step7.dfs6311_grid3_v6g1_size.yaml
 #        GGA rung, 40core scheme, 4 architectures, 44 cells
-#   2. dfs_step7.dfs6311_grid3_v6g2_families.yaml
-#        GGA rung, 40core scheme, 6 architectures, 66 cells
-#   3. dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml
-#        meta-GGA rung, 96core scheme, 5 architectures, 55 cells
-#   4. dfs_step7.dfs6311_grid3_v6g3_dm.yaml
+#   2. dfs_step7.dfs6311_grid3_v6g2a_families_core.yaml
 #        GGA rung, 40core scheme, 3 architectures, 33 cells
-#   5. dfs_step7.dfs6311_grid3_v6g4_ablations.yaml
+#   3. dfs_step7.dfs6311_grid3_v6g2b_families_rung35.yaml
+#        GGA rung, 40core scheme, 3 architectures, 33 cells
+#   4. dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml
+#        meta-GGA rung, 96core scheme, 5 architectures, 55 cells
+#   5. dfs_step7.dfs6311_grid3_v6g3_dm.yaml
+#        GGA rung, 40core scheme, 3 architectures, 33 cells
+#   6. dfs_step7.dfs6311_grid3_v6g4_ablations.yaml
 #        GGA rung, 40core scheme, 2 architectures, 22 cells
 #
-# SUBMISSION IS PER GROUP AND INDEPENDENT. Each of the five files is submitted
+# SUBMISSION IS PER GROUP AND INDEPENDENT. Each of the six files is submitted
 # on its own and lands in its OWN run directory (`inputs.output_root` below),
 # with its own pretraining-data root, its own pretrain array and its own
 # fidelity certificate gate. No group waits on another: the order above is the
 # order the questions are worth answering in, not a dependency chain, and a
 # group that fails its certificate blocks its own train array and nothing else.
-# The 220 cells of the five groups are what the campaign submits; the reference
+# The 220 cells of the six groups are what the campaign submits; the reference
 # file dfs_step7.dfs6311_grid3_v6.yaml stays as the statement of the method and
 # is not itself submitted.
 #
@@ -93,30 +97,24 @@ sweep:
   # GROUP G2 (DESCRIPTOR FAMILIES, GGA)'s axis: 6 of the 31 architectures of
   # `xcquinox.alec.ARCHITECTURES`. Listed in the order expand_grid
   # canonicalizes to (`_canon_axis` = sorted(set(...))), so the arch axis reads
-  # in array-task order. With 11 subset sizes the grid is 6 x 1 x 1 x
-  # 11 x 1 = 66 cells: task index = arch_index * 11 + subset_index, i.e.
+  # in array-task order. With 11 subset sizes the grid is 3 x 1 x 1 x
+  # 11 x 1 = 33 cells: task index = arch_index * 11 + subset_index, i.e.
   # tasks 0-10 are `deep_3x16`,
   #       11-21 are `deep_attn_3x16`,
-  #       22-32 are `deep_cusp_3x16`,
-  #       33-43 are `deep_rung35_3x16`,
-  #       44-54 are `deep_rung35_attn_3x16`,
-  #       55-65 are `deep_rung35ms_3x16`.
+  #       22-32 are `deep_cusp_3x16`.
   #
-  # THE FIVE GROUP AXES ARE PAIRWISE DISJOINT, and together with the eleven
+  # THE SIX GROUP AXES ARE PAIRWISE DISJOINT, and together with the eleven
   # architectures the campaign directive excludes from v6 they cover the
   # registry exactly. A NEW ARCHITECTURE ADDED TO THE REGISTRY MAKES THE GROUP
   # SET STALE: the pin `test_v6_groups_and_the_exclusions_partition_the_registry`
   # compares the union against sorted(ARCHITECTURES) and goes red naming the
   # new name, which is the intent -- an architecture may only be left out of
   # the campaign deliberately, in the exclusion list, never by falling through
-  # the gap between five files.
+  # the gap between six files.
   arch:
     - deep_3x16
     - deep_attn_3x16
     - deep_cusp_3x16
-    - deep_rung35_3x16
-    - deep_rung35_attn_3x16
-    - deep_rung35ms_3x16
   loss: [L5_gradnorm_vxc_step7]
   metric: [jsd]
   # v5's subset-size axis, unchanged (v5 line 35). 26 = the dfs_step7 pool
@@ -235,7 +233,7 @@ inputs:
   # THIS GROUP'S OWN output root: additive, every other run dir -- the other
   # four groups' included -- is untouched, and `status`, `validate_run` and the
   # figure suite each read one group's run at a time.
-  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v6g2_families
+  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v6g2a_families_core
 
 pretrain:
   # THIS GROUP'S OWN data_dir. `parent_density: auto` names its files after the
@@ -247,7 +245,7 @@ pretrain:
   # are value-identical by construction: the rows are a deterministic function
   # of the set, the footing, the objective and the run identity, all five of
   # which are the same in all five files.
-  data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v6g2_families
+  data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v6g2a_families_core
   # Pretraining schedule, byte-inherited from v5 (lines 134-140).
   n_steps: 2500
   lr_start: 0.01

@@ -775,11 +775,11 @@ those exist. The five files, in submission order (executed check C11 reads each 
 Each group's train array is gated on a PASS fidelity certificate for every architecture on
 its axis: the certificate runs once per architecture on the pretrain node after the networks
 are written, the pretrain task exits non-zero on FAIL, and the train array's `afterok`
-dependency never releases (`cluster/fidelity.py:38-52`). All five files carry
-`fidelity: {tol_AE: 1.0, tol_atom: 1.0, override_reason: null, enforce: true}` and all five
+dependency never releases (`cluster/fidelity.py:38-52`). All six files carry
+`fidelity: {tol_AE: 1.0, tol_atom: 1.0, override_reason: null, enforce: true}` and all six
 carry `model: {parent_anchor: true, descriptor_coordinates: dfs}` with
 `pretrain.energy_term_weight: 0.0`, exact under the anchor (executed check C11 recorded the
-weight as the placeholder it then was). All five groups submit as they ship: the GGA-rung
+weight as the placeholder it then was). All six groups submit as they ship: the GGA-rung
 groups anchored to PBE, the meta-GGA group to SCAN (`parents.scan_fx` / `scan_fc` at the
 installed libxc's constants and regularizations; `SPEC_parent_anchor.md` Sections 3.1 and
 3.8). The preflight additionally sweeps every swept
@@ -787,8 +787,8 @@ architecture's certificate with no exemption before the array is submitted.
 
 Registry-wide, the 31 registered architectures split 26 GGA-rung to 5 meta-GGA-rung through
 `ArchitectureConfig.is_meta_gga` (executed check C1). The campaign sweeps 20 of them --
-15 GGA-rung and 5 meta-GGA-rung -- in the four groups below, for 220 cells; the remaining
-11 are listed in Section 3.5 (executed check C2 verifies that the four group lists are
+15 GGA-rung and 5 meta-GGA-rung -- in the groups below, for 220 cells; the remaining
+11 are listed in Section 3.5 (executed check C2 verifies that the group lists are
 pairwise disjoint, that their union with the exclusion list is exactly the registry, and
 that the cell counts sum as stated).
 
@@ -813,12 +813,16 @@ figure loaders are all exercised at minimum cost before an expensive group is co
 five meta-GGA forms are all depth-3 / width-16 `deep_*` names). The size ablation is
 therefore GGA-only by construction, not by choice.
 
-### 3.2 Group 2 -- the six production families and their meta-GGA parity forms (11 architectures, 121 cells; submitted as 66 + 55)
+### 3.2 Group 2 -- the six production families and their meta-GGA parity forms (11 architectures, 121 cells; submitted as 33 + 33 + 55)
 
-GGA-rung, submitted first (6 architectures, 66 cells), file
-`hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g2_families.yaml`: `deep_3x16`,
-`deep_attn_3x16`, `deep_cusp_3x16`, `deep_rung35_3x16`, `deep_rung35_attn_3x16`,
-`deep_rung35ms_3x16`.
+GGA-rung, submitted as two trios (split 2026-08-30: the QOS submit cap counts
+100 entries per user and a 75-entry submission cannot sit beside a draining
+group, while each 33-cell trio is 39 entries and submits independently).
+The core trio (3 architectures, 33 cells), file
+`hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g2a_families_core.yaml`: `deep_3x16`,
+`deep_attn_3x16`, `deep_cusp_3x16`. The rung-3.5 trio (3 architectures, 33
+cells), file `hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g2b_families_rung35.yaml`:
+`deep_rung35_3x16`, `deep_rung35_attn_3x16`, `deep_rung35ms_3x16`.
 
 Meta-GGA parity forms, submitted second (5 architectures, 55 cells), file
 `hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml`: `deep_mgga_3x16`,
@@ -1017,7 +1021,7 @@ All run with `OMP_NUM_THREADS=2 JAX_PLATFORMS=cpu` under
 - **C10** `check_ledger.py` / `check_ledger.log` -- the committed ledger's `jsd` sizes equal
   the v6 subset axis, the largest equals the 26-point pool size, and `jsd/26` holds 26 points
   spanning all three kinds.
-- **C11** `check_group_yamls.py` / `check_group_yamls.log` -- each of the five group files
+- **C11** `check_group_yamls.py` / `check_group_yamls.log` -- each of the six group files
   loaded and read back: architecture axis, subset axis, cell count, output root, fidelity
   block and `energy_term_weight`. Every axis matches the group list of Section 3 exactly;
   each carries the same eleven subset sizes; cells are 44 / 66 / 55 / 33 / 22 summing to 220;
