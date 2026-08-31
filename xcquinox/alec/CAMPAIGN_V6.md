@@ -944,7 +944,7 @@ block, the eval flags and the fidelity block.
 
 TWO FIELDS ARE THE EXCEPTION, AND THE FIVE FILES DISAGREE AMONG THEMSELVES. Four of them --
 `v6g1_size`, `v6g2_families`, `v6g3_dm` and `v6g4_ablations` -- set
-`cluster.oom_retry_partition: long-96core` and `cluster.timeout_retry_partition: long-96core`,
+`cluster.oom_retry_partition: extended-96core` and `cluster.timeout_retry_partition: extended-96core` (retargeted 2026-08-30: long-96core's QOS caps MaxWall at 48 h and rejects both the 96 h escalation and the 72 h campaign replay),
 which the whole-registry file leaves unset and `v6g2_families_mgga` also leaves unset
 (executed check C12, updated after the group files landed: 6 differing leaves for those four
 -- the two retry partitions, the 48 h wall against the reference's 72 h, the axis and the two
@@ -1031,5 +1031,5 @@ All run with `OMP_NUM_THREADS=2 JAX_PLATFORMS=cpu` under
   The three common differences are `sweep.arch`, `inputs.output_root` and
   `pretrain.data_dir`; the three extra ones, present on the four GGA groups only, are
   `cluster.oom_retry_partition` and `cluster.timeout_retry_partition`, both set to
-  `long-96core` where the whole-registry file and the meta-GGA group leave them unset, and
+  `extended-96core` (the 7-day-cap class; long-96core until the 2026-08-30 retarget) where the whole-registry file and the meta-GGA group leave them unset, and
   `cluster.time`, the 40-core class's recorded 48 h wall against the reference's 72 h.

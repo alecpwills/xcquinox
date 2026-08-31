@@ -2275,6 +2275,33 @@ def test_second_stage_starts_from_the_lowest_gradient_density_of_the_trajectory(
     assert np.allclose(silent.second_order.dm0, silent.make_rdm1())
 
 
+def test_recorder_is_restored_when_the_kernel_raises():
+    """A raise inside the first-stage kernel must not leave the recorder on
+    the caller's object: the recorder closes over a full density copy, and
+    before the try/finally the caller's mf kept it installed on this path
+    (measured by the closure review's sabotage probe)."""
+
+    class _RaisingStub(_TrajectoryStubSCF):
+        def kernel(self):
+            for cycle, gorb in enumerate(self.gradients[:2]):
+                if callable(self.callback):
+                    self.callback({
+                        "mf": self, "cycle": cycle, "norm_gorb": gorb,
+                        "mo_coeff": self.orbitals(cycle),
+                        "mo_occ": self.mo_occ,
+                    })
+            raise RuntimeError("mid-kernel failure")
+
+    stub = _RaisingStub([1.0, 0.5, 0.1])
+    probe_calls = []
+    probe = lambda envs: probe_calls.append(int(envs["cycle"]))  # noqa: E731
+    stub.callback = probe
+    with pytest.raises(RuntimeError, match="mid-kernel failure"):
+        data_mod._converge_reference_scf(stub)
+    assert stub.callback is probe
+    assert probe_calls == [0, 1]
+
+
 def test_the_best_point_recorder_is_detached_before_the_rescue_returns(
         monkeypatch):
     """Neither object the rescue path touches may leave the driver holding a

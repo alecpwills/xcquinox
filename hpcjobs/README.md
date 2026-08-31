@@ -105,7 +105,7 @@ allows 8 h. Simplest is one long-wall queue for all stages:
 
 Set walls on the CLI with `--time` (all stages) or
 `--{train,eval,preflight,pretrain}-time`. SeaWulf max-walls: `short-* 4 h`,
-`medium-* 12 h`, `long-28core 2 days`, `long-96core-shared` longer.
+`medium-* 12 h`, `long-28core 2 days`; every `long-*` QOS caps MaxWall at 48 h and the `extended-*` partitions carry 7-day caps (sacctmgr, 2026-08-27).
 
 > SeaWulf couples queues to login nodes: `*-96core-shared` exist on
 > `milan1`/`milan2`; `*-28core` on `login1`/`login2`. `sbatch` only accepts

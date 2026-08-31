@@ -1451,9 +1451,14 @@ def test_v6_group_partition_scheme_mirrors_its_historical_arm(name):
     larger Milan nodes, which is what v4gga's two retry partitions do, while a
     run already on those nodes has nowhere larger to go and v5 therefore leaves
     both unset (a same-partition retry cannot clear a deterministic compile
-    OOM). The values are read from the historical files rather than transcribed,
-    and the two arms are asserted to actually differ, so the mirror is a
-    comparison and not a tautology.
+    OOM). What is mirrored is the SCHEME -- whether each route is engaged --
+    not the partition name: v4gga's historical target was long-96core, whose
+    QOS caps MaxWall at 48 h (sacctmgr, 2026-08-27) and therefore rejects the
+    96 h escalation and the 72 h campaign replay, so the v6 groups carry the
+    same routing retargeted at extended-96core (7-day cap); the historical
+    file keeps its own recorded value. The arms are read from their files
+    rather than transcribed, and asserted to actually differ, so the mirror
+    is a comparison and not a tautology.
     """
     path, cfg = _campaign_config(name)
     _f, _n, _rung, arm_name = _v6_group_row(name)
@@ -1462,17 +1467,21 @@ def test_v6_group_partition_scheme_mirrors_its_historical_arm(name):
         _campaign_config_path("dfs_step7.dfs6311_grid3_v4gga.yaml"))
     mgga_arm = load_grid_config(
         _campaign_config_path("dfs_step7.dfs6311_grid3_v5.yaml"))
-    assert gga_arm.cluster.oom_retry_partition is not None
-    assert gga_arm.cluster.timeout_retry_partition is not None
+    assert gga_arm.cluster.oom_retry_partition == "long-96core"
+    assert gga_arm.cluster.timeout_retry_partition == "long-96core"
     assert mgga_arm.cluster.oom_retry_partition is None
     assert mgga_arm.cluster.timeout_retry_partition is None
     assert cfg.cluster.partition == arm.cluster.partition == "", (
         f"{path}: the partition is chosen at submit time (--partition is "
         f"required), so the config states none")
-    assert cfg.cluster.oom_retry_partition == arm.cluster.oom_retry_partition, (
+    engaged = arm.cluster.oom_retry_partition is not None
+    assert (cfg.cluster.oom_retry_partition is not None) == engaged, (
         path, arm_path)
-    assert (cfg.cluster.timeout_retry_partition
-            == arm.cluster.timeout_retry_partition), (path, arm_path)
+    assert (cfg.cluster.timeout_retry_partition is not None) == engaged, (
+        path, arm_path)
+    if engaged:
+        assert cfg.cluster.oom_retry_partition == "extended-96core", path
+        assert cfg.cluster.timeout_retry_partition == "extended-96core", path
 
 
 @pytest.mark.parametrize("name", _V6_GROUP_FILES)

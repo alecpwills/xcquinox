@@ -167,8 +167,7 @@ and pretrain to an **8 h** wall (a 2 h train wall previously killed 15/40 specs
 mid-training). The *short* queues cap at **4 h**, so the whole graph goes on a
 queue that allows 8 h -- `long-96core-shared` is simplest (`--partition` is the
 base for all four stages). On `login1`/`login2`, use `long-28core` instead.
-SeaWulf queue max-walls: `short-* 4 h`, `medium-* 12 h`, `long-28core 2 days`,
-`long-96core-shared` (longer still). To shorten/lengthen a stage ad-hoc, add
+SeaWulf queue max-walls: `short-* 4 h`, `medium-* 12 h`, `long-28core 2 days`; every `long-*` QOS (40- and 96-core, shared included) caps MaxWall at 48 h, and the `extended-*` partitions carry 7-day caps (sacctmgr, 2026-08-27). To shorten/lengthen a stage ad-hoc, add
 `--time` (all stages) or `--{train,eval,preflight,pretrain}-time`.
 
 **Allocation = whole node per task.** Every stage defaults to `exclusive`

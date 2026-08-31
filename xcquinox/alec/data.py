@@ -475,13 +475,14 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     callback the caller had already installed keeps firing (the recorder
     chains to it) and is restored before any return, so the returned
     object carries the caller's callback and no trace of the recorder.
-    The best-by-|g| selection is measured at the settings the reference
-    paths build their mean fields with (pyscf defaults: no level shift, no
-    damping, minao guess); under other settings it is not universally the
-    better start (measured: with a level shift, damping, or the
-    core-Hamiltonian ``1e`` guess, 7 of 27 differing rescues favoured the
-    end point by up to 3.09e-5 Ha, none of which any caller of this
-    function configures). For a system
+    The best-by-|g| selection is measured at the settings of the mean
+    fields that REACH this function (pyscf defaults: no level shift, no
+    damping, minao guess; ``external_refs``/``oep`` build level-shifted or
+    damped fields for other purposes and never route them here); under
+    other settings it is not universally the better start (measured: with a
+    level shift, damping, or the core-Hamiltonian ``1e`` guess, 7 of 27
+    differing rescues favoured the end point by up to 3.09e-5 Ha). For a
+    system
     this rescue previously started from the end point, the second stage's
     start -- and with it the converged endpoint -- may move within the
     flat-direction slack quantified above (2.3e-8 to 9.8e-7 Ha).
