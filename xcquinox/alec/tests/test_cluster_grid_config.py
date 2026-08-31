@@ -1655,7 +1655,8 @@ _TRACKED_CONFIGS = (
     "dfs_step7.dfs6311_grid3_v5mgga2.yaml",
     "dfs_step7.dfs6311_grid3_v6.yaml",
     "dfs_step7.dfs6311_grid3_v6g1_size.yaml",
-    "dfs_step7.dfs6311_grid3_v6g2_families.yaml",
+    "dfs_step7.dfs6311_grid3_v6g2a_families_core.yaml",
+    "dfs_step7.dfs6311_grid3_v6g2b_families_rung35.yaml",
     "dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml",
     "dfs_step7.dfs6311_grid3_v6g3_dm.yaml",
     "dfs_step7.dfs6311_grid3_v6g4_ablations.yaml",
@@ -1707,7 +1708,7 @@ def test_tracked_configs_carry_valid_walltimes():
         assert path.is_file(), f"tracked config missing: {path}"
         _assert_walltimes_are_strings(path)
     _assert_walltimes_are_strings(example)
-    assert len(_TRACKED_CONFIGS) + 1 == 22, "tracked config count changed"
+    assert len(_TRACKED_CONFIGS) + 1 == 23, "tracked config count changed"  # 2026-08-30: +1, the families file split into two trios
 
 
 def test_untracked_local_configs_carry_valid_walltimes():

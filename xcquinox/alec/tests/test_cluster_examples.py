@@ -1422,8 +1422,11 @@ def test_v6_group_cell_count(name):
     assert len(set(cfg.sweep.subset_size)) == _V6_SUBSET_SIZES, path
     assert len(cells) == n_arch * _V6_SUBSET_SIZES, path
     assert len(cells) == {4: 44, 5: 55, 3: 33, 2: 22}[n_arch], path
-    assert f"{len(cells)} cells" in open(path).read(), (
-        f"{path}: the header must state the cell count it expands to")
+    text = open(path).read()
+    assert f"= {len(cells)} cells: task index" in text, (
+        f"{path}: the header's own grid-arithmetic line must state the cell "
+        "count it expands to (the shared ladder listing does not count -- "
+        "every file names every group's cells there)")
 
 
 def test_v6_group_cells_sum_to_the_submitted_campaign():

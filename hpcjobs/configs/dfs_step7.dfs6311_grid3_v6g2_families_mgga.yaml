@@ -176,7 +176,7 @@ inputs:
   # 192-204), which value-inherited it from v5. These five fields are exactly
   # what `fidelity.run_identity` records on every certificate, so a change here
   # invalidates every certificate this group writes AND breaks the comparison
-  # between groups: the five run directories are one campaign only because
+  # between groups: the six run directories are one campaign only because
   # their identities are the same object.
   # DFS-paper parity: same basis for training AND the CCSD references, grid 3.
   basis: 6-311++G(3df,2pd)
@@ -213,7 +213,7 @@ inputs:
   # and the seeds are keyed by SPECIES, not by architecture -- the training
   # species are v5's (same pool, same subset ledger).
   seed_cache_dir: /gpfs/scratch/awills/seed_cache_scan_6311ppg3df2pd_g3
-  # SAME subsets as v3/v4/v5 and as the other four groups (apples-to-apples
+  # SAME subsets as v3/v4/v5 and as the other five groups (apples-to-apples
   # across the campaign lineage AND across the ladder).
   subset_ledger_path: /gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/alpha_on/subset_index_log.json
   # SHARED with v3/v4/v5 and with the other groups (complete, relocked; input
@@ -223,7 +223,7 @@ inputs:
   benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_6311ppg3df2pd_g3
   val_refs_dir: /gpfs/scratch/awills/external_refs_val_6311ppg3df2pd_g3
   # THIS GROUP'S OWN output root: additive, every other run dir -- the other
-  # four groups' included -- is untouched, and `status`, `validate_run` and the
+  # five groups' included -- is untouched, and `status`, `validate_run` and the
   # figure suite each read one group's run at a time.
   output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v6g2_families_mgga
 
@@ -236,7 +236,7 @@ pretrain:
   # independent submissions with no ordering between them. The per-group copies
   # are value-identical by construction: the rows are a deterministic function
   # of the set, the footing, the objective and the run identity, all five of
-  # which are the same in all five files.
+  # which are the same in all six files.
   data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v6g2_families_mgga
   # Pretraining schedule, byte-inherited from v5 (lines 134-140).
   n_steps: 2500
@@ -278,7 +278,7 @@ pretrain:
   # the merged BH76 / W4-11 pools at their production charges and spins (the 12
   # neutral elements plus the F- and Cl- anions that are BH76 reactants). Both
   # replace the historical four-atom default; the `atoms` list above extends it
-  # by Na. The set is the same in all five groups: a certificate is only
+  # by Na. The set is the same in all six groups: a certificate is only
   # comparable across groups if the networks were fitted to the same rows.
   dfs_set: true
   pool_atoms: true

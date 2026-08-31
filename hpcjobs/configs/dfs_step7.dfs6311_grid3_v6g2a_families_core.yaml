@@ -94,7 +94,7 @@
 # =============================================================================
 
 sweep:
-  # GROUP G2 (DESCRIPTOR FAMILIES, GGA)'s axis: 6 of the 31 architectures of
+  # GROUP G2a (DESCRIPTOR FAMILIES, GGA CORE TRIO)'s axis: 3 of the 31 architectures of
   # `xcquinox.alec.ARCHITECTURES`. Listed in the order expand_grid
   # canonicalizes to (`_canon_axis` = sorted(set(...))), so the arch axis reads
   # in array-task order. With 11 subset sizes the grid is 3 x 1 x 1 x
@@ -185,7 +185,7 @@ inputs:
   # 192-204), which value-inherited it from v5. These five fields are exactly
   # what `fidelity.run_identity` records on every certificate, so a change here
   # invalidates every certificate this group writes AND breaks the comparison
-  # between groups: the five run directories are one campaign only because
+  # between groups: the six run directories are one campaign only because
   # their identities are the same object.
   # DFS-paper parity: same basis for training AND the CCSD references, grid 3.
   basis: 6-311++G(3df,2pd)
@@ -218,10 +218,10 @@ inputs:
   seed_xc: auto
   # Root whose _intermediates/ holds the SCAN seeds. Carried from the reference
   # file and NEVER READ on this axis -- a PBE-seeded architecture consults no
-  # cache -- so it is stated only to keep the five groups' `inputs` blocks one
+  # cache -- so it is stated only to keep the six groups' `inputs` blocks one
   # identical block. hpcjobs/seed_cache_scan.sbatch is not a prerequisite here.
   seed_cache_dir: /gpfs/scratch/awills/seed_cache_scan_6311ppg3df2pd_g3
-  # SAME subsets as v3/v4/v5 and as the other four groups (apples-to-apples
+  # SAME subsets as v3/v4/v5 and as the other five groups (apples-to-apples
   # across the campaign lineage AND across the ladder).
   subset_ledger_path: /gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/alpha_on/subset_index_log.json
   # SHARED with v3/v4/v5 and with the other groups (complete, relocked; input
@@ -231,7 +231,7 @@ inputs:
   benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_6311ppg3df2pd_g3
   val_refs_dir: /gpfs/scratch/awills/external_refs_val_6311ppg3df2pd_g3
   # THIS GROUP'S OWN output root: additive, every other run dir -- the other
-  # four groups' included -- is untouched, and `status`, `validate_run` and the
+  # five groups' included -- is untouched, and `status`, `validate_run` and the
   # figure suite each read one group's run at a time.
   output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v6g2a_families_core
 
@@ -244,7 +244,7 @@ pretrain:
   # independent submissions with no ordering between them. The per-group copies
   # are value-identical by construction: the rows are a deterministic function
   # of the set, the footing, the objective and the run identity, all five of
-  # which are the same in all five files.
+  # which are the same in all six files.
   data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v6g2a_families_core
   # Pretraining schedule, byte-inherited from v5 (lines 134-140).
   n_steps: 2500
@@ -286,7 +286,7 @@ pretrain:
   # the merged BH76 / W4-11 pools at their production charges and spins (the 12
   # neutral elements plus the F- and Cl- anions that are BH76 reactants). Both
   # replace the historical four-atom default; the `atoms` list above extends it
-  # by Na. The set is the same in all five groups: a certificate is only
+  # by Na. The set is the same in all six groups: a certificate is only
   # comparable across groups if the networks were fitted to the same rows.
   dfs_set: true
   pool_atoms: true
@@ -498,7 +498,7 @@ cluster:
   pretrain_time: "12:00:00"
   # STATED here although v5 left it unset (v5 had 3 distinct architectures).
   # Unset means every distinct architecture pretrains concurrently, i.e.
-  # 6 whole exclusive nodes at once for this group alone, with the
+  # 3 whole exclusive nodes at once for this group alone, with the
   # other groups possibly queued beside it. 4 is the reference file's value,
   # kept identical in all five so the five pretrain arrays are one etiquette
   # budget. The wall above is per task, so throttling costs queue time and

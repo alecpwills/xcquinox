@@ -762,15 +762,18 @@ directory, its own pretraining-data root and its own certificate gate; none wait
 another. The subset-size axis is the same eleven values throughout, so a group of `n`
 architectures is `n x 11` cells. The order is cheapest-and-most-diagnostic first, and within
 a group the GGA-rung architectures are submitted before the meta-GGA parity forms where
-those exist. The five files, in submission order (executed check C11 reads each one back):
+those exist. The six files, in submission order (executed check C11 read the
+five-file ladder back; the 2026-08-30 split of the families file into two trios
+postdates that record):
 
 | order | file, under `hpcjobs/configs/` | rung | archs | cells |
 |---|---|---|---|---|
 | 1 | `dfs_step7.dfs6311_grid3_v6g1_size.yaml` | GGA | 4 | 44 |
-| 2 | `dfs_step7.dfs6311_grid3_v6g2_families.yaml` | GGA | 6 | 66 |
-| 3 | `dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml` | meta-GGA | 5 | 55 |
-| 4 | `dfs_step7.dfs6311_grid3_v6g3_dm.yaml` | GGA | 3 | 33 |
-| 5 | `dfs_step7.dfs6311_grid3_v6g4_ablations.yaml` | GGA | 2 | 22 |
+| 2 | `dfs_step7.dfs6311_grid3_v6g2a_families_core.yaml` | GGA | 3 | 33 |
+| 3 | `dfs_step7.dfs6311_grid3_v6g2b_families_rung35.yaml` | GGA | 3 | 33 |
+| 4 | `dfs_step7.dfs6311_grid3_v6g2_families_mgga.yaml` | meta-GGA | 5 | 55 |
+| 5 | `dfs_step7.dfs6311_grid3_v6g3_dm.yaml` | GGA | 3 | 33 |
+| 6 | `dfs_step7.dfs6311_grid3_v6g4_ablations.yaml` | GGA | 2 | 22 |
 
 Each group's train array is gated on a PASS fidelity certificate for every architecture on
 its axis: the certificate runs once per architecture on the pretrain node after the networks
@@ -924,7 +927,7 @@ architecture axis and costs 11 x 11 = 121 additional cells if taken in full.
 | G4 width and depth at baseline inputs | 2 (2 GGA) | 22 |
 | **campaign total** | **20 (15 GGA + 5 meta-GGA)** | **220** |
 
-Executed check C2 confirms `44 + 66 + 55 + 33 + 22 = 220`, that the five group lists are
+The suite's pins confirm `44 + 33 + 33 + 55 + 33 + 22 = 220` and that the six group lists are (executed check C2 established the pre-split five-file equivalent)
 pairwise disjoint, that the swept set carries 5 meta-GGA and 15 GGA architectures, and that
 the swept set together with the eleven exclusions is exactly `sorted(ARCHITECTURES)`.
 
