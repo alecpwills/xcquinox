@@ -425,21 +425,24 @@ def run_stamp_datetime(run_id: str):
         return None
 
 
-def ssh_control_opts(persist_seconds: int) -> tuple[str, ...]:
+def ssh_control_opts(socket_dir: str, persist_seconds: int) -> tuple[str, ...]:
     """SSH option words enabling connection multiplexing.
 
     The first connection (discovery) authenticates and becomes the master;
     every later connection in the batch rides its socket, so an N-run pull
-    costs ONE interactive verification. The socket path is expressed with
-    ssh's OWN tokens -- ``%d`` (local user's home directory) and ``%C`` (a
-    fixed-length hash of the connection identity; the expanded path is 65
-    chars, inside the sockaddr_un limit) -- so the option string never
-    contains a space even when ``$HOME`` does: these words also travel
-    inside rsync's ``-e "ssh ..."`` value, which rsync word-splits.
-    ``ControlMaster=auto`` composes with any user config: it reuses an
-    existing master or becomes one. The caller is responsible for the
-    ``~/.ssh`` mkdir (ssh silently skips multiplexing when the socket dir
-    cannot be opened).
+    costs ONE interactive verification. The socket name carries ``%C`` (a
+    fixed-length hash of the connection identity; the expanded path stays
+    inside the sockaddr_un limit), the ONE ssh token ``ControlPath``
+    actually supports here -- ``%d`` is NOT in ControlPath's token list
+    (OpenSSH 8.2: ``percent_expand: unknown key %d``, rc 255 on every
+    connection), so the directory travels expanded. A ``socket_dir``
+    containing spaces is legal: callers passing these words as separate
+    argv elements need nothing, and the one caller that folds them into
+    rsync's word-split ``-e "ssh ..."`` value must shell-quote each word
+    (``__main__`` does). ``ControlMaster=auto`` composes with any user
+    config: it reuses an existing master or becomes one. The caller is
+    responsible for the ``socket_dir`` mkdir (ssh silently skips
+    multiplexing when the socket dir cannot be opened).
 
     ``persist_seconds`` must be >= 1: ssh defines ``ControlPersist=0`` as
     "persist forever", the OPPOSITE of disable, so 0 is refused here --
@@ -450,8 +453,9 @@ def ssh_control_opts(persist_seconds: int) -> tuple[str, ...]:
         raise ValueError(
             f"persist_seconds must be >= 1 (ssh treats ControlPersist=0 as "
             f"'persist forever'), got {persist_seconds!r}")
+    sock = str(socket_dir).rstrip("/")
     return ("-o", "ControlMaster=auto",
-            "-o", "ControlPath=%d/.ssh/xcq-cm-%C",
+            "-o", f"ControlPath={sock}/xcq-cm-%C",
             "-o", f"ControlPersist={persist}")
 
 

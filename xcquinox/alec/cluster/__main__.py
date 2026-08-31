@@ -2007,7 +2007,7 @@ def _pull_cm_opts(args):
         return None
     sock_dir = Path.home() / ".ssh"
     sock_dir.mkdir(mode=0o700, exist_ok=True)
-    return _sync.ssh_control_opts(args.ssh_persist)
+    return _sync.ssh_control_opts(str(sock_dir), args.ssh_persist)
 
 
 def _report_multiplexing(host: str, cm_opts, label: str = "pull") -> None:
@@ -2026,6 +2026,17 @@ def _report_multiplexing(host: str, cm_opts, label: str = "pull") -> None:
     else:
         _log(f"{label}: ssh multiplexing NOT active (master exited or "
              "socket unavailable); each connection may prompt")
+
+
+def _ssh_transport_arg(cm_opts) -> str:
+    """The rsync ``-e`` value carrying the multiplexing options.
+
+    rsync word-splits this string shell-style, so every option word is
+    shell-quoted: a ControlPath under a home directory containing spaces
+    must arrive at ssh as ONE argv element (unquoted, it arrived as four
+    and the transfer died with exit 127).
+    """
+    return "ssh " + " ".join(shlex.quote(str(w)) for w in cm_opts)
 
 
 def _pull_inventory(run_dir: Path) -> str:
@@ -2122,7 +2133,7 @@ def _cmd_pull_auto(args, spec_indices) -> int:
     try:
         with os.fdopen(fd, "w") as fh:
             fh.write(generated)
-        extra = ("-e", "ssh " + " ".join(cm_opts)) if cm_opts else ()
+        extra = ("-e", _ssh_transport_arg(cm_opts)) if cm_opts else ()
         try:
             argv = _sync.build_multi_rsync_command(
                 host=host, remote_root=remote_root, local_root=local_root,
@@ -2219,7 +2230,7 @@ def cmd_pull(args) -> int:
     local_dest = local_dest / run_id
     local_dest.mkdir(parents=True, exist_ok=True)
 
-    extra = ("-e", "ssh " + " ".join(cm_opts)) if cm_opts else ()
+    extra = ("-e", _ssh_transport_arg(cm_opts)) if cm_opts else ()
     argv = _sync.build_rsync_command(
         host=host, remote_root=remote_root, local_root=local_root,
         run_id=run_id, category=category,

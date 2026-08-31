@@ -1045,20 +1045,42 @@ def test_ssh_remote_command_quotes_globs_and_scripts(tmp_path):
 
 
 def test_ssh_control_opts_shape_and_persist_validation():
-    opts = sync.ssh_control_opts(3600)
+    opts = sync.ssh_control_opts("/home/u/.ssh", 3600)
     assert opts == ("-o", "ControlMaster=auto",
-                    "-o", "ControlPath=%d/.ssh/xcq-cm-%C",
+                    "-o", "ControlPath=/home/u/.ssh/xcq-cm-%C",
                     "-o", "ControlPersist=3600")
-    # The words are folded into rsync's -e "ssh ..." value, which rsync
-    # word-splits: none may contain whitespace (a $HOME with a space broke
-    # the transport when the path was expanded locally).
-    assert not any(" " in w for w in opts)
     # ssh defines ControlPersist=0 as "persist forever", the opposite of
     # disable, so 0 (and negatives) must be refused here.
     with pytest.raises(ValueError):
-        sync.ssh_control_opts(0)
+        sync.ssh_control_opts("/home/u/.ssh", 0)
     with pytest.raises(ValueError):
-        sync.ssh_control_opts(-5)
+        sync.ssh_control_opts("/home/u/.ssh", -5)
+
+
+def test_ssh_control_opts_tokens_are_accepted_by_the_real_ssh(tmp_path):
+    # Executed oracle: ssh must EXPAND the ControlPath, not die on an
+    # unsupported percent token (ControlPath accepts %C but NOT %d --
+    # a %d form shipped once and killed every connection with
+    # "percent_expand: unknown key" before any network activity).
+    if shutil.which("ssh") is None:
+        pytest.skip("ssh executable not available")
+    opts = sync.ssh_control_opts(str(tmp_path), 60)
+    completed = subprocess.run(
+        ["ssh", *opts, "-O", "check",
+         "xcq-nonexistent-host.invalid"],
+        capture_output=True, text=True)
+    assert "percent_expand" not in completed.stderr, completed.stderr
+    assert completed.returncode != 0  # no master exists; the probe still ran
+
+
+def test_ssh_transport_arg_survives_spaced_socket_dirs():
+    from xcquinox.alec.cluster.__main__ import _ssh_transport_arg
+    import shlex as _shlex
+    opts = sync.ssh_control_opts("/home/a user/.ssh", 3600)
+    value = _ssh_transport_arg(opts)
+    # rsync splits the -e value shell-style: the round trip must restore
+    # every option word intact, spaces included.
+    assert _shlex.split(value) == ["ssh", *opts]
 
 
 def test_run_stamp_datetime_display_only():
