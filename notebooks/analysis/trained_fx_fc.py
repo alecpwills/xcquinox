@@ -28,7 +28,9 @@ loader, which holds the class record beside the checkpoint to the ``.eqx`` on
 disk by its SHA-256 and then to the class of the skeleton. Neither the anchor
 nor the coordinates changes a parameter shape, so a checkpoint of another
 class would otherwise deserialize here in silence and plot as a plausible
-curve. A refusal is raised, not swallowed: a figure drawn from a checkpoint
+curve -- at zero-initialized final layers one that agrees with the parent to
+round-off (2.2e-16), and with perturbed legacy leaves one that sits 8.3e-3
+off, an O(1 percent) silently wrong functional. A refusal is raised, not swallowed: a figure drawn from a checkpoint
 nothing on disk describes would be worse than no figure.
 
 ``enhancement_factors.load_trained_model`` is the sibling reader of the same
@@ -620,12 +622,16 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
     best = [(cell, curves_by_index[cell.index], mae)
             for cell, mae in selected]
 
+    used_dirs = sorted({CHANNEL_EVAL_DIR[cell.channel]
+                        for cell, mae in selected if mae is not None})
+    score_src = "/".join(used_dirs) if used_dirs else \
+        CHANNEL_EVAL_DIR[eval_channel]
     footer = (f"run {run_dir.name}; {channel_note}; one cell per architecture, "
               f"selected by the smallest {BEST_CELL_COLUMN} of the "
               f"{BEST_CELL_SET} row of "
-              f"checkpoints/spec_*/{CHANNEL_EVAL_DIR[eval_channel]}/"
-              "test_set.csv; parent curves parents.pbe_fx / parents.pbe_fc "
-              "(libxc constants).")
+              f"checkpoints/spec_*/{score_src}/test_set.csv -- each cell "
+              "scored on the channel its drawn weights came from; parent "
+              "curves parents.pbe_fx / parents.pbe_fc (libxc constants).")
     if unranked:
         footer += (f"  No held-out evaluation on disk for {', '.join(unranked)}"
                    " -- drawn at the largest completed subset size instead.")
