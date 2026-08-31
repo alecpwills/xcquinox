@@ -1595,6 +1595,76 @@ def test_v6_group_states_its_place_in_the_ladder(name):
         assert other in text, (path, other)
 
 
+# QOS wall caps as measured (sacctmgr, 2026-08-27, both login instances):
+# every long-* QOS holds MaxWall at 48 h; the extended-* partitions carry
+# 7-day caps. Pinned here because SLURM rejects an over-cap wall only when
+# the sbatch carrying it runs -- for a retry key that is days into a
+# campaign, at recovery time -- and the first v6 groups shipped exactly that
+# defect: timeout_retry_partition long-96core with timeout_retry_time 96 h,
+# an escalation rejected whenever it fired, and an OOM re-route to the same
+# 48 h QOS replaying scripts whose baked campaign wall is 72 h.
+_QOS_MAX_WALL_HOURS = {
+    "long-40core": 48.0,
+    "long-96core": 48.0,
+    "long-96core-shared": 48.0,
+    "extended-40core": 168.0,
+    "extended-96core": 168.0,
+    "extended-96core-shared": 168.0,
+}
+
+#: The campaign submits the 40-core groups with ``--train-time "72:00:00"``
+#: (recorded in the 2026-08-27 relaunch); an OOM re-route replays the captured
+#: script at that baked wall, so the OOM target must admit it too.
+_V6_CAMPAIGN_TRAIN_WALL_H = 72.0
+
+
+def _wall_hours(literal) -> float:
+    d, _, rest = str(literal).rpartition("-")
+    h, m, sec = (int(x) for x in rest.split(":"))
+    return int(d or 0) * 24 + h + m / 60.0 + sec / 3600.0
+
+
+@pytest.mark.parametrize("name", _V6_GROUP_FILES)
+def test_v6_group_retry_targets_admit_their_walls(name):
+    """Every rendered recovery wall fits its target partition's QOS cap.
+
+    The timeout escalation renders ``--partition=<timeout_retry_partition>
+    --time=<timeout_retry_time>``; the OOM escalation renders
+    ``--partition=<oom_retry_partition>`` and replays the captured script at
+    its baked wall (the file's, or the campaign's 72 h ``--train-time``
+    override, whichever was submitted). A target whose QOS cap is below the
+    wall turns the recovery into a rejection at the moment it is needed --
+    the shipped long-96core targets (48 h cap) against the 96 h retry and
+    the 72 h replay failed this test before the 2026-08-30 retarget to
+    extended-96core."""
+    path = _campaign_config_path(name)
+    if path is None:
+        pytest.skip(f"no hpcjobs/configs/{name} in this checkout")
+    raw = _raw_yaml(path)["cluster"]
+    file_wall_h = _wall_hours(raw["time"])
+
+    trp = raw.get("timeout_retry_partition")
+    trt = raw.get("timeout_retry_time")
+    assert trt is not None, name
+    if trp is not None:
+        cap = _QOS_MAX_WALL_HOURS[trp]
+        assert _wall_hours(trt) <= cap, (
+            f"{name}: timeout retry {trt} exceeds {trp}'s {cap:g} h cap")
+    else:
+        # Partition unset: the retry stays on the submit partition, whose
+        # campaign home is extended-* (7-day) -- the wall must fit that.
+        assert _wall_hours(trt) <= _QOS_MAX_WALL_HOURS["extended-96core"]
+
+    orp = raw.get("oom_retry_partition")
+    if orp is not None:
+        cap = _QOS_MAX_WALL_HOURS[orp]
+        for wall_h, label in ((file_wall_h, "file wall"),
+                              (_V6_CAMPAIGN_TRAIN_WALL_H, "campaign wall")):
+            assert wall_h <= cap, (
+                f"{name}: the OOM re-route to {orp} replays the {label} "
+                f"{wall_h:g} h above the {cap:g} h cap")
+
+
 def test_v6_reference_names_the_five_group_files_in_order():
     """The reference file points at the ladder, in submission order, and says
     it is not itself the submission.

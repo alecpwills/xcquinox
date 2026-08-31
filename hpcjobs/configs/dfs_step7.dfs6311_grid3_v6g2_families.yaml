@@ -434,10 +434,12 @@ cluster:
   # bigger node and the resume are alternatives, never one relaunch.
   # The partition must exist
   # on the login instance the submission is made from or the retry sbatch is
-  # rejected -- verify the spelling with the sinfo call above (the runbook
-  # names `long-96core-shared`; v4gga carries bare `long-96core`, which is the
-  # value inherited here).
-  oom_retry_partition: long-96core
+  # rejected -- verify the spelling with the sinfo call above. The v4gga
+  # value `long-96core` inherited here was retargeted 2026-08-30:
+  # long-96-core-qos caps MaxWall at 48 h (sacctmgr, 2026-08-27), so the
+  # 96 h escalation below was rejected exactly when it fired; extended-96core
+  # carries the 7-day cap that admits it.
+  oom_retry_partition: extended-96core
   # TIMEOUT retry keys, ENGAGED, and on the 40-core scheme they carry a
   # PARTITION as well as a wall. They apply to ONE case: a cell wall-killed
   # before it wrote its first resume checkpoint. That cell restarts from step
@@ -447,10 +449,12 @@ cluster:
   # block above); the two are exclusive and the checkpoint wins. Without these
   # keys the second case would restart from zero on a wall it has already been
   # shown to exceed. Both cases are the same operator command; neither is
-  # unattended. VERIFY 96 h against the
-  # retry queue's cap with the same sinfo call as the wall above -- an over-cap
-  # retry is rejected days later, during recovery, rather than at submit.
-  timeout_retry_partition: long-96core
+  # unattended. The 96 h below sits inside extended-96core's 7-day QOS cap
+  # (sacctmgr, 2026-08-27; the earlier long-96core target capped MaxWall at
+  # 48 h and rejected this escalation at recovery time) -- the rendered-wall
+  # test in test_cluster_examples.py holds every retry wall inside its
+  # target's cap.
+  timeout_retry_partition: extended-96core
   timeout_retry_time: "96:00:00"
   # jax-0.7.0 PARITY env (matches the local dev/test stack the meta-GGA code was
   # tested on) -- a fresh, single-purpose conda-forge+pip env built from
