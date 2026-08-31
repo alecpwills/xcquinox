@@ -34,9 +34,12 @@ ARCH_ORDER: Tuple[str, ...] = (
     "deep", "deep_attn", "deep_cusp", "deep_dm",
     "deep_combined", "deep_combined_attn",
     "deep_notransform", "deep_notransform_attn",
-    # v6 size-ladder archs (registered base names, no width-twin suffix):
-    # ascending capacity, attention twin after its base, ahead of the
-    # production-width _3x16 block they are compared against.
+    # v6 G1 ladder archs (registered base names, no width-twin suffix).
+    # shallow/shallow_attn are the reduced size (depth 2 x 8 nodes);
+    # medium/medium_attn are the PRODUCTION 3x16 size differing from
+    # deep_3x16/deep_attn_3x16 only in descriptor_log_transform and
+    # zero_init_final_layer -- a transform/initialization ablation at fixed
+    # capacity, not a size step. Attention twin after its base.
     "shallow", "shallow_attn", "medium", "medium_attn",
     "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16", "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
@@ -66,12 +69,18 @@ ARCH_COLOR["deep_rung35_mgga"] = "#7b4173"
 ARCH_COLOR["deep_rung35ms"] = "#6b6ecf"
 ARCH_COLOR["deep_cusp_mgga"] = "#bd9e39"
 ARCH_COLOR["deep_rung35ms_mgga"] = "#a55194"
-# v6 size-ladder archs: the greens, a hue family no other rung or descriptor
-# family uses; each attention twin is the lighter shade of its base.
+# v6 G1 ladder archs: green-family entries chosen by worst-case CIEDE2000
+# distance against every colour a same-figure architecture or rung accent can
+# carry -- tab10[2] #2ca02c (deep_cusp, its 3x16 twin, and the rung-3.5
+# accent) is itself a green, so proximity to it is the binding constraint.
+# shallow pair (tab20b[4]/[5]): worst cross-family separation 15.91.
+# medium pair (tab20[5]/tab20c[11]): worst 16.90 (the tab20c[8] value first
+# chosen here sat at 5.79 from #2ca02c, half the palette's own twin gap).
+# Each attention twin is the lighter shade of its base.
 ARCH_COLOR["shallow"] = "#637939"
 ARCH_COLOR["shallow_attn"] = "#8ca252"
-ARCH_COLOR["medium"] = "#31a354"
-ARCH_COLOR["medium_attn"] = "#74c476"
+ARCH_COLOR["medium"] = "#98df8a"
+ARCH_COLOR["medium_attn"] = "#c7e9c0"
 for _small in ARCH_ORDER[8:]:
     # Only width-twin names inherit by suffix-strip; a base name in the tail
     # (the size ladder) keeps its explicit entry above -- the unguarded strip

@@ -220,8 +220,12 @@ def test_v6_campaign_archs_all_in_arch_order_with_distinct_colors():
         # within a group's axis (across groups the palette deliberately
         # repeats: a width twin reuses its 4x32 base's color, and G4's
         # deep/deep_attn are the bases of G2's deep_3x16/deep_attn_3x16).
-        group_cols = [A.ARCH_COLOR[a] for a in archs if a in A.ARCH_COLOR]
-        assert len(set(group_cols)) == len(archs), (path, group_cols)
+        # Membership and collision are separate defects with separate
+        # messages: a missing palette key must not read as a collision.
+        missing = [a for a in archs if a not in A.ARCH_COLOR]
+        assert not missing, (path, missing)
+        group_cols = [A.ARCH_COLOR[a] for a in archs]
+        assert len(set(group_cols)) == len(group_cols), (path, group_cols)
     assert len(union) == 20, sorted(union)
     for a in sorted(union):
         assert a in A.ARCH_ORDER, a
