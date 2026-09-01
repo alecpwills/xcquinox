@@ -407,9 +407,27 @@ _REFERENCE_SCF_NEWTON_MAX_CYCLE = 50
 # (moments 3.371581 / 3.771174 / 3.779969 against 3.371541 / 3.770797 /
 # 3.780388, 1.4e-3 relative in rho on 94 percent of the grid, energies 9e-8
 # Ha above the 1e-9 point). The consumers that rebuild the orbital gradient
-# from a record's Fock pieces hold it to twice pyscf's gradient criterion for
-# the reason stated at pretrain_data_gen._GRADIENT_CHECK_MARGIN.
+# from a record's Fock pieces hold it to three times pyscf's gradient
+# criterion (pretrain_data_gen._GRADIENT_CHECK_MARGIN = 3.0) for the reason
+# stated there.
 _REFERENCE_SCF_CONV_TOL = 1e-9
+# Branch tolerance of the acceptance check (both stages): a converged
+# solution may sit above the DIIS trajectory's minimum-energy point only by
+# the convergence slack of one basin. Measured same-basin excesses at
+# equilibrium identities: -2.97e-7 Ha (Li / SCAN / 6-311++G(3df,2pd) /
+# grid 3 / lock 3e-5), -4.09e-6 Ha (C2 / PBE, same basis and grid),
+# +8.26e-7 Ha (O / PBE / def2-svp rescue) and +8.38e-6 Ha (S / SCAN,
+# DIIS-converged endpoint over its own trajectory minimum) -- 1e-4 sits
+# roughly 12x above the largest of these -- while a solution on the WRONG
+# SCF branch exceeds the tolerance by the inter-branch gap, +7.984e-2 Ha
+# (50.10 kcal/mol) over the trajectory minimum on C2, nearly three decades
+# above it. The residual exposure is a FALSE REFUSAL, never a wrong value:
+# at a near-degenerate geometry (C2 stretched to r = 1.60 A) the rescue's
+# converged endpoint is itself reproducible only to 1.31e-4 Ha across
+# draws, so such a species can refuse on an unlucky draw; every species of
+# the current datagen pools was swept (28 atom runs plus the rescue
+# identities) and none exceeds +8.4e-6 Ha.
+_REFERENCE_SCF_BRANCH_TOL = 1e-4
 
 
 def _converge_reference_scf(mf, label="the reference SCF"):
@@ -486,6 +504,31 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     this rescue previously started from the end point, the second stage's
     start -- and with it the converged endpoint -- may move within the
     flat-direction slack quantified above (2.3e-8 to 9.8e-7 Ha).
+
+    A converged second stage is accepted only against the trajectory's own
+    minimum energy (:data:`_REFERENCE_SCF_BRANCH_TOL`), because pyscf's
+    SOSCF ingests ``dm0`` by diagonalizing Fock(dm0) and re-occupying by
+    aufbau, and near a configuration crossing that step selects an SCF
+    branch discontinuously. Measured on C2 / PBE / 6-311++G(3df,2pd) /
+    grid level 3 under the 3e-5 lock (the held-out evaluation identity):
+    DIIS oscillates unconverged between the two SCF configurations of C2
+    for all 100 cycles, and SOSCF from the trajectory's lowest-energy
+    DENSITY (E=-75.8167361) converges 0.0798415986 Ha UPHILL onto the
+    internally unstable higher solution (-75.7368945310 against
+    -75.8167407121, 50.10 kcal/mol; the ground solution is non-aufbau in
+    its own Fock, so even its exact density re-occupies onto the higher
+    branch), while from the same point's ORBITAL PAIR it converges to the
+    ground solution in 2 macro-iterations. Which branch the best-by-|g|
+    density start lands on is draw-dependent (the unconverged oscillation
+    is chaotic; 4 of 10 local draws of the pre-acceptance code landed the
+    higher branch at this identity, and seven pulled evaluations of
+    run_20260827T163330Z stamped it -- the cross-spec reference guard's
+    outlier set -- while every end-point-started run measured landed the
+    ground one). A rescue above the trajectory minimum by
+    more than the branch tolerance is therefore rerun from the
+    minimum-energy point's recorded orbital pair, the lower converged
+    solution is kept, and an excess that still stands is refused rather
+    than recorded.
     """
     mf.max_cycle = _REFERENCE_SCF_MAX_CYCLE
     mf.conv_tol = _REFERENCE_SCF_CONV_TOL
@@ -499,6 +542,13 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     # gradient of that cycle's density, the quantity both stages converge
     # on, and make_rdm1(mo_coeff, mo_occ) holds for RKS and UKS alike.
     best = {"dm": None, "gorb": np.inf}
+    # Trajectory-lowest ENERGY point, kept as the ORBITAL PAIR of that
+    # cycle's determinant (not its density: dm0 is re-occupied by aufbau
+    # through Fock(dm0), the step that flips the C2 branch -- docstring),
+    # for the branch-acceptance rerun below. e_tot is in scf.hf.kernel's
+    # callback locals beside norm_gorb; a NaN energy never improves inf,
+    # and a kernel whose envs lack it leaves the acceptance disabled.
+    low = {"e": np.inf, "mo": None, "occ": None}
     caller_callback = getattr(mf, "callback", None)
 
     def _record_best(envs):
@@ -507,6 +557,11 @@ def _converge_reference_scf(mf, label="the reference SCF"):
             best["gorb"] = gorb
             best["dm"] = np.array(
                 envs["mf"].make_rdm1(envs["mo_coeff"], envs["mo_occ"]))
+        e_tot = float(envs.get("e_tot", np.inf))
+        if e_tot < low["e"]:
+            low["e"] = e_tot
+            low["mo"] = np.array(envs["mo_coeff"])
+            low["occ"] = np.array(envs["mo_occ"])
         if callable(caller_callback):
             caller_callback(envs)
 
@@ -522,7 +577,54 @@ def _converge_reference_scf(mf, label="the reference SCF"):
         mf.callback = caller_callback
     cycles = int(mf.cycles)
     if mf.converged:
-        return mf, cycles, "diis"
+        if (low["mo"] is None
+                or float(mf.e_tot) <= low["e"] + _REFERENCE_SCF_BRANCH_TOL):
+            return mf, cycles, "diis"
+        # The variational argument of the branch acceptance holds on this
+        # path identically (every trajectory energy is an aufbau
+        # determinant's energy): a CONVERGED endpoint above the
+        # trajectory's minimum-energy point by more than the tolerance is
+        # a higher stationary point. Rerun from that point's orbital pair
+        # directly -- no dm0 stage, the aufbau re-occupation is the hazard
+        # -- keep the lower converged solution, refuse a standing excess.
+        # No equilibrium pool species fires this (28 atom runs and every
+        # rescue identity measured within +8.4e-6 Ha of trajectory min).
+        excess = float(mf.e_tot) - low["e"]
+        try:
+            so2 = mf.newton()
+            so2.max_cycle = _REFERENCE_SCF_NEWTON_MAX_CYCLE
+            so2.conv_tol = _REFERENCE_SCF_CONV_TOL
+            macro2 = []
+            so2.callback = lambda envs: macro2.append(int(envs["imacro"]))
+            so2.kernel(mo_coeff=low["mo"], mo_occ=low["occ"])
+        except Exception as exc:
+            raise ReferenceSCFNotConverged(
+                f"{label}: the DIIS stage converged onto a stationary "
+                f"point {excess:.3e} Ha above its own trajectory's "
+                f"minimum-energy point (E={float(mf.e_tot):.10f} against "
+                f"{low['e']:.10f}), and the rerun from that point's "
+                f"orbitals raised {type(exc).__name__}: {exc}.",
+                cycles=cycles) from exc
+        n2 = (macro2[-1] + 1) if macro2 else 0
+        result = mf
+        if bool(so2.converged) and float(so2.e_tot) < float(mf.e_tot):
+            result = so2
+        if float(result.e_tot) > low["e"] + _REFERENCE_SCF_BRANCH_TOL:
+            raise ReferenceSCFNotConverged(
+                f"{label}: the DIIS stage converged onto a stationary "
+                f"point {excess:.3e} Ha above its own trajectory's "
+                f"minimum-energy point (E={float(mf.e_tot):.10f} against "
+                f"{low['e']:.10f}, tolerance "
+                f"{_REFERENCE_SCF_BRANCH_TOL:g}), and the rerun from that "
+                "point's orbitals "
+                + (f"converged no lower (E={float(so2.e_tot):.10f})"
+                   if bool(so2.converged) else
+                   "did not converge within "
+                   f"{_REFERENCE_SCF_NEWTON_MAX_CYCLE} macro-iterations")
+                + "; a record on a higher SCF branch would be silently "
+                "wrong by the inter-branch gap.",
+                cycles=cycles + n2)
+        return result, cycles + n2, "diis+newton"
     # The measured crash class of the second stage: an UNRESTRICTED system
     # whose orbital-rotation space is empty in both spin channels -- the H
     # atom in a minimal basis (alpha 1 occupied, 0 virtual; beta 0 occupied,
@@ -570,6 +672,53 @@ def _converge_reference_scf(mf, label="the reference SCF"):
             f"(cycles={cycles}, max_cycle={_REFERENCE_SCF_MAX_CYCLE}).",
             cycles=cycles) from exc
     newton_cycles = (macro[-1] + 1) if macro else 0
+    # Branch acceptance (the C2 case in the docstring): every trajectory
+    # energy is the energy of an aufbau determinant, a variational upper
+    # bound of its own basin's minimum, so a converged rescue ABOVE the
+    # trajectory's minimum-energy point by more than the branch tolerance
+    # has converged onto a higher stationary point than one the trajectory
+    # already visited. Rerun the stage from that point's orbital pair (the
+    # exact determinant, immune to the aufbau re-occupation) and keep the
+    # lower converged solution; an excess that still stands is refused --
+    # a record on the higher branch would be silently wrong by the
+    # inter-branch gap (50.10 kcal/mol on C2).
+    if (bool(so.converged) and low["mo"] is not None
+            and float(so.e_tot) > low["e"] + _REFERENCE_SCF_BRANCH_TOL):
+        excess = float(so.e_tot) - low["e"]
+        try:
+            so2 = mf.newton()
+            so2.max_cycle = _REFERENCE_SCF_NEWTON_MAX_CYCLE
+            so2.conv_tol = _REFERENCE_SCF_CONV_TOL
+            macro2 = []
+            so2.callback = lambda envs: macro2.append(int(envs["imacro"]))
+            so2.kernel(mo_coeff=low["mo"], mo_occ=low["occ"])
+        except Exception as exc:
+            raise ReferenceSCFNotConverged(
+                f"{label}: the second-order stage converged onto a "
+                f"stationary point {excess:.3e} Ha above the DIIS "
+                f"trajectory's minimum-energy point "
+                f"(E={float(so.e_tot):.10f} against {low['e']:.10f}), and "
+                f"the rerun from that point's orbitals raised "
+                f"{type(exc).__name__}: {exc}.",
+                cycles=cycles + newton_cycles) from exc
+        newton_cycles += (macro2[-1] + 1) if macro2 else 0
+        if bool(so2.converged) and float(so2.e_tot) < float(so.e_tot):
+            so = so2
+        if float(so.e_tot) > low["e"] + _REFERENCE_SCF_BRANCH_TOL:
+            raise ReferenceSCFNotConverged(
+                f"{label}: the second-order stage converged onto a "
+                f"stationary point {float(so.e_tot) - low['e']:.3e} Ha "
+                f"above the DIIS trajectory's minimum-energy point "
+                f"(E={float(so.e_tot):.10f} against {low['e']:.10f}, "
+                f"tolerance {_REFERENCE_SCF_BRANCH_TOL:g}), and the rerun "
+                "from that point's orbitals "
+                + (f"converged no lower (E={float(so2.e_tot):.10f})"
+                   if bool(so2.converged) else
+                   "did not converge within "
+                   f"{_REFERENCE_SCF_NEWTON_MAX_CYCLE} macro-iterations")
+                + "; a record on the higher SCF branch would be silently "
+                "wrong by the inter-branch gap.",
+                cycles=cycles + newton_cycles)
     return so, cycles + newton_cycles, "diis+newton"
 
 

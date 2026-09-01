@@ -2343,3 +2343,231 @@ def test_the_best_point_recorder_is_detached_before_the_rescue_returns(
                  for c in (getattr(cb, "__closure__", None) or ())]
         assert not any(isinstance(v, np.ndarray) for v in cells), cells
         assert not any(isinstance(v, dict) and "dm" in v for v in cells), cells
+
+
+# --------------------------------------------------------------------------- #
+# Branch acceptance of the second-order rescue (the C2 case)
+# --------------------------------------------------------------------------- #
+
+class _BistableTrajectoryStubSCF(_TrajectoryStubSCF):
+    """A trajectory over TWO SCF branches, shaped like the C2 / PBE case.
+
+    The envs carry ``e_tot`` (as ``scf.hf.kernel``'s locals do), so the
+    driver can see the trajectory's minimum-energy point. The second-order
+    stubs model the measured dm0-ingestion discontinuity: a stage started
+    from a DENSITY converges onto the HIGHER branch (pyscf re-occupies
+    Fock(dm0) by aufbau, the step that flips C2), while a stage started from
+    an ORBITAL PAIR converges onto the branch of that determinant -- the
+    lower one for the trajectory's minimum-energy point.
+    """
+
+    E_HIGH = -0.2
+    E_LOW = -0.7
+
+    def __init__(self, gradients, energies, retry_converges=True,
+                 retry_e_tot=None):
+        super().__init__(gradients)
+        self.energies = list(energies)
+        self.retry_converges = retry_converges
+        self.retry_e_tot = self.E_LOW if retry_e_tot is None else retry_e_tot
+        self.newton_calls = []
+
+    def kernel(self):
+        for cycle, (gorb, e) in enumerate(zip(self.gradients,
+                                              self.energies)):
+            if callable(self.callback):
+                self.callback({"mf": self, "cycle": cycle,
+                               "norm_gorb": gorb, "e_tot": e,
+                               "mo_coeff": self.orbitals(cycle),
+                               "mo_occ": self.mo_occ})
+
+    def newton(self):
+        so = _BistableSecondOrderStub(self)
+        self.newton_calls.append(so)
+        return so
+
+
+class _BistableSecondOrderStub:
+    """Records how it was started; converges HIGH from a density and onto
+    the trajectory's ``retry_e_tot`` from an orbital pair."""
+
+    def __init__(self, traj):
+        self.traj = traj
+        self.callback = None
+        self.converged = False
+        self.max_cycle = None
+        self.conv_tol = None
+        self.e_tot = None
+        self.start = None
+
+    def kernel(self, dm0=None, mo_coeff=None, mo_occ=None):
+        if dm0 is not None:
+            self.start = ("dm0", np.array(dm0))
+            self.converged = True
+            self.e_tot = self.traj.E_HIGH
+        else:
+            self.start = ("mo", np.array(mo_coeff), np.array(mo_occ))
+            self.converged = bool(self.traj.retry_converges)
+            self.e_tot = self.traj.retry_e_tot
+        if callable(self.callback):
+            self.callback({"imacro": 0})
+        return self.e_tot
+
+
+def test_wrong_branch_rescue_is_rerun_from_the_lowest_energy_trajectory_point():
+    """A converged rescue ABOVE the DIIS trajectory's minimum energy has
+    converged onto a higher stationary point than one the trajectory already
+    visited (every trajectory energy is the energy of an aufbau determinant,
+    a variational upper bound of its own basin's minimum) and must be rerun
+    from the minimum-energy point's ORBITAL PAIR, keeping the lower converged
+    solution. The real-path anchor is C2 / PBE / 6-311++G(3df,2pd) / grid 3
+    under the 3e-5 lock, where the two converged branches are 0.0798461811 Ha
+    (50.1042 kcal/mol) apart (the acceptance check's own excess, higher
+    branch over the trajectory minimum, reads 0.0798415986 Ha there), the
+    rescue's dm0 start lands on either branch
+    draw-dependently (the ground solution is non-aufbau in its own Fock, so
+    even its exact density re-occupies onto the higher branch), and SOSCF
+    from the lowest-energy point's orbitals converges to the ground branch
+    in 2 macro-iterations (E=-75.8167407121, measured)."""
+    # lowest |g| at cycle 1 (the rescue's dm0 start), lowest E at cycle 2.
+    stub = _BistableTrajectoryStubSCF(gradients=[1.0, 3e-3, 5e-2, 0.9],
+                                      energies=[-0.1, -0.55, -0.6, -0.3])
+
+    out, cycles, solver = data_mod._converge_reference_scf(stub)
+
+    assert solver == "diis+newton"
+    # Two second-order stages ran: the dm0 rescue (which landed on the
+    # higher branch) and the orbital-pair rerun from the lowest-E point.
+    assert len(stub.newton_calls) == 2, len(stub.newton_calls)
+    first, second = stub.newton_calls
+    assert first.start[0] == "dm0"
+    assert np.allclose(first.start[1],
+                       stub.make_rdm1(stub.orbitals(1), stub.mo_occ))
+    assert second.start[0] == "mo"
+    assert np.allclose(second.start[1], stub.orbitals(2))
+    assert np.allclose(second.start[2], stub.mo_occ)
+    # The LOWER converged solution is the one returned.
+    assert out is second
+    assert float(out.e_tot) == pytest.approx(stub.E_LOW)
+    # DIIS cycles plus one macro-iteration per second-order stage.
+    assert cycles == len(stub.gradients) + 2, cycles
+
+
+@pytest.mark.parametrize("retry_converges,retry_e_tot", [
+    (False, _BistableTrajectoryStubSCF.E_LOW),   # rerun does not converge
+    (True, _BistableTrajectoryStubSCF.E_HIGH),   # rerun converges, not lower
+])
+def test_wrong_branch_rescue_that_cannot_reach_a_lower_solution_is_refused(
+        retry_converges, retry_e_tot):
+    """When the rerun cannot produce a lower converged solution, the excess
+    over the trajectory minimum still stands and the record is REFUSED: a
+    converged flag on the higher SCF branch would be silently wrong by the
+    inter-branch gap (50.10 kcal/mol on C2), which is exactly the defect a
+    refusal makes loud. Both terminal sub-cases: a rerun that does not
+    converge, and one that converges without going lower."""
+    stub = _BistableTrajectoryStubSCF(gradients=[1.0, 3e-3, 5e-2, 0.9],
+                                      energies=[-0.1, -0.55, -0.6, -0.3],
+                                      retry_converges=retry_converges,
+                                      retry_e_tot=retry_e_tot)
+    with pytest.raises(data_mod.ReferenceSCFNotConverged,
+                       match="stationary point"):
+        data_mod._converge_reference_scf(stub)
+    assert len(stub.newton_calls) == 2, len(stub.newton_calls)
+
+
+class _ConvergedUphillDIISStub(_BistableTrajectoryStubSCF):
+    """DIIS CONVERGES -- onto a stationary point above a determinant its own
+    trajectory visited. The variational argument is identical to the rescue
+    case: every trajectory energy is an aufbau determinant's energy, so a
+    converged endpoint above the trajectory minimum by more than the branch
+    tolerance is a higher stationary point (measured on S / SCAN /
+    6-311++G(3df,2pd) / grid 3: a DIIS-converged endpoint +8.38e-6 Ha above
+    its own trajectory minimum -- below tolerance; the stub places the
+    excess above it)."""
+
+    def kernel(self):
+        super().kernel()
+        self.converged = True
+        self.e_tot = self.E_HIGH
+        self.cycles = len(self.gradients)
+
+
+def test_converged_diis_above_its_own_trajectory_minimum_is_rerun():
+    """A converged DIIS endpoint above the trajectory's minimum-energy point
+    by more than the branch tolerance is rerun from that point's ORBITAL
+    PAIR directly (no dm0 stage -- the aufbau re-occupation hazard is the
+    thing being avoided), and the lower converged solution is returned."""
+    stub = _ConvergedUphillDIISStub(gradients=[1.0, 3e-3, 5e-2, 0.9],
+                                    energies=[-0.1, -0.55, -0.6, -0.3])
+
+    out, cycles, solver = data_mod._converge_reference_scf(stub)
+
+    assert solver == "diis+newton"
+    assert len(stub.newton_calls) == 1, len(stub.newton_calls)
+    (rerun,) = stub.newton_calls
+    assert rerun.start[0] == "mo"
+    assert np.allclose(rerun.start[1], stub.orbitals(2))
+    assert out is rerun
+    assert float(out.e_tot) == pytest.approx(stub.E_LOW)
+    assert cycles == len(stub.gradients) + 1, cycles
+
+
+@pytest.mark.parametrize("retry_converges,retry_e_tot,fragment", [
+    (False, _BistableTrajectoryStubSCF.E_LOW, "did not converge within"),
+    (True, _BistableTrajectoryStubSCF.E_HIGH, "converged no lower"),
+])
+def test_converged_diis_uphill_that_cannot_go_lower_is_refused(
+        retry_converges, retry_e_tot, fragment):
+    """When the orbital-pair rerun of a converged-but-uphill DIIS endpoint
+    cannot produce a lower converged solution, the record is REFUSED, and
+    the message states which terminal case stood (non-convergence within
+    the macro-iteration budget, or convergence no lower)."""
+    stub = _ConvergedUphillDIISStub(gradients=[1.0, 3e-3, 5e-2, 0.9],
+                                    energies=[-0.1, -0.55, -0.6, -0.3],
+                                    retry_converges=retry_converges,
+                                    retry_e_tot=retry_e_tot)
+    with pytest.raises(data_mod.ReferenceSCFNotConverged, match=fragment):
+        data_mod._converge_reference_scf(stub)
+    assert len(stub.newton_calls) == 1, len(stub.newton_calls)
+
+
+def test_c2_pbe_reference_lands_on_the_ground_scf_branch():
+    """C2 at PBE / 6-311++G(3df,2pd) / grid level 3 under the 3e-5 lock --
+    the held-out evaluation identity whose reference flipped on the cluster.
+    DIIS oscillates unconverged between the two SCF configurations of C2 for
+    all 100 cycles; the converged branches sit at E=-75.8167407121
+    (internally stable) and E=-75.7368945310 (internally unstable),
+    0.0798461811 Ha = 50.1042 kcal/mol apart (the excess over the
+    trajectory's minimum-energy point, the quantity the acceptance check
+    measures, reads 0.0798415986 Ha). Which branch the dm0-ingested
+    rescue lands on is draw-dependent (measured: 4 of 10 draws of the
+    pre-rescue code at this identity landed the higher branch locally, and
+    seven pulled evaluations of run_20260827T163330Z stamped it, the
+    cross-spec reference guard's outlier set), so the acceptance check must
+    pin the returned solution to
+    the ground branch on every draw. Band 2e-6 as in the Li rescue test:
+    the pinned value plus the documented flat-direction slack with margin."""
+    from pyscf import dft, gto
+    from xcquinox.alec.orientation_lock import orientation_lock_bias
+    from xcquinox.alec.pyscf_determinism import pin_reference_scf
+    mol = gto.M(
+        atom=("C 0.6199999559 0.0000000000 0.0000000000; "
+              "C -0.6199999559 0.0000000000 0.0000000000"),
+        basis="6-311++G(3df,2pd)", charge=0, spin=0, verbose=0)
+    mf = dft.RKS(mol)
+    mf.xc = "pbe"
+    mf.grids.level = 3
+    locked = np.asarray(mf.get_hcore()) + orientation_lock_bias(mol, 3e-5)
+    mf.get_hcore = lambda *a, **k: locked
+    pin_reference_scf(mf)
+
+    out, cycles, solver = data_mod._converge_reference_scf(mf)
+
+    assert out.converged is True
+    assert solver == "diis+newton"
+    assert abs(float(out.e_tot) - (-75.8167407121)) <= 2e-6, float(out.e_tot)
+    # Not the internally unstable higher branch of the defect.
+    assert float(out.e_tot) < -75.8, float(out.e_tot)
+    assert data_mod._REFERENCE_SCF_MAX_CYCLE < cycles <= (
+        data_mod._REFERENCE_SCF_MAX_CYCLE
+        + 2 * data_mod._REFERENCE_SCF_NEWTON_MAX_CYCLE), cycles
