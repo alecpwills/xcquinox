@@ -608,7 +608,7 @@ show a clean period-2 oscillation in the tail (`t-hooo` steps 18--24 alternate
 $-223.40/-223.75/\ldots$) or a still-drifting endpoint (`s4-c2v` ends 10.3 Ha,
 $\sim6500$ kcal/mol, off PBE). The final-step energy is then an arbitrary oscillation
 phase. Splitting held-out reactions by SCF convergence proves the mechanism: converged
-reactions score MAE $\sim$12--28 kcal/mol, non-converged 140--485, with 26--59
+reactions score MAE $\sim$ 12--28 kcal/mol, non-converged 140--485, with 26--59
 non-converged species per spec (HISTORY Phase 11).
 
 **Remedy.** The DFS trajectory supervision was ported verbatim from the reference

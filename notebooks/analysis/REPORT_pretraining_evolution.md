@@ -135,7 +135,7 @@ architectures (HISTORY 2026-08-20, Phase 39):
    closed-shell definition. The pretrained meta-GGA pair over-bound H2O / N2 / CH4 by 30.5 /
    55.9 / 20.8 kcal/mol relative to SCAN; transforming only the indicator
    ($\alpha_\sigma$ from $2\rho_\sigma, 4\sigma_{\sigma\sigma}, 2\tau_\sigma$, which libxc's
-   spin-polarized SCAN satisfies to $<10^{-12}$ Ha) recovered 75--86% of the effect. The
+   spin-polarized SCAN satisfies to $<10^{-12}$ Ha) recovered 75, 86 and 63 percent of the effect on H2O, N2 and CH4 respectively (fractions from NOTES_v5_mgga_vs_scan.md; the residual offsets -7.6 / -7.9 / -7.6 kcal/mol). The
    superseded two-block evaluation costs $-30.1$ kcal/mol on the O atom alone for SCAN
    exchange, and O anchors atomization energies throughout the pools. A secondary
    contribution came from the pretraining rows themselves: open-shell atoms stored
