@@ -66,6 +66,32 @@ WRONG_DENS = {
     "density_eps_l1_pbe": 0.18741013307960408,
 }
 
+# Three-generation clean-pool structure (fresh pull, 2026-08-31): the
+# E_pbe and density_eps_l1_pbe triples are the measured cluster values
+# verbatim (generation 0 = the 72-channel bit-identical set = CONS); the
+# rmse/l1 companions span the measured spread classes (2.81e-9 / 3.40e-10)
+# around generation 0 -- the fixture needs the structure, not the
+# cluster's exact low digits.
+GEN1 = {
+    "E_pbe": -75.81674071207661,
+    "density_rmse_pbe": CONS["density_rmse_pbe"] + 1.4e-9,
+    "density_l1_pbe": CONS["density_l1_pbe"] + 1.7e-10,
+    "density_eps_l1_pbe": 0.011497374547239803,
+}
+GEN2 = {
+    "E_pbe": -75.81674071210273,
+    "density_rmse_pbe": CONS["density_rmse_pbe"] - 1.4e-9,
+    "density_l1_pbe": CONS["density_l1_pbe"] - 1.7e-10,
+    "density_eps_l1_pbe": 0.011497281245159167,
+}
+# A fourth-generation local recompute, inside every clean envelope.
+LOCAL_SCF = {
+    "E_pbe": -75.81674071209,
+    "density_rmse_pbe": CONS["density_rmse_pbe"] + 0.5e-9,
+    "density_l1_pbe": CONS["density_l1_pbe"] + 0.5e-10,
+    "density_eps_l1_pbe": 0.0114971,
+}
+
 NEW_NN = -75.8300                  # stubbed recomputed NN energy (standard)
 NEW_NN_DENS = {"density_rmse": 0.00031, "density_l1": 1.6e-05,
                "density_eps_l1": 0.0171}
@@ -298,6 +324,20 @@ def _tree_hash(root):
             out[str(p.relative_to(root))] = hashlib.sha256(
                 p.read_bytes()).hexdigest()
     return out
+
+
+def _add_clean_valbest_spec(run, idx, gen):
+    """A spec dir carrying ONLY a clean eval_holdout_val_best channel with
+    the given generation's model-free values."""
+    sd = run / "checkpoints" / f"spec_{idx:04d}"
+    sd.mkdir()
+    (sd / "model_val_best.eqx").write_bytes(b"weights-valbest")
+    trio = {k: gen[k] for k in ("density_rmse_pbe", "density_l1_pbe",
+                                "density_eps_l1_pbe")}
+    _write_channel(sd, "eval_holdout_val_best",
+                   _per_molecule(gen["E_pbe"], c2_dens=trio),
+                   SOLVER_DESCRIBE, model="model_val_best.eqx")
+    return sd
 
 
 def _drift_c_atom_self_consistently(ch, delta=2e-5):
@@ -790,9 +830,78 @@ def test_bench_refs_missing_refused(tmp_path, stubbed):
     assert _tree_hash(run) == before
 
 
+def test_three_generation_pool_patches_recompute_in_band(tmp_path, stubbed,
+                                                         monkeypatch,
+                                                         capsys):
+    """A clean pool spanning three evaluation generations (per-evaluation
+    SCF reconvergence slack) must PATCH when the local recompute lies
+    within the clean envelope widened by the measured band -- and the
+    written SCF-dependent values are the RECOMPUTE'S OWN, while the grid
+    pair keeps the exact consensus."""
+    run = make_run(tmp_path)              # spec 19 val_best = generation 0
+    _add_clean_valbest_spec(run, 27, GEN1)
+    _add_clean_valbest_spec(run, 28, GEN2)
+
+    def local_record(model, md, sc):
+        rec = _fresh_record(sc.describe()["seed_source"])
+        rec.update(LOCAL_SCF)
+        rec["AE_nn"] = rec["E_total_nn"] - LOCAL_SCF["E_pbe"]
+        return rec
+
+    monkeypatch.setattr(rcp, "_nn_record_for_channel", local_record)
+    assert _main(run, stubbed) == 0
+    out = capsys.readouterr().out
+    assert "model-free consensus from 3 clean channels" in out
+    ch = run / "checkpoints" / "spec_0019" / "eval_holdout"
+    pm = json.loads((ch / "per_molecule.json").read_text())
+    c2 = [r for r in pm if r["molecule"] == "c2"][0]
+    for k, v in LOCAL_SCF.items():
+        assert c2[k] == v, f"{k} must carry the local recompute's value"
+    assert c2["n_electrons"] == CONS["n_electrons"]
+    assert c2["grid_weight_sum"] == CONS["grid_weight_sum"]
+
+
+def test_recompute_outside_band_refuses(tmp_path, stubbed, monkeypatch):
+    """A recompute outside the clean envelope + 10x measured-spread band
+    refuses, even though it passes the stable-branch 1e-6 gate. The
+    offset (1e-9 Ha) sits far above the 2.61e-10 E_pbe band of a
+    single-generation pool."""
+    run = make_run(tmp_path)
+
+    def off_record(model, md, sc):
+        rec = _fresh_record(sc.describe()["seed_source"])
+        rec["E_pbe"] = GOOD + 1e-9
+        rec["AE_nn"] = rec["E_total_nn"] - rec["E_pbe"]
+        return rec
+
+    monkeypatch.setattr(rcp, "_nn_record_for_channel", off_record)
+    before = _tree_hash(run)
+    assert _main(run, stubbed) == 2
+    assert _tree_hash(run) == before
+
+
+def test_exact_field_recompute_disagreement_refuses(tmp_path, stubbed,
+                                                    monkeypatch):
+    """n_electrons / grid_weight_sum are pure grid quantities: the local
+    recompute must reproduce the single consensus value EXACTLY, else the
+    grid identity differs and nothing may be patched."""
+    run = make_run(tmp_path)
+
+    def off_record(model, md, sc):
+        rec = _fresh_record(sc.describe()["seed_source"])
+        rec["n_electrons"] = CONS["n_electrons"] + 1e-9
+        return rec
+
+    monkeypatch.setattr(rcp, "_nn_record_for_channel", off_record)
+    before = _tree_hash(run)
+    assert _main(run, stubbed) == 2
+    assert _tree_hash(run) == before
+
+
 def test_consensus_recompute_disagreement_refuses(tmp_path, stubbed,
                                                   monkeypatch):
-    """The clean-channel consensus and the local recompute must agree."""
+    """A recompute far outside the band (1e-5 on density_rmse_pbe, band
+    2.81e-8) must refuse."""
     run = make_run(tmp_path)
 
     def _off_record(model, md, sc):
@@ -995,14 +1104,17 @@ def test_coldstart_cycles_mismatch_refuses(tmp_path, stubbed, monkeypatch):
 
 
 def test_clean_consensus_spread_refuses(tmp_path, stubbed):
-    """Two clean channels disagreeing on a model-free value leave no
-    single consensus to patch from."""
+    """Clean channels disagreeing on a GRID quantity (n_electrons) leave
+    no exact consensus: pure grid quantities are bit-identical across all
+    clean channels (measured 80/80), so any disagreement is a
+    grid-identity problem and refuses. (The SCF-dependent fields are
+    band-gated instead -- see the three-generation tests.)"""
     run = make_run(tmp_path, specs=(19, 20))
     ch = run / "checkpoints" / "spec_0020" / "eval_holdout_val_best"
     pm = json.loads((ch / "per_molecule.json").read_text())
     for r in pm:
         if r["molecule"] == "c2":
-            r["density_rmse_pbe"] = CONS["density_rmse_pbe"] + 1e-5
+            r["n_electrons"] = CONS["n_electrons"] + 1e-9
     (ch / "per_molecule.json").write_text(json.dumps(pm, indent=2))
     before = _tree_hash(run)
     assert _main(run, stubbed) == 2

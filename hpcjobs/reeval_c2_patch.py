@@ -54,11 +54,20 @@ Per patched channel the tool rewrites, in place and nothing else:
 The repaired reference is recomputed ONCE per seed through the repo's own
 path (full_benchmark_pools.load_full_held_out_pools at the run's
 basis/grid + data.precompute_fixed_density_data, whose process memo
-deduplicates repeat calls) and gated to the clean-channel consensus within
-1e-6 Ha before anything is written. All gates run before the first write:
-a refusal (exit 2) leaves every file byte-identical; a write-phase integrity
-failure is the separate partial-write path (exit 3, committed channels
-named -- see the Exit codes section below).
+deduplicates repeat calls) and must land on the stable branch within 1e-6
+Ha. The clean pool is NOT one bit-identical value set: it spans several
+evaluation generations (measured 2026-08-31: the 72 pre-fix channels
+share one c2 sextet, while the post-fix specs 0027/0028 each carry their
+own values -- per-evaluation SCF reconvergence slack, all converged). The
+four SCF-dependent model-free columns (E_pbe + the PBE density trio) are
+therefore written from the LOCAL RECOMPUTE, gated to lie within the
+clean-channel envelope widened by 10x each field's measured spread
+(MODEL_FREE_SPREAD); the two pure grid quantities (n_electrons,
+grid_weight_sum), bit-identical over all 80 clean channels, keep the
+exact consensus and refuse on ANY disagreement. All gates run before the
+first write: a refusal (exit 2) leaves every file byte-identical; a
+write-phase integrity failure is the separate partial-write path (exit 3,
+committed channels named -- see the Exit codes section below).
 
 Usage::
 
@@ -129,9 +138,37 @@ C_ATOM_TOL = 1e-6
 #: Recorded per-reaction rows must reproduce from the recorded
 #: per-molecule energies within this (kcal/mol) before being patched.
 REACTION_CONSISTENCY_TOL = 1e-6
-#: Model-free recompute vs clean-channel consensus agreement.
-CONSENSUS_ABS_TOL = 1e-8
-CONSENSUS_REL_TOL = 1e-9
+#: Measured clean-pool reproducibility of the SCF-dependent model-free
+#: fields (fresh pull, 2026-08-31): the clean pool held 80 channels from
+#: THREE evaluation generations -- the 72 pre-fix channels share one
+#: bit-identical c2 sextet, while the two post-fix specs (0027, 0028)
+#: each carry their own micro-different values. Per-evaluation SCF
+#: reconvergence slack, not a code split: all fully converged; the fixed
+#: rescue's extra macro-iterations wander within the orientation lock's
+#: flat direction where the old endpoint happened to be deterministic.
+#: Measured max spreads (with the three cluster values where quoted):
+#: Constants are the measured spreads rounded UP at 3 s.f. (measured
+#: 2.611955e-11 / 2.808558e-9 / 3.401316e-10 / 3.783110e-7), so the band
+#: covers the measurement at any BAND_FACTOR >= 1:
+#:   E_pbe               2.62e-11 Ha  (-75.81674071208121 / ...207661 /
+#:                                     ...210273)
+#:   density_rmse_pbe    2.81e-9      (0.00022149606464626117 /
+#:                                     ...643534261995 / ...362678433278)
+#:   density_l1_pbe      3.41e-10
+#:   density_eps_l1_pbe  3.79e-7      (0.01149699623628779 /
+#:                                     0.011497374547239803 /
+#:                                     0.011497281245159167)
+#: n_electrons and grid_weight_sum were EXACTLY single-valued over all 80
+#: channels (pure grid quantities).
+MODEL_FREE_SPREAD = {
+    "E_pbe": 2.62e-11,
+    "density_rmse_pbe": 2.81e-9,
+    "density_l1_pbe": 3.41e-10,
+    "density_eps_l1_pbe": 3.79e-7,
+}
+#: The local recompute must lie within the clean-channel envelope widened
+#: by this factor times the field's measured max spread.
+BAND_FACTOR = 10.0
 
 #: CODATA-2018 hartree -> kcal/mol; pinned to eval_holdout.KCAL_PER_HA by a
 #: source-text test so the two cannot drift.
@@ -154,6 +191,15 @@ PATCH_ARTIFACTS = ("per_molecule.json", "per_reaction.json", "test_set.csv",
 #: reference PBE density and the fixed CCSD reference only.
 MODEL_FREE_FIELDS = ("E_pbe", "density_rmse_pbe", "density_l1_pbe",
                      "density_eps_l1_pbe", "n_electrons", "grid_weight_sum")
+#: The four SCF-dependent members: micro-different per evaluation
+#: generation (see MODEL_FREE_SPREAD), so the patch writes the LOCAL
+#: RECOMPUTE's values, band-gated against the clean-channel envelope.
+SCF_DEPENDENT_MODEL_FREE = ("E_pbe", "density_rmse_pbe", "density_l1_pbe",
+                            "density_eps_l1_pbe")
+#: The two pure grid quantities: bit-identical across every clean channel
+#: (80/80 measured), patched from the exact consensus; any disagreement
+#: -- in the pool or in the recompute -- is a grid-identity problem.
+EXACT_MODEL_FREE = ("n_electrons", "grid_weight_sum")
 #: NN scalar columns recomputed for the PBE-seeded channels.
 NN_SCALAR_FIELDS = ("E_total_nn", "density_rmse", "density_l1",
                     "density_eps_l1", "ref_density_method", "cycles_run",
@@ -846,20 +892,28 @@ def _load_channel(audit: ChannelAudit) -> ChannelPlan:
                        coldstart=coldstart)
 
 
-def _plan_patch(plan: ChannelPlan, fresh: dict, consensus: dict) -> None:
+def _plan_patch(plan: ChannelPlan, fresh: dict, pool: dict) -> None:
     """Fill the plan's new_* artifacts. ``fresh`` is the recomputed c2
-    record; ``consensus`` maps the model-free sextet to the values to
-    write."""
+    record; ``pool`` is the clean-channel evidence from
+    :func:`_collect_consensus`. The SCF-dependent model-free fields are
+    written from the LOCAL RECOMPUTE (already band-gated against the
+    clean envelope); the grid pair is written from the exact consensus.
+    A field with no clean-channel evidence, or no recomputed value, must
+    not overwrite a finite recorded one."""
     old = plan.old_c2
     new_fields = {}
     for k in MODEL_FREE_FIELDS:
-        v = consensus.get(k)
+        if k in EXACT_MODEL_FREE:
+            v = pool["exact"].get(k)
+        else:
+            v = (fresh.get(k)
+                 if pool["envelope"].get(k) is not None else None)
         if v is None and _finite(old.get(k)):
             raise PatchRefused(
-                f"spec {plan.audit.spec} {plan.audit.channel}: the clean-"
-                f"channel consensus carries no value for {k} while the "
-                f"recorded value ({old.get(k)!r}) is finite; a null "
-                "consensus cannot overwrite a finite recorded value.")
+                f"spec {plan.audit.spec} {plan.audit.channel}: no clean-"
+                f"channel evidence (or no recomputed value) for {k} while "
+                f"the recorded value ({old.get(k)!r}) is finite; a null "
+                "cannot overwrite a finite recorded value.")
         new_fields[k] = v
     new_trace = None
     if plan.coldstart:
@@ -932,9 +986,16 @@ def _print(msg=""):
 
 
 def _collect_consensus(run_dir, audit_rows):
-    """The model-free sextet from the CLEAN channels' c2 rows: one value
-    per field (the run's own clean channels are bit-identical -- measured
-    72/72). Returns ``(consensus dict | None, n_channels)``."""
+    """Model-free evidence from the CLEAN channels' c2 rows.
+
+    Returns ``(pool, n_channels)`` with ``pool = {"envelope": {field:
+    (lo, hi) | None}, "exact": {field: value | None}}``, or ``(None, 0)``
+    when no clean channel exists. The SCF-dependent fields
+    (:data:`SCF_DEPENDENT_MODEL_FREE`) span an envelope because the clean
+    pool holds several evaluation generations with per-evaluation SCF
+    reconvergence slack (see :data:`MODEL_FREE_SPREAD`); the pure grid
+    pair (:data:`EXACT_MODEL_FREE`) must be single-valued (bit-identical
+    over all 80 measured clean channels) and refuses otherwise."""
     values = {k: [] for k in MODEL_FREE_FIELDS}
     n = 0
     for r in audit_rows:
@@ -952,20 +1013,31 @@ def _collect_consensus(run_dir, audit_rows):
             values[k].append(row.get(k))
     if n == 0:
         return None, 0
-    cons = {}
+    pool = {"envelope": {}, "exact": {}}
     for k, vals in values.items():
         finite = [float(v) for v in vals if _finite(v)]
-        if not finite:
-            cons[k] = None
-            continue
-        spread = max(finite) - min(finite)
-        if spread > max(CONSENSUS_REL_TOL * abs(finite[0]),
-                        CONSENSUS_ABS_TOL):
-            raise PatchRefused(
-                f"clean channels disagree on {k}: spread {spread:g} over "
-                f"{n} channels; no single consensus value exists to patch.")
-        cons[k] = finite[0]
-    return cons, n
+        if k in EXACT_MODEL_FREE:
+            # Pure grid quantities are bit-identical across every clean
+            # channel (80/80 measured); any pool-internal disagreement is
+            # a grid-identity problem and refuses.
+            if not finite:
+                pool["exact"][k] = None
+                continue
+            if max(finite) != min(finite):
+                raise PatchRefused(
+                    f"clean channels disagree on the grid quantity {k}: "
+                    f"spread {max(finite) - min(finite):g} over {n} "
+                    "channels where bit-identity is the measured norm "
+                    "(80/80); a grid-identity problem must be resolved "
+                    "before any patch.")
+            pool["exact"][k] = finite[0]
+        else:
+            # SCF-dependent fields legitimately differ per evaluation
+            # generation (see MODEL_FREE_SPREAD); the clean pool defines
+            # an ENVELOPE, not a single value.
+            pool["envelope"][k] = ((min(finite), max(finite))
+                                   if finite else None)
+    return pool, n
 
 
 def _push_sheet(run_dir, patched) -> str:
@@ -1013,10 +1085,16 @@ def main(argv=None) -> int:
                              "channel seeds minao so its NN rows must "
                              "reproduce (default 1e-6, the reference-gate "
                              "scale).")
-    parser.add_argument("--coldstart-tol-dens", type=float, default=1e-8,
+    parser.add_argument("--coldstart-tol-dens", type=float, default=3.78e-6,
                         help="Max |recomputed - recorded| for the "
-                             "cold-start channel's NN density metrics "
-                             "(default 1e-8).")
+                             "cold-start channel's NN density metrics. "
+                             "Default 3.78e-6 = 10 x the largest measured "
+                             "cross-evaluation spread of the density "
+                             "metrics' noise class (density_eps 3.78e-7, "
+                             "2026-08-31 three-generation measurement) -- "
+                             "the same 10x-band footing as the model-free "
+                             "gates; override for a tighter or looser "
+                             "verification.")
     # JAX routing + shard-worker parity env FIRST: _load_cfg /
     # _solver_config_for_channel below import xcquinox modules that pull
     # JAX in transitively, and a backend initialized before the routing
@@ -1285,25 +1363,50 @@ def _gate_coldstart_verify(plan: ChannelPlan, fresh: dict, *, tol_e: float,
     return deltas
 
 
-def _gate_consensus_agreement(plan: ChannelPlan, fresh: dict,
-                              cons: dict | None) -> None:
-    """The locally recomputed model-free values must agree with the
-    clean-channel consensus that will be written."""
-    if cons is None:
+def _gate_model_free_recompute(plan: ChannelPlan, fresh: dict,
+                               pool: dict | None) -> None:
+    """The locally recomputed model-free values must sit inside the
+    clean-channel evidence.
+
+    SCF-dependent fields: the recompute (the corrected code, the same
+    generation as the post-fix cluster evals) must lie within the clean
+    envelope widened by :data:`BAND_FACTOR` x the field's measured max
+    spread (:data:`MODEL_FREE_SPREAD`). Grid quantities: the recompute
+    must reproduce the exact consensus value bit-for-bit -- a mismatch
+    means the local grid identity differs from the eval's and nothing may
+    be patched."""
+    if pool is None:
         return
-    for k in MODEL_FREE_FIELDS:
-        c, f = cons.get(k), fresh.get(k)
-        if c is None or f is None:
+    for k in SCF_DEPENDENT_MODEL_FREE:
+        env = pool["envelope"].get(k)
+        f = fresh.get(k)
+        if env is None or f is None:
             continue
-        tol = max(CONSENSUS_REL_TOL * abs(float(c)), CONSENSUS_ABS_TOL)
-        if abs(float(f) - float(c)) > tol:
+        lo, hi = env
+        band = BAND_FACTOR * MODEL_FREE_SPREAD[k]
+        if not (lo - band <= float(f) <= hi + band):
             raise PatchRefused(
                 f"spec {plan.audit.spec} {plan.audit.channel}: the local "
-                f"recompute of {k} ({f!r}) disagrees with the "
-                f"clean-channel consensus ({c!r}) beyond {tol:g}; the "
-                "model-free values are properties of one reference "
-                "density, so this disagreement must be resolved before "
-                "any patch.")
+                f"recompute of {k} ({f!r}) lies outside the clean-channel "
+                f"envelope [{lo!r}, {hi!r}] widened by "
+                f"{BAND_FACTOR:g} x the measured {MODEL_FREE_SPREAD[k]:g} "
+                "reproducibility spread (2026-08-31 measurement, three "
+                "evaluation generations); the recompute does not "
+                "reproduce the reference within the known reconvergence "
+                "class and nothing is patched.")
+    for k in EXACT_MODEL_FREE:
+        v = pool["exact"].get(k)
+        f = fresh.get(k)
+        if v is None or f is None:
+            continue
+        if float(f) != float(v):
+            raise PatchRefused(
+                f"spec {plan.audit.spec} {plan.audit.channel}: the local "
+                f"recompute of the grid quantity {k} ({f!r}) does not "
+                f"equal the clean-channel value ({v!r}) exactly; grid "
+                "quantities are bit-identical across evaluations (80/80 "
+                "measured), so this mismatch is a grid-identity problem "
+                "and nothing is patched.")
 
 
 def _run_patch(run_dir, args, audit_rows, patchable, pending) -> int:
@@ -1340,16 +1443,18 @@ def _run_patch(run_dir, args, audit_rows, patchable, pending) -> int:
     _print(f"C-atom gate: recorded E_pbe({C_ATOM}) = {c_atom_e_pbe!r} "
            f"agrees across all audited channels (tol {C_ATOM_TOL:g})")
 
-    cons, n_cons = _collect_consensus(run_dir, full_rows)
-    if cons is None:
+    pool, n_cons = _collect_consensus(run_dir, full_rows)
+    if pool is None:
         raise PatchRefused(
             "no clean channel anywhere in the run supplies the model-free "
-            "consensus; the six model-free c2 columns are properties of "
-            "one reference density and are patched only from a clean-"
-            "channel consensus. Re-pull after more specs complete, or "
-            "repair one spec on the cluster first.")
+            "evidence; the six model-free c2 columns are patched only "
+            "against a clean-channel envelope (SCF-dependent fields) and "
+            "exact consensus (grid quantities). Re-pull after more specs "
+            "complete, or repair one spec on the cluster first.")
+    _env = pool["envelope"].get("E_pbe")
     _print(f"model-free consensus from {n_cons} clean channels: "
-           f"E_pbe={cons['E_pbe']!r}")
+           f"E_pbe envelope={_env!r}, "
+           f"n_electrons={pool['exact'].get('n_electrons')!r}")
 
     # ---- recompute + plan (all gates; still no writes) ----
     cfg = _load_cfg(run_dir)
@@ -1375,7 +1480,7 @@ def _run_patch(run_dir, args, audit_rows, patchable, pending) -> int:
         _gate_reference(md, f"spec {audit.spec} {audit.channel}")
         model = _load_model_for_channel(cfg, cell, model_path)
         fresh = _nn_record_for_channel(model, md, sc)
-        _gate_consensus_agreement(plan, fresh, cons)
+        _gate_model_free_recompute(plan, fresh, pool)
         if plan.coldstart:
             deltas = _gate_coldstart_verify(
                 plan, fresh, tol_e=args.coldstart_tol_e,
@@ -1383,7 +1488,7 @@ def _run_patch(run_dir, args, audit_rows, patchable, pending) -> int:
             coldstart_deltas[(audit.spec, audit.channel)] = deltas
             _print(f"[{i}/{n}] cold-start NN rows reproduce: " + ", ".join(
                 f"{k} |d|={v:.3g}" for k, v in sorted(deltas.items())))
-        _plan_patch(plan, fresh, dict(cons))
+        _plan_patch(plan, fresh, pool)
         el = time.time() - t0
         eta = (n - i) * (time.time() - t_start) / i
         _print(f"[{i}/{n}] spec {audit.spec} {audit.channel}: planned "
