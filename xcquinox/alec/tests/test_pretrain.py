@@ -479,6 +479,36 @@ def test_run_pretrain_metadata_json_all_fields(tiny_pretrain_data_dir):
         assert md["pretrain_mesh"] is False
 
 
+@pytest.mark.parametrize("on", [True, False])
+def test_run_pretrain_metadata_records_the_descriptor_log_transform(
+        tiny_pretrain_data_dir, on):
+    """The writer states the descriptor log transform the networks were fitted
+    under, for BOTH values rather than only the one that differs from the
+    default.
+
+    It is recorded beside ``parent_anchor`` and ``descriptor_coordinates``
+    because it is the same kind of field: a static property of both networks
+    (and of the cusp descriptor) that changes no parameter shape, so the
+    ``.eqx`` leaves do not reveal it and a pair written under one value
+    deserialises into the other's skeleton in silence. This file is the only
+    channel ``train._require_matching_model_class`` has for it.
+    """
+    from xcquinox.alec.pretrain import run_pretrain
+
+    with tempfile.TemporaryDirectory() as ckdir:
+        spec = PretrainSpec(
+            arch=_make_arch(descriptor_log_transform=on),
+            data_dir=tiny_pretrain_data_dir,
+            checkpoint_dir=ckdir,
+            n_steps=2,
+            seed=0,
+        )
+        run_pretrain(spec)
+        with open(os.path.join(ckdir, "pretrain_metadata.json")) as f:
+            md = json.load(f)
+    assert md["descriptor_log_transform"] is on, md
+
+
 def test_run_pretrain_warmup_phase_and_progress_callback(tiny_pretrain_data_dir):
     """(16) warmup phase is respected and progress_callback receives dict payloads."""
     from xcquinox.alec.pretrain import run_pretrain

@@ -1377,3 +1377,108 @@ def test_the_loader_accepts_a_matching_anchor_state(tmp_path, monkeypatch,
     assert model is not None
     assert getattr(model.xnet, "parent", None) == parent
     assert getattr(model.cnet, "parent", None) == parent
+
+
+# ---------------------------------------------------------------------------
+# V7b: the loader refuses a descriptor-log-transform mismatch
+# ---------------------------------------------------------------------------
+
+def _state_log_transform(pretrain_dir, value):
+    """Add ``descriptor_log_transform`` to a metadata file already written.
+
+    ``_write_untrained_pretrain_checkpoint`` records what a run wrote before
+    the key existed, which is what keeps every other case here a statement
+    about a file that states nothing; a case about the field states it here.
+    """
+    path = os.path.join(pretrain_dir, "pretrain_metadata.json")
+    with open(path) as f:
+        md = json.load(f)
+    md["descriptor_log_transform"] = bool(value)
+    with open(path, "w") as f:
+        json.dump(md, f)
+    return path
+
+
+@pytest.mark.parametrize("recorded,requested",
+                         [(True, False), (False, True)])
+def test_the_loader_refuses_a_descriptor_log_transform_mismatch(
+        tmp_path, monkeypatch, recorded, requested):
+    """Networks pretrained under one descriptor log transform are not loadable
+    into a model of the other, and the refusal names both values.
+
+    The flag is a static field of both networks and of the cusp descriptor and
+    changes no parameter shape, so the two architectures' leaves are
+    interchangeable and the load is silent: what comes out reads identical
+    leaves through a different map.
+
+    Measured on ``deep_3x16`` with a live final layer
+    (``zero_init_final_layer=False``, seed 0), serialising the transformed
+    network and deserialising it into the untransformed skeleton: ``F_x``
+    moves by 3.34e-4 over the three ``(rho, sigma)`` points (0.1, 0.02),
+    (1.0, 0.5), (5.0, 12.0) on the LEGACY coordinates, and by exactly 0 on the
+    ``dfs`` coordinates, whose branch takes precedence over the transform in
+    ``networks.AlecGGA_XNet._core``. On ``dfs`` -- what the v6 groups run --
+    the live channel is therefore the cusp descriptor alone, whose bounded
+    (-1, 1) second column moves 0.534 at 0.85 bohr from an oxygen nucleus
+    (0.421 against 0.955; 400 points over 0.3 to 4 bohr), and which thirteen
+    registered architectures carry. The state is therefore read from
+    ``pretrain_metadata.json``, beside the anchor and the coordinates it sits
+    with.
+    """
+    from xcquinox.alec import train as train_mod
+
+    monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
+    base = _anchored_arch("deep_3x16")
+    recorded_arch = dataclasses.replace(base,
+                                        descriptor_log_transform=recorded)
+    requested_arch = dataclasses.replace(base,
+                                         descriptor_log_transform=requested)
+
+    run_dir = str(tmp_path / f"run_lt_{recorded}_{requested}")
+    d = _write_untrained_pretrain_checkpoint(run_dir, recorded_arch,
+                                             "deep_3x16", seed=0)
+    _state_log_transform(d, recorded)
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump({"verdict": "PASS", "arch": "deep_3x16",
+                   "parent_anchor": True}, f)
+
+    with pytest.raises(ValueError) as excinfo:
+        train_mod._build_model(_training_spec(requested_arch, d, tmp_path))
+    message = str(excinfo.value)
+    assert f"descriptor_log_transform={recorded}" in message, message
+    assert f"descriptor_log_transform={requested}" in message, message
+
+    # The matching model loads from the same directory, so this is a
+    # comparison and not a loader that refuses everything.
+    assert train_mod._build_model(
+        _training_spec(recorded_arch, d, tmp_path)) is not None
+
+
+@pytest.mark.parametrize("requested", [True, False])
+def test_metadata_that_states_no_log_transform_loads_into_either_model(
+        tmp_path, monkeypatch, requested):
+    """A ``pretrain_metadata.json`` written before the key existed -- every one
+    of them on the cluster -- states no ``descriptor_log_transform`` and is
+    read exactly as it was: the comparison is made only where the file carries
+    the field, so such a directory is accepted by a model of either value.
+
+    23 of the 31 registered architectures set the transform, so a rule that
+    read a missing key as False would refuse those directories to the very
+    class that pretrained them.
+    """
+    from xcquinox.alec import train as train_mod
+
+    monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
+    base = _anchored_arch("deep_3x16")
+    run_dir = str(tmp_path / f"run_lt_absent_{requested}")
+    d = _write_untrained_pretrain_checkpoint(run_dir, base, "deep_3x16",
+                                             seed=0)
+    with open(os.path.join(d, "pretrain_metadata.json")) as f:
+        assert "descriptor_log_transform" not in json.load(f)
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump({"verdict": "PASS", "arch": "deep_3x16",
+                   "parent_anchor": True}, f)
+
+    arch = dataclasses.replace(base, descriptor_log_transform=requested)
+    assert train_mod._build_model(
+        _training_spec(arch, d, tmp_path)) is not None

@@ -479,12 +479,33 @@ def identity_mismatches(cfg, cert) -> list:
     return out
 
 
-def model_class_mismatches(cfg, cert) -> list:
+def model_class_mismatches(cfg, cert, arch_name=None) -> list:
     """``[(key, recorded, wanted), ...]`` for the model-class fields a
-    certificate records -- ``parent_anchor`` and ``descriptor_coordinates``
-    -- that differ from the run's ``model`` block. A certificate written
-    before the fields existed records neither, which reads as the unanchored
-    legacy class it certified; a run of any other class must not accept it.
+    certificate records -- ``parent_anchor``, ``descriptor_coordinates`` and
+    ``descriptor_log_transform`` -- that differ from the class this run
+    builds. A certificate written before the first two fields existed records
+    neither, which reads as the unanchored legacy class it certified; a run of
+    any other class must not accept it.
+
+    The first two are read from the run's ``model`` block, which is what sets
+    them for every architecture of the run. The third is a property of the
+    ARCHITECTURE -- no run-level switch states it, and neither the polarized
+    override nor ``config.apply_model_block`` touches it -- so its expected
+    value is the registry entry's, for ``arch_name``: the architecture the
+    CALLER is asking about, as :func:`parent_mismatch` is asked. With no name
+    given the certificate's own is used, which is the run's architecture only
+    where the caller has separately held it to that (both do, reporting a
+    disagreement as a finding of its own); since 23 of the 31 registered
+    architectures set the transform, a certificate from another architecture's
+    directory agrees on this field more often than not, so the name is worth
+    passing.
+
+    ``descriptor_log_transform`` is compared ONLY WHERE THE CERTIFICATE STATES
+    IT: every certificate written before that key carries the two class fields
+    alone, and is read exactly as it was. An architecture that is not in the
+    registry, or a certificate whose ``arch`` is not even a string, has no
+    expected value at all -- the unresolvable architecture is already reported
+    by both callers through :func:`parent_mismatch`.
     """
     model_block = getattr(cfg, "model", None)
     want_anchor = bool(getattr(model_block, "parent_anchor", False))
@@ -496,6 +517,24 @@ def model_class_mismatches(cfg, cert) -> list:
         out.append(("parent_anchor", got_anchor, want_anchor))
     if got_coords != want_coords:
         out.append(("descriptor_coordinates", got_coords, want_coords))
+    got_transform = cert.get("descriptor_log_transform")
+    name = arch_name if arch_name is not None else cert.get("arch")
+    if got_transform is not None and isinstance(name, str):
+        # Imported here, as :func:`resolve_parent` imports
+        # ``rungs.seed_xc_for_arch`` for the same kind of registry answer:
+        # the module body stays a pure reader, and the registry is consulted
+        # only for a certificate that states the field.
+        from xcquinox.alec.config import get_architecture
+        try:
+            arch = get_architecture(name)
+        except KeyError:
+            arch = None
+        if arch is not None:
+            want_transform = bool(
+                getattr(arch, "descriptor_log_transform", False))
+            if bool(got_transform) != want_transform:
+                out.append(("descriptor_log_transform", bool(got_transform),
+                            want_transform))
     return out
 
 
@@ -615,7 +654,7 @@ def certificate_describes_run(cfg, pretrain_dir: str, arch_name: str,
             out.append(f"certificate parent {recorded!r}, but this "
                        f"architecture's rung is pretrained against "
                        f"{expected!r}")
-    for key, got, want in model_class_mismatches(cfg, cert):
+    for key, got, want in model_class_mismatches(cfg, cert, arch_name):
         out.append(f"certificate records {key}={got!r}, but this run builds "
                    f"{key}={want!r} -- the certified networks are not the "
                    "model class this run trains")
@@ -1462,12 +1501,17 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "arch": arch_name,
         "parent": parent,
         # The model class the certified networks were built as: whether
-        # they are anchored to the parent and which coordinates their MLPs
-        # read (a static property of the networks, absent from the
-        # checkpoint's leaf stream, so recorded here beside the arch).
+        # they are anchored to the parent, which coordinates their MLPs
+        # read, and whether their inputs are log-compressed (each a static
+        # property of the networks, absent from the checkpoint's leaf stream,
+        # so recorded here beside the arch). The third is compared where a
+        # certificate states it (:func:`model_class_mismatches`); files
+        # written before it carry the first two alone.
         "parent_anchor": bool(getattr(arch, "parent_anchor", False)),
         "descriptor_coordinates": str(
             getattr(arch, "descriptor_coordinates", "legacy")),
+        "descriptor_log_transform": bool(
+            getattr(arch, "descriptor_log_transform", False)),
         "xcquinox_version": running_xcquinox_version(),
         "identity": run_identity(cfg),
         "checkpoint": checkpoint,

@@ -1721,6 +1721,18 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "parent_anchor": bool(getattr(spec.arch, "parent_anchor", False)),
         "descriptor_coordinates": str(
             getattr(spec.arch, "descriptor_coordinates", "legacy")),
+        # The descriptor log transform, recorded for the same reason: a static
+        # field of both networks and of the cusp descriptor
+        # (ArchitectureConfig.materialize_descriptors ->
+        # features.compute_cusp_descriptor) that changes no parameter shape,
+        # so networks fitted under one value deserialise into the other's
+        # skeleton with every array equal and the model that comes out reads
+        # identical leaves through a different map. This file is the only
+        # channel the loader has for it, and the comparison it makes is
+        # conditional on the key being here, since files written before this
+        # key carry the two fields above alone.
+        "descriptor_log_transform": bool(
+            getattr(spec.arch, "descriptor_log_transform", False)),
         # Architecture-shape keys the run validator cross-checks
         # (validate_run.py); the step count is already recorded as
         # "pretrain_steps" above. Absent from files written before

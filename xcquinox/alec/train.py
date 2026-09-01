@@ -420,6 +420,20 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     that predates the fields describes the unanchored legacy class; a
     checkpoint with no record at all is accepted only by that class, since
     nothing states what an anchored model would be loading.
+
+    ``descriptor_log_transform`` is the third such field and is compared ONLY
+    WHERE THE RECORD STATES IT, as the trained checkpoints' own record
+    compares it (``checkpoint_class.require_matching_log_transform``): every
+    ``pretrain_metadata.json`` written before the key carries the two fields
+    above and nothing else, and is read exactly as it was, since 23 of the 31
+    registered architectures set the transform and reading a missing key as
+    False would refuse their directories to the class that pretrained them.
+    A record that STATES it is held to it. The two sides are read
+    asymmetrically, as the anchor and the coordinates above them are: a record
+    that states nothing states nothing, while an ``arch`` carrying no such
+    attribute reads as False rather than as silence -- the field is a real
+    ``ArchitectureConfig`` field with that default, and the one caller
+    (:func:`_build_model`) passes a spec's architecture.
     """
     want_anchor = bool(getattr(arch, "parent_anchor", False))
     want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
@@ -456,6 +470,24 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
             f"descriptor_coordinates={want_coords!r}. The two are different "
             "model classes with identical parameter shapes; loading across "
             "them would silently produce a model that is neither.")
+    # The descriptor log transform, compared where the record states it. A
+    # value of ``None`` -- the key absent, or present and null -- is not a
+    # statement about the networks and is not treated as one.
+    want_transform = bool(getattr(arch, "descriptor_log_transform", False))
+    got_transform = md.get("descriptor_log_transform")
+    if got_transform is not None and bool(got_transform) != want_transform:
+        raise ValueError(
+            f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r}: "
+            f"its networks were pretrained with "
+            f"descriptor_log_transform={bool(got_transform)} "
+            "(pretrain_metadata.json), but the model being built has "
+            f"descriptor_log_transform={want_transform}. The flag changes "
+            "what the networks read -- the log compression of the MLP inputs "
+            "on the legacy coordinates (networks.AlecGGA_XNet._core, "
+            "AlecGGA_CNet._core) and the cusp descriptor's weighted-Z column "
+            "on every coordinate set -- and changes no parameter shape, so "
+            "loading across it would silently produce a model that is "
+            "neither.")
 
 
 def _build_model(spec: TrainingSpec) -> AlecGGAModel:

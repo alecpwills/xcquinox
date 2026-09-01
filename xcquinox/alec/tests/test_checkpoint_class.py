@@ -28,6 +28,7 @@ import os
 import time
 
 import equinox as eqx
+import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
 import pytest
@@ -35,6 +36,7 @@ import pytest
 from xcquinox.alec.checkpoint_class import (CLASS_RECORD_SUFFIX,
                                             TEMPORARY_GRACE_SECONDS,
                                             ClassRecordStale,
+                                            ModelClassMismatch,
                                             class_record_path,
                                             load_trained_checkpoint,
                                             model_class_of_arch,
@@ -140,7 +142,8 @@ def test_a_checkpoint_of_another_class_deserialises_without_complaint(tmp_path):
     assert all(np.array_equal(x, y) for x, y in zip(a, b))
     # ... and the skeleton it landed in still says it is the legacy class.
     assert model_class_of_model(loaded) == {"parent_anchor": False,
-                                            "descriptor_coordinates": "legacy"}
+                                            "descriptor_coordinates": "legacy",
+                                            "descriptor_log_transform": False}
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +181,7 @@ def test_save_artifacts_records_the_class_of_every_checkpoint_it_writes(tmp_path
         assert record is not None, name
         assert record["parent_anchor"] is True
         assert record["descriptor_coordinates"] == "dfs"
+        assert record["descriptor_log_transform"] is False
         assert record["parent"] == "pbe"
         assert record["arch_name"] == "t"
         assert record["meta_gga"] is False
@@ -350,7 +354,8 @@ def test_load_trained_model_accepts_the_class_it_was_written_as(tmp_path):
     _write_checkpoint(str(ckpt), _anchored_dfs_arch())
     loaded = load_trained_model(_SpecStub(_anchored_dfs_arch()), ckpt)
     assert model_class_of_model(loaded) == {"parent_anchor": True,
-                                            "descriptor_coordinates": "dfs"}
+                                            "descriptor_coordinates": "dfs",
+                                            "descriptor_log_transform": False}
 
 
 # ---------------------------------------------------------------------------
@@ -1022,17 +1027,181 @@ def test_a_record_without_a_digest_is_unreadable_rather_than_believed(tmp_path):
         require_matching_class(str(ckpt), model_class_of_arch(_anchored_arch()))
 
 
+# ---------------------------------------------------------------------------
+# The descriptor log transform: recorded, and compared when the record states it
+# ---------------------------------------------------------------------------
+
+def _lt_arch(on):
+    """The base architecture with the Dick XCDiff compression on or off.
+
+    ``descriptor_log_transform`` alone separates the two: the anchor, the
+    coordinates, the descriptors and every width are the base architecture's,
+    so one's leaves fit the other's skeleton exactly as they do across the
+    anchor.
+    """
+    return _base_arch(descriptor_log_transform=on)
+
+
+def _fx(model):
+    """The exchange enhancement factor at three ``(rho, sigma)`` points, which
+    is what the flag changes on the legacy coordinates (the MLP is fed
+    ``(1 - exp(-s^2)) log(s + 1)`` in place of the raw reduced gradient,
+    ``networks.AlecGGA_XNet._core``)."""
+    return np.array([float(np.asarray(model.xnet(jnp.array([rho, sigma]))))
+                     for rho, sigma in ((0.1, 0.02), (1.0, 0.5), (5.0, 12.0))])
+
+
+def test_the_log_transform_changes_the_function_and_not_the_leaves(tmp_path):
+    """The premise for the refusals below, measured rather than assumed.
+
+    The two architectures differ in one static field, so the leaves of one
+    deserialise into the other's skeleton with every array equal -- and the
+    two models then read those identical leaves differently, because the flag
+    changes what the MLP is fed. Neither of the two fields the record compares
+    as "the model class" separates them, so the class comparison alone lets
+    this load through.
+    """
+    path = str(tmp_path / "model.eqx")
+    written = _write_checkpoint(path, _lt_arch(True), record=False)
+    loaded = eqx.tree_deserialise_leaves(path, _model(_lt_arch(False), seed=7))
+    a, b = _arrays(written), _arrays(loaded)
+    assert len(a) == len(b) and a
+    assert all(np.array_equal(x, y) for x, y in zip(a, b))
+
+    delta = float(np.max(np.abs(_fx(written) - _fx(loaded))))
+    assert delta > 1e-6, (
+        f"the flag changed nothing at these points ({delta}): the case below "
+        "would then be refusing a difference that does not exist")
+
+    class_fields = ("parent_anchor", "descriptor_coordinates")
+    assert ({k: model_class_of_arch(_lt_arch(True))[k] for k in class_fields}
+            == {k: model_class_of_arch(_lt_arch(False))[k] for k in class_fields})
+
+
+@pytest.mark.parametrize("written_on,wanted_on", [(True, False), (False, True)])
+def test_a_checkpoint_written_under_the_other_log_transform_is_refused(
+        tmp_path, written_on, wanted_on):
+    """Both directions: the record states the flag its checkpoint was written
+    under, and a skeleton of the other value is refused with both named.
+
+    The matching skeleton still loads, so this is a comparison and not a
+    loader that refuses everything.
+    """
+    ckpt = str(tmp_path / "model.eqx")
+    written = _write_checkpoint(ckpt, _lt_arch(written_on))
+    assert read_class_record(ckpt)["descriptor_log_transform"] is written_on
+
+    with pytest.raises(ModelClassMismatch) as excinfo:
+        require_matching_class(ckpt, model_class_of_arch(_lt_arch(wanted_on)))
+    message = str(excinfo.value)
+    assert f"descriptor_log_transform={written_on}" in message, message
+    assert f"descriptor_log_transform={wanted_on}" in message, message
+
+    with pytest.raises(ModelClassMismatch):
+        load_trained_checkpoint(ckpt, _model(_lt_arch(wanted_on), seed=1))
+
+    loaded = load_trained_checkpoint(ckpt, _model(_lt_arch(written_on), seed=1))
+    a, b = _arrays(written), _arrays(loaded)
+    assert a and all(np.array_equal(x, y) for x, y in zip(a, b))
+
+
+def test_the_holdout_loader_refuses_the_other_log_transform(tmp_path):
+    """The held-out loader reads the class off the SPEC's arch rather than off
+    a skeleton, so the flag reaches it by the other of the two paths."""
+    from xcquinox.alec.eval_holdout import load_trained_model
+
+    ckpt = tmp_path / "model.eqx"
+    _write_checkpoint(str(ckpt), _lt_arch(True))
+    with pytest.raises(ValueError, match="descriptor_log_transform"):
+        load_trained_model(_SpecStub(_lt_arch(False)), ckpt)
+    assert load_trained_model(_SpecStub(_lt_arch(True)), ckpt) is not None
+
+
+def test_a_record_that_predates_the_log_transform_field_loads_as_before(tmp_path):
+    """Every record written before the field existed -- the ones standing
+    beside the cluster's checkpoints -- states no ``descriptor_log_transform``,
+    and is read exactly as it was: the field is compared only when the record
+    carries it, so such a record is accepted by a skeleton of either value and
+    the class it reports is unchanged.
+
+    Removing the key leaves the leaves untouched, so the digest still
+    describes them and the acceptance turns on the missing field alone.
+    """
+    ckpt = str(tmp_path / "model.eqx")
+    written = _write_checkpoint(ckpt, _lt_arch(True))
+    record = read_class_record(ckpt)
+    record.pop("descriptor_log_transform", None)
+    with open(class_record_path(ckpt), "w") as f:
+        json.dump(record, f, indent=2)
+    stripped = read_class_record(ckpt)
+    assert "descriptor_log_transform" not in stripped
+    assert stripped["sha256"] == _sha256_of(ckpt)
+
+    for on in (True, False):
+        got = require_matching_class(ckpt, model_class_of_arch(_lt_arch(on)))
+        assert got == {"parent_anchor": False,
+                       "descriptor_coordinates": "legacy"}, got
+        loaded = load_trained_checkpoint(ckpt, _model(_lt_arch(on), seed=1))
+        a, b = _arrays(written), _arrays(loaded)
+        assert a and all(np.array_equal(x, y) for x, y in zip(a, b))
+
+
+def test_a_checkpoint_with_no_record_is_legacy_whatever_the_flag(tmp_path):
+    """The flag is no part of what makes a record-less checkpoint readable.
+
+    Most of the registry's architectures set ``descriptor_log_transform`` (the
+    module's payload note carries the count), so a rule that made it part of
+    the legacy class would refuse every pulled v3/v4/v5 checkpoint of those
+    architectures -- which carry no record at all -- to the very skeleton that
+    wrote them.
+    """
+    ckpt = str(tmp_path / "model.eqx")
+    written = _write_checkpoint(ckpt, _lt_arch(True), record=False)
+    assert read_class_record(ckpt) is None
+
+    loaded = load_trained_checkpoint(ckpt, _model(_lt_arch(True), seed=1))
+    a, b = _arrays(written), _arrays(loaded)
+    assert a and all(np.array_equal(x, y) for x, y in zip(a, b))
+    assert require_matching_class(
+        ckpt, model_class_of_arch(_lt_arch(True))) == {
+            "parent_anchor": False, "descriptor_coordinates": "legacy"}
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_the_writer_states_the_log_transform_it_wrote_under(tmp_path, on):
+    """``train.save_trained_checkpoint`` -- the writer every producer outside
+    the training module goes through -- records the architecture's resolved
+    flag, for BOTH values rather than only the one that differs from the
+    default, and the checkpoint round-trips into its own architecture."""
+    from xcquinox.alec.train import save_trained_checkpoint
+
+    arch = _lt_arch(on)
+    ckpt = str(tmp_path / "model.eqx")
+    written = _model(arch, seed=4)
+    save_trained_checkpoint(ckpt, written, arch)
+
+    with open(class_record_path(ckpt)) as f:
+        payload = json.load(f)
+    assert payload["descriptor_log_transform"] is on, payload
+
+    loaded = load_trained_checkpoint(ckpt, _model(arch, seed=11))
+    a, b = _arrays(written), _arrays(loaded)
+    assert a and all(np.array_equal(x, y) for x, y in zip(a, b))
+
+
 def test_the_class_of_an_arch_and_of_the_model_it_builds_agree():
     """``create_network_pair`` carries the configuration's class into the
     built networks' static fields, so the two readings the loaders use --
     from the spec's arch, and from the skeleton itself -- answer the same.
 
-    All FOUR reachable classes: the anchor and the coordinates are independent
-    fields, so unanchored ``dfs`` is a class of its own and is checked here
-    with the other three."""
+    The four classes the two compared fields reach -- the anchor and the
+    coordinates are independent, so unanchored ``dfs`` is one of its own --
+    and the log transform, which is read off the same architecture and off the
+    exchange network it builds (``networks.create_network_pair`` passes it to
+    both nets), giving five distinct readings here."""
     classes = set()
     for arch in (_legacy_arch(), _anchored_arch(), _anchored_dfs_arch(),
-                 _dfs_arch()):
+                 _dfs_arch(), _lt_arch(True)):
         assert model_class_of_arch(arch) == model_class_of_model(_model(arch))
         classes.add(tuple(sorted(model_class_of_arch(arch).items())))
-    assert len(classes) == 4, classes
+    assert len(classes) == 5, classes

@@ -1338,6 +1338,112 @@ def test_certificate_records_the_checkpoint_digests(tmp_path):
     assert len(payload["checkpoint"]["xnet_sha256"]) == 64
 
 
+# ---------------------------------------------------------------------------
+# The descriptor log transform: recorded, and compared where it is stated
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("arch_name,on", [("deep_3x16", True),
+                                          ("deep_notransform_3x16", False)])
+def test_certificate_records_the_descriptor_log_transform(tmp_path, arch_name,
+                                                          on):
+    """The certificate states the descriptor log transform the certified
+    networks read their inputs through, beside the anchor and the coordinates.
+
+    Like those two it is a static field that changes no parameter shape, so
+    the checkpoint digests the certificate carries say nothing about it: the
+    same leaves are a different functional under the other value. Both values
+    are exercised, on the two registry architectures that differ in this field
+    and in nothing else that matters here.
+    """
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir, arch_name=arch_name)
+    payload = fid.fidelity_certificate(
+        _cfg(arch=(arch_name,)), run_dir, arch_name,
+        oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 0.5, "H2": 1.0}))
+    assert payload["descriptor_log_transform"] is on, payload
+    on_disk = json.loads(open(fid.certificate_path(run_dir, arch_name)).read())
+    assert on_disk["descriptor_log_transform"] is on
+
+
+def test_a_certificate_stating_the_other_log_transform_is_a_mismatch():
+    """A certificate recording a transform the run's architecture does not
+    carry does not describe the networks this run trains, and is reported by
+    the one comparison both the record layer and the pretrain keep check
+    apply."""
+    cert = {"arch": "deep_3x16", "parent_anchor": False,
+            "descriptor_coordinates": "legacy",
+            "descriptor_log_transform": False}
+    assert fid.model_class_mismatches(_cfg(), cert) == [
+        ("descriptor_log_transform", False, True)]
+
+
+def test_a_certificate_stating_the_architectures_log_transform_agrees():
+    """The control for the case above: the value the registry states is no
+    mismatch, so the comparison is not one that refuses every certificate."""
+    cert = {"arch": "deep_3x16", "parent_anchor": False,
+            "descriptor_coordinates": "legacy",
+            "descriptor_log_transform": True}
+    assert fid.model_class_mismatches(_cfg(), cert) == []
+
+
+def test_a_certificate_that_states_no_log_transform_still_validates():
+    """Every certificate on the cluster was written before the key and carries
+    the two class fields alone. Such a document states nothing about the
+    transform, and is read exactly as it was."""
+    cert = {"arch": "deep_3x16", "parent_anchor": False,
+            "descriptor_coordinates": "legacy"}
+    assert fid.model_class_mismatches(_cfg(), cert) == []
+
+
+def test_the_expected_log_transform_follows_the_caller_s_architecture():
+    """The expected value is the architecture the CALLER is asking about, as
+    :func:`parent_mismatch`'s expected parent is.
+
+    A certificate from another architecture's directory is refused on its
+    ``arch`` line by both callers, but 23 of the 31 registered architectures
+    set the transform, so such a document agrees on this field more often than
+    not and the model-class report would go quiet about the field it exists to
+    state. With the name passed, the comparison is against the architecture
+    this run builds: ``medium`` carries the transform off and ``deep_3x16``
+    carries it on.
+    """
+    cert = {"arch": "medium", "parent_anchor": False,
+            "descriptor_coordinates": "legacy",
+            "descriptor_log_transform": False}
+    assert fid.model_class_mismatches(_cfg(), cert, "deep_3x16") == [
+        ("descriptor_log_transform", False, True)]
+    # Without a name the certificate's own is used, and it agrees with itself.
+    assert fid.model_class_mismatches(_cfg(), cert) == []
+
+
+def test_certificate_describes_run_states_the_log_transform_of_this_run(
+        tmp_path):
+    """The keep check hands its own architecture down, so the finding it
+    reports is about the networks this run would train on."""
+    cert = {"verdict": "PASS", "arch": "medium", "parent_anchor": False,
+            "descriptor_coordinates": "legacy",
+            "descriptor_log_transform": False}
+    findings = fid.certificate_describes_run(
+        _cfg(), str(tmp_path), "deep_3x16", cert)
+    transform = [f for f in findings if "descriptor_log_transform" in f]
+    assert len(transform) == 1, findings
+    assert "this run builds descriptor_log_transform=True" in transform[0]
+
+
+def test_a_log_transform_on_an_unregistered_arch_has_no_expected_value():
+    """An architecture the registry does not carry has no value to compare
+    with, and the comparison says nothing rather than guessing one; the
+    unresolvable architecture is reported by the callers through
+    ``parent_mismatch``."""
+    cert = {"arch": "not_an_architecture", "parent_anchor": False,
+            "descriptor_coordinates": "legacy",
+            "descriptor_log_transform": True}
+    assert fid.model_class_mismatches(_cfg(), cert) == []
+    with pytest.raises(KeyError):
+        fid.parent_mismatch("not_an_architecture", cert)
+
+
 @pytest.mark.parametrize("enabled_before", [True, False])
 def test_certificate_leaves_the_precompute_cache_as_it_found_it(
         tmp_path, enabled_before):

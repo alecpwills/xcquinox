@@ -1,8 +1,9 @@
 """The model class a TRAINED checkpoint was written as, recorded beside it.
 
-The parent anchor (``ArchitectureConfig.parent_anchor``) and the descriptor
-coordinates (``ArchitectureConfig.descriptor_coordinates``) are STATIC
-properties of the networks: neither changes a parameter shape, so an
+The parent anchor (``ArchitectureConfig.parent_anchor``), the descriptor
+coordinates (``ArchitectureConfig.descriptor_coordinates``) and the descriptor
+log transform (``ArchitectureConfig.descriptor_log_transform``) are STATIC
+properties of the networks: none changes a parameter shape, so an
 ``.eqx`` leaf stream written by one class deserialises into the skeleton of
 another without complaint, and the resulting model is the parent plus a
 correction trained as the whole factor -- O(1) wrong everywhere, with nothing
@@ -43,11 +44,14 @@ a record of a checkpoint that is no longer there, and is refused
 (:class:`ClassRecordStale`) rather than believed.
 
 Payload, in the vocabulary of the records it sits beside
-(``pretrain_metadata.json`` for the first five keys, the fidelity certificate
-for the two after them)::
+(``pretrain_metadata.json`` for the two class fields, ``arch_name``,
+``meta_gga`` and ``use_polarized_correlation``; the fidelity certificate for
+``parent`` and ``xcquinox_version``)::
 
     parent_anchor              bool   the class, compared by the readers
     descriptor_coordinates     str    the class, compared by the readers
+    descriptor_log_transform   bool   the class, compared by the readers WHEN
+                                      THE RECORD STATES IT (below)
     arch_name                  str    provenance
     meta_gga                   bool   provenance (ArchitectureConfig.is_meta_gga)
     use_polarized_correlation  bool   provenance (a shape-CHANGING flag, which
@@ -60,10 +64,28 @@ for the two after them)::
                                       compared
     size                       int    that checkpoint's size in bytes
 
-Only ``parent_anchor`` and ``descriptor_coordinates`` are compared as the
-class: they are what "the model class" means, and they are the two a leaf
-stream cannot reveal. ``sha256`` and ``size`` say which leaves the two refer
-to. The rest states what wrote the file.
+The first three are what "the model class" means: each is a static field of
+the networks, none changes a parameter shape, and so none of the three is
+revealed by a leaf stream. ``sha256`` and ``size`` say which leaves the record
+refers to. The rest states what wrote the file.
+
+``descriptor_log_transform`` is compared ONLY WHEN THE RECORD STATES IT. Every
+record written before the field was added carries the other keys and not this
+one, and is read exactly as it was: such a record is accepted by a skeleton of
+either value, and a checkpoint with NO record is the legacy class whatever the
+flag (:func:`is_legacy_class` is the first two fields alone -- 23 of the 31
+registry architectures set the transform, so folding it into that judgement
+would refuse every unrecorded v3/v4/v5 checkpoint of those architectures to
+the very skeleton that wrote it). What the flag changes, measured at identical
+leaves: on the legacy coordinates the MLPs are fed
+``(1 - exp(-x^2)) log(x + 1)`` in place of the raw reduced gradient and r_s,
+which moved F_x by 1.9e-3 on a depth-2 untrained pair; and on EVERY coordinate
+set the cusp descriptor's second column is log-compressed before its tanh
+(``config.ArchitectureConfig.materialize_descriptors`` ->
+``features.compute_cusp_descriptor``: 0.51 apart on a bounded (-1, 1) column
+at 0.3 to 4 bohr from an oxygen nucleus), which 13 registry architectures
+carry. The ``dfs`` coordinates bypass the network transform and nothing else,
+so the field is not the coordinates under another name.
 
 A checkpoint with NO record beside it is a legacy checkpoint -- unanchored, on
 the legacy coordinates -- because every run that writes an anchored or a
@@ -97,8 +119,15 @@ TEMPORARY_SUFFIX = ".tmp"
 DIGEST_CHUNK_BYTES = 1 << 20
 
 #: The class of a checkpoint with no record: what everything written before
-#: the anchor existed is.
+#: the anchor existed is. The two compared fields alone -- a checkpoint with no
+#: record states no descriptor log transform either, and the readers compare
+#: that field only where it is stated (:func:`require_matching_log_transform`).
 LEGACY_CLASS = {"parent_anchor": False, "descriptor_coordinates": "legacy"}
+
+#: The record field naming the descriptor log transform the checkpoint was
+#: written under. Optional in the record, unlike the two class fields: absent
+#: in every record written before it was added.
+LOG_TRANSFORM_FIELD = "descriptor_log_transform"
 
 
 class ModelClassMismatch(ValueError):
@@ -302,21 +331,28 @@ def fsync_dir_of(path) -> None:
 
 
 def model_class_of_arch(arch) -> dict:
-    """The model class ``arch`` states: the two fields the readers compare.
+    """The model class ``arch`` states: the fields the readers compare.
 
     The defaults are the legacy class, so an arch-like object from before the
-    fields existed answers as the class it is.
+    fields existed answers as the class it is. ``descriptor_log_transform``
+    rides here with the two class fields because it is the only channel the
+    readers have -- ``evaluation.run_test`` and ``eval_holdout`` hand this
+    dict straight to :func:`require_matching_class` -- and it is compared
+    against a record that states it, never against one that does not.
     """
     return {
         "parent_anchor": bool(getattr(arch, "parent_anchor", False)),
         "descriptor_coordinates": str(
             getattr(arch, "descriptor_coordinates", "legacy")),
+        LOG_TRANSFORM_FIELD: bool(
+            getattr(arch, LOG_TRANSFORM_FIELD, False)),
     }
 
 
 def model_class_of_model(model) -> dict:
     """The model class a BUILT model carries, read off its exchange network's
-    static fields (``AlecGGA_XNet.parent``, ``.descriptor_coordinates``).
+    static fields (``AlecGGA_XNet.parent``, ``.descriptor_coordinates``,
+    ``.descriptor_log_transform``).
 
     The same question as :func:`model_class_of_arch` asked of the object
     rather than of the configuration; ``networks.create_network_pair`` is the
@@ -329,17 +365,32 @@ def model_class_of_model(model) -> dict:
         "parent_anchor": getattr(xnet, "parent", None) is not None,
         "descriptor_coordinates": str(
             getattr(xnet, "descriptor_coordinates", "legacy")),
+        LOG_TRANSFORM_FIELD: bool(
+            getattr(xnet, LOG_TRANSFORM_FIELD, False)),
     }
 
 
 def is_legacy_class(model_class) -> bool:
-    """Whether ``model_class`` is the unanchored legacy class."""
+    """Whether ``model_class`` is the unanchored legacy class.
+
+    The anchor and the coordinates alone. The descriptor log transform is
+    deliberately no part of this: what it decides is whether a checkpoint with
+    NO record beside it may be read, and the campaigns that left those
+    checkpoints set the transform on most of their architectures, so a rule
+    that read it here would refuse them all to the class that wrote them.
+    """
     return (not model_class["parent_anchor"]
             and model_class["descriptor_coordinates"] == "legacy")
 
 
 def describe_class(model_class) -> str:
-    """One line naming a class, in the loaders' shared vocabulary."""
+    """One line naming a class, in the loaders' shared vocabulary.
+
+    The two fields every record states. The descriptor log transform is not
+    named here because it is compared only where the record carries it, and
+    its refusal (:func:`require_matching_log_transform`) names both values
+    itself.
+    """
     return (f"parent_anchor={model_class['parent_anchor']}, "
             f"descriptor_coordinates="
             f"{model_class['descriptor_coordinates']!r}")
@@ -564,15 +615,61 @@ def require_matching_digest(checkpoint_path, record) -> None:
             "what this .eqx is.")
 
 
+def require_matching_log_transform(checkpoint_path, record, want_class, *,
+                                   what: str = "trained checkpoint") -> None:
+    """Refuse a checkpoint written under the other descriptor log transform,
+    where the record says which one that was.
+
+    ``descriptor_log_transform`` is a static field of both networks and of the
+    cusp descriptor, and it changes no parameter shape, so a checkpoint
+    written with the compression on deserialises into a skeleton with it off
+    in silence -- and the model that comes out reads identical leaves through
+    a different map. On the legacy coordinates the MLPs are fed
+    ``(1 - exp(-x^2)) log(x + 1)`` in place of the raw reduced gradient and
+    r_s (``networks.AlecGGA_XNet._core``, ``AlecGGA_CNet._core``); on EVERY
+    coordinate set the cusp descriptor's second column is log-compressed
+    before its tanh (``config.ArchitectureConfig.materialize_descriptors``
+    hands the flag to ``features.compute_cusp_descriptor``), so the ``dfs``
+    coordinates, which bypass the network transform, do not make the field
+    inert for an architecture carrying that descriptor.
+
+    Compared only where BOTH sides state it. A record written before the
+    field existed states nothing, and is accepted by a skeleton of either
+    value: those are the records standing beside every checkpoint written
+    before this check, and how they load is unchanged. A ``want_class``
+    that states nothing is a caller that read the flag off nothing, which is
+    not evidence either.
+
+    Raises :class:`ModelClassMismatch`, naming both values.
+    """
+    recorded = (record.get(LOG_TRANSFORM_FIELD)
+                if isinstance(record, dict) else None)
+    wanted = (want_class.get(LOG_TRANSFORM_FIELD)
+              if isinstance(want_class, dict) else None)
+    if recorded is None or wanted is None:
+        return
+    if bool(recorded) != bool(wanted):
+        raise ModelClassMismatch(
+            f"refusing to load the {what} {os.fspath(checkpoint_path)!r}: it "
+            f"was written with descriptor_log_transform={bool(recorded)}, and "
+            f"the model being built has "
+            f"descriptor_log_transform={bool(wanted)}. The flag changes what "
+            "the networks read -- the log compression of the MLP inputs on "
+            "the legacy coordinates, and the cusp descriptor's weighted-Z "
+            "column on every coordinate set -- and changes no parameter "
+            "shape, so loading across it would silently produce a model that "
+            "is neither.")
+
+
 def require_matching_class(checkpoint_path, want_class, *,
                            what: str = "trained checkpoint") -> dict:
     """Refuse to load a checkpoint written as another model class.
 
     ``want_class`` is the class of the skeleton about to be filled, from
     :func:`model_class_of_arch` (a spec's arch) or
-    :func:`model_class_of_model` (a built skeleton). Returns the recorded
-    class -- :data:`LEGACY_CLASS` when there is no record -- so a caller can
-    log what it accepted.
+    :func:`model_class_of_model` (a built skeleton). Returns the two fields
+    every record states -- :data:`LEGACY_CLASS` when there is no record -- so
+    a caller can log what it accepted.
 
     The record is held to the ``.eqx`` on disk BEFORE the classes are
     compared (:func:`require_matching_digest`): a record that does not
@@ -583,7 +680,10 @@ def require_matching_class(checkpoint_path, want_class, *,
     Raises :class:`ModelClassMismatch` (a ``ValueError``) when the record
     names another class, and when there is NO record and the skeleton is not
     the legacy class: nothing then states what the anchored model would be
-    loading, and the leaves do not reveal it.
+    loading, and the leaves do not reveal it. The descriptor log transform is
+    compared after those two fields agree, and only where the record states
+    it (:func:`require_matching_log_transform`), so a record written before
+    that field existed loads exactly as it did.
     """
     record = read_class_record(checkpoint_path)
     path = os.fspath(checkpoint_path)
@@ -605,13 +705,14 @@ def require_matching_class(checkpoint_path, want_class, *,
         "descriptor_coordinates": str(
             record.get("descriptor_coordinates", "legacy")),
     }
-    if got_class != want_class:
+    if got_class != {key: want_class.get(key) for key in got_class}:
         raise ModelClassMismatch(
             f"refusing to load the {what} {path!r}: it was written as "
             f"{describe_class(got_class)}, but the model being built is "
             f"{describe_class(want_class)}. The two are different model "
             "classes with identical parameter shapes; loading across them "
             "would silently produce a model that is neither.")
+    require_matching_log_transform(path, record, want_class, what=what)
     return got_class
 
 
@@ -624,9 +725,10 @@ def load_trained_checkpoint(checkpoint_path, skeleton, *,
     own loaders makes: :func:`require_matching_class` against the class the
     skeleton itself carries (:func:`model_class_of_model`), then
     ``eqx.tree_deserialise_leaves``. A bare deserialise is what the record
-    cannot guard -- the anchor and the descriptor coordinates change no
-    parameter shape, so another class's leaves land in this skeleton with
-    every array equal and nothing raising -- and the analysis scripts and
+    cannot guard -- the anchor, the descriptor coordinates and the descriptor
+    log transform change no parameter shape, so another class's leaves land in
+    this skeleton with every array equal and nothing raising -- and the
+    analysis scripts and
     notebook cells that read ``model.eqx``, ``model_best.eqx`` and
     ``model_val_best.eqx`` are exactly where such a load is not noticed,
     because what comes out of it is a plausible curve.
