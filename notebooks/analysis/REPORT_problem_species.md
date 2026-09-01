@@ -105,10 +105,14 @@ $1.8$--$2.2\times10^{-6}$ (scratch/v6_diag/verify_c2_branch_fix.log).
   density.
 
 **Status.** Closed at the reference-generation layer (branch-stable rescue, pinned
-grid). The only C2 benchmark reaction (`w411_c2_atomization`) sits in the validation
-slice, so no reported test metric carries the species; the drifted GGA-arm evaluation
-reference is scheduled for regeneration at array drain
-(xcquinox/alec/DEFERRED_WORK.md item 16).
+grid). The only C2 benchmark reaction (`w411_c2_atomization`) sits in the STRICT
+held-out slice of every completed v6 cell (`in_sample_overlap` empty in all 25
+`per_reaction.json` records); the cross-spec reference guard excludes the species from
+every pooled baseline wherever the reference disagrees, the seven branch-affected
+evaluations are listed for re-evaluation, and the beats-baseline verdicts are unchanged
+with and without the species. In the earlier (v4-era) split the reaction sat in the
+validation slice. The drifted GGA-arm evaluation reference is scheduled for
+regeneration at array drain (xcquinox/alec/DEFERRED_WORK.md item 16).
 
 ---
 
