@@ -1,0 +1,24 @@
+% Shared pandoc PDF header for the paper-support reports. An uncapped tall PNG
+% makes pandoc's implicit figure an unbreakable box taller than the text block
+% (an Overfull \vbox), and LaTeX then silently drops the material pushed off
+% the sheet -- measured on the pretraining report as ~470 words including two
+% section headings. Images are therefore capped to the text block; the wide
+% summary tables drop to footnotesize with tighter column separation; teletype
+% hyphenation and emergency stretch keep long artifact paths on the sheet.
+\usepackage{graphicx}
+% pandoc 3 emits \includegraphics[alt={...}]; the alt key only exists in
+% graphicx from TeX Live 2021, so define it as a no-op when absent.
+\makeatletter
+\@ifpackagelater{graphicx}{2021/01/01}{}{\define@key{Gin}{alt}[]{}}
+\makeatother
+\setkeys{Gin}{width=\linewidth,height=0.72\textheight,keepaspectratio}
+\usepackage{float}
+\floatplacement{figure}{htbp}
+\renewcommand{\topfraction}{.85}
+\renewcommand{\bottomfraction}{.7}
+\renewcommand{\textfraction}{.15}
+\renewcommand{\floatpagefraction}{.66}
+\usepackage{etoolbox}
+\AtBeginEnvironment{longtable}{\scriptsize\setlength{\tabcolsep}{2.5pt}}
+\setlength{\emergencystretch}{3em}
+\usepackage[htt]{hyphenat}

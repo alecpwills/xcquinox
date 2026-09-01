@@ -31,6 +31,30 @@ breaking, as is the higher solution) or to $E=-75.7368945310$ Ha (internally uns
 split by $7.984\times10^{-2}$ Ha $=50.10$ kcal/mol
 (scratch/v6_diag/repro_c2_pbe_branch.log).
 
+![C2 at the held-out evaluation identity (RKS/PBE, 6-311++G(3df,2pd), grid 3): the
+100-cycle DIIS trajectory oscillating between the two converged SCF solutions, with the
+lowest-energy (cycle 12) and lowest-gradient (cycle 25) trajectory points
+marked.](figures_report_pretraining/c2_diis_trajectory.png)
+
+The left axis carries the total energy of each DIIS cycle and the logarithmic right axis
+the orbital gradient norm; the dashed horizontals are the two converged second-order
+solutions, -75.8167407121 Ha (internally stable) and -75.7368945310 Ha (internally
+unstable), and the dotted horizontal is their midpoint at -75.776818 Ha, taken as the
+dividing line for counting rather than as a physical separatrix. The trajectory crosses
+that line repeatedly and never settles: 73 of the 100 cycles lie below it, the energies
+span $1.2043\times10^{-1}$ Ha, and the phase the cycle cap happens to fall on -- here the
+upper branch -- carries no information about which solution the species has. Both markers
+lie on the lower branch: the lowest-energy point at cycle 12, -75.8167361296 Ha, sitting
+$4.58\times10^{-6}$ Ha above this draw's converged solution -- the same separation the
+acceptance check under Detection reports as $-4.09\times10^{-6}$ Ha on a different draw,
+that check signing the excess as converged minus trajectory minimum, so the two figures
+differ in sign convention and not in direction -- and the lowest-gradient point at cycle
+25, where $|g|$ falls to $3.177\times10^{-3}$ a.u.; these are the two seeds the remedy
+below distinguishes, the first for the orbital-pair rerun and the second for the
+second-order stage. What the figure establishes is the landscape the next paragraph's
+aufbau flip rides on: a rescue must take its seed from a trajectory that visits both
+basins, and the quality of that seed does not by itself decide which one is reached.
+
 **The dm0-ingestion aufbau flip.** Which solution a density-seeded second-order solve
 reaches is not controlled by the quality of the seed: PySCF's SOSCF ingests `dm0` by
 diagonalizing $F[\mathrm{dm0}]$ and re-occupying by aufbau, and the ground solution of
@@ -106,13 +130,16 @@ $1.8$--$2.2\times10^{-6}$ (scratch/v6_diag/verify_c2_branch_fix.log).
 
 **Status.** Closed at the reference-generation layer (branch-stable rescue, pinned
 grid). The only C2 benchmark reaction (`w411_c2_atomization`) sits in the STRICT
-held-out slice of every completed v6 cell (`in_sample_overlap` empty in all 25
-`per_reaction.json` records); the cross-spec reference guard excludes the species from
-every pooled baseline wherever the reference disagrees, the seven branch-affected
-evaluations are listed for re-evaluation, and the beats-baseline verdicts are unchanged
-with and without the species. In the earlier (v4-era) split the reaction sat in the
-validation slice. The drifted GGA-arm evaluation reference is scheduled for
-regeneration at array drain (xcquinox/alec/DEFERRED_WORK.md item 16).
+held-out slice of every completed v6 cell (its `in_sample_overlap` empty in all 108
+`per_reaction.json` records -- the 27 completed specs, four evaluation channels each);
+the seven branch-affected evaluations were repaired in place by a gated patch tool rather
+than re-evaluated wholesale, after which the cross-spec reference guard is silent and C2
+rejoins the pooled PBE baselines on the final, validation-best and cold-start channels,
+the best-loss channel alone awaiting its checkpoint fetch (HISTORY 2026-09-01); the
+beats-baseline verdicts are unchanged with and without the species. In the earlier
+(v4-era) split the reaction sat in the validation slice. The drifted GGA-arm evaluation
+reference is scheduled for regeneration at array drain
+(xcquinox/alec/DEFERRED_WORK.md item 16).
 
 ---
 
@@ -177,7 +204,11 @@ NO $7.99\times$ (max/min over 208/114/50 evaluations) -- at essentially constant
 $4.4\times10^{-8}$ Ha) (notebooks/analysis/DENSITY_DIAGNOSIS.md Sec. 3).
 
 **Consequence for training.** With CH and NO in the training set, the density channel of
-the loss was owned by an error no functional can close: CH carries an Eq.-20
+the loss was owned by an error no functional can close. The measure throughout is the
+reference publication's per-electron density error,
+$\epsilon_n=N_e^{-1}\int|\rho-\rho_{ref}|$, with $N_e$ the quadrature integral of the
+reference density (Dick and Fernandez-Serra, Phys. Rev. B 104, L161109 (2021), eq. (20);
+xcquinox/alec/evaluation.py). CH carries an Eq.-20
 per-electron density error of $1.55\times10^{-1}$ against its stored reference (NO
 $7.78\times10^{-2}$) where the population median is $8.4\times10^{-3}$, and model-free
 PBE reproduces CH's error to 0.4% (NN/PBE $=1.004$); the two species own 68--98% of the
@@ -280,7 +311,13 @@ meta-GGA feels it: the SCAN $E_{xc}$ of the free O atom spreads by order 0.1 mHa
 independent unconstrained SCFs at def2-svp/grid 3 (0.26 mHa over one triple of runs,
 0.084 over another; 0.21 mHa for F at sto-3g/grid 1) against $1.6\times10^{-3}$ mHa for PBE -- a meaningful
 fraction of the 1.0 mHa certificate tolerance, decided by which orientation the SCF
-happened to reach. Certificate reference densities of such atoms are therefore built
+happened to reach. The fidelity certificate named here and below is the per-architecture
+pretraining gate: each pretrained network's $E_{xc}$ is evaluated on the parent
+functional's own self-consistent densities for the free atoms of the BH76/W4-11 pools,
+the molecular differences are folded into atomization-energy offsets, and the
+architecture passes only when the worst free-atom error is at most 1.0 mHa and the worst
+atomization offset at most 1.0 kcal/mol (xcquinox/alec/cluster/fidelity.py).
+Certificate reference densities of such atoms are therefore built
 under the orientation lock, after which two independent locked runs agree to
 $3.4\times10^{-11}$ mHa; spherical atoms are exempt (HISTORY 2026-08-23, Phase 40). The
 pretraining-data generator likewise refuses a spatially degenerate open-shell atom below
@@ -315,6 +352,28 @@ $$\alpha=\frac{\tau-\tau_W}{\tau_{unif}},\qquad
 whose division by $\tau_{unif}\propto n^{5/3}$ (and the resulting
 $\mathrm{d}\alpha/\mathrm{d}\sigma\sim n^{-8/3}$ sensitivity) concentrates every
 pathology in low-density regions.
+
+![The stored iso-orbital indicator produced by `metagga.compute_alpha`, drawn against
+$\tau/\tau_{unif}$ at unit density and reduced gradient $s$ = 1: (a) the linear regime
+with the smooth floor inset; (b) logarithmic axes, on which the stored value departs from
+the raw ratio at the ceiling.](figures_report_pretraining/alpha_indicator.png)
+
+Panel (a) fixes the density and the reduced gradient so that the ratio
+$\tau_W/\tau_{unif}$ is 1.6667, the abscissa at which the raw indicator vanishes; the
+stored indicator follows the raw ratio to within $5\times10^{-6}$ across the whole panel
+and passes through unity at $\tau=\tau_W+\tau_{unif}$, the uniform-electron-gas
+point. The inset resolves the immediate vicinity of $\tau=\tau_W$ on a logarithmic
+ordinate: the stored value passes through the floor value $p(0)=\delta/2 =
+5\times10^{-6}$ of Sec. 5.2 exactly at $\tau=\tau_W$ and continues smoothly to
+$4.95\times10^{-7}$ at the panel's left edge, where the raw indicator is negative --
+off the SCF manifold, on which $\tau \ge \tau_W$ holds and the floor is the
+smallest stored value. Panel (b) repeats the map on logarithmic axes out to a
+raw ratio of 1000: stored and raw coincide until the raw value reaches 100, past which
+the stored curve is flat at the ceiling of Sec. 5.1 (`metagga._ALPHA_MAX` = 100), with
+151 of that panel's 601 sampled points sitting on it and the largest raw value compressed
+tenfold. For the physical raw indicator ($\tau \ge \tau_W$) the two bounds give the
+domain of every indicator the network sees, $[5\times10^{-6},100]$, and they are what
+keeps the division by $\tau_{unif}$ finite in the tail.
 
 **5.1 Diffuse-tail ill-conditioning.** On the diffuse `++` basis the Li 2s tail reaches
 $\rho=5.4\times10^{-13}$ at grid 2; with only a value floor in place, $\alpha$ reached
@@ -371,12 +430,51 @@ across perturbed seeds to 0.0 and $1.9\times10^{-14}$ Ha; the occupancy-keyed so
 gate and the oracle's straddle mask, each a place where the implementation and its check
 had agreed to look away from the same point, were retired. The indicator definition is
 recorded in the pretraining-data identity (`ALPHA_DEFINITION`), so a file computed under
-the clip is stale for a run under the smooth part. A designed consequence: SCAN-parent
-pretraining starts at a loss floor of $3\times10^{-14}$ (against $2.7\times10^{-32}$ for
-PBE parents) because the stored targets are libxc SCAN at the exact $\tau$ while the
-anchored parent evaluates at $p(\alpha_{raw})$ with $p(0)=5\times10^{-6}$; the
-$\alpha=0$ mesh nodes alone reproduce the floor, and the certificates bound the energy
-consequence $200\times$ inside the gate (HISTORY 2026-08-31).
+the clip is stale for a run under the smooth part. The smoothing's own role is the one
+measured above -- the one-orbital Fock response, cured from 0.93 Ha to
+$3.6\times10^{-12}$ Ha -- and it is not the source of the pretraining floor. SCAN-parent
+pretraining starts at a loss floor of $3\times10^{-14}$ where PBE parents floor at
+$2.7\times10^{-32}$, and that floor belongs to the indicator's CEILING: the anchored
+network inverts the stored smoothed column exactly before the parent reads it, so a
+stored $p(0)=5\times10^{-6}$ recovers $\alpha_{raw}$ to round-off and the end-to-end
+anchored exchange loss on the committed mesh is $7.6179\times10^{-32}$; the mesh-carrying
+and mesh-free floors stand in the ratio 0.7000000000000004, exactly the 0.7 atomic share
+of the loss weighting, so the mesh block contributes at most $6\times10^{-29}$; and the H
+atom, one-orbital on every row, floors at $2.85\times10^{-32}$. What the inversion cannot
+undo is the cap at `metagga._ALPHA_MAX` = 100: the capped low-density tail rows, whose
+exact indicator spans $\sim10^{2}$ to $\sim7\times10^{6}$, carry 100.0 percent of the
+weighted exchange MSE on the O atom and on H2O, departing from the exact-$\tau$ libxc
+targets by a median $2.55\times10^{-4}$ and at most $5.70\times10^{-4}$ in enhancement
+factor. The first reading recorded here -- the floor attributed to the
+smoothed-column/exact-$\tau$ asymmetry, with the $\alpha$ = 0 mesh nodes reproducing it --
+priced a computation ($1.9\times10^{-14}$) that the run's code path never performs, and
+its agreement in decade with the measured floor was coincidental; it is superseded
+(HISTORY 2026-08-31, erratum). Nothing is repaired because nothing is broken: the ceiling
+is the documented energy-faithfulness bound, and the certificates gate its energy
+consequence $194\times$ inside the 1.0 mHa threshold.
+
+![The smooth positive part at width $w=10^{-5}$ (the $\delta$ of this section): (a) $p$
+against the hard clip $\max(x,0)$, with the excess over that clip inset; (b) the absolute
+error of the round trip through `metagga.invert_smooth_positive_part` against the
+conditioning scale of the inversion.](figures_report_pretraining/smooth_positive_part.png)
+
+Panel (a) draws $p_\delta$ (solid) against the hard clip it replaced (dashed) over the
+band $|x|\le5\times10^{-5}$ of raw indicator values: the two are indistinguishable away
+from the origin and separate only where the clip's derivative is one-sided, the marked
+value at the origin being the floor $p_\delta(0)=w/2=5\times10^{-6}$, at which the slope
+is 1/2 rather than 0 or 1. The inset follows the excess $p_\delta-\max(x,0)$ down from
+that floor onto its own $w^2/4|x|$ asymptote; at the edge of the band the excess is
+$4.951\times10^{-7}$ against the asymptote's $5\times10^{-7}$, so the smoothing is
+confined to a band of a few widths: the relative distortion of $x$ is 0.99 percent at
+five widths and falls to 0.01 percent by fifty. Panel (b) is the round
+trip that keeps a stored indicator column readable: $p_\delta$ followed by its exact
+inverse returns $x$ with an absolute error of at most $2.78\times10^{-19}$ over the grid
+($8.47\times10^{-15}$ relative), 430 of the 1001 grid points returning bit-exactly, and
+the largest excursion above the plotted conditioning scale
+$\varepsilon\max(|x|,w)(1+w^2/4p^2)$ is $1.01\times$ its value. The inversion is
+therefore
+exact to the floating-point representation, which is what allows the raw $\tau$ to be
+recovered from a column stored under a recorded width.
 
 **5.3 Residual tail response.** What the smoothing does not change is the indicator's
 response amplification in the density tail, which is peaked on a shell rather than a
@@ -438,6 +536,26 @@ $O(\epsilon\cdot\mathrm{d}E_c/\mathrm{d}\zeta)\sim10^{-8}$ Ha; the invariant tha
 guards match across paths (so $v_c$ remains the exact gradient of $E_c$) is held by the
 single definition and a test rather than by parallel comments (oneshot.py).
 
+![The PW92 spin interpolation $f(\zeta)$ and its curvature: (a) $f$ over the full
+polarization range with the production clip at $|\zeta|=1-10^{-6}$ marked; (b) $f''$ on a
+logarithmic ordinate, analytic against a central difference, with the approach to the
+pole inset.](figures_report_pretraining/zeta_pole.png)
+
+Panel (a) shows that $f$ itself is unremarkable at the boundary: it is bounded, rises
+smoothly to unity at full polarization, and at the clip already reads 0.999996787688811,
+so excluding the last $10^{-6}$ of polarization costs $3.2\times10^{-6}$ of the
+interpolation's range. Panel (a)'s annotation records the unpolarized curvature 1.7099209342
+(`parents._PW_MOD_FZ20`, reproduced exactly). Panel (b) carries the failure: the
+analytic curvature climbs from that value to 8550.14 at the clip, a factor of 5000,
+with the inset showing the $(1-\zeta)^{-2/3}$ divergence up to the clip, the drawn
+data terminating on the dashed clip line. The open circles are a central
+second difference of the written $f$, tracking the analytic curvature to
+$2.3\times10^{-4}$ relative for $|\zeta|$ up to 0.99, so the pole drawn here is a
+property of the interpolation and not of the differencing. The dashed verticals are the
+clip: outside them lies the region in which the second derivative the full SCF takes of
+$v_c$ returns a non-finite training gradient, and the clip's purpose is to keep the
+quadrature from ever evaluating a point there.
+
 **Status.** Closed; fail-loud non-finite guards run in every training loop, and the
 gradient-level sweep described in Sec. 8 closes the one-step blind spot this class
 originally exploited.
@@ -455,8 +573,9 @@ eigendecomposition of the density (HISTORY 2026-04-27, Phase 3).
 **The open class.** Two v6 incidents share the finite-loss/non-finite-gradient
 signature of Sec. 8 and remain open. (i) On the first group (G1, the size ladder), the
 `medium` subset-size-26 cell failed on the open non-finite-gradient defect, and the
-published G1 figure set carries 18 of 44 cells with that cell excluded; the record does
-not name the failing training group of that cell (HISTORY 2026-08-31). (ii) The
+published G1 figure set carries 27 of 44 cells with that cell excluded; the record does
+not name the failing training group of that cell (HISTORY 2026-08-31; the set regenerated
+at 27 cells on the repaired evaluations, HISTORY 2026-09-01). (ii) The
 DM-carrying group's (G3) preflight compile smoke (run_20260827T163335Z, preflight job
 2138042, spec 21 = `deep_combined_attn_3x16` at subset size 26) aborted at per-molecule
 step 27 on the group `bh76:C2H2` with a FINITE loss of 18.419290403706498 and 36 of 36
@@ -605,7 +724,8 @@ $\sim15$ for PBE, uniformly across matched specs (HISTORY 2026-06-24, Phase 11).
 For hard species the NN-driven SCF, given 25 cycles, left the stable PBE-initialized
 basin and the constant linear mixer could not damp it: the captured per-cycle traces
 show a clean period-2 oscillation in the tail (`t-hooo` steps 18--24 alternate
-$-223.40/-223.75/\ldots$) or a still-drifting endpoint (`s4-c2v` ends 10.3 Ha,
+-223.40/-223.75/-223.32/-223.72/-223.31/-223.71/-223.30, a peak-to-peak swing of 0.45 Ha)
+or a still-drifting endpoint (`s4-c2v` ends 10.3 Ha,
 $\sim6500$ kcal/mol, off PBE). The final-step energy is then an arbitrary oscillation
 phase. Splitting held-out reactions by SCF convergence proves the mechanism: converged
 reactions score MAE $\sim$ 12--28 kcal/mol, non-converged 140--485, with 26--59
@@ -679,10 +799,15 @@ two signed-error cells are not subset-matched)
 (HISTORY 2026-08-31;
 notebooks/analysis/figures_dfs_step7_dfs6311_grid3_v6g1_size_val_best/anchored_vs_unanchored_fx_fc.png,
 pretrain_fx_fc_delta_all.png, trained_fx_fc_delta_best.png in the same directory). On
-the first anchored group's published cells the pattern is W4-11 beaten against the
+the first anchored group's published cells the pattern was W4-11 beaten against the
 cell's own PBE anchor in 18 of 18 cells (5.99--12.25 against 13.1--13.6 kcal/mol), the
-combined pool in 17 of 18, BH76 in 5 of 18 (best 6.51 against 7.73) (HISTORY
-2026-08-31).
+combined pool in 17 of 18, BH76 in 5 of 18 (best 6.51 against 7.73) -- the first
+published state, at 18 cells (HISTORY 2026-08-31). On the regenerated 27-cell set over
+the repaired evaluations the pattern holds and strengthens: W4-11 beaten in 27 of 27
+cells (the same 5.99--12.25 against 13.1--13.6 kcal/mol), the combined pool in 26 of 27,
+BH76 in 9 of 27 (best 6.46 against 7.73), each cell scored on its own strict held-out
+slice (HISTORY 2026-09-01; the run's per-spec
+`eval_holdout_val_best/test_set.csv`).
 
 **Status.** Open as a design question rather than a defect: the anchor bought four
 orders of magnitude in pretraining fidelity, and whether it costs the barrier physics is

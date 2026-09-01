@@ -487,7 +487,7 @@ def make_smooth_positive_part(outdir, dpi):
     ax1.plot(x, err, color=OKABE_ITO["purple"], lw=1.3,
              label=r"$|p^{-1}(p(x)) - x|$")
     ax1.plot(x, scale, color=OKABE_ITO["black"], ls=":", lw=1.0,
-             label=r"conditioning scale $\varepsilon\,|x|\,(1 + w^2/4p^2)$")
+             label=r"conditioning scale $\varepsilon\max(|x|,w)(1 + w^2/4p^2)$")
     rows += _series_rows("b_roundtrip", "inversion_error", "x", x,
                          "abs_error", err)
     rows += _series_rows("b_roundtrip", "conditioning_scale", "x", x,
