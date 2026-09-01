@@ -269,7 +269,8 @@ def test_pw92c_polarized_second_derivative_finite_at_full_polarization():
     differentiates v_xc (itself a first derivative of E_xc) a second time, so an
     inf/NaN second derivative here breaks the training gradient of every
     fully-spin-polarized species (free atoms H, Li, ...). PW92's spin
-    interpolation f(zeta) ~ (1+-zeta)**(4/3) has d2/dzeta2 ~ (1-+zeta)**(-2/3)
+    interpolation f(zeta) ~ (1+zeta)**(4/3) + (1-zeta)**(4/3) has
+    d2/dzeta2 ~ (1+zeta)**(-2/3) + (1-zeta)**(-2/3)
     -> inf at |zeta|=1 unless the interpolation base is floored. The first-order
     gradient (checked above) is finite there and hid this. Perdew & Wang
     PRB 45, 13244 (1992), eqs (8)-(9)."""

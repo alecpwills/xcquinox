@@ -837,7 +837,8 @@ def pw92c_polarized_scalar(rho_alpha, rho_beta):
     fpp0 = 8.0 * c_fz / 9.0
     # AD-safety at full spin polarization (|zeta|=1, one spin density = 0). The
     # spin-interpolation f(zeta) ~ (1+-zeta)**(4/3) is finite there and its FIRST
-    # derivative is finite, but the SECOND derivative ~ (1-+zeta)**(-2/3) -> inf.
+    # derivative is finite, but the SECOND derivative
+    # ~ (1+zeta)**(-2/3) + (1-zeta)**(-2/3) -> inf as either factor vanishes.
     # The FULL SCF differentiates v_xc (itself a first derivative of E_xc) a
     # second time, so an unfloored base produces a NaN training gradient on every
     # fully-spin-polarized species (free atoms H, Li, ... in W4-11 atomization /

@@ -326,6 +326,26 @@ def pbe_fc_curve(s_grid: np.ndarray, rs: float) -> Optional[np.ndarray]:
     return np.where(np.abs(eps_c_pw92) > 1e-30, eps_c_pbe / eps_c_pw92, 1.0)
 
 
+def mgga_panel_curves(model, s_grid: np.ndarray):
+    """The meta-GGA panel curves of the enhancement-factor figure, all on
+    ONE indicator slice.
+
+    Returns ``(fx, fc, alpha_sweep)``: the ``F_x(s)`` curve and the
+    ``F_c(s; r_s)`` family at the ENCODED alpha = 0 slice, plus the alpha
+    panel's sweep over :data:`_ALPHA_PANELS`. The F_c panels sit on the
+    SAME alpha = 0 slice as the exchange panel: the zero-column cut is
+    recovered as alpha ~ 1 by the inverting model classes, which drew one
+    figure at two different indicator values (up to 0.669 apart in F_c at
+    r_s = 0.5, measured).
+    """
+    fx = model_fx_curve(model, s_grid, alpha=0.0)
+    fc = {rs: model_fc_curve(model, s_grid, rs, alpha=0.0)
+          for rs in _RS_PANELS}
+    sweep = {a: model_fx_curve(model, s_grid, alpha=a)
+             for a in _ALPHA_PANELS}
+    return fx, fc, sweep
+
+
 # ---------------------------------------------------------------------------
 # Figure
 # ---------------------------------------------------------------------------
@@ -357,16 +377,8 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
                   f"(spec {reps[arch]}): {exc}", flush=True)
             continue
         if is_meta_gga(model):
-            fx_curves[arch] = model_fx_curve(model, s_grid, alpha=0.0)
-            mgga_alpha[arch] = {a: model_fx_curve(model, s_grid, alpha=a)
-                                for a in _ALPHA_PANELS}
-            # The F_c panels sit on the SAME alpha = 0 slice as the F_x
-            # panel: the zero-column cut is recovered as alpha ~ 1 by the
-            # inverting classes, which drew one figure at two different
-            # indicator values (up to 0.669 apart in F_c, measured).
-            fc_curves[arch] = {rs: model_fc_curve(model, s_grid, rs,
-                                                  alpha=0.0)
-                               for rs in _RS_PANELS}
+            fx_curves[arch], fc_curves[arch], mgga_alpha[arch] = \
+                mgga_panel_curves(model, s_grid)
         else:
             fx_curves[arch] = model_fx_curve(model, s_grid)
             fc_curves[arch] = {rs: model_fc_curve(model, s_grid, rs)

@@ -431,9 +431,12 @@ def feature_response_vxc(dedf, grid_weights, features_of_dm, dm):
 
 
 # Spin polarization zeta is held strictly INSIDE (-1, 1) by this margin. At full
-# polarization (one spin density 0) zeta -> +-1 EXACTLY; both the PW92 spin
-# interpolation f(zeta) ~ (1+-zeta)**(4/3) and the (rho_a-rho_b)/rho_tot chain
-# have a SECOND derivative ~ (1-+zeta)**(-2/3) -> inf at |zeta|=1. The FULL SCF
+# polarization (one spin density 0) zeta -> +-1 EXACTLY; the PW92 spin
+# interpolation f(zeta) ~ (1+zeta)**(4/3) + (1-zeta)**(4/3) has a SECOND
+# derivative ~ (1+zeta)**(-2/3) + (1-zeta)**(-2/3) -> inf as EITHER factor
+# vanishes at |zeta|=1 (same-sign pairing: each term's curvature blows up at
+# its own zero). The (rho_a-rho_b)/rho_tot chain is finite at |zeta|=1 and
+# diverges separately as rho_tot**-2 in the vanishing-density tail. The FULL SCF
 # differentiates v_c (itself a first derivative of E_c) a second time, so the
 # exact boundary produces a NaN training gradient on every fully-spin-polarized
 # species (free atoms H, Li, ... in W4-11 atomization / atom anchors), which then

@@ -5822,6 +5822,31 @@ def test_model_fc_curve_alpha_is_the_true_scan_slice():
     assert np.max(np.abs(base - ref)) > 1e-2
 
 
+def test_mgga_panel_curves_sit_on_one_scan_slice():
+    """The figure-level contract: BOTH panel families of the meta-GGA
+    enhancement-factor figure are built at the encoded alpha = 0 slice.
+    Pinned at the helper the plotter calls, so dropping either call site's
+    alpha lands the alpha ~ 1 curve (0.174 off in F_x, up to 0.669 in F_c)
+    and fails here."""
+    import numpy as np
+    from xcquinox.alec import parents
+    model = _fresh_anchored_mgga_model("deep_mgga_3x16")
+    s = np.linspace(1e-3, 3.0, 25)
+    fx, fc, sweep = ef.mgga_panel_curves(model, s)
+    rho1 = np.full(25, 1.0)
+    ref_fx = np.asarray(parents.parent_fx(
+        "scan", rho1, ef.s_to_sigma(rho1, s), np.zeros(25)))
+    assert np.max(np.abs(fx - ref_fx)) < 1e-10
+    for rs in (0.5, 2.0, 5.0):
+        rho = ef.rs_to_rho(rs)
+        ref_fc = np.asarray(parents.parent_fc(
+            "scan", np.full(25, rho), ef.s_to_sigma(np.full(25, rho), s),
+            0.0, np.zeros(25)))
+        assert np.max(np.abs(fc[rs] - ref_fc)) < 1e-10, rs
+    # The alpha sweep's alpha = 0 member coincides with the F_x panel.
+    assert np.max(np.abs(sweep[0.0] - fx)) == 0.0
+
+
 def test_model_curves_refuse_a_gga_net_with_an_alpha_request():
     """A GGA net WITH extra descriptors carries metagga_alpha_index = -1;
     writing the encoded value there would silently land in the LAST
