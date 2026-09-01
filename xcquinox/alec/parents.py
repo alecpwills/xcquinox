@@ -636,12 +636,13 @@ def lob_preimage(F_parent, limit, z_max=40.0):
     (``networks._AlecLOB``), i.e. ``z = ln[(limit - 1) F_parent /
     (limit - F_parent)]``, clamped to ``[-z_max, z_max]``.
 
-    The clamp binds only where the parent sits within ``limit e^(-z_max)``
-    of the UPPER bound or ``limit e^(-z_max)/(limit - 1)`` of the LOWER bound
-    of ``(0, limit)`` (``z_max = 40``: both 8.5e-18 for the correlation
-    squash at 2.0; 7.7e-18 / 9.5e-18 at 1.804; 5.0e-18 / 2.9e-17 at the
-    meta-GGA exchange ceiling 1.174); there the map returns the parent to
-    that accuracy and the
+    The clamp binds only where the parent sits within
+    ``limit (limit - 1) e^(-z_max)`` of the UPPER bound or
+    ``limit e^(-z_max)/(limit - 1)`` of the LOWER bound of ``(0, limit)``
+    (from the pre-image: ``limit - F = (limit - 1) F e^(-z)``; ``z_max = 40``:
+    both 8.5e-18 for the correlation squash at 2.0; 6.2e-18 / 9.5e-18 at
+    1.804; 8.7e-19 / 2.9e-17 at the meta-GGA exchange ceiling 1.174); there
+    the map returns the parent to that accuracy and the
     network cannot move it, which is the parent's own limit rather than a
     degeneracy of the transform (``SPEC_parent_anchor.md`` Section 3.2). Both
     logarithm arguments are floored at the smallest normal float so a parent
