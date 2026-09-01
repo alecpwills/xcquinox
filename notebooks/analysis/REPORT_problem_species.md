@@ -130,13 +130,16 @@ $1.8$--$2.2\times10^{-6}$ (scratch/v6_diag/verify_c2_branch_fix.log).
 
 **Status.** Closed at the reference-generation layer (branch-stable rescue, pinned
 grid). The only C2 benchmark reaction (`w411_c2_atomization`) sits in the STRICT
-held-out slice of every completed v6 cell (its `in_sample_overlap` empty in all 108
-`per_reaction.json` records -- the 27 completed specs, four evaluation channels each);
+held-out slice of every completed v6 cell (its `in_sample_overlap` empty in all 116
+`per_reaction.json` records -- the 29 completed specs, four evaluation channels each);
 the seven branch-affected evaluations were repaired in place by a gated patch tool rather
-than re-evaluated wholesale, after which the cross-spec reference guard is silent and C2
-rejoins the pooled PBE baselines on the final, validation-best and cold-start channels,
-the best-loss channel alone awaiting its checkpoint fetch (HISTORY 2026-09-01); the
-beats-baseline verdicts are unchanged with and without the species. In the earlier
+than re-evaluated wholesale, in two rounds (the standard channels, then the best-loss
+channel after its checkpoint fetch), after which the audit reads 116 channels, 0 wrong,
+the cross-spec reference guard is silent and C2 rejoins the pooled PBE baselines on all
+four evaluation channels; the two cells completed after the repaired reference layer was
+deployed to the cluster arrived with the correct branch natively, with no patching
+(HISTORY 2026-09-01); the beats-baseline verdicts are unchanged with and without the
+species. In the earlier
 (v4-era) split the reaction sat in the validation slice. The drifted GGA-arm evaluation
 reference is scheduled for regeneration at array drain
 (xcquinox/alec/DEFERRED_WORK.md item 16).
@@ -573,9 +576,12 @@ eigendecomposition of the density (HISTORY 2026-04-27, Phase 3).
 **The open class.** Two v6 incidents share the finite-loss/non-finite-gradient
 signature of Sec. 8 and remain open. (i) On the first group (G1, the size ladder), the
 `medium` subset-size-26 cell failed on the open non-finite-gradient defect, and the
-published G1 figure set carries 27 of 44 cells with that cell excluded; the record does
+published G1 figure set carries 29 of 44 cells with that cell excluded; the record does
 not name the failing training group of that cell (HISTORY 2026-08-31; the set regenerated
-at 27 cells on the repaired evaluations, HISTORY 2026-09-01). (ii) The
+at 29 cells on the repaired evaluations, HISTORY 2026-09-01). The twin cell on the
+attention architecture -- `medium_attn` at the same subset size 26 -- has since completed
+and evaluated cleanly, so the defect is specific to the failed cell's own trajectory
+rather than a property of the largest subset. (ii) The
 DM-carrying group's (G3) preflight compile smoke (run_20260827T163335Z, preflight job
 2138042, spec 21 = `deep_combined_attn_3x16` at subset size 26) aborted at per-molecule
 step 27 on the group `bh76:C2H2` with a FINITE loss of 18.419290403706498 and 36 of 36

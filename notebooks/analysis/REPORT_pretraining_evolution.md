@@ -1304,8 +1304,8 @@ This figure is the document's central comparison, and it is rebuilt by a committ
 (`anchored_vs_unanchored_fx_fc.py`) from the committed long-form curve CSVs rather than by an ad
 hoc script, with a footer that states its own coverage from the rows it read. The subset size 18
 representative is the largest cell every drawn generation has reached, enforced by an internal
-consistency test; the footer currently reports v6 trained coverage of 27 cells (medium 10,
-medium_attn 10, shallow 7), all on the validation-best channel, which matches the tally of
+consistency test; the footer currently reports v6 trained coverage of 29 cells (medium 10,
+medium_attn 11, shallow 8), all on the validation-best channel, which matches the tally of
 Section 9.2 exactly.
 
 Read the top row first: the two unanchored pretrained curves lie on one another at
@@ -1461,48 +1461,57 @@ BH76 43--50, W4-11 97--113, combined 145--163 reactions; over the 27 v6 cells:
 61 / 111--120 / 172--181; per-spec `test_set.csv` `n_reactions` and `per_reaction.json`). Beats verdicts below are therefore within-cell (NN MAE < the same slice's PBE
 MAE), never cross-campaign row-for-row.
 
-### 9.2 v6 G1 at current coverage: 27 of 44 cells
+### 9.2 v6 G1 at current coverage: 29 of 44 cells
 
-From the 27 `eval_holdout_val_best/test_set.csv` files present (medium 10 of 11, medium_attn
-10 of 11, shallow 7 of 11, shallow_attn 0; the medium ss=26 cell failed on the open
-NaN-gradient defect, HISTORY 2026-08-31), all values kcal/mol, NN / cell-matched PBE:
+From the 29 `eval_holdout_val_best/test_set.csv` files present (medium 10 of 11, medium_attn
+11 of 11 -- the first architecture complete -- shallow 8 of 11, shallow_attn 0; the medium
+ss=26 cell failed on the open NaN-gradient defect, HISTORY 2026-08-31), all values kcal/mol,
+NN / cell-matched PBE:
 
-| arch | ss=1 | 2 | 3 | 4 | 5 | 6 | 7 | 12 | 15 | 18 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **W4-11** medium | 6.48/13.57 | 11.38/13.47 | 10.86/13.47 | 11.38/13.55 | 9.19/13.47 | 10.32/13.58 | 8.50/13.48 | 12.25/13.41 | 9.54/13.36 | 7.84/13.08 |
-| medium_attn | 5.99/13.57 | 11.03/13.47 | 9.04/13.47 | 11.56/13.55 | 9.54/13.47 | 9.50/13.58 | 7.04/13.48 | 9.13/13.41 | 8.06/13.36 | 6.83/13.08 |
-| shallow | 10.48/13.57 | 10.16/13.47 | 8.74/13.47 | 8.97/13.55 | 8.56/13.47 | 8.67/13.58 | 10.41/13.48 | -- | -- | -- |
-| **BH76** medium | 8.03/7.73 | 9.71/7.73 | 9.96/7.73 | 10.47/7.73 | 6.51/7.73 | 10.22/7.73 | 6.51/7.73 | 10.24/7.73 | 8.13/7.73 | 6.92/7.73 |
-| medium_attn | 9.66/7.73 | 7.45/7.73 | 9.01/7.73 | 11.30/7.73 | 8.72/7.73 | 8.95/7.73 | 7.61/7.73 | 10.47/7.73 | 10.75/7.73 | 10.57/7.73 |
-| shallow | 7.34/7.73 | 7.84/7.73 | 7.84/7.73 | 6.46/7.73 | 6.47/7.73 | 7.22/7.73 | 8.67/7.73 | -- | -- | -- |
-| **combined** medium | 7.00/11.59 | 10.82/11.53 | 10.56/11.53 | 11.07/11.58 | 8.29/11.53 | 10.29/11.60 | 7.82/11.52 | 11.55/11.43 | 9.05/11.38 | 7.51/11.18 |
-| medium_attn | 7.23/11.59 | 9.83/11.53 | 9.03/11.53 | 11.47/11.58 | 9.27/11.53 | 9.32/11.60 | 7.23/11.52 | 9.60/11.43 | 9.00/11.38 | 8.16/11.18 |
-| shallow | 9.42/11.59 | 9.38/11.53 | 8.43/11.53 | 8.12/11.58 | 7.86/11.53 | 8.18/11.60 | 9.82/11.52 | -- | -- | -- |
+| arch | ss=1 | 2 | 3 | 4 | 5 | 6 | 7 | 12 | 15 | 18 | 26 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **W4-11** medium | 6.48/13.57 | 11.38/13.47 | 10.86/13.47 | 11.38/13.55 | 9.19/13.47 | 10.32/13.58 | 8.50/13.48 | 12.25/13.41 | 9.54/13.36 | 7.84/13.08 | -- |
+| medium_attn | 5.99/13.57 | 11.03/13.47 | 9.04/13.47 | 11.56/13.55 | 9.54/13.47 | 9.50/13.58 | 7.04/13.48 | 9.13/13.41 | 8.06/13.36 | 6.83/13.08 | 7.48/13.63 |
+| shallow | 10.48/13.57 | 10.16/13.47 | 8.74/13.47 | 8.97/13.55 | 8.56/13.47 | 8.67/13.58 | 10.41/13.48 | 9.28/13.41 | -- | -- | -- |
+| **BH76** medium | 8.03/7.73 | 9.71/7.73 | 9.96/7.73 | 10.47/7.73 | 6.51/7.73 | 10.22/7.73 | 6.51/7.73 | 10.24/7.73 | 8.13/7.73 | 6.92/7.73 | -- |
+| medium_attn | 9.66/7.73 | 7.45/7.73 | 9.01/7.73 | 11.30/7.73 | 8.72/7.73 | 8.95/7.73 | 7.61/7.73 | 10.47/7.73 | 10.75/7.73 | 10.57/7.73 | 11.54/7.73 |
+| shallow | 7.34/7.73 | 7.84/7.73 | 7.84/7.73 | 6.46/7.73 | 6.47/7.73 | 7.22/7.73 | 8.67/7.73 | 7.56/7.73 | -- | -- | -- |
+| **combined** medium | 7.00/11.59 | 10.82/11.53 | 10.56/11.53 | 11.07/11.58 | 8.29/11.53 | 10.29/11.60 | 7.82/11.52 | 11.55/11.43 | 9.05/11.38 | 7.51/11.18 | -- |
+| medium_attn | 7.23/11.59 | 9.83/11.53 | 9.03/11.53 | 11.47/11.58 | 9.27/11.53 | 9.32/11.60 | 7.23/11.52 | 9.60/11.43 | 9.00/11.38 | 8.16/11.18 | 8.98/11.45 |
+| shallow | 9.42/11.59 | 9.38/11.53 | 8.43/11.53 | 8.12/11.58 | 7.86/11.53 | 8.18/11.60 | 9.82/11.52 | 8.68/11.43 | -- | -- | -- |
 
-Headline, at 27-cell coverage:
+Headline, at 29-cell coverage:
 
-* **W4-11: beaten in 27 of 27 cells** -- NN 5.99--12.25 against cell-matched PBE 13.08--13.58,
+* **W4-11: beaten in 29 of 29 cells** -- NN 5.99--12.25 against cell-matched PBE 13.08--13.63,
   a ratio of 0.441 (medium_attn, ss=1) to 0.914 (medium, ss=12).
-* **Combined pool: 26 of 27** -- the one miss is medium ss=12 (11.55 against 11.43, ratio
+* **Combined pool: 28 of 29** -- the one miss is medium ss=12 (11.55 against 11.43, ratio
   1.011).
-* **BH76: 9 of 27**, best 6.46 (shallow, ss=4) against 7.73; the other beats are medium
-  ss=5/7/18 (6.51, 6.51, 6.92), medium_attn ss=2/7 (7.45, 7.61) and shallow ss=1/5/6 (7.34,
-  6.47, 7.22). The worst cell is medium_attn ss=4 at 11.30, a ratio of 1.463.
+* **BH76: 10 of 29**, best 6.46 (shallow, ss=4) against 7.73; the other beats are medium
+  ss=5/7/18 (6.51, 6.51, 6.92), medium_attn ss=2/7 (7.45, 7.61) and shallow ss=1/4/5/6/12
+  (7.34, 6.47, 7.22, 7.56 at ss=12). The worst cell is now medium_attn ss=26 at 11.54, a
+  ratio of 1.493, displacing medium_attn ss=4 (11.30, 1.463).
 
-The 27-cell state supersedes the 25-cell one published on 2026-08-31 in two independent ways.
-Two `shallow` cells completed (ss=6 and ss=7), and seven cells were repaired for a reference
-defect (Section 9.3) -- `medium_attn` ss=15 and ss=18 and all five then-completed `shallow`
-cells -- which moved their W4-11 and combined rows and their PBE anchors, though not their BH76
-rows. The verdict counts moved from 25/25, 24/25 and 8/25 to 27/27, 26/27 and 9/27; the one
-combined-pool miss is the same cell in both. The first published set, 18 cells, read 18 of 18,
-17 of 18 and 5 of 18 (HISTORY 2026-08-31).
+The 29-cell state extends the 27-cell one of 2026-09-01 by two completions: `medium_attn`
+ss=26 (spec 21) and `shallow` ss=12 (spec 29). The first is the direct counterpart of the
+one failed cell -- a size-26 training run on the twin attention architecture completed and
+evaluated cleanly, so the open NaN-gradient defect is specific to the `medium` ss=26 cell's
+own trajectory rather than a property of the largest subset. Both new evaluations also
+arrived with the correct C2 reference under the repaired reference layer (Section 9.3),
+with no patching. The 27-cell state had itself superseded the 25-cell one published on
+2026-08-31 in two independent ways: two `shallow` cells completed (ss=6 and ss=7), and seven
+cells were repaired for a reference defect (Section 9.3) -- `medium_attn` ss=15 and ss=18 and
+all five then-completed `shallow` cells -- which moved their W4-11 and combined rows and their
+PBE anchors, though not their BH76 rows. The verdict counts have moved 25/25, 24/25, 8/25
+to 27/27, 26/27, 9/27 to 29/29, 28/29, 10/29; the one combined-pool miss is the same cell
+throughout. The first published set, 18 cells, read 18 of 18, 17 of 18 and 5 of 18
+(HISTORY 2026-08-31).
 
 ![Learning curves: held-out reaction-energy MAE against training subset size, one line per
 architecture, with the full-pool PBE reference dashed. Left panel held-out, right panel
 in-sample.](figures_dfs_step7_dfs6311_grid3_v6g1_size_val_best/ablation_mae_vs_subset.png)
 
 This is the combined-pool row of the table above, drawn. Read the left panel against the dashed
-PBE line: every one of the 27 anchored cells except `medium` at ss=12 sits below it (26 of 27,
+PBE line: every one of the 29 anchored cells except `medium` at ss=12 sits below it (28 of 29,
 derived from the `test_set.csv` files above; combined NN 7.00--11.55 against PBE 11.18--11.60).
 Read the *shape* rather than the level, because there is one training run per point and no
 replicates (Section 1.1): the curves are not monotone in subset size, the best combined cells
@@ -1592,23 +1601,24 @@ rows of `test_set.csv` and a `reference_patch` stamp in `eval_metadata.json`, wi
 JSON reconstruction proven byte-identical on all 99 channels that existed when the tool ran
 before any patch logic executed (HISTORY 2026-09-01). Those 99 were the 25 then-complete specs'
 $25 \times 4 = 100$ channels less one: `spec_0026` had not yet written a cold-start artifact.
-The run now carries 108, which is $27 \times 4$ -- the two `shallow` cells of Section 9.2
-contributing 8 channels and `spec_0026`'s completed cold-start the ninth. No training subset
-ever contained c2 -- the reaction
+The run now carries 116, which is $29 \times 4$: the 108 of the 27-spec state (the two
+`shallow` cells contributing 8 channels and `spec_0026`'s completed cold-start the ninth beyond
+the 99), plus the 8 channels of the two cells completed since (`medium_attn` ss=26 and
+`shallow` ss=12, Section 9.2). No training subset ever contained c2 -- the reaction
 `w411_c2_atomization` sits in the strict held-out slice of every completed cell with an empty
 `in_sample_overlap` -- so no trained checkpoint was affected.
 
-The state as pulled, verified by execution over the 27 completed specs: the seven repaired
-specs (0019, 0020 and 0022-0026) carry a `reference_patch` stamp on three channels each --
-`eval_holdout`, `eval_holdout_val_best` and `eval_holdout_coldstart` -- recording
-`from_E_pbe` $= -75.7368945258$ Ha and `to_E_pbe` $= -75.8167407121$ Ha. On those three channels
-the C2 atomization's PBE error now reads $-3.5457$ kcal/mol in all 27 cells, against
-$-53.6499$ kcal/mol before, so the cross-spec reference guard is silent and the species has
-rejoined every pooled PBE baseline. **The `eval_holdout_best` channel is not repaired**: 7 of
-its 27 cells still carry $-53.6499$, pending a checkpoint fetch that must follow the push of the
-patched channels back to the cluster. That channel is therefore excluded from every table in
-this document -- which costs nothing, since it is the channel the figure suite stopped plotting
-for independent reasons (Section 1.4).
+The state as pulled, verified by execution over the 29 completed specs: the seven repaired
+specs (0019, 0020 and 0022-0026) carry a `reference_patch` stamp on all four channels --
+`eval_holdout`, `eval_holdout_val_best`, `eval_holdout_coldstart` and, after the best-loss
+checkpoint fetch of 2026-09-01, `eval_holdout_best` -- recording
+`from_E_pbe` $= -75.7368945258$ Ha and `to_E_pbe` $= -75.8167407121$ Ha. The C2 atomization's
+PBE error now reads $-3.5457$ kcal/mol in all 116 channels of all 29 cells, against
+$-53.6499$ kcal/mol before the repair, so the cross-spec reference guard is silent and the
+species has rejoined every pooled PBE baseline on every channel. The two cells completed after
+the reference layer was repaired on the cluster (`medium_attn` ss=26 and `shallow` ss=12)
+arrived with the correct value natively, with no patching -- the deployed acceptance check
+producing the correct branch in production is the repair's closing verification.
 
 ### 9.4 The corrected v4gga validation-best record, per architecture (54 cells)
 
@@ -1639,17 +1649,63 @@ the remaining 7, so the v4 record is not affected by the incident of Section 9.3
 ### 9.5 Reading
 
 At matched capacity (medium pair against deep_3x16 pair), the anchored cells reproduce the
-unanchored campaigns' W4-11 gains -- and do so uniformly (27 of 27 against 28 of 54; the
+unanchored campaigns' W4-11 gains -- and do so uniformly (29 of 29 against 28 of 54; the
 unanchored total is diluted by the retired-fidelity descriptor arms, whose pretraining never
 delivered their parent, Section 4.2). On BH76 the picture inverts: the unanchored deep_3x16
-beats PBE in all 11 cells (best 4.14) where the anchored cells beat it in 9 of 27 (best
+beats PBE in all 11 cells (best 4.14) where the anchored cells beat it in 10 of 29 (best
 6.46), and the signed decomposition (Section 8.3) locates the difference in the parent's
 barrier bias, which the unanchored large-$s$ correlation freedom removed and the anchored
 parameterization largely retains. Whether that is the anchor's price or a removable training
-artifact is exactly what the queued anchored deep_3x16 group measures (Section 12). The
-comparison carries the coverage caveats stated: 27 of 44 G1 cells, no `shallow_attn` cell at
-all, one run per cell, and slices cell-matched within each campaign but not identical across
-campaigns.
+artifact is exactly what the anchored deep_3x16 group measures (Section 12) -- and its first
+two cells now exist: the G2a core trio's deep_3x16 at ss=1 and ss=2 reproduce the G1 `medium`
+cells at table precision (ss=1 identically, 6.48 / 8.03 / 7.00 on the three pools; ss=2 with
+the combined pool differing by 0.01 kcal/mol), the direct empirical confirmation that the two
+architectures are one functional class under the v6 model block (the erratum's inertness
+finding, Section 9.1). The comparison carries the coverage caveats stated: 29 of 44 G1 cells,
+no `shallow_attn` cell at all, one run per cell, and slices cell-matched within each campaign
+but not identical across campaigns.
+
+### 9.6 The queued groups' first artifacts (pulled 2026-09-01)
+
+Three of the queued v6 groups now have pretrained networks on disk, every one with a PASSED
+fidelity certificate; together with G1's four they bring the pulled total to fifteen
+certificates, all PASS.
+
+![Anchored (v6 G2a) pretrained corrections to the PBE parent for the core trio (deep_3x16,
+deep_attn_3x16, deep_cusp_3x16), both
+channels.](figures_dfs_step7_dfs6311_grid3_v6g2a_families_core/pretrain_fx_fc_delta_all.png)
+
+**G2a core trio** (deep_3x16, deep_attn_3x16, deep_cusp_3x16; the controlled test of Section
+12). Certificates PASS at max atomic errors $7.2\times 10^{-4}$, $7.6\times 10^{-4}$ and
+$1.02\times 10^{-2}$ mHa respectively and atomization offsets at most $3.9\times 10^{-3}$
+kcal/mol; the pretrained enhancement factors sit $4.5\times 10^{-6}$--$1.4\times 10^{-5}$ from
+parent PBE in $F_x$ and $1.1\times 10^{-6}$--$3.3\times 10^{-6}$ in $F_c$
+(`pretrain_fx_fc_curves.csv` in the figure directory). The largest of the three certificate
+errors belongs to deep_cusp_3x16, the one architecture of the trio whose descriptor is live
+under the v6 block (Section 3.7) -- an order of magnitude above its descriptor-free siblings
+and still two orders inside the 1.0 mHa gate. Training has begun: the first two evaluated
+cells (deep_3x16 at ss=1 and ss=2) reproduce the G1 `medium` cells at table precision, as
+Section 9.5 records.
+
+![Anchored (v6 G3) pretrained corrections to the PBE parent for the dm-descriptor family
+(deep_dm_3x16, deep_combined_3x16, deep_combined_attn_3x16), both
+channels.](figures_dfs_step7_dfs6311_grid3_v6g3_dm/pretrain_fx_fc_delta_all.png)
+
+**G3 dm family** (deep_dm_3x16, deep_combined_3x16, deep_combined_attn_3x16). Certificates
+PASS at worst $5.1\times 10^{-3}$ mHa atomic and $9.2\times 10^{-3}$ kcal/mol on atomization;
+pretrained factors $2.9\times 10^{-6}$--$7.2\times 10^{-6}$ from parent in $F_x$ and
+$1.7\times 10^{-6}$--$4.9\times 10^{-6}$ in $F_c$. This is the first parent-faithful
+pretraining the dm-statistics descriptor family has ever had: its legacy-protocol record was
+retired precisely because these architectures entered training 25.7--56.1 kcal/mol from their
+parent on their worst systems (Section 4.2--4.3), and under the anchor the same descriptor
+set starts at the certificate floor. No G3 cell has trained yet.
+
+**G2 meta-GGA relaunch.** The relaunched chain (Section 6.4's certificates, from
+`run_20260831T011905Z`) also carries the five family pretrains whose enhancement-factor set
+was refreshed against SCAN: worst deviations $8.1\times 10^{-7}$--$1.3\times 10^{-5}$ in
+$F_x$ and $5.4\times 10^{-6}$--$1.1\times 10^{-5}$ in $F_c$, reproducing the values of
+Section 6.6 -- the relaunch regenerated its references and pretrains to the same identity.
+No meta-GGA cell has trained yet.
 
 ---
 
@@ -1731,22 +1787,24 @@ panel.](figures_dfs_step7_dfs6311_grid3_v6g1_size_val_best/ablation_density_ener
 
 Read down a column, not across a row: row 1 is what the network did to the energy, row 2 what it
 did to the density, row 3 the combination. From
-`ablation_density_energy_3x3_dfs_units.csv` (27 cells per column, $\gamma = 1084.87$):
+`ablation_density_energy_3x3_dfs_units.csv` (29 cells per column, $\gamma = 1084.87$; the
+pooled PBE anchors move with coverage, since each channel's pool is the union of the present
+cells' slices):
 
 | channel | WTMAD-2, NN / PBE | $\varepsilon_{\lvert n\rvert}$, NN / PBE | $\mathcal{ED}_{\lvert n\rvert}$, NN / PBE | energy beats | density beats | $\mathcal{ED}$ beats |
 |---|---|---|---|---|---|---|
-| BH76 | 20.19--42.26 / 24.85 | 0.00920--0.01607 / 0.00946 | 13.63--23.39 / 14.53 | 10/27 | 2/27 | 6/27 |
-| W4-11 | 1.08--2.13 / 2.55 | 0.00885--0.01302 / 0.00893 | 1.95--3.66 / 4.03 | 27/27 | 2/27 | 27/27 |
-| combined | 7.96--15.82 / 10.12 | 0.00912--0.01427 / 0.00921 | 9.12--14.39 / 10.06 | 13/27 | 1/27 | 8/27 |
+| BH76 | 18.39--33.72 / 22.11 | 0.00904--0.01576 / 0.00928 | 12.99--22.58 / 13.83 | 10/29 | 2/29 | 6/29 |
+| W4-11 | 1.13--2.29 / 2.54 | 0.00895--0.01341 / 0.00891 | 2.03--3.90 / 4.02 | 29/29 | 0/29 | 29/29 |
+| combined | 7.09--12.94 / 8.92 | 0.00912--0.01427 / 0.00921 | 8.53--13.74 / 9.42 | 13/29 | 1/29 | 8/29 |
 
-The finding is in row 2. **The anchored cells improve the energy without improving the
-density**: on the combined channel exactly one of 27 cells has a smaller per-electron density
-error than PBE, and the best cell's $\varepsilon_{|n|}$ ($0.00912$) is 1 percent below PBE's
-$0.00921$. The same asymmetry on W4-11, where the best-$\varepsilon_{|n|}$ cell is `medium` at
-ss=1: its density error is 0.86 percent better than PBE's ($0.008855$ against $0.008932$) while
-its WTMAD-2 is **53.56 percent** better ($1.1821$ against $2.5455$), or 52.25 percent on the
-plain mean absolute error of Section 9.2. The energy is
-beaten in every W4-11 cell and the density in two. **Conclusion:** at this coverage the anchored
+The finding is in row 2, and at 29 cells it is sharper than at 27. **The anchored cells improve
+the energy without improving the density**: on the combined channel exactly one of 29 cells has
+a smaller per-electron density error than PBE, the best cell's $\varepsilon_{|n|}$ ($0.00912$)
+1 percent below PBE's $0.00921$, and on W4-11 the density-beat count has fallen to zero -- the
+best-$\varepsilon_{|n|}$ cell, `medium` at ss=1, now reads $0.008945$ against PBE's $0.008911$
+(0.38 percent worse) while its WTMAD-2 is **51.98 percent** better ($1.2176$ against $2.5357$),
+or 52.25 percent on the plain mean absolute error of Section 9.2. The energy is beaten in every
+W4-11 cell and the density in none. **Conclusion:** at this coverage the anchored
 networks are energy-fitted functionals whose self-consistent densities are indistinguishable
 from -- and usually slightly worse than -- their parent's. That is precisely the failure mode the
 DFS protocol's density-weighted loss exists to prevent, and it is a live finding, not a settled
@@ -1779,7 +1837,7 @@ Two things separate this from the anchored panel. The **range** is enormous -- t
 retired-fidelity descriptor architectures produce WTMAD-2 values in the hundreds and density
 errors five times PBE's, which is what a network that started 25.7 to 56.1 kcal/mol from its
 parent on its worst system and then diverged looks like. But the **density beat rate is an order of magnitude higher**:
-27 of 54 BH76 cells improve the per-electron density error where 2 of 27 anchored cells do, and
+27 of 54 BH76 cells improve the per-electron density error where 2 of 29 anchored cells do, and
 the best unanchored density error, $0.00759$, is 20 percent below PBE's where the best anchored
 one is 3 percent below. **Conclusion:** the unanchored parameterization moved the density and
 the anchored one has not. Read together with Section 8.2 this is consistent: the large-gradient
@@ -1852,9 +1910,9 @@ Every cell of the following table is sourced in the section named beside it.
 | **Acceptance gate** | none | none | per-architecture fidelity certificate: PASS requires $\max$ atomic $\lvert\Delta E_{xc}\rvert \leq 1.0$ mHa and $\max\lvert\Delta AE\rvert \leq 1.0$ kcal/mol on 38--39 systems through the production energy path; enforced unconditionally by every record layer (Sec. 6.4) |
 | **First-step pretrain loss** | $1.591407\times 10^{-2}$, identical across all six GGA architectures (the v4gga run's own `pretrain/*/losses_x.npy`); the unanchored G1 control submission reads 0.008--0.012 (Sec. 6.4) | as v4 | $2.72\times 10^{-32}$ (PBE parent); $3.02$--$4.31\times 10^{-14}$ (SCAN parent, the `_ALPHA_MAX` ceiling, Sec. 6.5) |
 | **Handoff fidelity, curve metric** | $\max\lvert\Delta F_x\rvert$ 0.039--0.090 (GGA); meta-GGA $\max\lvert\Delta F_c\rvert$ up to 0.49 (Sec. 4.2, Sec. 5) | identical to v4 by construction; the stacking arm reaches 0.52 (Sec. 5) | $8.7\times 10^{-7}$--$9.2\times 10^{-6}$ in $F_x$ (G1); $8.1\times 10^{-7}$--$1.3\times 10^{-5}$ over both channels (meta-GGA) (Sec. 6.6) |
-| **Handoff fidelity, energy** | atomization offsets $-2.3$ to $-56.1$ kcal/mol on H2O/N2/CH4; worst-system offset per descriptor-carrying architecture 25.7--56.1 kcal/mol against 4.1--4.2 for the descriptor-free controls, individual systems overlapping (Sec. 4.2) | unmeasured until 2026-08-20, then the same (Sec. 5) | certificates PASS at $7.2\times 10^{-4}$--$5.15\times 10^{-3}$ mHa atomic and $1.9\times 10^{-3}$--$2.5\times 10^{-3}$ kcal/mol on atomization (Sec. 6.4) |
-| **Held-out headline (GGA, validation-best, within-cell)** | W4-11 28/54, BH76 27/54, combined 28/54; best cells 4.51 / 4.14 / 4.79 kcal/mol (Sec. 9.4) | no GGA cells (its GGA rows are the v4 rows) | W4-11 27/27, BH76 9/27, combined 26/27 at 27 of 44 cells; best cells 5.99 / 6.46 / 7.00 kcal/mol (Sec. 9.2) |
-| **Held-out density (DFS units, combined channel)** | $\varepsilon_{\lvert n\rvert}$ beats PBE in 18/54 on the per-arm slice and 18/47 on the merged slice (both from the `ablation_density_energy_3x3_dfs_units.csv` of the respective directory); BH76 30/47 on the merged slice (Sec. 10.3) | -- | 1/27 (Sec. 10.2) |
+| **Handoff fidelity, energy** | atomization offsets $-2.3$ to $-56.1$ kcal/mol on H2O/N2/CH4; worst-system offset per descriptor-carrying architecture 25.7--56.1 kcal/mol against 4.1--4.2 for the descriptor-free controls, individual systems overlapping (Sec. 4.2) | unmeasured until 2026-08-20, then the same (Sec. 5) | all fifteen pulled certificates PASS, at $5.3\times 10^{-4}$--$1.02\times 10^{-2}$ mHa atomic and $2.4\times 10^{-4}$--$9.2\times 10^{-3}$ kcal/mol on atomization (Sec. 6.4, Sec. 9.6) |
+| **Held-out headline (GGA, validation-best, within-cell)** | W4-11 28/54, BH76 27/54, combined 28/54; best cells 4.51 / 4.14 / 4.79 kcal/mol (Sec. 9.4) | no GGA cells (its GGA rows are the v4 rows) | W4-11 29/29, BH76 10/29, combined 28/29 at 29 of 44 cells; best cells 5.99 / 6.46 / 7.00 kcal/mol (Sec. 9.2) |
+| **Held-out density (DFS units, combined channel)** | $\varepsilon_{\lvert n\rvert}$ beats PBE in 18/54 on the per-arm slice and 18/47 on the merged slice (both from the `ablation_density_energy_3x3_dfs_units.csv` of the respective directory); BH76 30/47 on the merged slice (Sec. 10.3) | -- | 1/29 (Sec. 10.2) |
 | **Status of the record** | retired for every descriptor-carrying architecture; the descriptor-free `deep_3x16` and `deep_attn_3x16` rows stand (Sec. 4.3) | meta-GGA record retired as a quantitative result; v5mgga2 never trained (Sec. 5) | live |
 
 ---
@@ -1876,7 +1934,7 @@ Every cell of the following table is sourced in the section named beside it.
    discriminating observable; the G1 spread ($-7.75$ at
    medium/ss=12 against $-0.81$ at medium_attn/ss=12) says the outcome is not foreclosed.
 2. **The density question.** The anchored G1 cells improve energies almost everywhere and the
-   per-electron density error almost nowhere -- 1 of 27 combined-channel cells against 18 of 47
+   per-electron density error almost nowhere -- 1 of 29 combined-channel cells against 18 of 47
    for the unanchored merged record (Section 10). Two candidate explanations are separable by
    the queued groups: that the pre-image suppression of large-$s$ correlation (Section 8.2)
    removes the freedom a density improvement needs, in which case the anchored deep_cusp and
