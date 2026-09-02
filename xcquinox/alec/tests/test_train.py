@@ -2991,3 +2991,72 @@ def test_build_model_refuses_a_waived_failure_outside_the_harness_layout(
     # Refused on the verdict itself, with no waiver read off the certificate.
     assert "verdict 'FAIL'" in str(excinfo.value)
     assert "enforcement is OFF" not in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Group-scoped atom-anchor allowlist (train._build_group_loss_and_batch)
+# ---------------------------------------------------------------------------
+
+def _empty_scope_group():
+    """A bh76:r1 group (H2, H) under a run allowlist ('O',) that intersects
+    the group's atoms to the EMPTY scope. The production defect collapsed the
+    empty scope to None, which losses.py:1350-1352 documents as
+    "regularize every single-atom MoleculeSpec" -- so a group with no
+    allowlisted atoms silently anchored every atom it contained."""
+    from xcquinox.alec.train import _training_groups, _build_group_loss_and_batch
+    from xcquinox.alec.solver import SolverBackend
+
+    sc = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                      max_cycles=3, scf_loss_use_tail=True, scf_loss_tail=3)
+    rxn = {"name": "r1", "reactants": ["H2"], "products": ["H"],
+           "coeffs": [-1.0, 2.0], "e_rxn_ref": 0.17}
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(), molecules=(h_atom(), h2_molecule(), o_atom()),
+        targets={"H": -0.5, "H2": 0.17, "O": -75.0},
+        atom_energies={"H": -0.5, "O": -75.0},
+        loss_name="L5_gradnorm_vxc_step7",
+        loss_kwargs={"bh76_reactions": [rxn],
+                     "regularize_atom_syms": ("O",),
+                     "aux_only_names": ("H2",),
+                     "solver_config": sc},
+        update_scheme="per_molecule", require_atom_anchors=False,
+        n_steps=1, lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0,
+        grad_clip=1.0, checkpoint_dir=None, seed=42)
+    g = next(gr for gr in _training_groups(spec) if gr["label"] == "bh76:r1")
+    return spec, g, _build_group_loss_and_batch
+
+
+def test_group_scoped_regularizer_empty_scope_stays_empty():
+    """A group whose atoms miss the allowlist gets an EMPTY allowlist, not
+    None (None = regularize-everything back-compat, losses.py:1350-1352)."""
+    spec, g, build = _empty_scope_group()
+    batch = {"mol_data": tuple({} for _ in spec.molecules),
+             "targets": spec.targets_dict,
+             "atom_energies": spec.atom_energies_dict}
+    gloss, _ = build(spec, g, batch)
+    assert gloss.regularize_atom_syms == (), (
+        f"empty group scope must stay empty, got "
+        f"{gloss.regularize_atom_syms!r} (None regularizes every atom)")
+
+
+def test_group_with_no_allowlisted_atoms_has_zero_loss_ae():
+    """The observable: with the AE compound aux-forced, the group's loss_AE
+    is the atomic-anchor term alone, and a group with no allowlisted atoms
+    must contribute exactly 0.0 (the defect anchored H here)."""
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.train import _build_model
+
+    spec, g, build = _empty_scope_group()
+    md = [precompute_fixed_density_data(
+              m, required_keys=("eri",),
+              descriptors=spec.arch.materialize_descriptors(),
+              orientation_lock_strength=0.0)
+          for m in spec.molecules]
+    batch = {"mol_data": tuple(md), "targets": spec.targets_dict,
+             "atom_energies": spec.atom_energies_dict}
+    gloss, gbatch = build(spec, g, batch)
+    model = _build_model(spec)
+    comps = gloss.compute_components(model, gbatch, relative=False)
+    assert float(comps["loss_AE"]) == 0.0, (
+        f"no-allowlisted-atom group must carry loss_AE == 0.0, got "
+        f"{float(comps['loss_AE'])} (nonzero = the anchor leak)")

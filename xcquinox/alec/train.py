@@ -1844,9 +1844,17 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
         next(iter(dict(s.atom_composition)))
         for s in species if sum(dict(s.atom_composition).values()) == 1
     }
-    scoped_reg = tuple(s for s in (spec.loss_kwargs_dict.get(
-        "regularize_atom_syms") or ()) if s in group_atom_syms)
-    lk["regularize_atom_syms"] = scoped_reg or None
+    # A CONFIGURED allowlist scopes to the group and an empty scope must
+    # STAY empty: None means "regularize every single-atom MoleculeSpec"
+    # (losses back-compat), which silently anchored every atom in groups
+    # whose atoms miss the allowlist. Only an UNCONFIGURED run (no
+    # allowlist at all) keeps the regularize-everything default.
+    run_reg = spec.loss_kwargs_dict.get("regularize_atom_syms")
+    if run_reg is None:
+        lk["regularize_atom_syms"] = None
+    else:
+        lk["regularize_atom_syms"] = tuple(
+            s for s in run_reg if s in group_atom_syms)
     present = {s.name for s in species}
     if lk.get("aux_only_names"):
         lk["aux_only_names"] = tuple(a for a in lk["aux_only_names"]
