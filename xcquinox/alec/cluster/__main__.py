@@ -760,7 +760,11 @@ def cmd_prepare(args) -> int:
     except ValueError as exc:
         _log(f"ERROR: {exc}")
         return 1
-    cfg = load_grid_config(args.grid)
+    try:
+        cfg = load_grid_config(args.grid)
+    except Exception as exc:
+        _log(f"prepare: cannot parse {args.grid} ({exc!r}); fix the file.")
+        return 1
     # Same semantic validation `submit` runs. `prepare` accepts any grid
     # config, a run's already-written resolved_config.yaml included, so the
     # certificate bounds (and every other semantic bound) are re-checked here
@@ -1010,7 +1014,11 @@ def cmd_submit(args) -> int:
     except ValueError as exc:
         _log(f"ERROR: {exc}")
         return 1
-    cfg = load_grid_config(args.grid)
+    try:
+        cfg = load_grid_config(args.grid)
+    except Exception as exc:
+        _log(f"submit: cannot parse {args.grid} ({exc!r}); fix the file.")
+        return 1
     cfg = _apply_partition_overrides(cfg, args)
     cfg = _apply_max_nodes_overrides(cfg, args)
     cfg = _apply_time_overrides(cfg, args)

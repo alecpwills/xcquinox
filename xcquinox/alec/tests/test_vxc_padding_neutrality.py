@@ -154,9 +154,14 @@ def test_grid_term_is_padding_neutral(monkeypatch, kwargs):
     the loss bit-identical in all three normalization modes. The mutation
     control at the end proves the comparison can fail: edge-padding the
     WEIGHTS (nonzero rows in the padded tail) separates the two values."""
+    # Non-proportional fake density: with rho_nn proportional to rho_ref the
+    # relative-mode ratio is a CONSTANT (err and its normalizer share every
+    # weight), so an edge-padded-weights mutation separated by only ~8e-10
+    # there -- a control that fires on float noise proves nothing. The
+    # additive offset makes all three modes separate at the percent scale.
     monkeypatch.setattr(
         losses_mod, "grid_density_for_loss",
-        lambda model, md, solver_config: md["rho_ref_grid"] * 1.1)
+        lambda model, md, solver_config: md["rho_ref_grid"] * 1.1 + 0.05)
     mols = [_grid_mol(40, 0), _grid_mol(64, 1)]
     unpadded = float(losses_mod._grid_term(None, mols, range(2), **kwargs))
 
@@ -184,4 +189,11 @@ def test_grid_term_is_padding_neutral(monkeypatch, kwargs):
             m["rho_ref_grid"], target.n_grid, "edge")
         mutated.append(out)
     mutated_val = float(losses_mod._grid_term(None, mutated, range(2), **kwargs))
-    assert mutated_val != unpadded, "mutation control failed to separate"
+    # Measured separations under this fixture: 14.6% (absolute), 5.6%
+    # (relative), 16.7% (per_electron); the floor sits an order below the
+    # smallest so the control demonstrates a MATERIAL failure mode, not
+    # round-off inequality.
+    rel_sep = abs(mutated_val - unpadded) / unpadded
+    assert rel_sep > 0.01, (
+        f"mutation control separated by only {rel_sep:.2e}; "
+        "a near-vacuous control survives real defects")

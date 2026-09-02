@@ -2486,3 +2486,27 @@ def test_submit_refuses_a_null_bh76_mode_at_the_cli(tmp_path):
         main(["submit", grid, "--run-root", str(run_root),
               "--partition", "long-40core"])
     assert list(run_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("ext,body", [("yaml", "a: [unclosed\nb: {broken\n"),
+                                      ("json", "{,broken")])
+def test_prepare_and_submit_refuse_a_corrupt_grid_cleanly(
+        tmp_path, capsys, ext, body):
+    """A grid file that does not parse must refuse with rc 1 and a message
+    naming the file, at both submission entry points and for both formats --
+    not surface as a raw parser traceback (the resubmission family gained
+    this in the same round; prepare/submit were the last config-reading
+    commands without it)."""
+    p = tmp_path / f"grid.{ext}"
+    p.write_text(body)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    for argv in (["prepare", str(p), "--no-recompute-refs"],
+                 ["submit", str(p), "--run-root", str(run_root),
+                  "--partition", "long-40core"]):
+        rc = main(argv)
+        assert rc == 1, argv
+        out = capsys.readouterr().out
+        assert "cannot parse" in out, (argv, out)
+        assert str(p) in out, (argv, out)
+    assert list(run_root.iterdir()) == []
