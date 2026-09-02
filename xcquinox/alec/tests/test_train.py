@@ -3060,3 +3060,31 @@ def test_group_with_no_allowlisted_atoms_has_zero_loss_ae():
     assert float(comps["loss_AE"]) == 0.0, (
         f"no-allowlisted-atom group must carry loss_AE == 0.0, got "
         f"{float(comps['loss_AE'])} (nonzero = the anchor leak)")
+
+
+def test_run_level_empty_allowlist_regularizes_nothing():
+    """A run-level regularize_atom_syms=() is an explicit empty allowlist:
+    it derives no anchor groups and every group loss carries an empty
+    scope (regularize-everything survives only for the UNCONFIGURED None
+    case). Pinned deliberately: before the empty-scope fix, () collapsed
+    to None at the group layer and regularized every atom."""
+    from xcquinox.alec.train import _training_groups, _build_group_loss_and_batch
+
+    rxn = {"name": "r1", "reactants": ["H2"], "products": ["H"],
+           "coeffs": [-1.0, 2.0], "e_rxn_ref": 0.17}
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(), molecules=(h_atom(), h2_molecule()),
+        targets={"H": -0.5, "H2": 0.17}, atom_energies={"H": -0.5},
+        loss_name="L5_gradnorm_vxc_step7",
+        loss_kwargs={"bh76_reactions": [rxn],
+                     "regularize_atom_syms": ()},
+        update_scheme="per_molecule", require_atom_anchors=False,
+    )
+    groups = _training_groups(spec)
+    assert all(not g["label"].startswith("anchor:") for g in groups)
+    g = next(gr for gr in groups if gr["label"] == "bh76:r1")
+    batch = {"mol_data": tuple({} for _ in spec.molecules),
+             "targets": spec.targets_dict,
+             "atom_energies": spec.atom_energies_dict}
+    gloss, _ = _build_group_loss_and_batch(spec, g, batch)
+    assert gloss.regularize_atom_syms == ()

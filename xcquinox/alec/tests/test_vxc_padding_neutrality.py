@@ -4,8 +4,11 @@ The shape-padding pass advertises itself as results-neutral (padding.py module
 docstring), and it is for the energy and density channels. The V_xc channel's
 absolute normalization divides by the AO count read off the (padded) reference
 matrix, so padding a molecule from n_ao to n_ao_t rescales its loss_vxc by
-(n_ao / n_ao_t)^2 -- up to 4.7x on the production 6-311++G(3df,2pd) grid where
-54-AO species pad to 117. These tests pin the neutrality contract: the same
+(n_ao / n_ao_t)^2. At the production basis 6-311++G(3df,2pd) the pool's AO
+counts span 15 (H, which carries both vxc_ref and dm_target) to 117
+(CO2/NO2/O3/N2O), so the worst case is (15/117)^2 = 60.8x (51.8x over the
+vxc-supervised span 15..108); a 54-AO species padding to 117 (4.7x) is a
+mid-range example. These tests pin the neutrality contract: the same
 molecule must contribute the same loss_vxc padded or not.
 
 The NN-side V_xc is stubbed with the exact quadrature V_mn = sum_g w_g v_g

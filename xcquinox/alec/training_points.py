@@ -372,20 +372,18 @@ def build_dfs_pool_points(
           MUST be a reaction energy. This DEVIATES from Dick &
           Fernandez-Serra 2021, whose SI (Sec. I) used barrier heights
           (see the dfs_pool.py deviation note).
-        - ``'barrier_height'`` (opt-in), BH76 points carry the forward
-          barrier height as ``e_rxn_ref``. A true forward barrier is
-          ``E(TS) - E(reactants)``, which requires a transition-state
-          geometry per reaction. Those geometries are NOT yet staged in
-          dfs_pool.py, so selecting this mode raises NotImplementedError
-          until they are supplied.
+        - ``'barrier_height'``, the Letter's quantity: BH76 points build
+          species = reactants + the staged transition state (``ts_species``
+          resolved from the tracked ``bh76_full_pool.json``) with coeffs
+          ``(-1, ..., +1)``, so ``Σ coeffs·E = E(TS) - E(reactants)`` is a
+          true forward barrier trained against ``barrier_ref``
+          (GMTKN55-BH76).
 
     Raises
     ------
     ValueError
-        If ``bh76_mode`` is not a recognized value.
-    NotImplementedError
-        If ``bh76_mode='barrier_height'`` is selected while the BH76
-        transition-state geometries are not yet staged.
+        If ``bh76_mode`` is not a recognized value, or barrier mode is
+        selected for a reaction dict without a staged transition state.
     """
     if bh76_mode not in BH76_MODES:
         raise ValueError(
