@@ -78,7 +78,7 @@ deep_3x16 at ss 3 and 7, NN MAE 4.56 and 4.96 with bias -0.25 and -0.70 and sd 5
 
 1. The error of both parent functionals on the held-out barrier heights is dominated by a
    systematic underestimation: |bias| / MAE = 0.97 for PBE and 0.93 for SCAN. Fine-tuning on
-   a handful of atomization reactions removes that bias in both arms (NN biases of order
+   a handful of atomization and BH76 reaction-energy points removes that bias in both arms (NN biases of order
    -0.1 to -3 kcal/mol at ss 2-5) and adds reaction-level scatter that is nearly uncorrelated
    with the parent's residual error (sd 5.65 -> 7.8-8.7 for the meta-GGA; correlation with
    SCAN 0.21-0.33). The trained network is therefore not SCAN with a small correction but a

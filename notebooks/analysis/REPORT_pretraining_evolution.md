@@ -62,12 +62,20 @@ meta-GGA ones (Section 5).
 
 ### 1.2 The training pool and the subset-size axis
 
-Training points are drawn from the DFS Letter's own training pool, transcribed verbatim from its
-supplementary material (`xcquinox/alec/dfs_pool.py:1-12`, "SI Sec. II 'Training Data'"): 21
-atomization energies from G2/97 (10 linear closed-shell, 3 linear open-shell, 8 non-linear), 3
-BH76 reaction barriers, 2 IP13 ionization potentials, and 2 atomic-density references (H, Li)
-that are always present rather than swept. The 26 selectable points are assembled by
-`training_points.build_dfs_pool_points` (`training_points.py:312-316`).
+Training points follow the DFS Letter's own training pool composition (`xcquinox/alec/
+dfs_pool.py:1-12`, "SI Sec. II 'Training Data'"): 21 atomization energies from G2/97 (10 linear
+closed-shell, 3 linear open-shell, 8 non-linear), 3 BH76 reactions, 2 IP13 ionization
+potentials, and 2 atomic-density references (H, Li) that are always present rather than swept.
+One substitution governs every BH76 statement in this document: the three BH76 points are
+trained as GMTKN55-BH76RC **reaction energies** (+64.91/-5.44/+103.28 kcal/mol), NOT the
+Letter's barrier heights -- a documented deviation (`dfs_pool.py`'s `bh76_mode` block;
+`training_points.py`; approved 2026-05-24, HISTORY Phase 7). No transition state entered
+training in any generation of this campaign, so every held-out barrier height below is an
+out-of-quantity extrapolation for every cell, anchored and unanchored alike. (The
+`bh76_mode='barrier_height'` path -- species = reactants + the staged TS, trained against the
+GMTKN55 forward barriers 82.6/8.9/104.8 -- was wired on 2026-09-01 with the TS geometries
+resolved from the tracked benchmark cache; a campaign using it has not yet run.) The 26
+selectable points are assembled by `training_points.build_dfs_pool_points`.
 
 **Subset size (ss) counts training points, not molecules and not reactions.** The axis is
 `[1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 26]` in all thirteen dfs6311 configurations (e.g.
@@ -76,7 +84,7 @@ composition at each size is fixed once, in the committed ledger
 `notebooks/checkpoints_step7/alpha_on/subset_index_log.json`, and reused by every generation --
 which is what makes the subset axis comparable across the campaign lineage
 (`CAMPAIGN_V6.md:695-700`). At `ss = 12`, for instance, the ledger's `jsd/12` entry holds 7
-atomization energies, 3 BH76 barriers and 2 ionization potentials; at `ss = 26` it holds all 21,
+atomization energies, 3 BH76 reaction-energy points and 2 ionization potentials; at `ss = 26` it holds all 21,
 3 and 2. Selection itself is a pre-process, not part of the harness: `subset_selection.select_subset`
 (`subset_selection.py:472-487`) enumerates every size-$r$ combination and minimizes the
 Jensen-Shannon divergence between the subset's and the full pool's histograms over
@@ -572,9 +580,9 @@ anchors: at $\tau = \tau_W$ the indicator goes to its smoothed floor rather than
 (`alpha_indicator.csv` gives $5\times 10^{-6} = w/2$ at raw indicator 0), and at
 $\tau = \tau_W + \tau_{\mathrm{unif}}$ it reads $1.000000000025$ -- exactly $1 + w^2/4$, the
 smoothing's own second-order offset at the uniform gas, which is the scale at which the
-regularization is visible at all. Read the right panel for the ceiling: over the four decades of
-raw indicator the panel draws ($0.1$ to $1000$), the stored column tracks the raw value for the
-first three -- to $\alpha = 98.5$ -- and then saturates, 151 of the panel's 601 points sitting
+regularization is visible at all. Read the right panel for the ceiling: over the raw-indicator
+span the panel draws ($0.1$ to $1000$), the stored column tracks the raw value for three
+decades -- to $\alpha = 98.5$ -- and then saturates, 151 of the panel's 601 points sitting
 at the ceiling (`alpha_indicator.csv`, panel `b_ceiling`). **Conclusion:** the column is the
 raw indicator everywhere the physics is resolved and departs from it only in two regimes -- one
 below the numerical noise floor of the $\tau - \tau_W$ cancellation, one on the low-density tail
@@ -1393,8 +1401,9 @@ anchored cells still build sizable corrections where the pre-image leaves traina
 
 ### 8.3 The BH76 barrier bias
 
-The unanchored campaigns used precisely that large-$s$ correlation freedom to remove the
-parent's systematic barrier bias. PBE's BH76 error is almost pure bias ($-6.6$ to $-7.5$
+The large-$s$ correlation freedom, fit on atomization and reaction energies (no arm supervises
+barrier heights, Sec. 1.2), incidentally removed the parent's systematic barrier bias in the
+unanchored campaigns. PBE's BH76 error is almost pure bias ($-6.6$ to $-7.5$
 kcal/mol mean signed error on the two slices below; $|\mathrm{bias}|/\mathrm{MAE} = 0.97$ for
 PBE and 0.93 for SCAN on the full v5 held-out pool,
 `NOTES_v5_mgga_vs_scan.md:79-89`). Measured mean signed BH76 errors on the
@@ -1414,7 +1423,8 @@ The last two rows, added here from the same files, show the suppression is not a
 the anchored attention twin at the same subset size removed most of the bias (through other
 channels; its correlation still collapses at large $s$, Section 8.2) while paying for it in
 scatter (BH76 MAE 10.47 against PBE's 7.73, Section 9.2). Whether anchored cells can
-reproduce the unanchored barrier improvement is the campaign's live question (Section 12).
+reproduce the unanchored arms' extrapolated barrier-height accuracy -- neither arm supervises
+barriers (Sec. 1.2) -- is the campaign's live question (Section 12).
 
 **Unanchored cons, for the same ledger:** no parent fidelity at handoff (the worst-system
 offsets of 25.7 to 56.1 kcal/mol per descriptor-carrying architecture in Section 4.2, against
@@ -1557,8 +1567,11 @@ atomization energies over three decades with visible improvement on PBE. The BH7
 the scatter that the MAE table quantifies: on the same cell the network's barrier predictions
 run $-24.5$ to 87.8 kcal/mol against references of $-12.3$ to 104.8, i.e. it both over- and
 under-shoots. **Conclusion:** the anchored networks have learned atomization energetics and have
-not learned barrier heights; the combined column is dominated by W4-11 simply because that pool
-contributes about twice as many reactions per slice.
+not learned barrier heights -- which no cell was trained on: the three BH76 training points
+supply reaction energies (Sec. 1.2), so barrier heights are a pure extrapolation target for the
+anchored and unanchored campaigns alike, and this class asymmetry coincides exactly with the
+supervised/unsupervised-quantity split. The combined column is dominated by W4-11 simply
+because that pool contributes about twice as many reactions per slice.
 
 ### 9.3 The c2 reference-branch incident and its repair
 
@@ -1655,8 +1668,11 @@ delivered their parent, Section 4.2). On BH76 the picture inverts: the unanchore
 beats PBE in all 11 cells (best 4.14) where the anchored cells beat it in 10 of 29 (best
 6.46), and the signed decomposition (Section 8.3) locates the difference in the parent's
 barrier bias, which the unanchored large-$s$ correlation freedom removed and the anchored
-parameterization largely retains. Whether that is the anchor's price or a removable training
-artifact is exactly what the anchored deep_3x16 group measures (Section 12) -- and its first
+parameterization largely retains. Whether that is the anchor's price, a removable training
+artifact, or a consequence of the training pool carrying reaction energies rather than the
+Letter's barrier heights -- which makes the held-out BH76 slice an out-of-quantity
+extrapolation for every cell in this campaign (Sec. 1.2) -- is exactly what the anchored
+deep_3x16 group measures (Section 12), and its first
 two cells now exist: the G2a core trio's deep_3x16 at ss=1 and ss=2 reproduce the G1 `medium`
 cells at table precision (ss=1 identically, 6.48 / 8.03 / 7.00 on the three pools; ss=2 with
 the combined pool differing by 0.01 kcal/mol), the direct empirical confirmation that the two
@@ -1797,16 +1813,25 @@ cells' slices):
 | W4-11 | 1.13--2.29 / 2.54 | 0.00895--0.01341 / 0.00891 | 2.03--3.90 / 4.02 | 29/29 | 0/29 | 29/29 |
 | combined | 7.09--12.94 / 8.92 | 0.00912--0.01427 / 0.00921 | 8.53--13.74 / 9.42 | 13/29 | 1/29 | 8/29 |
 
-The finding is in row 2, and at 29 cells it is sharper than at 27. **The anchored cells improve
-the energy without improving the density**: on the combined channel exactly one of 29 cells has
-a smaller per-electron density error than PBE, the best cell's $\varepsilon_{|n|}$ ($0.00912$)
-1 percent below PBE's $0.00921$, and on W4-11 the density-beat count has fallen to zero -- the
-best-$\varepsilon_{|n|}$ cell, `medium` at ss=1, now reads $0.008945$ against PBE's $0.008911$
-(0.38 percent worse) while its WTMAD-2 is **51.98 percent** better ($1.2176$ against $2.5357$),
-or 52.25 percent on the plain mean absolute error of Section 9.2. The energy is beaten in every
-W4-11 cell and the density in none. **Conclusion:** at this coverage the anchored
-networks are energy-fitted functionals whose self-consistent densities are indistinguishable
-from -- and usually slightly worse than -- their parent's. That is precisely the failure mode the
+The finding is in row 2. **The anchored cells improve the energy while the cell-level species
+mean of the density error does not fall below PBE's**: on the combined channel exactly one of
+29 cells has a smaller per-electron density error than PBE, the best cell's
+$\varepsilon_{|n|}$ ($0.00912$) 1 percent below PBE's $0.00921$, and on W4-11 the density-beat
+count is zero -- the best-$\varepsilon_{|n|}$ cell, `medium` at ss=1, reads $0.008945$ against
+PBE's $0.008911$ (0.38 percent worse) while its WTMAD-2 is **51.98 percent** better ($1.2176$
+against $2.5357$), or 52.25 percent on the plain mean absolute error of Section 9.2. Two
+caveats are load-bearing for that cell statistic. First, it is a SPECIES MEAN
+(`README_density_figures.md`, "Cell mean held-out density error vs CCSD") dominated by a small
+multireference tail (bn worst): at the per-species level the direction reverses -- on
+spec_0021's validation-best channel the median NN/PBE Eq.-20 ratio is 0.898 with the NN better
+on 150 of 199 species (and 132 of 199 on the RMSE channel) -- so a median or fraction-improved
+reduction is the robust companion statistic. Second, the comparison is depth-asymmetric: the
+NN leg is a 3-cycle capped SCF scored against a fully converged, model-free PBE twin (the
+symmetric-depth rescoring is the discriminating test,
+`notebooks/analysis/rescore_depth_symmetric.py`). **Conclusion:** at this coverage the
+anchored networks are energy-fitted functionals whose 3-cycle densities, measured on the
+tail-dominated cell-level species mean against a fully converged model-free PBE twin, do not
+fall below their parent's. That is precisely the failure mode the
 DFS protocol's density-weighted loss exists to prevent, and it is a live finding, not a settled
 one: the loss carries the Letter's density weight of 20 against reaction weight 1
 (`LOSS_PRIMER.md:42-56`, verified to $2.2\times 10^{-16}$ over all 1400 optimizer updates), so
@@ -1840,7 +1865,9 @@ parent on its worst system and then diverged looks like. But the **density beat 
 27 of 54 BH76 cells improve the per-electron density error where 2 of 29 anchored cells do, and
 the best unanchored density error, $0.00759$, is 20 percent below PBE's where the best anchored
 one is 3 percent below. **Conclusion:** the unanchored parameterization moved the density and
-the anchored one has not. Read together with Section 8.2 this is consistent: the large-gradient
+the anchored one has not -- on the species-mean reduction; the comparison inherits the tail
+sensitivity and the capped-SCF asymmetry of Sec. 10.2 and has not been repeated on a median
+or fraction-improved statistic. Read together with Section 8.2 this is consistent: the large-gradient
 correlation freedom the anchor suppresses is exactly the region that distinguishes one
 self-consistent density from another, and the anchored networks have been buying their energy
 improvements in the small-gradient region where the pre-image leaves them trainable.
@@ -1931,16 +1958,24 @@ Every cell of the following table is sourced in the section named beside it.
    identical subset axis including ss=26 (`dfs_step7.dfs6311_grid3_v6g1_size.yaml` line
    129, `...v6g2a_families_core.yaml` line 122), so G1's ss=26 cells are pending rather
    than absent (item 4). The BH76 signed bias (Section 8.3) is the
-   discriminating observable; the G1 spread ($-7.75$ at
+   discriminating observable between the two parameterizations; it cannot separate either
+   from the campaign-wide absence of barrier-height supervision (Sec. 1.2), which a
+   `bh76_mode='barrier_height'` arm (wired 2026-09-01; TS geometries resolved from the
+   tracked benchmark cache) would. The G1 spread ($-7.75$ at
    medium/ss=12 against $-0.81$ at medium_attn/ss=12) says the outcome is not foreclosed.
-2. **The density question.** The anchored G1 cells improve energies almost everywhere and the
-   per-electron density error almost nowhere -- 1 of 29 combined-channel cells against 18 of 47
-   for the unanchored merged record (Section 10). Two candidate explanations are separable by
-   the queued groups: that the pre-image suppression of large-$s$ correlation (Section 8.2)
+2. **The density question.** The anchored G1 cells improve energies almost everywhere while
+   the cell-level species mean of the per-electron density error beats PBE almost nowhere --
+   1 of 29 combined-channel cells against 18 of 47
+   for the unanchored merged record (Section 10). Three candidate explanations are separable:
+   that the pre-image suppression of large-$s$ correlation (Section 8.2)
    removes the freedom a density improvement needs, in which case the anchored deep_cusp and
-   rung-3.5 cells will show the same pattern; or that the unanchored density improvements were
+   rung-3.5 cells will show the same pattern; that the unanchored density improvements were
    an artifact of networks that started far from their parent and had large corrections to
-   build, in which case they should not survive the anchored re-run of the same architectures.
+   build, in which case they should not survive the anchored re-run of the same architectures;
+   or that the cell-level species mean is tail-dominated and the capped-SCF/converged-PBE
+   asymmetry biases it (Sec. 10.2: per-species, the anchored networks improve 150 of 199
+   species), in which case the median and fraction-improved statistics separate the
+   explanations without new cluster work.
 3. **The meta-GGA trained factors.** The five anchored meta-GGA family architectures hold
    PASS certificates at production identity and pretrained curves within
    $8.1\times 10^{-7}$--$1.3\times 10^{-5}$ of SCAN (Sections 6.4-6.6); their training cells

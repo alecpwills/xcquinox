@@ -23,7 +23,7 @@ The per-update objective actually optimized is
     L  =  1 * loss_AE  +  1 * loss_BH76  +  1 * loss_IP13  +  1 * loss_vxc  +  20 * loss_rho
 
 with FIXED channel weights, from `_DEFAULT_CHANNEL_WEIGHTS`
-(`xcquinox/alec/train.py:1258-1268`):
+(`xcquinox/alec/train.py:1737-1743`):
 
     # Density-dominant fixed channel weights (dpyscf: density L_n weight ~20,
     # atomization/reaction L_RE ~1, total-energy L_E ~0.01). Energy channels at 1.0,
@@ -34,7 +34,7 @@ with FIXED channel weights, from `_DEFAULT_CHANNEL_WEIGHTS`
         "loss_vxc": 1.0, "loss_rho": 20.0,
     }
 
-resolved by `_effective_channel_weights` (`train.py:1271`, spec overrides merged over
+resolved by `_effective_channel_weights` (`train.py:1746`, spec overrides merged over
 these defaults) and applied in `xcquinox/alec/defused_grad.py:156`:
 
     total = total + channel_weights.get(key, 1.0) * value
@@ -77,13 +77,13 @@ suggest adaptive task weighting. At runtime none of them act:
    update_scheme='per_molecule' (the only training loop with an in-loop validation
    hook)".
 2. `run_training` dispatches on the scheme BEFORE consulting the balancer
-   (`train.py:1707-1710`): "DFS/dpyscf-style per-molecule stochastic updates: one
+   (`train.py:2194-2197`): "DFS/dpyscf-style per-molecule stochastic updates: one
    optimizer step per target-group per epoch with fixed channel weights (ignores
    `balancing`, whose GradNorm rebalancing is a full-batch construct)". The GradNorm
-   loop (`_run_gradnorm_loop`, `train.py:1091-1092`, "GradNorm (Chen et al. 2018):
+   loop (`_run_gradnorm_loop`, `train.py:1566-1567`, "GradNorm (Chen et al. 2018):
    learned per-task weights via gradient norm equalization"; alpha = 1.5,
    weight_lr = 0.025 at `balancing.py:53-56`; softmax reparameterization keeping
-   sum(w) = n_tasks at `train.py:1215`) runs only under `update_scheme="batched"`,
+   sum(w) = n_tasks at `train.py:1587`) runs only under `update_scheme="batched"`,
    which no dfs_step7 YAML sets.
 3. The per-molecule loop REBUILDS the loss per group with the pre-scales forced to one
    (`train.py:1353-1355`, `:1361-1362`): "Channels are RAW (vxc/density pre-weights
@@ -219,7 +219,7 @@ skipped so those molecules are not double-supervised (`train.py:1323`).
 With `scf_loss_use_tail: true` (`yaml:79-81`), each energy residual is scored on a
 weighted WINDOW of the SCF energy trajectory instead of the final cycle alone
 (`losses.py:1303-1312`). The window comes from `scf_tail_window`
-(`xcquinox/alec/oneshot.py:478`): keep the last `min(tail, N)` steps
+(`xcquinox/alec/oneshot.py:632`): keep the last `min(tail, N)` steps
 (`skip = max(0, N - tail)`, generalizing dpyscf's `max(5, N-10)` which underflows for
 small N) with weights `linspace(0, 1, N)**power` restricted to the kept steps; the
 residual uses the SQUARED weights (`step_w2 = step_w ** 2`, `losses.py:1312`).
@@ -307,17 +307,31 @@ density) and the GradNorm knobs in the YAML are inert.
 ## 6. Pretraining (one paragraph)
 
 Pretraining is a separate per-architecture stage that fits the exchange and
-correlation ENHANCEMENT FACTORS pointwise on per-atom grid data -- no energies, no
-SCF. Targets are stored as F - 1; GGA architectures pretrain to PBE targets and the
-meta-GGA architectures to SCAN ("DFS-faithful meta_gga archs pretrain to SCAN (a GGA
-structurally cannot fit SCAN's alpha-dependence)", `xcquinox/alec/pretrain.py:330`).
-The objective is an integration-weighted MSE (`loss_weighting: integration`,
-`yaml:152`; branch at `pretrain.py:383`): `jnp.sum(w * residual_sq) / (jnp.sum(w) +
-1e-12)` (`pretrain.py:380`) with per-point weights `w_i = |rho_i * eps_LDA,i| *
-w_grid,i` (`pretrain.py:89`), x-net and c-net fitted in separate trainer calls. The
-convention caveat is documented in-code (`pretrain.py:46`): "This is NOT the squared
-integrated XC-energy residual." The step-7 loss hard-rejects a PBE anchor at train
-time (`losses.py:1111`), matching `pbe_anchor_weight: 0.0`.
+correlation ENHANCEMENT FACTORS pointwise on the stored grid rows of the pretraining
+set. Three properties the earlier one-paragraph description got wrong, corrected here
+for v6 (`grep -n` the quoted text on drift): the set is NOT per-atom -- the v6
+resolution is 38 systems, 16 free atoms plus 22 molecules (`resolve_pretrain_systems`
+with `dfs_set: true` + `pool_atoms: true`; `pretrain_metadata.json` records
+`n_systems: 38`); every row's density comes from a CONVERGED reference SCF
+(`pretrain_data_gen._system_columns` via `precompute_fixed_density_data`, refused
+unless stamped converged by `_require_sane_density`); and the objective CARRIES an
+energy term (`_PretrainLoss`, per-system Hartree^2), at weight 0.0 in v6, so the
+fitted quantity is the point-wise residual but the objective's form is not
+energy-free. Targets are stored as F - 1; GGA architectures pretrain to PBE targets
+and the meta-GGA architectures to SCAN ("DFS-faithful meta_gga archs pretrain to SCAN
+(a GGA structurally cannot fit SCAN's alpha-dependence)",
+`xcquinox/alec/pretrain.py:1299`). The objective is an integration-weighted MSE
+(`loss_weighting: integration`): `jnp.sum(w * residual_sq) / (jnp.sum(w) + 1e-12)`
+(`_PretrainLoss.parts`, `pretrain.py:226-249`) with per-point weights
+`w_i = |rho_i * eps_LDA,i| * w_grid,i` (`_compute_integration_weights`,
+`pretrain.py:100-115`) -- a DEVIATION from the Letter's pretraining, which fits a
+plain unweighted MSE over all rows (vendored `pretrain.ipynb`); x-net and c-net are
+fitted in separate trainer calls. The convention caveat is documented in-code
+(`pretrain.py:113`): "This is NOT the squared integrated XC-energy residual." The
+initialization is scored as validation step 0 and is a full best-model candidate
+(under a parent anchor it is the exact optimum of this objective). The step-7 loss
+hard-rejects a PBE anchor at train time (`losses.py:513-521`), matching
+`pbe_anchor_weight: 0.0`.
 
 ## 7. Observability -- what the artifacts record
 
@@ -357,3 +371,11 @@ time (`losses.py:1111`), matching `pbe_anchor_weight: 0.0`.
 | Mixer schedule index | SI equation alpha_i = 0.3^i + 0.3; the vendored code no-ops the step-0 mix, so its first effective alpha is 0.6 | The SI equation verbatim: the first mix uses alpha_0 = 1.3 (one-step offset against the paper's own code) |
 | Pretrain mesh | SI: 2-D (s, alpha) at fixed rho = 1, exchange only, ~10100 nodes, equal weight per point | 3-D (r_s, s, alpha), exchange AND correlation, 560 nodes, flat 30% loss-weight share per channel |
 | Atomic densities | H and Li electron densities supervised (SI Sec. II) | Free-atom anchor groups carry no density/V_xc references (their density channels iterate over nothing) |
+| V_xc channel | No such channel exists (the vendored loss vocabulary is {ip, energy, econv, ae, dm, rho, rho_alt, moe, gap}) | ADDED: loss_vxc at runtime weight 1.0, squared Frobenius deviation from a Wu-Yang OEP reference normalized by the physical n_ao^2 |
+| Self-consistency per point class | BH76 + IP entries staged non-self-consistently ('sc': False, one pass, loss x 0.5 nonsc_weight) | Every point class fully self-consistent under one solver_config; no 0.5 multiplier |
+| Learning rate | 1e-4 (vendored --lr default; SI) | lr_start 1e-3 (10x), constant for 50% then linear to 1e-5 |
+| Gradient clipping | None | clip_by_global_norm(1.0) (load-bearing: an unclipped Na2 channel once pegged training) |
+| NaN handling | 3-strike rollback to rotating checkpoints on RuntimeError | Fixed epoch budget, validation early stop, no rollback (spec_0010's unhandled NaN failure is the measured consequence) |
+| Pretraining objective | Plain unweighted MSE over all rows, Adam 1e-3, no stopping rule (vendored pretrain.ipynb) | Integration-weighted MSE (Sec. 6), lr 0.01 -> 1e-5 with decay, 20% held-out validation split with step-0 (initialization) scored |
+| AE tail weights at N=25 | ae_loss re-derives linspace(0,1)^2 on the SLICED trajectory (first kept step weighted 0), unlike energy_loss | One step_w2 applied uniformly to every energy channel (identical at the production N=3, where the conventions coincide) |
+| Evaluation suites | BH76 + G2/97 + IP13 + S22 (vendored test_*.py) | BH76 + W4-11 held-out pool; S22 and IP13 not evaluated |

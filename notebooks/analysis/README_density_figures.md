@@ -327,7 +327,7 @@ per-species energies (`E_total_nn`/`E_pbe` in `per_molecule.json`) over the cano
 pool with the cluster's own reaction math, excluding -- by canonical reaction identity
 (`xcquinox.alec.species_matching`; composition/charge/spin keys with geometric isomer
 classes) -- exactly the spec's VERBATIM supervised reactions (its AE-as-reaction points'
-`w411_*_atomization` twins; its trained barrier reactions) and the recorded validation
+`w411_*_atomization` twins; its trained BH76 reaction-energy points) and the recorded validation
 slice. A reaction merely containing a trained molecule is a generalization target and
 STAYS. Rows require a finite COMPARATOR (PBE) leg only: reactions the NN failed to
 score are kept with NaN NN columns, so every per-cell comparator reduction covers the
@@ -452,3 +452,12 @@ only (each has its own gamma). In-sample figures (4.1, 4.9) support statements a
 training fit only, never about generalization. Cross-basis ED values are relative to each
 basis's own PBE baseline (Sec. 2.3, deviation 1) -- compare rankings, not raw ED, across
 bases.
+
+Density beats-PBE statements carry two mandatory qualifiers. The cell statistic is a
+SPECIES MEAN that is tail-dominated by a handful of multireference species (bn worst):
+pair every such statement with the median or fraction-improved companion (on the v6 G1
+val-best record the per-species direction reverses -- median NN/PBE Eq.-20 ratio 0.898,
+NN better on 150 of 199 species -- while the cell means beat PBE in 1 of 29 cells). And
+the comparison is depth-asymmetric: the NN leg is a 3-cycle capped SCF scored against a
+fully converged, model-free PBE twin; the symmetric-depth re-scoring
+(`rescore_depth_symmetric.py`) is the discriminating test.

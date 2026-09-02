@@ -28,7 +28,7 @@ name-by-name expansion of that line.
 Hold-out is VERBATIM: a spec's test slice excludes exactly its supervised reactions --
 the reaction-form training points recorded in its `train_metadata.json`
 (`loss_kwargs["bh76_reactions"]`: the AE-as-reactions, whose `w411_*_atomization` pool
-twins leave under cross-vocabulary identity, and the trained barrier reactions) -- plus
+twins leave under cross-vocabulary identity, and the trained BH76 reaction-energy points) -- plus
 the recorded validation slice (identity-level, so permuted-name twins leave with it). A
 reaction merely CONTAINING a trained molecule stays: it is a generalization target, not
 a training target. The figure layer reconstructs each spec's full slice from its

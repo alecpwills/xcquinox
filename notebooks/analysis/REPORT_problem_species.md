@@ -808,17 +808,29 @@ pretrain_fx_fc_delta_all.png, trained_fx_fc_delta_best.png in the same directory
 the first anchored group's published cells the pattern was W4-11 beaten against the
 cell's own PBE anchor in 18 of 18 cells (5.99--12.25 against 13.1--13.6 kcal/mol), the
 combined pool in 17 of 18, BH76 in 5 of 18 (best 6.51 against 7.73) -- the first
-published state, at 18 cells (HISTORY 2026-08-31). On the regenerated 27-cell set over
-the repaired evaluations the pattern holds and strengthens: W4-11 beaten in 27 of 27
-cells (the same 5.99--12.25 against 13.1--13.6 kcal/mol), the combined pool in 26 of 27,
-BH76 in 9 of 27 (best 6.46 against 7.73), each cell scored on its own strict held-out
-slice (HISTORY 2026-09-01; the run's per-spec
-`eval_holdout_val_best/test_set.csv`).
+published state, at 18 cells (HISTORY 2026-08-31). On the complete 29-cell set over the
+repaired evaluations the pattern holds: W4-11 beaten in 29 of 29 cells (5.99--12.25
+against 13.08--13.63 kcal/mol), the combined pool in 28 of 29, BH76 in 10 of 29 (best
+6.46 against 7.73), each cell scored on its own strict held-out slice (the run's
+per-spec `eval_holdout_val_best/test_set.csv`, recomputed 2026-09-01). Two scope facts
+temper the BH76 count. No cell in either arm was trained on a barrier height -- the
+three BH76 training points are GMTKN55-BH76RC reaction energies, a documented deviation
+from the Letter (`dfs_pool.py`'s `bh76_mode` block; approved 2026-05-24) -- so the
+held-out barrier slice is an out-of-quantity extrapolation for anchored and unanchored
+cells alike. And the own-slice counts are not like-for-like across generations: on the
+union-excluded common slice (`notebooks/analysis/rescore_depth_symmetric.py`, strict
+recipe, 119 of 208 reaction identities), the anchored validation-best cells beat their
+PBE anchors in 29 of 29 cells on BH76, W4-11 and combined alike.
 
 **Status.** Open as a design question rather than a defect: the anchor bought four
-orders of magnitude in pretraining fidelity, and whether it costs the barrier physics is
-under controlled test (an anchored run of the identical unanchored architecture is
-queued; HISTORY 2026-08-31).
+orders of magnitude in pretraining fidelity, and whether it costs the extrapolated
+barrier-height accuracy -- no cell in either arm trains barrier heights; the three BH76
+training points are reaction energies -- is under controlled test (an anchored run of
+the identical unanchored architecture is queued; HISTORY 2026-08-31). The
+`bh76_mode='barrier_height'` path itself was wired on 2026-09-01 (species = reactants +
+the staged transition state, trained against the GMTKN55 forward barriers
+82.6/8.9/104.8 kcal/mol), so a barrier-supervised arm is now a submission decision
+rather than a code gap.
 
 ---
 
