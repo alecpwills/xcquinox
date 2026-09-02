@@ -1801,7 +1801,7 @@ def test_v7_files_are_the_unanchored_cloning_protocol():
         assert pt["lr_end"] == 0.00001, name
         assert pt["lr_decay_start"] == 0.5, name
         assert pt["energy_term_weight"] == 0.1, name
-        assert raw["cluster"]["pretrain_time"] == "24:00:00", name
+        assert raw["cluster"]["pretrain_time"] == "48:00:00", name
 
 
 def test_every_dfs_domain_config_states_bh76_mode_exactly_once():

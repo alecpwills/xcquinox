@@ -30,7 +30,7 @@
 # EXCEPT THE METHOD AND ITS SCHEDULE. Every field except the model class
 # (parent_anchor: false -- the networks LEARN their parent's enhancement
 # factors), the pretraining objective and schedule (energy_term_weight 0.1;
-# 20000 steps at 1e-3 -> 1e-5, decay from the midpoint; a 24 h pretrain
+# 20000 steps at 1e-3 -> 1e-5, decay from the midpoint; a 48 h pretrain
 # wall for the real fits) and the two roots is the v6 group file's,
 # including the barrier-height BH76 objective, the production identity, the
 # DFS pretraining set with pool atoms and spin-channel exchange footing,
@@ -235,7 +235,12 @@ pretrain:
   # Cloning schedule, aligned to the published protocol (arXiv:2605.10331:
   # 2e4 epochs at 1e-3 with linear decay to 1e-5 from the midpoint) in
   # place of the v5/v6 2500 @ 0.01 -- the certificate-missing fits of the
-  # 2026-08-25 sweep had 1/20 of this schedule.
+  # 2026-08-25 sweep had 1/20 of this schedule. Residual deviation: the
+  # published schedule flattens at 1e-5 for the final 10 percent of steps;
+  # the harness's linear_schedule reaches 1e-5 at the last step instead
+  # (pretrain._build_optimizer), so the final tenth runs marginally above
+  # 1e-5. The validation early-stop (patience 10 x every 50) supersedes
+  # both endings for a converged fit.
   n_steps: 20000
   lr_start: 0.001
   lr_end: 0.00001
@@ -447,9 +452,15 @@ cluster:
   # full-batch steps whose per-step cost is milliseconds now that the loop is
   # jitted once rather than per snapshot interval. The margin is the point:
   # the train array is gated afterok on this job.
-  # 24 h: v7 runs REAL 20000-step cloning fits where v6's anchored fits
-  # patienced out at step 500; the v6 12 h wall was sized for those.
-  pretrain_time: "24:00:00"
+  # 48 h: v7 runs REAL 20000-step cloning fits where v6's anchored fits
+  # patienced out at step 500 inside a 12 h wall sized for those. The v5-era
+  # real fits ran 2500 steps against that same 12 h wall; 20000 steps is 8x
+  # the schedule, and no per-step rate is measured at this basis, so the
+  # wall is sized to 4x the old budget rather than to an estimate. The
+  # validation early-stop (patience 10 x every 50) ends a converged fit
+  # long before the wall; an unconverged one is wall-killed and recovered
+  # by resubmit-preflight.
+  pretrain_time: "48:00:00"
   # STATED here although v5 left it unset (v5 had 3 distinct architectures).
   # Unset means every distinct architecture pretrains concurrently, i.e.
   # 5 whole exclusive nodes at once for this group alone, with the
