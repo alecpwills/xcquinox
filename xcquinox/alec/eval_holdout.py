@@ -357,17 +357,40 @@ def reaction_mae_kcalmol(
     energies_ha: Dict[str, float],
     reactions: Sequence[Dict[str, Any]],
 ) -> Tuple[float, int, int]:
-    """``(MAE in kcal/mol, n_reactions_used, n_dropped_nan)``.
+    """``(MAE in kcal/mol, n_identities_used, n_dropped_nan)``.
 
-    Thin wrapper around :func:`per_reaction_errors` that averages the
-    finite absolute errors and reports how many reactions were silently
-    dropped because a species energy was missing / non-finite.
+    Wrapper around :func:`per_reaction_errors` that averages the finite
+    absolute errors ONE PER REACTION IDENTITY: permuted-name and
+    duplicate-name twins (the serialized sorted species/coefficient
+    multiset coincides, ``species_matching.reaction_identity_keys`` with
+    the casefolded-name fallback) are one physical reaction and must not
+    weight the mean twice. Production BH76 carries 61 rows over 54
+    identities (7 twin groups, each with a single reference value and
+    identical errors), so pre-dedup means over-weighted the twinned
+    barriers. Rows within one identity share a species multiset, hence
+    share energy availability; an identity is dropped as NaN only when
+    all its rows are (``n_dropped_nan`` counts identities, matching the
+    identity-level ``n_used``).
     """
+    from xcquinox.alec.species_matching import reaction_identity_keys
     rxns = list(reactions)
     err_rows = list(per_reaction_errors(energies_ha, rxns))
-    abs_errs = [r["abs_error_kcalmol"] for r in err_rows
-                if math.isfinite(r["abs_error_kcalmol"])]
-    n_dropped_nan = len(err_rows) - len(abs_errs)
+    groups: Dict[Any, list] = {}
+    order: list = []
+    for i, (rxn, row) in enumerate(zip(rxns, err_rows)):
+        key = reaction_identity_keys(rxn, {}) or ("__row__", i)
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append(row["abs_error_kcalmol"])
+    abs_errs = []
+    n_dropped_nan = 0
+    for key in order:
+        finite = [e for e in groups[key] if math.isfinite(e)]
+        if finite:
+            abs_errs.append(sum(finite) / len(finite))
+        else:
+            n_dropped_nan += 1
     if not abs_errs:
         return float("nan"), 0, n_dropped_nan
     return float(sum(abs_errs) / len(abs_errs)), len(abs_errs), n_dropped_nan
@@ -1364,6 +1387,12 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
         all_kept.extend(kept)
         n_dropped_total += n_dropped_pool
         n_nan_total += n_nan
+    if strict and excluded_identities and n_dropped_total == 0:
+        print(f"[holdout] WARNING: strict mode's verbatim-exclusion set "
+              f"({len(excluded_identities)} identities) resolves to ZERO "
+              f"reactions in this pool -- a stale or foreign training "
+              f"identity record leaves every supervised twin in the score",
+              flush=True)
     combined_mae_nn, combined_n_used, combined_n_nan_nn = reaction_mae_kcalmol(
         energies, all_kept)
     combined_mae_pbe, _, combined_n_nan_pbe = reaction_mae_kcalmol(

@@ -168,8 +168,12 @@ def run_holdout_with_escalation(
              f"{', '.join(failed_everywhere)}")
     # MOLECULE-level names (single atoms excluded): held-out overlap is
     # molecule-level, else shared reference atoms (h, c, n, o, ...) drop nearly
-    # the entire atomization held-out set. See eval_holdout.training_molecule_names.
-    training_names = eval_holdout.training_molecule_names(training_spec)
+    # the entire atomization held-out set. Expanded with the pool species
+    # physically identical to a trained molecule under another naming scheme
+    # (Hill 'CHN' vs pool 'hcn'), matching the serial driver -- bare names
+    # left the parallel path's overlap annotations blind to those twins.
+    training_names = eval_holdout.held_out_filter_names_with_aliases(
+        training_spec, full_specs)
     excl, key_map = eval_holdout.trained_reaction_exclusion(
         training_spec, full_specs)
     return eval_holdout._finalize_holdout_outputs(

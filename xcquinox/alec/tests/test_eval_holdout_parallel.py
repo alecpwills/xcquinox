@@ -855,3 +855,49 @@ def test_compute_shard_coldstart_applies_shared_override(monkeypatch):
     assert sc.seed_source == "minao"
     assert sc.max_cycles == 25
     assert sc.conv_tol == 1e-12
+
+
+def test_escalation_passes_aliased_training_names_to_finalize(
+        tmp_path, monkeypatch):
+    """The parallel driver's loose-annotation names must include pool
+    species physically identical to trained molecules under another naming
+    scheme (Hill 'CHN' vs pool 'hcn') -- the serial path expands aliases
+    via held_out_filter_names_with_aliases; the parallel path passed bare
+    training_molecule_names, so per_reaction overlap flags disagreed with
+    the per-molecule in_training_subset flags."""
+    from xcquinox.alec.cluster import _holdout_parallel as hp
+    from xcquinox.alec.config import MoleculeSpec
+
+    hcn = MoleculeSpec(name="hcn", atom="H 0 0 -1.06; C 0 0 0; N 0 0 1.16",
+                       basis="sto-3g", charge=0, spin=0,
+                       atom_composition=(("C", 1), ("H", 1), ("N", 1)))
+    full_specs = {"hcn": hcn}
+
+    class _ChnMol:
+        name = "CHN"
+        atom_composition = (("C", 1), ("H", 1), ("N", 1))
+        charge = 0
+        spin = 0
+
+    class _ChnSpec:
+        molecules = (_ChnMol(),)
+        loss_kwargs = {}
+
+    monkeypatch.setattr(par, "run_workers",
+                        _make_fake_run_workers(lambda c, n: True))
+    captured = {}
+    real_finalize = eh._finalize_holdout_outputs
+
+    def _capture(*a, **k):
+        captured["names"] = a[4] if len(a) > 4 else k["training_names"]
+        return real_finalize(*a, **k)
+
+    monkeypatch.setattr(eh, "_finalize_holdout_outputs", _capture)
+    hp.run_holdout_with_escalation(
+        "/run", 0, _ChnSpec(), object(), [], full_specs,
+        tmp_path / "eval_holdout", basis="sto-3g", grid_level=1,
+        n_workers_top=2, total_cpus=2)
+    names_cf = {str(n).casefold() for n in captured["names"]}
+    assert "hcn" in names_cf, (
+        f"pool alias 'hcn' of trained 'CHN' missing from the annotation "
+        f"names: {sorted(names_cf)}")

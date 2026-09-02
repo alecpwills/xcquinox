@@ -561,6 +561,61 @@ def test_finalize_warns_on_empty_exclusion_with_trained_molecules(
     assert "EMPTY verbatim-exclusion" in capsys.readouterr().out
 
 
+def test_reaction_mae_dedups_identity_twins():
+    """Permuted-name and duplicate-name twins are ONE physical reaction and
+    contribute ONE term to the MAE (production BH76: 61 rows -> 54
+    identities in 7 twin groups, each group carrying a single reference).
+    Here: 3 rows, 2 identities -- the deduped MAE equals the MAE over one
+    row per identity."""
+    e = {"a": -1.0, "b": -2.0, "ts": -2.9}
+    twin_a = {"name": "fwd", "reactants": ["a", "b"], "products": ["ts"],
+              "coeffs": [-1.0, -1.0, 1.0], "reaction_energy_ref": 10.0}
+    twin_b = {"name": "fwd_permuted", "reactants": ["b", "a"],
+              "products": ["ts"], "coeffs": [-1.0, -1.0, 1.0],
+              "reaction_energy_ref": 10.0}
+    other = {"name": "other", "reactants": ["a"], "products": ["b"],
+             "coeffs": [-1.0, 1.0], "reaction_energy_ref": 5.0}
+    mae, n_used, n_nan = eh.reaction_mae_kcalmol(e, [twin_a, twin_b, other])
+    mae_unique, n_unique, _ = eh.reaction_mae_kcalmol(e, [twin_a, other])
+    assert n_used == 2, f"3 rows over 2 identities must count 2, got {n_used}"
+    assert mae == pytest.approx(mae_unique, rel=1e-12)
+    assert n_nan == 0
+
+
+def test_reaction_mae_counts_nan_drops_per_identity():
+    """A twin pair on a species with no energy is ONE dropped identity,
+    not two dropped rows."""
+    e = {"a": -1.0, "b": -2.0}
+    missing_twin_1 = {"name": "m1", "reactants": ["zz"], "products": ["b"],
+                      "coeffs": [-1.0, 1.0], "reaction_energy_ref": 1.0}
+    missing_twin_2 = {"name": "m2", "reactants": ["zz"], "products": ["b"],
+                      "coeffs": [-1.0, 1.0], "reaction_energy_ref": 1.0}
+    ok = {"name": "ok", "reactants": ["a"], "products": ["b"],
+          "coeffs": [-1.0, 1.0], "reaction_energy_ref": 5.0}
+    mae, n_used, n_nan = eh.reaction_mae_kcalmol(
+        e, [missing_twin_1, missing_twin_2, ok])
+    assert n_used == 1
+    assert n_nan == 1, f"one all-NaN identity, got {n_nan}"
+
+
+def test_finalize_warns_on_nonresolving_exclusion_set(tmp_path, capsys):
+    """Strict mode with a NON-empty exclusion set that matches zero pool
+    reactions (a stale or foreign identity record; the v3-era shape was 3
+    recorded identities, 0 matches) must be loud -- before this guard the
+    eval silently scored the unshrunk pool as if exclusion had happened."""
+    e = {"a": -1.0, "b": -0.5}
+    eh._finalize_holdout_outputs(
+        [{"name": "r1", "source_pool": "w411", "reactants": ["a"],
+          "products": ["b"], "coeffs": [-1.0, 2.0],
+          "reaction_energy_ref": 0.1}],
+        e, dict(e), mol_records=[], training_names=("X",), n_species=2,
+        out_dir=tmp_path, strict=True,
+        excluded_identities={"stale-id-1", "stale-id-2", "stale-id-3"},
+        species_key_map={})
+    out_text = capsys.readouterr().out
+    assert "resolves to ZERO" in out_text
+
+
 def test_finalize_drops_verbatim_supervised_only(tmp_path):
     """The strict eval drops the trained reaction's pool twin and NOTHING
     else -- reactions merely containing the trained molecule stay."""
