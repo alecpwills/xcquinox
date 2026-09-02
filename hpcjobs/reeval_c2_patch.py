@@ -593,17 +593,40 @@ def _fmt_delta(x) -> str:
 def _pool_stats(rows):
     """(mae_nn, mae_pbe, n_used_nn, n_nan_union) with
     eval_holdout.reaction_mae_kcalmol / _n_nan_union semantics on stored
-    per-reaction rows."""
-    nn = [float(r["abs_error_nn_kcalmol"]) for r in rows
-          if _finite(r.get("abs_error_nn_kcalmol"))]
-    pbe = [float(r["abs_error_pbe_kcalmol"]) for r in rows
-           if _finite(r.get("abs_error_pbe_kcalmol"))]
-    mae_nn = sum(nn) / len(nn) if nn else float("nan")
-    mae_pbe = sum(pbe) / len(pbe) if pbe else float("nan")
-    n_nan = sum(1 for r in rows
-                if not (_finite(r.get("abs_error_nn_kcalmol"))
-                        and _finite(r.get("abs_error_pbe_kcalmol"))))
-    return mae_nn, mae_pbe, len(nn), n_nan
+    per-reaction rows: one term per reaction IDENTITY (permuted-name and
+    duplicate-name twins collapse; the casefolded-name multiset of
+    species_matching.reaction_identity_keys), finite values averaged
+    within an identity; n_nan_union counts identities whose NN or PBE leg
+    has no finite row."""
+    import math as _math
+    from xcquinox.alec.species_matching import reaction_identity_keys
+
+    def _ident_mae(err_key):
+        groups, order = {}, []
+        for i, r in enumerate(rows):
+            key = reaction_identity_keys(r, {}) or ("__row__", i)
+            if key not in groups:
+                order.append(key)
+                groups[key] = []
+            v = r.get(err_key)
+            groups[key].append(float(v) if _finite(v) else float("nan"))
+        terms = []
+        for key in order:
+            finite = [v for v in groups[key] if _math.isfinite(v)]
+            if finite:
+                terms.append(sum(finite) / len(finite))
+        return ((sum(terms) / len(terms)) if terms else float("nan"),
+                len(terms))
+
+    mae_nn, n_nn = _ident_mae("abs_error_nn_kcalmol")
+    mae_pbe, _n_pbe = _ident_mae("abs_error_pbe_kcalmol")
+    dropped, kept = set(), set()
+    for i, r in enumerate(rows):
+        key = reaction_identity_keys(r, {}) or ("__row__", i)
+        ok = (_finite(r.get("abs_error_nn_kcalmol"))
+              and _finite(r.get("abs_error_pbe_kcalmol")))
+        (kept if ok else dropped).add(key)
+    return mae_nn, mae_pbe, n_nn, len(dropped - kept)
 
 
 def recompute_test_set_csv(old_text: str, pr_rows_patched) -> str:
@@ -613,8 +636,8 @@ def recompute_test_set_csv(old_text: str, pr_rows_patched) -> str:
     Column semantics reproduce eval_holdout.write_test_set_csv /
     _finalize_holdout_outputs: per-pool rows are ``test_set_<pool>`` over
     the rows of that pool, the combined row is over all rows;
-    ``n_reactions`` is the count of NN-finite rows, ``n_dropped_nan`` the
-    NN/PBE union of non-finite rows; ``n_dropped_overlap`` and ``note``
+    ``n_reactions`` is the count of NN-finite reaction IDENTITIES,
+    ``n_dropped_nan`` the NN/PBE union of all-non-finite identities; ``n_dropped_overlap`` and ``note``
     are not recomputable from the kept rows and are copied through.
     """
     reader = csv.DictReader(io.StringIO(old_text))

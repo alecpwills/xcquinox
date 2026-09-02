@@ -10,10 +10,15 @@ Two jobs, both from PULLED ARTIFACTS only (no SCF):
    of the pool), so a cross-run table built from per-run CSVs compares
    different denominators. Here the kept slice excludes, by reaction
    identity, the UNION over both runs of (every cell's supervised-reaction
-   identities + the run's validation identities); every cell of both runs
-   is then scored on exactly that slice, identity-deduped (one term per
-   physical reaction), with the slice size and exclusion recipe stamped
-   into the output.
+   identities + the run's validation identities); under the STRICT recipe
+   every cell of both runs is then scored on exactly that slice (uniform
+   row count per cell), identity-deduped (one term per physical reaction),
+   with the slice size and exclusion recipe stamped into the output. The
+   VALIDATION-ONLY recipe is like-for-like only across runs' validation
+   slices: each cell's strict eval already removed its own supervised
+   rows, so per-cell row counts vary there (120-134 measured) and its
+   tables are the reproduction of the previously reported figure, not a
+   uniform-slice comparison.
 
 2. The same tables carry the v6 depth channels side by side: the
    validation-best channel (3 SCF cycles from the converged PBE seed) and
@@ -283,9 +288,10 @@ def write_tables(out_dir: Path, slice_info: Dict[str, Any],
         indent=1))
 
     cols = ["run", "channel", "idx", "arch", "subset_size", "n_slice_rows",
-            "bh76_mae_nn", "bh76_mae_pbe", "bh76_n",
-            "w411_mae_nn", "w411_mae_pbe", "w411_n",
-            "combined_mae_nn", "combined_mae_pbe", "combined_n"]
+            "bh76_mae_nn", "bh76_mae_pbe", "bh76_n", "bh76_n_pbe",
+            "w411_mae_nn", "w411_mae_pbe", "w411_n", "w411_n_pbe",
+            "combined_mae_nn", "combined_mae_pbe", "combined_n",
+            "combined_n_pbe"]
     with (out_dir / "common_slice.csv").open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -319,8 +325,8 @@ def write_tables(out_dir: Path, slice_info: Dict[str, Any],
             continue
         lines.append(f"## {run} -- {channel}\n")
         lines.append("| arch | ss | BH76 NN | BH76 PBE | W4-11 NN | "
-                     "W4-11 PBE | comb NN | comb PBE | n |")
-        lines.append("|---|---|---|---|---|---|---|---|---|")
+                     "W4-11 PBE | comb NN | comb PBE | n | n_pbe |")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|")
         for r in sorted(sub, key=lambda x: (str(x["arch"]),
                                             int(x["subset_size"] or 0))):
             lines.append(
@@ -329,7 +335,7 @@ def write_tables(out_dir: Path, slice_info: Dict[str, Any],
                     "bh76_mae_nn", "bh76_mae_pbe",
                     "w411_mae_nn", "w411_mae_pbe",
                     "combined_mae_nn", "combined_mae_pbe",
-                    "combined_n")) + " |")
+                    "combined_n", "combined_n_pbe")) + " |")
         lines.append("")
     (out_dir / "common_slice_tables.md").write_text("\n".join(lines) + "\n")
 

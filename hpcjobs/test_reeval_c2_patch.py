@@ -1191,3 +1191,31 @@ def test_write_integrity_violation_detected(tmp_path, stubbed, monkeypatch,
     out = capsys.readouterr().out
     assert rc == 3
     assert "integrity violation" in out
+
+
+def test_pool_stats_matches_writer_on_identity_twins():
+    """_pool_stats must reproduce eval_holdout's identity-deduped counts on
+    a slice WITH twins (every earlier fixture was twin-free, so the row/
+    identity semantic split was invisible): 3 rows over 2 identities."""
+    from xcquinox.alec.eval_holdout import reaction_mae_kcalmol
+    rows = [
+        {"name": "fwd", "reactants": ["a", "b"], "products": ["ts"],
+         "coeffs": [-1.0, -1.0, 1.0],
+         "abs_error_nn_kcalmol": 2.0, "abs_error_pbe_kcalmol": 3.0},
+        {"name": "fwd_perm", "reactants": ["b", "a"], "products": ["ts"],
+         "coeffs": [-1.0, -1.0, 1.0],
+         "abs_error_nn_kcalmol": 2.0, "abs_error_pbe_kcalmol": 3.0},
+        {"name": "other", "reactants": ["a"], "products": ["b"],
+         "coeffs": [-1.0, 1.0],
+         "abs_error_nn_kcalmol": 8.0, "abs_error_pbe_kcalmol": 5.0},
+    ]
+    mae_nn, mae_pbe, n_used, n_nan = rcp._pool_stats(rows)
+    assert n_used == 2
+    assert mae_nn == pytest.approx(5.0)
+    assert mae_pbe == pytest.approx(4.0)
+    assert n_nan == 0
+    # Cross-check against the writer-side reduction on the same rows.
+    e = {"a": -1.0, "b": -2.0, "ts": -2.9}
+    w_rxns = [dict(r, reaction_energy_ref=1.0) for r in rows]
+    _, n_writer, _ = reaction_mae_kcalmol(e, w_rxns)
+    assert n_writer == n_used

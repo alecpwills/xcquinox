@@ -154,10 +154,12 @@ class AtomizationEnergyMetric(Metric):
 def pbe_density_errors(mol_data) -> tuple:
     """Model-free PBE-vs-reference weighted grid density errors.
 
-    ``mol_data['rho_grid']`` IS the PBE density evaluated on the same pruned
-    grid the external reference density (``rho_ref_grid``, e.g. CCSD) was
-    written for, so the PBE baseline needs no model and no extra SCF: it is
-    the :class:`DensityRMSEMetric` formula with rho_pbe in place of rho_nn.
+    The PBE leg prefers ``mol_data['rho_pbe_ref_grid']`` -- the reference
+    calculation's own PBE density on the same grid as ``rho_ref_grid`` --
+    and falls back to the locally recomputed ``mol_data['rho_grid']`` for
+    records without it. Either way the baseline needs no model and no
+    extra SCF: it is the :class:`DensityRMSEMetric` formula with rho_pbe
+    in place of rho_nn.
     Returns ``(rmse, l1)``, or ``(None, None)`` when no reference density is
     loaded.
 

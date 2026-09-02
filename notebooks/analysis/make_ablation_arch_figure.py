@@ -1310,20 +1310,30 @@ def pbe_pool_baseline(run_dir: Path, *, eval_subdir: str = "eval_holdout",
     ``load_full_held_out_pools`` -- so it covers ALL 76 BH76 / 140 W4-11
     reactions, including the few that are in-sample in every spec and thus absent
     from any held-out file. ``coverage[pool] = {"used": n, "reference": m}``
-    counts the reactions actually averaged against the UNRESTRICTED canonical
-    leg size, so a consistency-guard exclusion (:func:`_first_pbe_energies`) or
-    missing per_molecule energies shows as ``used < reference`` on the footers
-    instead of silently shrinking the pool. Counts are canonical pool ENTRIES
-    (76 + 140 = 216), the benchmarks' own accounting -- BH76 lists its
-    symmetric identity reactions as two entries with identical signatures, so
-    entry counts sit above distinct-signature counts by those pairs.
-    ``_loader`` is a test seam (default: ``load_full_held_out_pools``)."""
+    counts the reaction IDENTITIES actually averaged against the pool leg's
+    own identity count, so a consistency-guard exclusion
+    (:func:`_first_pbe_energies`) or missing per_molecule energies shows as
+    ``used < reference`` on the footers instead of silently shrinking the
+    pool. Both sides are in IDENTITY units (216 pool entries = 208
+    identities: BH76 lists its symmetric/permuted twins as extra entries,
+    and ``reaction_mae_kcalmol`` averages one term per identity) -- a
+    reference in raw entry units would report 208/216 on perfectly healthy
+    data. ``_loader`` is a test seam (default:
+    ``load_full_held_out_pools``)."""
     if _loader is None:
         from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
         _loader = load_full_held_out_pools
     from xcquinox.alec.eval_holdout import reaction_mae_kcalmol
+    from xcquinox.alec.species_matching import reaction_identity_keys
     _, full_rxns = _loader()
     pbe = _first_pbe_energies(run_dir, eval_subdir=eval_subdir)
+
+    def _n_identities(rx: List[Dict[str, Any]]) -> int:
+        seen: set = set()
+        for i, r in enumerate(rx):
+            seen.add(reaction_identity_keys(r, {}) or ("__row__", i))
+        return len(seen)
+
     out: Dict[str, Any] = {}
     cov: Dict[str, Dict[str, int]] = {}
     legs = [("bh76", [r for r in full_rxns if r.get("source_pool") == "bh76"]),
@@ -1335,7 +1345,7 @@ def pbe_pool_baseline(run_dir: Path, *, eval_subdir: str = "eval_holdout",
         else:
             mae, n_used = float("nan"), 0
         out[key] = mae
-        cov[key] = {"used": int(n_used), "reference": len(rx)}
+        cov[key] = {"used": int(n_used), "reference": _n_identities(rx)}
     out["coverage"] = cov
     return out
 
@@ -1573,7 +1583,7 @@ def scan_pool_baseline(run_dir: Path, *, basis: Optional[str] = None,
 
     ``coverage[pool] = {"used": n, "reference": m}`` records how many reactions
     SCAN averaged against the UNRESTRICTED canonical leg size (pool ENTRIES,
-    matching :func:`pbe_pool_baseline`'s accounting), so ``used < reference``
+    matching :func:`pbe_pool_baseline`'s IDENTITY-unit accounting), so ``used < reference``
     whenever SCAN misses a species OR a PBE consistency-guard exclusion
     dropped reactions from both legs -- either reduction is then visible in
     the ``, u/r`` label suffix and the coverage floor counts it (deliberate: a
@@ -1609,15 +1619,26 @@ def scan_pool_baseline(run_dir: Path, *, basis: Optional[str] = None,
         return [r for r in rxns
                 if all(n in pbe for n in (list(r.get("reactants", []))
                                           + list(r.get("products", []))))]
+    from xcquinox.alec.species_matching import reaction_identity_keys
+
+    def _n_identities(rxns):
+        seen = set()
+        for i, r in enumerate(rxns):
+            seen.add(reaction_identity_keys(r, {}) or ("__row__", i))
+        return len(seen)
+
     for key, rx in legs:
         rx_eff = _pbe_computable(rx) if pbe else rx
+        # Both coverage sides in IDENTITY units (matching
+        # pbe_pool_baseline and reaction_mae_kcalmol's n_used): a raw
+        # entry-count reference reads 208/216 on healthy data.
         if not rx_eff:
             out[key] = float("nan")
-            cov[key] = {"used": 0, "reference": len(rx)}
+            cov[key] = {"used": 0, "reference": _n_identities(rx)}
             continue
         mae, n_used, _n_drop = reaction_mae_kcalmol(scan, rx_eff)
         out[key] = mae
-        cov[key] = {"used": int(n_used), "reference": len(rx)}
+        cov[key] = {"used": int(n_used), "reference": _n_identities(rx)}
     out["coverage"] = cov
     return out
 
@@ -8391,7 +8412,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                         r for r in rows if r.get("pool") == ch]
                     ch_hd_ = hd_rows if ch == "combined" else [
                         r for r in hd_rows
-                        if ch in pools_of_eps.get(r.get("molecule"), ())]
+                        if ch in pools_of_eps.get(_mol_cf(r.get("molecule")), ())]
                     ch_counts = (
                         _cell_counts(ch_rows_, "abs_error_nn_kcalmol"),
                         _cell_counts(ch_hd_, "density_eps_l1"),

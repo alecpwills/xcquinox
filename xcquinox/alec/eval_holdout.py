@@ -905,7 +905,10 @@ def write_test_set_csv(
 
     ``per_pool_mae`` maps pool token (``"bh76"``, ``"w411"``) to
     ``(mae_nn_kcalmol, mae_pbe_kcalmol, n_used, n_dropped_overlap,
-    n_dropped_nan)``. The PBE MAE comes from re-evaluating the same
+    n_dropped_nan)``. ``n_used`` and ``n_dropped_nan`` are in reaction
+    IDENTITY units (permuted-name and duplicate-name twins collapse;
+    ``reaction_mae_kcalmol`` / ``_n_nan_union``), so one row's counts share
+    one unit; ``n_dropped_overlap`` counts the strict-mode dropped ROWS. The PBE MAE comes from re-evaluating the same
     reactions against ``mol_data["E_pbe"]`` instead of the NN, costs
     nothing extra since the PBE energies are by-products of the precompute
     step, and gives the operator a direct apples-to-apples NN-vs-PBE
@@ -1312,16 +1315,23 @@ def merge_holdout_shards(shard_payloads: Sequence[Dict[str, Any]]
 def _n_nan_union(energies_ha: Dict[str, float],
                  pbe_energies_ha: Dict[str, float],
                  reactions: Sequence[Dict[str, Any]]) -> int:
-    """Count reactions dropped (non-finite abs error) in EITHER the NN or the
-    PBE metric, i.e. the union. The two metrics can drop DIFFERENT reactions, so
-    max(n_nan_nn, n_nan_pbe) undercounts the true dropped set."""
+    """Count reaction IDENTITIES dropped (non-finite abs error) in EITHER the
+    NN or the PBE metric, i.e. the union. The two metrics can drop DIFFERENT
+    reactions, so max(n_nan_nn, n_nan_pbe) undercounts the true dropped set.
+    Identity units match ``reaction_mae_kcalmol``'s ``n_used`` -- one CSV row
+    must not mix identity counts with row counts (rows within one identity
+    share a species multiset, hence share energy availability)."""
+    from xcquinox.alec.species_matching import reaction_identity_keys
     nn = list(per_reaction_errors(energies_ha, reactions))
     pb = list(per_reaction_errors(pbe_energies_ha, reactions))
-    return sum(
-        1 for a, b in zip(nn, pb)
-        if not (math.isfinite(a["abs_error_kcalmol"])
-                and math.isfinite(b["abs_error_kcalmol"]))
-    )
+    dropped: set = set()
+    kept: set = set()
+    for i, (rxn, a, b) in enumerate(zip(reactions, nn, pb)):
+        key = reaction_identity_keys(rxn, {}) or ("__row__", i)
+        ok = (math.isfinite(a["abs_error_kcalmol"])
+              and math.isfinite(b["abs_error_kcalmol"]))
+        (kept if ok else dropped).add(key)
+    return len(dropped - kept)
 
 
 def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],

@@ -159,7 +159,7 @@ def test_save_vxc_ref_roundtrip(tmp_path):
     )
     path = str(tmp_path / "ref.npz")
     save_vxc_ref(oep_result, path, method="CCSD")
-    _, _, _, _, vxc_loaded = _load_external_data(
+    _, _, _, _, vxc_loaded, _ = _load_external_data(
         path,
         dm_pbe_shape=(nao, nao),
         rho_pbe_shape=(100,),
@@ -1469,23 +1469,37 @@ def test_plateau_stop_does_not_claim_converged_without_scf_verification(monkeypa
         plateau_window=0,            # disable real detector; we force-raise
     )
 
-    # The carried plateau iterate is a large b, whose KS density does NOT
-    # match the target to 1e-6, so the SCF-verified residual is well
-    # above conv_tol. The reported density_error must be that real
-    # residual, NOT the 1e-12 plateau median.
-    assert result.density_error > conv_tol, (
-        "expected SCF-verified final_error > conv_tol; got "
-        f"{result.density_error!r}"
+    # The carried plateau iterate is a large b whose KS density does NOT
+    # match the target; the worse-than-baseline guard therefore replaces it
+    # with the b = 0 baseline (which on this minimal-basis fixture matches
+    # the HF target exactly) and records the regression. The invariants
+    # the defect concerned survive in strengthened form: the reported
+    # density_error is the SCF-VERIFIED residual of the RETURNED potential
+    # (re-solved here independently), never the fabricated plateau median,
+    # and the fabricated iterate's own (large) error is on record in
+    # lbfgs_status.
+    from xcquinox.alec.oep import (_ks_from_vxc_matrix, _dm_to_rho_on_grid,
+                                   _build_mol_and_mf)
+    _mol_chk, mf_ks = _build_mol_and_mf(spec, baseline_xc="pbe")
+    dm_chk, _, _, ok = _ks_from_vxc_matrix(mol, mf_ks, result.vxc_matrix)
+    assert ok
+    rho_chk = _dm_to_rho_on_grid(mol, mf_ks, dm_chk)
+    rho_tgt = _dm_to_rho_on_grid(mol, mf_ks, dm_target)
+    verified = float(np.sqrt(np.sum(
+        mf_ks.grids.weights * (rho_tgt - rho_chk) ** 2)))
+    assert result.density_error == pytest.approx(verified, abs=1e-8), (
+        "density_error must be the SCF-verified residual of the returned "
+        f"potential; got {result.density_error!r} vs re-solved {verified!r}"
     )
-    assert abs(result.density_error - plateau_value) > 1e-9, (
-        "density_error must be the SCF-verified final_error, not the "
-        "plateau median"
-    )
-    # Because the SCF-verified error is above conv_tol, the result must
-    # NOT be marked converged even though the plateau median was tiny.
-    assert result.converged is False
-    # stop_reason must distinguish a plateau stop from true convergence.
-    assert result.stop_reason == "plateau"
+    assert result.stop_reason == "regressed_below_baseline"
+    assert "regressed_below_baseline" in result.lbfgs_status
+    # The fabricated large-b iterate's own error is recorded and is far
+    # above conv_tol -- the plateau median (1e-12) faked nothing.
+    import re as _re
+    m = _re.search(r"optimized_error=([0-9.e+-]+)", result.lbfgs_status)
+    assert m and float(m.group(1)) > conv_tol
+    # converged reflects the RETURNED potential's real residual.
+    assert result.converged is (verified < conv_tol)
 
 
 def test_plateau_stop_below_conv_tol_is_converged_with_plateau_stop_reason(monkeypatch):
@@ -1562,3 +1576,33 @@ def test_oep_hybrid_baseline_warns():
     with _w.catch_warnings():
         _w.simplefilter("error", RuntimeWarning)
         _build_mol_and_mf(h, baseline_xc="pbe")  # must not raise
+
+
+def test_oep_never_returns_worse_than_baseline():
+    """The finite-basis Wu-Yang pathology (H2 / 6-31g / def2-svp-jkfit
+    against a CCSD target at module defaults) drove the optimized iterate
+    to a density error ~100x WORSE than the b = 0 baseline (0.49 vs
+    3.97e-3), and scipy's own ftol stop accepted it silently. The result
+    now keeps the baseline when the optimizer regressed past it, recorded
+    as stop_reason='regressed_below_baseline'."""
+    from pyscf import gto, scf, cc
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+
+    ms = MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74",
+                      basis="6-31g", charge=0, spin=0,
+                      atom_composition=(("H", 2),))
+    mol = gto.M(atom=ms.atom, basis=ms.basis, unit="angstrom", verbose=0)
+    mf = scf.RHF(mol).run()
+    mycc = cc.CCSD(mf).run()
+    dm_mo = mycc.make_rdm1()
+    c = mf.mo_coeff
+    dm_target = c @ dm_mo @ c.T
+
+    res = run_oep_inversion(ms, dm_target, max_iter=50, conv_tol=1e-6)
+    # The guard's whole content: the returned error can never exceed the
+    # b=0 baseline's (~4e-3 here; the unguarded return measured ~0.49).
+    assert res.density_error < 0.02, (
+        f"worse-than-baseline potential returned: {res.density_error:.3e}")
+    if res.stop_reason == "regressed_below_baseline":
+        assert "regressed_below_baseline" in res.lbfgs_status

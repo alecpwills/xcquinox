@@ -2067,10 +2067,21 @@ def test_nn_vs_pbe_caveat_insufficient_data():
 @pytest.mark.slow
 @pytest.mark.skipif(not _SVP_RUN.is_dir(), reason="svp run not present")
 def test_pbe_pool_baseline_matches_validated_full_pool():
+    """Identity-deduped values (one term per reaction identity; the BH76
+    twins collapse 76 rows -> 68 identities): recomputed 2026-09-01 from
+    the same validated run. The pre-dedup row-mean values were 11.82 /
+    15.94 / 14.49. Coverage is in identity units on BOTH sides, so healthy
+    data reads full (208/208), not 208/216."""
     base = fig.pbe_pool_baseline(_SVP_RUN)
-    assert base["bh76"] == pytest.approx(11.82, abs=0.05)
+    assert base["bh76"] == pytest.approx(11.74, abs=0.05)
     assert base["w411"] == pytest.approx(15.94, abs=0.05)
-    assert base["combined"] == pytest.approx(14.49, abs=0.05)
+    assert base["combined"] == pytest.approx(14.57, abs=0.05)
+    cov = base["coverage"]
+    assert cov["bh76"] == {"used": 68, "reference": 68}
+    assert cov["w411"] == {"used": 140, "reference": 140}
+    assert cov["combined"] == {"used": 208, "reference": 208}
+    assert fig.pool_line_suffix(base) == ""
+    assert fig._pool_cov_bracket(base) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -3048,6 +3059,13 @@ def _add_val_best_eval(run_dir):
         eh = sd / "eval_holdout"
         if eh.is_dir():
             shutil.copytree(eh, sd / "eval_holdout_val_best", dirs_exist_ok=True)
+    # A run with a val-best channel trained WITH a validation slice; the
+    # figure layer hard-requires its identity record (a fixture without it
+    # models a broken pull, which has its own dedicated test).
+    vdir = run_dir / "validation"
+    if not (vdir / "val_reactions.json").is_file():
+        vdir.mkdir(exist_ok=True)
+        (vdir / "val_reactions.json").write_text("[]")
 
 
 def test_build_bh76w411_suite_writes_all_families(tmp_path):
@@ -6765,8 +6783,9 @@ def test_holdout_density_cell_means_dedup_case_twins():
 
 def test_collect_holdout_density_drops_supervised_rows(tmp_path):
     """Rows the eval flagged from_training_subset=True are supervised
-    species and must not enter the held-out density means (production
-    ss=26 cells carried 18 such species inside the mean)."""
+    species and must not enter the held-out density means (the production
+    ss=26 cell, spec_0021 val-best, carried 28 such rows over 23
+    casefolded species inside the mean)."""
     run = _make_run_dir(tmp_path)
     sd = run / "checkpoints" / "spec_0000" / "eval_holdout"
     (sd / "per_molecule.json").write_text(json.dumps([
