@@ -963,6 +963,37 @@ def run_oep_inversion(
     final_error = float(
         np.sqrt(np.sum(weights * (rho_target_total - rho_final) ** 2))
     )
+    # Never return a potential worse than not optimizing. The b = 0
+    # baseline is re-solved through the same inner-SCF machinery and kept
+    # when the optimized iterate regressed past it (measured on H2/6-31g
+    # at module defaults with a CCSD target: b=0 density error 3.97e-3 vs
+    # 4.9e-1 for the returned iterate -- a ~100x regression that scipy's
+    # own ftol stop accepted silently; the finite-basis Wu-Yang pathology
+    # class). The regression is recorded in stop_reason/lbfgs_status.
+    regressed_below_baseline = False
+    vxc_b0 = _vxc_from_b(np.zeros_like(np.asarray(b_final)))
+    dm_b0, _, _, b0_success = _ks_from_vxc_matrix(
+        mol, mf, vxc_b0, dm0=final_warm, level_shift=level_shift,
+        damp=inner_damp,
+        diis_start_cycle=inner_diis_start_cycle,
+    )
+    if b0_success:
+        if is_uks:
+            rho_b0_a, rho_b0_b = _dm_to_rho_on_grid(
+                mol, mf, dm_b0, per_spin=True,
+            )
+            rho_b0 = rho_b0_a + rho_b0_b
+        else:
+            rho_b0 = _dm_to_rho_on_grid(mol, mf, dm_b0)
+        b0_error = float(
+            np.sqrt(np.sum(weights * (rho_target_total - rho_b0) ** 2))
+        )
+        if np.isfinite(b0_error) and (
+                not np.isfinite(final_error) or b0_error < final_error):
+            regressed_below_baseline = True
+            optimized_error = final_error
+            vxc_final, dm_final = vxc_b0, dm_b0
+            final_error, final_success = b0_error, b0_success
     # Clip scipy's reported nit at our requested max_iter so
     # n_iter never exceeds what the user asked for; documented in the
     # OEPResult.n_iter docstring above.
@@ -1041,7 +1072,14 @@ def run_oep_inversion(
     # sentinel fired). A plateau stop keeps stop_reason="plateau" even
     # when converged is True, so downstream can distinguish it from a
     # true stationary-point convergence.
-    if plateau_terminated:
+    if regressed_below_baseline:
+        stop_reason = "regressed_below_baseline"
+        lbfgs_status = (
+            lbfgs_status
+            + f" + regressed_below_baseline(optimized_error="
+              f"{optimized_error:.3e}, baseline kept)"
+        )
+    elif plateau_terminated:
         stop_reason = "plateau"
     elif converged:
         stop_reason = "converged"
@@ -1100,6 +1138,12 @@ def save_vxc_ref(
     payload["oep_converged"] = np.array(bool(oep_result.converged))
     payload["oep_lbfgs_status"] = np.array(oep_result.lbfgs_status)
     payload["oep_n_electrons"] = np.array(oep_result.n_electrons)
+    # Structured stop provenance (previously free text inside lbfgs_status
+    # only): a consumer of oep_converged=True cannot otherwise tell a true
+    # stationary convergence from a plateau/early stop, nor interpret the
+    # error without the tolerance it was accepted against.
+    payload["oep_stop_reason"] = np.array(oep_result.stop_reason or "")
+    payload["oep_terminated_by"] = np.array(oep_result.terminated_by or "")
 
     if os.path.isfile(output_path):
         with np.load(output_path) as existing:

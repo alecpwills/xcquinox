@@ -1132,6 +1132,10 @@ def _mesh_columns(*, rs_grid=MESH_RS, s_grid=MESH_S, alpha_grid=MESH_ALPHA):
         "Fc_scan": np.clip(ec_scan / ec_safe - 1.0, -5.0, 5.0),
         "metagga": alpha_col.reshape(-1, 1),
         "weights": np.ones_like(rho),
+        # COVERAGE LIMIT: the synthetic mesh sits entirely at zeta = 0, so
+        # it determines the alpha axis only at zero polarization; a
+        # polarized correlation net's zeta x alpha coupling is constrained
+        # by the physical rows alone.
         "zeta": np.zeros_like(rho),
     }
 
@@ -1152,13 +1156,19 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
 
     Written as a sidecar so the ``.npz`` array payload stays byte-identical to
     the pre-manifest format (legacy loaders that ignore the sidecar are
-    unaffected). Every key here is something a change of which changes the
-    stored VALUES, so :func:`pretrain_data_is_current` treats all of them as
-    the file's identity:
+    unaffected). With two stated exceptions, every key here is something a
+    change of which changes the stored VALUES, and
+    :func:`pretrain_data_is_current` treats those as the file's identity.
+    The exceptions: ``density_fit`` is recorded but value-inert (the parent
+    SCF no longer branches on it -- see ``_system_columns``) and is NOT
+    compared by the currency check; and at the production basis
+    ``auxbasis`` resolves to ``None`` whether DF is on or off (the non-def2
+    rule), so it cannot discriminate the DF state there -- it forces a
+    regeneration only where a def2 fitting basis resolves.
 
     - ``basis`` / ``grid_level`` / ``auxbasis``: the integration identity
-      (``auxbasis`` is the EFFECTIVE DF fitting basis, ``None`` when DF is
-      off, so a fitting-basis change forces a regeneration).
+      (``auxbasis`` is the EFFECTIVE DF fitting basis where one resolves;
+      see the exception above).
     - ``atoms``: the legacy projection ``[[name, 2S], ...]`` of the set, kept
       so a reader written before the set became a system list still resolves.
     - ``systems``: the set itself, ``[[name, geometry, charge, 2S], ...]``. A

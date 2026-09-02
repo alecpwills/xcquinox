@@ -560,9 +560,15 @@ def test_classify_sacct_state_live_states_are_live():
     LIVE queue states, not evidence a task never ran: mapping them to
     dependency_never_satisfied put live jobs in the retry set and reported
     a healthy queue as failed (specs 30-43 behind a %3 throttle)."""
-    for state in ("RUNNING", "PENDING", "COMPLETING", "REQUEUED",
-                  "SUSPENDED", "RESIZING"):
+    for state in sorted(jt.LIVE_SACCT_STATES):
         assert jt._classify_sacct_state(state, "0:0") == "live", state
+    # The full sacct(1) live vocabulary, not just the obvious six: a
+    # CONFIGURING or STAGE_OUT task holds its allocation right now and was
+    # measured resubmitted beside itself under the six-state set.
+    for state in ("CONFIGURING", "RESV_DEL_HOLD", "REQUEUE_FED",
+                  "REQUEUE_HOLD", "SIGNALING", "SPECIAL_EXIT",
+                  "STAGE_OUT", "STOPPED"):
+        assert state in jt.LIVE_SACCT_STATES, state
     # The terminal mappings are untouched.
     assert jt._classify_sacct_state("COMPLETED", "0:0") == "success"
     assert jt._classify_sacct_state("TIMEOUT", "0:0") == "timeout"
@@ -586,3 +592,13 @@ def test_parse_sacct_expands_pending_range_rows():
     for idx in (3, 4, 5, 7, 8, 9, 11, 14, 15):
         assert out[idx] == ("PENDING", "0:0"), idx
     assert len(out) == 11
+
+
+def test_parse_sacct_concrete_rows_outrank_bracket_rows():
+    """A requeued index can appear in both a concrete and a bracket row;
+    the concrete row wins in EITHER order (order-dependence measured in
+    review: the same two rows reversed flipped the state)."""
+    a = jt._parse_sacct("123_[1-3]|PENDING|0:0\n123_2|FAILED|1:0\n")
+    b = jt._parse_sacct("123_2|FAILED|1:0\n123_[1-3]|PENDING|0:0\n")
+    assert a[2] == b[2] == ("FAILED", "1:0")
+    assert a[1] == b[1] == ("PENDING", "0:0")

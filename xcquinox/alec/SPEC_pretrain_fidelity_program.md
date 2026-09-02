@@ -120,8 +120,15 @@ the pretrain stage and before the train array:
    molecules, and a fixed molecule set spanning the pool's elements, on frozen parent
    densities at the production identity (PBE for GGA-rung, SCAN for meta-GGA).
 3. Computes E_xc^NN - E_xc^parent per system (production footing, energy path) and the
-   implied atomization-energy offsets; runs O1-O4 on the installed code.
-4. PASS iff max |dE_xc| per atom <= tol_atom and max |dAE| <= tol_AE and O1-O4 pass.
+   implied atomization-energy offsets (sign convention: the recorded
+   dAE(mol) = dE_xc(mol) - sum_atoms n_atom * dE_xc(atom) is the NEGATIVE of an
+   atomization-energy offset AE_NN - AE_parent, since AE = sum E_atoms - E_mol; the gate
+   is on |dAE|, so the convention carries no gate consequence). (As built, the driver does NOT run O1-O4: the
+   oracles test fixed library code and are exercised by CI and the Section 3.4
+   workflow matrix, not per checkpoint; wiring them into the compute-node driver is
+   the recorded alternative.)
+4. PASS iff max |dE_xc| per atom <= tol_atom and max |dAE| <= tol_AE, with finite
+   measurements, converged references and both parent-route agreements.
    Proposed: tol_AE = 1.0 kcal/mol, tol_atom = 1.0 mHa (configurable in the YAML but
    never above 2.0 / 2.0 without an explicit `fidelity.override_reason`).
 5. Writes `<run_dir>/pretrain/<arch>/fidelity_certificate.json` (inputs, every number,

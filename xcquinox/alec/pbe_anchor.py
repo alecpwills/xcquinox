@@ -79,9 +79,15 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
     on each spin channel's doubled density, dividing the GGA exchange
     energy per electron by the LDA exchange energy per electron at the
     same rho_tot=2*rho_sigma. At rho_sigma -> 0 (spin-polarized
-    boundary or rho_tot -> 0), the libxc / LDA ratio is 0/0; we fall
-    back to the analytic PBE F_x(s) formula since F_x is rho-
-    independent at fixed s.
+    boundary or rho_tot -> 0), the libxc / LDA ratio is 0/0; the
+    fallback is the analytic PBE F_x evaluated at the CHANNEL's own
+    reduced gradient s_sigma = s * (1 -+ zeta)^(-1/3) (F_x is
+    rho-independent at fixed s_sigma). For an emptying channel at
+    finite s that gradient diverges and the fallback lands on the
+    saturation limit 1 + kappa = 1.804 -- the one-sided limit the
+    total-density fallback F_x(s) missed (measured 0.316 jump at
+    zeta -> 1 before the correction); at zeta = 0 (the rho_tot -> 0
+    case) s_sigma = s and the prior behavior is unchanged.
     """
     ra = np.asarray(rho_alpha, dtype=np.float64)
     rb = np.asarray(rho_beta, dtype=np.float64)
@@ -102,7 +108,15 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
 
     _compute = _LIBXC_CALL.eval_xc
     c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
-    fx_pbe_at_s = _fx_pbe_analytic(s_arr)
+    # Per-channel fallback gradients: s_sigma = s * (1 -+ zeta)^(-1/3).
+    # The 1e8 cap keeps F_x_analytic finite where a channel empties at
+    # finite s (F_x(1e8) = 1 + kappa to double precision); the tiny floor
+    # only routes the exactly-empty channel onto that saturated branch.
+    _s_cap = 1.0e8
+    frac_a = np.clip(1.0 + zeta, 1e-15, None)
+    frac_b = np.clip(1.0 - zeta, 1e-15, None)
+    s_chan_a = np.minimum(s_arr * frac_a ** (-1.0 / 3.0), _s_cap)
+    s_chan_b = np.minimum(s_arr * frac_b ** (-1.0 / 3.0), _s_cap)
 
     def _fx_rks(rho_spin_doubled: np.ndarray,
                 sigma_spin_eff: np.ndarray,
@@ -122,17 +136,19 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
         ex_lda_per_e = c_lda * np.power(
             np.clip(rho_spin_doubled, 1e-300, None), 1.0 / 3.0,
         )
-        # rho -> 0: 0/0 limit becomes the rho-independent F_x_PBE(s) (NOT
-        # the pre-fix fallback F_x = 1, which biased the target toward UEG
-        # at every spin-polarized boundary).
+        # rho -> 0: the 0/0 limit becomes the rho-independent F_x_PBE at
+        # the CHANNEL's own s_sigma (NOT the total-density F_x(s), whose
+        # value is wrong for an emptying channel -- its own gradient
+        # diverges and F_x -> 1 + kappa; and NOT the pre-fix F_x = 1,
+        # which biased the target toward UEG at every boundary).
         return np.where(
             np.abs(ex_lda_per_e) > 1e-30,
             ex_per_e / ex_lda_per_e,
             fallback_fx,
         )
 
-    fx_a = _fx_rks(2.0 * ra, sigma_aa_eff, fx_pbe_at_s)
-    fx_b = _fx_rks(2.0 * rb, sigma_bb_eff, fx_pbe_at_s)
+    fx_a = _fx_rks(2.0 * ra, sigma_aa_eff, _fx_pbe_analytic(s_chan_a))
+    fx_b = _fx_rks(2.0 * rb, sigma_bb_eff, _fx_pbe_analytic(s_chan_b))
     return jnp.asarray(0.5 * (fx_a + fx_b))
 
 

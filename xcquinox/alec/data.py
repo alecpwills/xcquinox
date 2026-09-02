@@ -35,6 +35,12 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     "oep_converged",
     "oep_lbfgs_status",
     "oep_n_electrons",
+    # Structured stop provenance (2026-09-01): which sentinel ended the
+    # inversion and whether the accepted iterate is a verified convergence,
+    # a plateau stop, or the kept b=0 baseline after an optimizer
+    # regression. Absent on refs written before the fields existed.
+    "oep_stop_reason",
+    "oep_terminated_by",
     # grid_level the reference was generated on. When present,
     # _load_external_data asserts it equals the consumer's resolved
     # grid_level so a reference built on a different grid cannot load

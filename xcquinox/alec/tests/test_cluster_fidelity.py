@@ -2132,7 +2132,10 @@ def test_certificate_keeps_the_runs_own_lock_when_it_is_on(tmp_path):
     assert seen == {"atom_H": 0.02, "H2": 0.02, "atom_O": 0.02}
     lock = payload["atom_orientation_lock"]
     assert lock["applied_to"] == []
-    assert lock["strength"] == 0.0
+    # "strength" records what the degenerate atoms were actually evaluated
+    # at: the run's own lock here (the pre-correction payloads recorded 0.0
+    # for locked runs while every system was in fact evaluated at 0.02).
+    assert lock["strength"] == 0.02
     assert lock["run_orientation_lock_strength"] == 0.02
     assert payload["identity"]["orientation_lock_strength"] == 0.02
 
@@ -2549,3 +2552,28 @@ def test_route_disagreement_reasons_name_the_system(tmp_path):
     assert "H2" not in grid[0]
     assert "H2" in record[0] and "3e-06" in record[0]
     assert "atom_H" not in record[0]
+
+
+def test_version_cross_check_skips_the_unknown_fallback(tmp_path, monkeypatch,
+                                                        capsys):
+    """versioneer's '1+unknown' fallback carries no code identity: on the
+    cluster every certificate AND manifest records it (21 of 21 production
+    certificates), so equality there was vacuous, and a local recovery under
+    a versioned tree FALSELY refused correct, digest-matching cluster
+    artifacts. The comparison now fires only when BOTH sides carry real
+    versions; an unknown side is reported as a warning, and the digest +
+    identity + parent checks carry the provenance load."""
+    cert = {"verdict": "PASS", "arch": "deep_3x16", "parent_anchor": True,
+            "descriptor_coordinates": "dfs", "descriptor_log_transform": True,
+            "xcquinox_version": "1+unknown"}
+    monkeypatch.setattr(fid, "running_xcquinox_version",
+                        lambda: "1.0.0+319.gdeadbee")
+    findings = fid.certificate_describes_run(
+        _cfg(), str(tmp_path), "deep_3x16", cert)
+    assert not [f for f in findings if "xcquinox_version" in f], findings
+    assert "no code identity" in capsys.readouterr().out
+    # Both sides REAL and different: still a refusal finding.
+    cert2 = dict(cert, xcquinox_version="0.9.0+100.gaaaaaaa")
+    findings2 = fid.certificate_describes_run(
+        _cfg(), str(tmp_path), "deep_3x16", cert2)
+    assert [f for f in findings2 if "xcquinox_version" in f]

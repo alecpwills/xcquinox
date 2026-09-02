@@ -749,8 +749,10 @@ def test_training_loop_stops_on_patience_and_returns_the_best_weights():
         n_steps=100, validate_every=1, patience=3, monitor="pointwise")
     assert len(losses) < 100
     assert record["stopped_early"] is True
-    assert record["best_step"] >= 1
-    assert len(record["history"]) == len(losses) // 1
+    # Step 0 is scored; on this flat trajectory the initialization ties and
+    # the earlier candidate wins.
+    assert record["best_step"] == 0
+    assert len(record["history"]) == len(losses) + 1
     assert float(record["best_value"]) <= float(record["history"][0][1])
 
 
@@ -788,12 +790,14 @@ def test_training_loop_returns_the_best_model_not_the_last(tmp_path):
         start, optax.sgd(0.1), loss, desc, ref_train, loss, desc, ref_val,
         n_steps=5, validate_every=5, patience=0, monitor="pointwise")
     assert losses_a == losses_b
-    assert rec_a["best_step"] == 1 and rec_b["best_step"] == 5
-    assert 0.0 < float(first.offset) < float(last.offset)
+    # The zero-offset start scores exactly 0 on the validation rows, so the
+    # initialization (step 0) is the best candidate in BOTH schedules.
+    assert rec_a["best_step"] == 0 and rec_b["best_step"] == 0
+    assert float(first.offset) == 0.0 and float(last.offset) == 0.0
     vals = [h[3] for h in rec_a["history"]]
     assert vals == sorted(vals) and rec_a["best_value"] == vals[0]
     on_disk = eqx.tree_deserialise_leaves(ck, start)
-    assert float(on_disk.offset) == float(first.offset)
+    assert float(on_disk.offset) == 0.0
 
 
 def test_training_loop_monitors_the_validation_loss_at_the_run_weight():
@@ -813,7 +817,8 @@ def test_training_loop_monitors_the_validation_loss_at_the_run_weight():
         ref, loss, descriptors, ref, n_steps=4, validate_every=2,
         patience=0, monitor="loss")
     assert record["monitor"] == "loss"
-    assert len(record["history"]) == 2
+    # step-0 (initialization) record + validations at steps 2 and 4.
+    assert len(record["history"]) == 3
     for _step, pointwise, energy, monitored in record["history"]:
         assert energy > 0.0
         assert monitored == pytest.approx(pointwise + w_e * energy, rel=1e-12)
@@ -928,8 +933,8 @@ def test_run_pretrain_validation_holds_out_a_molecule_and_keeps_the_best(
     assert v["systems"] == ["LiH"]
     for key in ("x", "c"):
         rec = v[key]
-        assert 1 <= rec["best_step"] <= rec["steps_run"] <= 6
-        assert len(rec["history"]) == rec["steps_run"]
+        assert 0 <= rec["best_step"] <= rec["steps_run"] <= 6
+        assert len(rec["history"]) == rec["steps_run"] + 1
         assert rec["best_value"] == min(h[3] for h in rec["history"])
         assert rec["n_rows_train"] > 0 and rec["n_rows_val"] > 0
         assert np.isfinite(rec["best_value"])
@@ -962,7 +967,7 @@ def test_run_pretrain_validates_without_the_energy_term(molecule_dir,
     assert v["systems"] == ["LiH"]
     for key in ("x", "c"):
         rec = v[key]
-        assert rec["steps_run"] == 4 and len(rec["history"]) == 2
+        assert rec["steps_run"] == 4 and len(rec["history"]) == 3
         for _step, pointwise, energy, monitored in rec["history"]:
             assert energy == 0.0
             assert monitored == pointwise
@@ -1080,10 +1085,10 @@ def test_the_stop_lands_exactly_at_best_step_plus_patience_intervals(
     disagree with the rule the record is read by."""
     _m, losses, rec = _worsening_run(every=every, patience=patience)
     assert rec["stopped_early"] is True
-    # The first validation is the best one, so the rule is checkable against
-    # a step this test knows independently of the record.
-    assert rec["best_step"] == every
-    assert rec["steps_run"] == rec["best_step"] + patience * every
+    # The initialization is scored as step 0 and, in a worsening run, is the
+    # best; the stop lands after `patience` in-loop non-improvements.
+    assert rec["best_step"] == 0
+    assert rec["steps_run"] == patience * every
     assert len(losses) == rec["steps_run"]
     assert len(rec["history"]) == 1 + patience
     scores = [h[3] for h in rec["history"]]

@@ -698,26 +698,47 @@ def test_resubmit_classifies_oom_via_sacct_and_submits_sparse(tmp_path,
     assert attempts == {"1": 1, "2": 1}
 
 
-def test_resubmit_refuses_while_train_tasks_live(tmp_path, monkeypatch):
-    """A run with tasks still RUNNING/PENDING in the queue is draining, not
-    failed: resubmitting beside it double-writes checkpoints and re-queues
-    work the scheduler already holds. resubmit must refuse, naming the live
-    indices, and submit nothing -- even when other indices are retryable."""
+def test_resubmit_skips_live_indices_and_retries_the_rest(tmp_path,
+                                                          monkeypatch):
+    """A live index must never be resubmitted (double-writes its checkpoint
+    dir beside the scheduler's copy) -- but a dead index beside a draining
+    array stays recoverable: live indices are dropped from the plan per
+    index and the retryable remainder is submitted. Liveness is judged on
+    the RAW sacct states, so a RUNNING index with disk evidence (the
+    resume-class case: resume_state.pkl written by the live task itself) is
+    skipped too, not resumed on top of itself."""
     rd = _make_resubmit_run(tmp_path, monkeypatch)
     open(os.path.join(_spec_dir(rd, 0), "model.eqx"), "wb").close()
+    # Index 4: RUNNING in the queue AND carrying a resume checkpoint --
+    # disk reduces it to incomplete_resumable, the raw queue says live.
+    open(os.path.join(_spec_dir(rd, 4), "resume_state.pkl"), "wb").close()
+    # Index 5: deterministic failure (never retried).
+    with open(os.path.join(_spec_dir(rd, 5), "failure.json"), "w") as f:
+        json.dump({"classification": "value_error"}, f)
     train_rows = "\n".join([
-        "1000_1|OUT_OF_MEMORY|0:125",   # retryable on its own
-        "1000_2|RUNNING|0:0",           # live
+        "1000_1|OUT_OF_MEMORY|0:125",   # dead: retryable now
+        "1000_2|CONFIGURING|0:0",       # live transient (nodes booting)
         "1000_[3-3%2]|PENDING|0:0",     # live behind a throttle
+        "1000_4|RUNNING|0:0",           # live WITH disk evidence
     ])
     fake = _fake_slurm(ids=["7001", "7002", "7003", "7004"],
                        sacct_rows={"1000": train_rows})
     monkeypatch.setattr(jt, "_run_slurm", fake)
 
     rc = main(["resubmit", rd, "--submit"])
-    assert rc == 1
+    assert rc == 0
     sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
-    assert not sbatch, "no submission may happen while tasks are live"
+    assert len(sbatch) == 2  # sparse train + sparse eval for index 1 only
+
+    def _arr(cmd):
+        for tok in cmd:
+            if tok.startswith("--array="):
+                return tok.split("=", 1)[1].split("%", 1)[0]
+        raise AssertionError("no --array")
+    assert _arr(sbatch[0]) == _arr(sbatch[1]) == "1", (
+        "only the dead index may be retried; live 2/3/4 must be skipped")
+    attempts = json.load(open(os.path.join(rd, "attempts.json")))
+    assert attempts == {"1": 1}
 
 
 def test_resubmit_dry_run_makes_no_sbatch_call(tmp_path, monkeypatch):

@@ -37,9 +37,10 @@
 # The staged validation slice (cluster/inputs._stage_validation_slice): the
 # identity record of the 47-name validation set. The figures' validation
 # column hard-requires it -- a pull without it silently rendered a DIFFERENT
-# slice than the training's own.
+# slice than the training's own. The record file is named explicitly (not
+# ***) so this dir can never smuggle a stray blob past the terminal rule.
 + /validation/
-+ /validation/***
++ /validation/val_reactions.json
 
 # --- shard scratch: excluded BEFORE the eval_holdout*/ includes below ------
 # The parallel eval's worker shard payloads (names_t*_s*.json /

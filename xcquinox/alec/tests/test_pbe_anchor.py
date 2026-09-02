@@ -495,3 +495,27 @@ def test_anchor_is_round_off_with_pbe_exchange_through_the_anchor_path(
         "same libxc kernel at the same doubled-channel rows and must agree "
         "to round-off")
     assert float(_anchor_term(model, sample, 1.0)) < 1e-26
+
+
+def test_spin_boundary_fallback_is_the_channel_limit():
+    """The zero-density fallback evaluates the CHANNEL's own reduced
+    gradient: an emptying channel at finite s saturates to 1 + kappa, so
+    F_target is continuous through zeta -> 1 (the total-density fallback
+    F_x(s) produced a 0.316 jump there: 1.460996 at zeta = 1 - 1e-12 vs
+    1.145212 on the fallback branch)."""
+    from xcquinox.alec.pbe_anchor import _pbe_fx_libxc
+    near = float(_pbe_fx_libxc(
+        np.array([0.1 * (1 + (1 - 1e-12)) / 2]),
+        np.array([0.1 * (1 - (1 - 1e-12)) / 2]),
+        np.array([1.0]))[0])
+    at = float(_pbe_fx_libxc(
+        np.array([0.1]), np.array([0.0]), np.array([1.0]))[0])
+    assert abs(near - at) < 1e-5, (
+        f"fallback discontinuity at the spin boundary: "
+        f"F(zeta->1) = {near:.6f} vs F(zeta=1) = {at:.6f}")
+    # The zeta = 0 (rho_tot -> 0) leg is unchanged: s_sigma = s there.
+    lo = float(_pbe_fx_libxc(
+        np.array([5e-301]), np.array([5e-301]), np.array([1.0]))[0])
+    from xcquinox.alec.pbe_anchor import _fx_pbe_analytic
+    assert lo == pytest.approx(float(_fx_pbe_analytic(np.array([1.0]))[0]),
+                               rel=1e-6)

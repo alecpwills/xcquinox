@@ -377,8 +377,7 @@ def _classify_sacct_state(state: str, exit_code: str) -> str:
     # LIVE queue states: the task is running, waiting, or in a scheduler
     # transient. Mapping these to "dependency_never_satisfied" reported a
     # healthy draining array as failed and put live tasks in the retry set.
-    if head in {"RUNNING", "PENDING", "COMPLETING", "REQUEUED",
-                "SUSPENDED", "RESIZING"}:
+    if head in LIVE_SACCT_STATES:
         return "live"
     if head == "CANCELLED":
         # A cgroup OOM-kill frequently surfaces as CANCELLED with a 0:125 /
@@ -394,6 +393,47 @@ def _classify_sacct_state(state: str, exit_code: str) -> str:
     return "dependency_never_satisfied"
 
 
+# The sacct(1) JOB STATE CODES that mean the task is in the queue or on a
+# node RIGHT NOW: running/waiting states plus every scheduler transient. The
+# original six-state set missed the second row, and a CONFIGURING or
+# STAGE_OUT task (nodes booting / allocation held while staging) fell
+# through to the retry path and was resubmitted beside itself.
+LIVE_SACCT_STATES: frozenset = frozenset({
+    "RUNNING", "PENDING", "COMPLETING", "REQUEUED", "SUSPENDED", "RESIZING",
+    "CONFIGURING", "RESV_DEL_HOLD", "REQUEUE_FED", "REQUEUE_HOLD",
+    "SIGNALING", "SPECIAL_EXIT", "STAGE_OUT", "STOPPED",
+})
+
+
+def live_queue_indices(run_dir: str, kind: str) -> set:
+    """Indices of ``kind`` tasks whose RAW sacct state is live, disk-blind.
+
+    ``reduce_outcomes`` is disk-first, so a RUNNING task that has already
+    written a resume checkpoint (or carries a stale ``failure.json``)
+    reduces to a disk outcome and its liveness is invisible there. This
+    helper reads only the queue: every non-superseded generation of
+    ``kind`` is consulted (one ``sacct`` each, newest first; later
+    generations win per index) and an index counts as live when its state
+    head is in :data:`LIVE_SACCT_STATES`. ``resubmit`` refuses to touch
+    these indices no matter what the disk says.
+    Raises :class:`SlurmTransientError` when the controller is unreachable.
+    """
+    records = read_job_records(run_dir)
+    gens = sorted(
+        (r for r in records
+         if r.get("kind") == kind and not r.get("superseded", False)),
+        key=lambda r: r["generation"],
+    )
+    state_by_idx: dict[int, str] = {}
+    for rec in gens:  # oldest -> newest; newest generation wins per index
+        rows = _query_sacct(str(rec["array_job_id"]))
+        for idx, (state, _exit) in rows.items():
+            state_by_idx[idx] = state
+    return {idx for idx, state in state_by_idx.items()
+            if ((state or "").strip().upper().split()[0]
+                if (state or "").strip() else "") in LIVE_SACCT_STATES}
+
+
 def _parse_sacct(stdout: str) -> dict[int, tuple[str, str]]:
     """Parse ``sacct`` pipe-delimited output into ``{task_index: (State, ExitCode)}``.
 
@@ -403,6 +443,7 @@ def _parse_sacct(stdout: str) -> dict[int, tuple[str, str]]:
     row and any ``.batch`` / ``.extern`` step rows are skipped.
     """
     outcomes: dict[int, tuple[str, str]] = {}
+    concrete: set = set()
     for line in (stdout or "").splitlines():
         line = line.strip()
         if not line:
@@ -419,11 +460,15 @@ def _parse_sacct(stdout: str) -> dict[int, tuple[str, str]]:
             continue
         task_part = job_id.rsplit("_", 1)[1]
         if task_part.isdigit():
+            concrete.add(int(task_part))
             outcomes[int(task_part)] = (state, exit_code)
             continue
         # "12345_[3-7]" / "[3-7%2]" / "[1,4-5]" PENDING-range rows: one row
         # covers every not-yet-dispatched task. Expand per index -- dropping
-        # them made throttled pending tasks invisible ("never ran").
+        # them made throttled pending tasks invisible ("never ran"). A
+        # concrete row for an index always outranks a bracket row,
+        # whichever order sacct printed them (a requeued index can appear
+        # in both).
         if task_part.startswith("[") and task_part.endswith("]"):
             body = task_part[1:-1].split("%", 1)[0]
             for piece in body.split(","):
@@ -434,9 +479,11 @@ def _parse_sacct(stdout: str) -> dict[int, tuple[str, str]]:
                     lo, _, hi = piece.partition("-")
                     if lo.strip().isdigit() and hi.strip().isdigit():
                         for idx in range(int(lo), int(hi) + 1):
-                            outcomes[idx] = (state, exit_code)
+                            if idx not in concrete:
+                                outcomes[idx] = (state, exit_code)
                 elif piece.isdigit():
-                    outcomes[int(piece)] = (state, exit_code)
+                    if int(piece) not in concrete:
+                        outcomes[int(piece)] = (state, exit_code)
     return outcomes
 
 

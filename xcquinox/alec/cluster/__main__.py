@@ -1232,6 +1232,7 @@ def cmd_status(args) -> int:
     train_resumable = sum(
         1 for v in train.values() if v == "incomplete_resumable"
     )
+    train_live = sum(1 for v in train.values() if v == "live")
     train_never = sum(
         1 for v in train.values()
         if v in ("dependency_never_satisfied", "unknown_sacct_purged")
@@ -1320,12 +1321,18 @@ def cmd_status(args) -> int:
         _log("  remedy: `resubmit <run_dir>`: re-run the failed train "
              "task(s) IN THIS run directory. A wall-kill with no checkpoint "
              "restarts from zero and takes the escalated timeout_retry_* "
-             "resources; an OOM takes oom_retry_*.")
+             "resources; an OOM takes oom_retry_*."
+             + (f" {train_live} task(s) are still LIVE in the queue and "
+                "are skipped automatically -- retry them after the array "
+                "drains." if train_live else ""))
         if train_resumable > 0:
             _log(_resume_remedy(train_resumable))
     elif train_resumable > 0:
         # WS6: no hard failures, but mid-run-killed tasks can be CONTINUED.
         _log(_resume_remedy(train_resumable))
+    elif train_live > 0:
+        _log(f"  remedy: none yet -- {train_live} train task(s) are live in "
+             "the queue (array draining); check again when it finishes.")
     else:
         _log("  remedy: none, no failed train tasks detected.")
     return 0
@@ -1464,16 +1471,20 @@ def cmd_resubmit(args) -> int:
             _log("resubmit: SLURM controller unreachable, retry.")
             return 1
 
-        # A draining run is not a failed run: any train task still live in
-        # the queue (RUNNING/PENDING/COMPLETING/...) means a resubmission
-        # would double-write checkpoints beside the scheduler's own copy and
-        # re-queue work it already holds. Refuse outright; retry when the
-        # array has drained.
-        live = sorted(i for i, v in outcomes.items() if v == "live")
-        if live:
-            _log(f"resubmit: {len(live)} train task(s) still live in the "
-                 f"queue (indices {live}); refusing to resubmit into a "
-                 f"draining run -- wait for the array to finish.")
+        # A live task must never be resubmitted: two train tasks writing one
+        # checkpoints/spec_<i>/ tear resume_state/model.eqx with no error
+        # anywhere. Liveness is judged on the RAW sacct states of every
+        # non-superseded generation, NOT on the disk-first outcomes -- a
+        # RUNNING resume-class index reduces to incomplete_resumable from
+        # disk and would otherwise be resubmitted on top of itself, and a
+        # stale failure.json on a running index would have its live
+        # directory archived under it. Live indices are dropped from the
+        # plan per index (a dead OOM cell stays recoverable beside a
+        # draining array); everything else proceeds.
+        try:
+            live_raw = job_tracking.live_queue_indices(run_dir, "train")
+        except job_tracking.SlurmTransientError:
+            _log("resubmit: SLURM controller unreachable, retry.")
             return 1
 
         failed = _failed_train_indices(run_dir, width, outcomes)
@@ -1487,9 +1498,13 @@ def cmd_resubmit(args) -> int:
         retry: list[int] = []
         skipped_det: list[int] = []
         skipped_cap: list[int] = []
+        skipped_live: list[int] = []
         defaulted: list[int] = []      # got default knobs (no retry partition)
         classes: dict = {}
         for idx in failed:
+            if idx in live_raw or outcomes.get(idx) == "live":
+                skipped_live.append(idx)
+                continue
             cls = _classify_failure(run_dir, idx, width, outcomes)
             classes[idx] = cls
             if cls == "deterministic":
@@ -1500,6 +1515,12 @@ def cmd_resubmit(args) -> int:
                 skipped_cap.append(idx)
                 continue
             retry.append(idx)
+        if skipped_live:
+            _log(f"resubmit: {len(skipped_live)} train task(s) are LIVE in "
+                 f"the queue (indices {sorted(skipped_live)}): skipped -- "
+                 "resubmitting a live index double-writes its checkpoint "
+                 "directory beside the scheduler's own copy. Retry them "
+                 "after the array drains.")
 
         # Resolve retry-knob routing from resolved_config.yaml.
         cfg = load_grid_config(
@@ -1530,7 +1551,8 @@ def cmd_resubmit(args) -> int:
 
         _log(f"resubmit: {len(failed)} failed train task(s): "
              f"retry={sorted(retry)} skip-deterministic={sorted(skipped_det)} "
-             f"skip-attempt-cap={sorted(skipped_cap)}")
+             f"skip-attempt-cap={sorted(skipped_cap)} "
+             f"skip-live={sorted(skipped_live)}")
         for idx in sorted(skipped_det):
             _log(f"  index {idx}: deterministic failure "
                  f"({classes[idx]}): NOT retried; inspect failure.json.")

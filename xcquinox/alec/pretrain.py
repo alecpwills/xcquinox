@@ -10,6 +10,7 @@ The loader falls back to .pkl for legacy files.
 import json
 import os
 import pickle  # noqa: S403 -- only used for the trusted legacy local .pkl fallback below
+import tempfile
 import time
 
 import equinox as eqx
@@ -80,8 +81,20 @@ def _write_metadata(path, record):
     on a value that helper does not know about, which is a defect rather than
     a datum.
     """
-    with open(path, "w") as f:
-        json.dump(_json_safe(record), f, indent=2, allow_nan=False)
+    # Atomic like every neighbouring writer (tmp + os.replace):
+    # completed_pretraining's ordering rule -- a certificate on disk implies
+    # readable metadata beside it -- is void if a torn metadata file can
+    # satisfy the existence check while being unparseable.
+    fd, tmp_name = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                                    suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(_json_safe(record), f, indent=2, allow_nan=False)
+        os.replace(tmp_name, path)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
 
 
 def _compute_integration_weights(rho, grid_weights=None):
@@ -588,11 +601,15 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
     count; ``patience`` validations without one stop the run (``patience`` of
     0 disables the stop, and the loop then runs the full schedule). The model
     returned is the best one SEEN, never the last one, and the record carries
-    the step it was seen at; when ``checkpoint_path`` is given the best model
-    is written there at every improvement, so a job that dies mid-run leaves
-    its best weights on disk. A non-finite score never counts as an
+    the step it was seen at. The INITIALIZATION is scored as step 0 and is a
+    full candidate: under a parent anchor it is the exact optimum of the
+    fitted objective, and a schedule that only scores from ``validate_every``
+    onward cannot select it (``best_step`` 0 with a FINITE ``best_value``
+    means the incoming model won). When ``checkpoint_path`` is given the best
+    model is written there at every improvement, so a job that dies mid-run
+    leaves its best weights on disk. A non-finite score never counts as an
     improvement; a run whose every score is non-finite therefore leaves
-    ``best_step`` 0 and a non-finite ``best_value``, and the model it returns
+    ``best_step`` 0 and a NON-FINITE ``best_value``, and the model it returns
     is the incoming (untrained) one. That state is a diverged fit, not a
     result: :func:`run_pretrain` refuses it with :class:`PretrainDiverged`
     rather than writing the initialization as the run's checkpoint (see
@@ -631,6 +648,25 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
     best_value, best_step, best_model = float("inf"), 0, model
     stale, stopped_early = 0, False
     snapshot_best = _SNAPSHOT_SEED_LOSS
+    if validating:
+        # Step 0: the INCOMING model is a candidate. Under a parent anchor
+        # the initialization is the exact pointwise optimum of the fitted
+        # objective (measured loss_x[0] = 2.7e-32 on the v6 G1 anchored
+        # fits, argmin 0 on all eight trajectories), and a schedule that
+        # first scores at step `validate_every` made it structurally
+        # unselectable -- every shipped anchored checkpoint was 1e5-1e18x
+        # worse in the objective than the network the stage received.
+        pointwise, energy = _evaluate(model, loss_val, desc_val, ref_val)
+        pointwise, energy = float(pointwise), float(energy)
+        monitored = pointwise if w_e == 0.0 else pointwise + w_e * energy
+        history.append((0, pointwise, energy, monitored))
+        if monitored < best_value:
+            best_value, best_step, best_model = monitored, 0, model
+            if checkpoint_path is not None:
+                eqx.tree_serialise_leaves(checkpoint_path, model)
+        print(f"[pretrain] validation at step 0/{n_steps} (initialization): "
+              f"held-out pointwise {pointwise:.6e}, energy {energy:.6e}, "
+              f"{monitor} {monitored:.6e}", flush=True)
     for step in range(1, n_steps + 1):
         # The model this step is about to move: the trainer serialises the
         # network whose loss the step reports, not the one the step produces.
@@ -707,24 +743,34 @@ def _refuse_a_diverged_fit(record, *, network, arch_name, checkpoint_dir,
     one -- and passes through.
     """
     history = list(record.get("history") or ())
-    if not history:
-        # Nothing was scored: an unvalidated run, which has no criterion to
-        # fail here. Its trajectory is checked instead, by
+    # Divergence is judged on POST-INITIALIZATION scores: the step-0 record
+    # scores the incoming model, and a finite init must not mask a training
+    # run whose every own score is non-finite (returning the initialization
+    # as "best" there is exactly the silent-random-network hazard this
+    # refusal exists for; an anchored init that stays best against FINITE
+    # later scores is a legitimate result and passes).
+    post_init = [h for h in history if int(h[0]) >= 1]
+    if not post_init:
+        # No training step was scored: an unvalidated run (or one stopped
+        # before its first interval), which has no criterion to fail here.
+        # Its trajectory is checked instead, by
         # :func:`_refuse_a_non_finite_trajectory`.
         return
-    if np.isfinite(float(record.get("best_value", np.inf))):
+    if any(np.isfinite(float(h[3])) for h in post_init):
         return
     _fail_a_pretrain(
         f"run_pretrain: the {network} fit of {arch_name!r} (checkpoint_dir "
-        f"{checkpoint_dir!r}) scored {len(history)} validation(s) and no "
-        "finite validation value was recorded, so the best-validation network "
-        "is the untrained initialization. No final checkpoint was written; "
-        "the scores are in 'pretrain_failed.json'. Lower pretrain.lr_start or "
-        "check the target columns for a non-finite entry.",
+        f"{checkpoint_dir!r}) scored {len(post_init)} post-initialization "
+        "validation(s) and no finite validation value was recorded, so "
+        "training produced nothing usable and the best-validation network "
+        "would be the untrained initialization. No final checkpoint was "
+        "written; the scores are in 'pretrain_failed.json'. Lower "
+        "pretrain.lr_start or check the target columns for a non-finite "
+        "entry.",
         network=network, arch_name=arch_name, checkpoint_dir=checkpoint_dir,
         reason="no finite validation value was recorded",
         also_remove=also_remove,
-        monitor=record.get("monitor"), n_validations=len(history),
+        monitor=record.get("monitor"), n_validations=len(post_init),
         steps_run=record.get("steps_run"), history=history)
 
 
@@ -2119,13 +2165,24 @@ def from_legacy_step3b(
             src_leaves_all, _ = jax.tree_util.tree_flatten(src)
             src_array_leaves = [l for l in src_leaves_all if eqx.is_array(l)]
             dst_leaves_all, dst_treedef = jax.tree_util.tree_flatten(dst)
-            dst_array_count = sum(1 for l in dst_leaves_all if eqx.is_array(l))
-            if len(src_array_leaves) != dst_array_count:
+            dst_array_leaves = [l for l in dst_leaves_all if eqx.is_array(l)]
+            if len(src_array_leaves) != len(dst_array_leaves):
                 raise ValueError(
                     f"legacy -> alec training-layout graft leaf mismatch: "
                     f"library has {len(src_array_leaves)} eqx.is_array "
-                    f"leaves, alec expects {dst_array_count}."
+                    f"leaves, alec expects {len(dst_array_leaves)}."
                 )
+            # Per-leaf shape/dtype agreement, matching the pretrain-layout
+            # branch's _load_one_network check: a count-only graft would
+            # silently transpose a same-count different-shape layout.
+            for i, (s, d) in enumerate(zip(src_array_leaves,
+                                           dst_array_leaves)):
+                if s.shape != d.shape or s.dtype != d.dtype:
+                    raise ValueError(
+                        f"legacy -> alec training-layout graft leaf {i}: "
+                        f"library leaf shape {s.shape}/{s.dtype} does not "
+                        f"match alec skeleton {d.shape}/{d.dtype}."
+                    )
             src_iter = iter(src_array_leaves)
             new_leaves = [
                 next(src_iter) if eqx.is_array(l) else l

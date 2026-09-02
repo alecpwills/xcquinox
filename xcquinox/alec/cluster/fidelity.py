@@ -14,8 +14,13 @@ atomization-energy offsets
     dAE(mol) = dE_xc(mol) - sum_atoms n_atom * dE_xc(atom).
 
 PASS requires max |dE_xc| over the free atoms <= tol_atom (mHa) AND max |dAE|
-<= tol_AE (kcal/mol) AND the oracle tests O1-O4 passing on the installed code
-(SPEC_pretrain_fidelity_program.md Section 3.3, item 4). The parent is PBE for
+<= tol_AE (kcal/mol), plus finite measurements, converged references and the
+two parent-route agreements (the seven failure sources
+``fidelity_certificate`` assembles). The spin-scaling oracle tests O1-O4
+(SPEC_pretrain_fidelity_program.md Section 3.4) are NOT part of this driver:
+they exercise fixed library code, run in CI and in the offline
+``workflow_matrix``, and no per-checkpoint certificate evaluates them --
+wiring them into the compute-node driver is the recorded alternative. The parent is PBE for
 a GGA-rung architecture and SCAN for a meta-GGA one (rungs.seed_xc_for_arch),
 which is what each rung was pretrained against. The parent's E_xc on each
 record is computed three independent ways (point-wise libxc on the stored
@@ -384,8 +389,12 @@ def resolve_parent(arch_name: str) -> str:
 def dfs_level_for_parent(parent: str) -> str:
     """The DFS pretraining-set level matching a parent functional.
 
-    The meta-GGA variant of the DFS protocol drops H2 and N2, so a SCAN-parent
-    architecture is certified on the same 28 systems it was pretrained on.
+    The meta-GGA variant of the DFS protocol drops H2 and N2 from the
+    PRETRAINING set (36 systems vs the GGA level's 38). The certificate's
+    oracle set is larger than either: ``_FIXED_MOLECULE_POOL_NAMES``
+    unconditionally restores N2 and adds H2O, so a SCAN-parent architecture
+    is certified on 38 systems, two of which (N2, H2O) it was not pretrained
+    on -- see ``build_oracle_set``, whose docstring states the composition.
     """
     return "mgga" if parent == "scan" else "gga"
 
@@ -634,7 +643,21 @@ def certificate_describes_run(cfg, pretrain_dir: str, arch_name: str,
                    "directory certifies nothing here")
     recorded_version = cert.get("xcquinox_version")
     running = running_xcquinox_version()
-    if recorded_version != running:
+
+    def _no_identity(v) -> bool:
+        # versioneer's fallback ('1+unknown') carries no code identity: on
+        # the cluster both sides record it (measured on 21 of 21 production
+        # certificates), making equality vacuous, and a local recovery under
+        # a versioned tree falsely refused correct digest-matching cluster
+        # artifacts. The comparison fires only when BOTH sides are real.
+        return not v or "unknown" in str(v)
+
+    if _no_identity(recorded_version) or _no_identity(running):
+        print(f"[fidelity] version cross-check skipped: certificate "
+              f"{recorded_version!r} / running {running!r} -- a versioneer "
+              f"fallback carries no code identity; the digest, identity and "
+              f"parent checks below carry the provenance load", flush=True)
+    elif recorded_version != running:
         out.append(f"certificate xcquinox_version {recorded_version!r} is not "
                    f"the running code's {running!r}, the version the "
                    "recovered preflight stamps into the manifest the record "
@@ -1517,7 +1540,11 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "checkpoint": checkpoint,
         "atom_orientation_lock": {
             "run_orientation_lock_strength": run_lock,
-            "strength": atom_lock,
+            # The strength the degenerate atoms were actually evaluated at:
+            # the run's own lock when it is on, else the calibrated fallback.
+            # (The pre-correction payloads recorded 0.0 here for locked runs
+            # while the atoms were in fact evaluated at run_lock.)
+            "strength": (run_lock if run_lock != 0.0 else atom_lock),
             "applied_to": locked_atoms,
             "note": (
                 "degenerate free atoms (open p shell) are evaluated on an "
@@ -1646,14 +1673,24 @@ def main(argv=None) -> int:
     if payload["verdict"] != VERDICT_PASS:
         for reason in summary["failure_reasons"]:
             _log(arch_name, f"FAIL: {reason}")
-        if not payload["enforced"]:
+        reason = (payload.get("tolerances") or {}).get("override_reason")
+        # Same waiver rule as gate_certificate_from_read (the rule every
+        # stage gate applies): enforcement off WITHOUT a stated non-blank
+        # reason does not waive -- a bare enforce=false previously returned
+        # 0 here while every other gate refused it.
+        if not payload["enforced"] and isinstance(reason, str) \
+                and reason.strip():
             _log(arch_name,
                  "enforcement is OFF for this run (fidelity.enforce=false, "
-                 f"override_reason: "
-                 f"{payload['tolerances']['override_reason']!r}); the verdict "
-                 "is on record and the stage continues. This run cannot enter "
+                 f"override_reason: {reason!r}); the verdict is on record "
+                 "and the stage continues. This run cannot enter "
                  "validate_run, merge_v4_arms or the figure suite.")
             return 0
+        if not payload["enforced"]:
+            _log(arch_name,
+                 "enforcement is OFF but no override_reason is stated; a "
+                 "waiver without a reason does not waive (the rule every "
+                 "stage gate applies).")
         return 1
     return 0
 

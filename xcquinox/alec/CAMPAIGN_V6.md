@@ -116,7 +116,7 @@ clamped alpha rather than the Letter's `x3` (Section 1.9).
 
 **Where it enters.** Both. In pretraining the columns are `rho_all` / `sigma_all` for the
 total-density block and `rho_x` / `sigma_x` for the per-channel exchange block
-(`pretrain.py:890` and the schema at `pretrain_data_gen.py:1404-1424`); in training they
+(`pretrain.py:890` and the schema at `pretrain_data_gen.py:1490-1533`); in training they
 are the density and gradient invariant of the live SCF density.
 
 **What `notransform` ablates.** The four `deep_notransform*` architectures are the
@@ -551,7 +551,7 @@ untouched: the total density with `zeta`.
 which supplies the correlation rows always and the exchange rows under the historical
 footing; a per-channel exchange block (`<stem>_x`), present only on the `spin_channel`
 footing; and the synthetic mesh block (`<stem>_mesh`). The stems are declared at
-`pretrain_data_gen.py:1404-1424`. `_assemble_pretrain_descriptors` selects the block by
+`pretrain_data_gen.py:1490-1533`. `_assemble_pretrain_descriptors` selects the block by
 suffix and refuses `for_cnet` with any suffix but `_all`, because correlation is
 spin-interpolated rather than spin-scaled (`pretrain.py:849-890`).
 
@@ -559,10 +559,10 @@ spin-interpolated rather than spin-scaled (`pretrain.py:849-890`).
 `MESH_RS = (0.1, 0.3, 0.7, 1.5, 3.0, 5.0, 10.0)`,
 `MESH_S = (0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0)` and
 `MESH_ALPHA = (0.0, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0)`
-(`pretrain_data_gen.py:998-1000`), each node realized as a physical `(rho, sigma, tau)`
+(`pretrain_data_gen.py:1068-1070`), each node realized as a physical `(rho, sigma, tau)`
 triple so its alpha column is produced by the same `compute_alpha` the SCF sees
-(`pretrain_data_gen.py:1023-1030`). Its share of the total integration weight is
-`MESH_WEIGHT_FRACTION = 0.3` (`pretrain_data_gen.py:1006`; executed check C6; and the v6
+(`pretrain_data_gen.py:1104-1109`). Its share of the total integration weight is
+`MESH_WEIGHT_FRACTION = 0.3` (`pretrain_data_gen.py:1076`; executed check C6; and the v6
 configuration states `mesh_fraction: 0.3` rather than inheriting it). The share is a
 deliberate choice, not an emergent one: the atomic rows carry physical quadrature weights
 and the mesh rows carry none, and pushing the mesh's synthesized densities through the
@@ -642,8 +642,9 @@ from the pools, folding the molecular differences against the free atoms into
     dAE(mol) = dE_xc(mol) - sum_atoms n_atom * dE_xc(atom)
 
 (`cluster/fidelity.py:1-20`). PASS requires `max |dE_xc|` over the free atoms at or below
-`tol_atom` AND `max |dAE|` at or below `tol_AE` AND the oracles O1-O4 passing on the
-installed code. The v6 tolerances are the program's binding values, `tol_AE = 1.0` kcal/mol
+`tol_atom` AND `max |dAE|` at or below `tol_AE`, with finite measurements, converged
+references and both parent-route agreements; the spin-scaling oracles O1-O4 are exercised
+by CI and the offline workflow matrix, NOT by the per-checkpoint certificate driver. The v6 tolerances are the program's binding values, `tol_AE = 1.0` kcal/mol
 and `tol_atom = 1.0` mHa, with `override_reason: null` and `enforce: true` (executed check
 C5 reads the block back as `{'tol_AE': 1.0, 'tol_atom': 1.0, 'override_reason': None,
 'enforce': True}`). The parent's `E_xc` on each record is computed three independent ways --

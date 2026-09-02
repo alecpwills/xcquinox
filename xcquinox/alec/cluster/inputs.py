@@ -329,6 +329,11 @@ def prepare_inputs(
          get computed. The species are the ones the run's own cells name
          (:func:`_run_cells_ledger`), and for the DFS domain they are taken
          from the canonical set (:func:`_run_scoped_canonical_species`).
+      4. Check the pretrain-data ``.npz`` currency against the run identity
+         (``ensure_pretrain_data``). Steps 3 and 4 share the
+         ``recompute_refs`` gate: ``recompute_refs=False`` skips BOTH.
+      5. Stage the validation slice record
+         (``validation/val_reactions.json``) into the run directory.
 
     Parameters
     ----------
@@ -339,8 +344,11 @@ def prepare_inputs(
     recompute_refs : bool, keyword-only, default ``True``
         ``True``: call ``precompute_all`` to ensure CCSD external references
         are staged (skip-if-cached, idempotent). ``False``: skip the
-        precompute entirely; use this only when the references are known to
-        be already staged.
+        precompute entirely -- INCLUDING the pretrain-data currency check
+        that lives in the same block (step 4 below), so a stale pretrain
+        ``.npz`` is not detected on this path; use only when the references
+        AND the pretrain data are known to be already staged and current
+        (the drop_failed_species preflight path).
 
     Returns
     -------

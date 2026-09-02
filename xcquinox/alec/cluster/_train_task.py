@@ -9,7 +9,9 @@ It is the thin harness layer between SLURM and the existing per-spec worker
 
   - Locate this task's spec file (``<run_dir>/specs/spec_<idx>.spec``, pad
     ``width`` read from ``manifest.json``) and its checkpoint directory
-    (``<run_dir>/checkpoints/spec_<idx>/``).
+    (``<run_dir>/checkpoints/spec_<idx>/``). Exit 2 when the manifest is
+    missing/unparseable or the spec file is not found -- structural refusals
+    made before any ``failure.json`` can name a spec.
   - Refuse the spec when the architecture its grid cell names carries no
     PASS pretraining-fidelity certificate
     (``<run_dir>/pretrain/<arch>/fidelity_certificate.json``): exit 3 with a
@@ -475,7 +477,15 @@ def main(argv=None) -> int:
     # Install the SIGTERM handler early, a kill can arrive any time.
     _install_sigterm_handler(run_dir, idx)
 
-    width = _read_width(run_dir)
+    # A missing/unparseable manifest previously escaped as a bare traceback
+    # (no failure.json possible yet -- width names the spec file); exit 2
+    # like the spec-not-found refusal, with the cause named.
+    try:
+        width = _read_width(run_dir)
+    except Exception as exc:  # noqa: BLE001 - any manifest defect is fatal here
+        _log(f"cannot read manifest width for {run_dir}: {exc!r}; "
+             "run repair-manifest and resubmit")
+        return 2
     spec_path = _spec_path(run_dir, idx, width)
     checkpoint_dir = _checkpoint_dir(run_dir, idx, width)
     model_path = _model_path(run_dir, idx, width)
