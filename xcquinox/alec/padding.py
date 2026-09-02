@@ -157,6 +157,17 @@ def _pad_mol_data(mol_data, target: PadTarget):
     def present(k):
         return mol_data.get(k) is not None
 
+    # Record the physical AO count before any padding so per-element loss
+    # normalizations (V_xc, DM) divide by the true size, not the padded one.
+    # Stored as a 0-d traced array: a Python int leaf would re-key the JIT
+    # cache per molecule and defeat the single-compile purpose of padding.
+    if "n_ao_unpadded" not in out:
+        for k in ("s_matrix", "h_core") + _PAD_AO_ZERO_BLOCK:
+            if present(k):
+                out["n_ao_unpadded"] = jnp.asarray(
+                    float(jnp.asarray(mol_data[k]).shape[-1]))
+                break
+
     # AO matrices: overlap (padded diag 1) and core H (padded diag huge) build the
     # decoupled padded block; every other AO matrix pads with a zero block.
     if present("s_matrix"):

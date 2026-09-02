@@ -341,8 +341,17 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
             # ``int(...)`` raises ``ConcretizationTypeError``. ``shape``
             # is always a tuple of concrete Python ints (jit does not
             # trace shapes), so ``math.prod`` is both jit-safe and faster.
-            n_elems = math.prod(dm_ref_arr.shape)
-            err = err / float(n_elems)
+            # When the batch was shape-padded, divide by the physical
+            # element count instead (traced 0-d array; division is fine
+            # under jit, only int() coercion is not): padding must not
+            # rescale the loss.
+            n_ao_u = mol_data[i].get("n_ao_unpadded")
+            if n_ao_u is None:
+                n_elems = math.prod(dm_ref_arr.shape)
+                err = err / float(n_elems)
+            else:
+                spin_mult = 2.0 if dm_ref_arr.ndim == 3 else 1.0
+                err = err / (spin_mult * n_ao_u * n_ao_u)
         terms.append(err)
     if n_skipped:
         warnings.warn(
@@ -436,7 +445,12 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
             if relative:
                 err = err / (jnp.sum(vxc_ref_arr ** 2) + 1e-8)
             else:
-                n_ao = vxc_ref_arr.shape[-1]
+                # Physical AO count when the batch was shape-padded (the
+                # padded vxc_ref block is zero, so only the denominator
+                # would otherwise change): padding must not rescale the loss.
+                n_ao = mol_data[i].get("n_ao_unpadded")
+                if n_ao is None:
+                    n_ao = vxc_ref_arr.shape[-1]
                 # Two spin channels -> normalize by 2 * n_ao^2.
                 err = err / (2 * n_ao * n_ao)
         else:  # RKS: (n_ao, n_ao)
@@ -454,7 +468,9 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
             if relative:
                 err = err / (jnp.sum(vxc_ref_arr ** 2) + 1e-8)
             else:
-                n_ao = vxc_ref_arr.shape[-1]
+                n_ao = mol_data[i].get("n_ao_unpadded")
+                if n_ao is None:
+                    n_ao = vxc_ref_arr.shape[-1]
                 err = err / (n_ao * n_ao)
         terms.append(err)
     if n_skipped:
