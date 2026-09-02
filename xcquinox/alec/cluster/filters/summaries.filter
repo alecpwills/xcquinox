@@ -31,6 +31,23 @@
 + /resolved_config.yaml
 + /jobs.json
 + /attempts.json
+# The run-level representative-subset ledger: names every cell's selected
+# training points; the figures and the exclusion layer both key on it.
++ /subset_ledger.json
+# The staged validation slice (cluster/inputs._stage_validation_slice): the
+# identity record of the 47-name validation set. The figures' validation
+# column hard-requires it -- a pull without it silently rendered a DIFFERENT
+# slice than the training's own.
++ /validation/
++ /validation/***
+
+# --- shard scratch: excluded BEFORE the eval_holdout*/ includes below ------
+# The parallel eval's worker shard payloads (names_t*_s*.json /
+# shard_t*_s*.json). Already merged into per_molecule/per_reaction at eval
+# time; measured ~60 percent of a summaries pull's bytes with no analysis
+# use. First-match wins in rsync filters, so this line must stay ABOVE the
+# `+ .../eval_holdout*/***` rules.
+- /checkpoints/spec_*/eval_holdout*/_shards/
 
 # --- per-spec eval / training summaries ------------------------------------
 # rsync needs `+ <dir>/` rules to descend into each level; the final `- *`

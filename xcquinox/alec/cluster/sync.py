@@ -549,6 +549,7 @@ def discover_runs_with_activity(
 #: Anchored include rule in a packaged filter file: ``+ /<path>``, where the
 #: path may end in ``/`` (directory descent) or ``***`` (whole subtree).
 _ANCHORED_INCLUDE_RE = re.compile(r"^\+ (/\S+)$")
+_ANCHORED_EXCLUDE_RE = re.compile(r"^- (/\S+)$")
 
 
 def _checked_run_paths(run_paths: Sequence[str]) -> list[str]:
@@ -576,14 +577,16 @@ def build_multi_filter(packaged_text: str, run_paths: Sequence[str]) -> str:
     file stays the single source of truth for WHAT a profile carries.
 
     Accepted packaged forms: ``# comment``, blank, anchored include
-    ``+ /...`` (including the full profile's single ``+ /***``), and one
-    optional terminal ``- *`` (the summaries profile carries it, full does
-    not; this transform always appends its own). Any other rule raises
-    ``ValueError`` naming the line, so a future filter edit that breaks the
-    transform assumption fails loudly instead of silently mis-pulling.
+    ``+ /...`` (including the full profile's single ``+ /***``), anchored
+    exclude ``- /...`` (e.g. the shard-scratch drop; re-emitted per run in
+    packaged order, first-match-wins preserved), and one optional terminal
+    ``- *`` (the summaries profile carries it, full does not; this
+    transform always appends its own). Any other rule raises ``ValueError``
+    naming the line, so a future filter edit that breaks the transform
+    assumption fails loudly instead of silently mis-pulling.
     """
     paths = _checked_run_paths(run_paths)
-    includes: list[str] = []
+    rules: list[tuple[str, str]] = []
     seen_terminal = False
     for lineno, raw in enumerate(packaged_text.splitlines(), 1):
         line = raw.strip()
@@ -597,12 +600,18 @@ def build_multi_filter(packaged_text: str, run_paths: Sequence[str]) -> str:
             seen_terminal = True
             continue
         m = _ANCHORED_INCLUDE_RE.match(line)
-        if m is None:
-            raise ValueError(
-                f"unsupported filter rule at line {lineno}: {raw!r} (the "
-                "multi-run transform accepts comments, blanks, anchored "
-                "includes '+ /...', and one terminal '- *')")
-        includes.append(m.group(1))
+        if m is not None:
+            rules.append(("+", m.group(1)))
+            continue
+        m = _ANCHORED_EXCLUDE_RE.match(line)
+        if m is not None:
+            rules.append(("-", m.group(1)))
+            continue
+        raise ValueError(
+            f"unsupported filter rule at line {lineno}: {raw!r} (the "
+            "multi-run transform accepts comments, blanks, anchored "
+            "includes '+ /...', anchored excludes '- /...', and one "
+            "terminal '- *')")
     out: list[str] = []
     seen_dirs: set[str] = set()
     for p in paths:
@@ -612,9 +621,9 @@ def build_multi_filter(packaged_text: str, run_paths: Sequence[str]) -> str:
             if rule not in seen_dirs:
                 seen_dirs.add(rule)
                 out.append(rule)
-    for inc in includes:
+    for sign, rest in rules:
         for p in paths:
-            out.append(f"+ /{p}{inc}")
+            out.append(f"{sign} /{p}{rest}")
     out.append("- *")
     return "\n".join(out) + "\n"
 

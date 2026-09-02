@@ -723,6 +723,24 @@ def _materialize_fake_run(root: Path) -> Path:
     (spec / "eval_holdout_coldstart" / "per_molecule.json").write_text("[]\n")
     (spec / "eval_holdout_coldstart" / "eval_metadata.json").write_text(
         '{"channel": "eval_holdout_coldstart", "coldstart": true}\n')
+    # The parallel eval's shard scratch: worker names/payload JSON, the bulk
+    # of an eval_holdout*/ tree by bytes (~60 percent of a pull), of no
+    # analysis use once merged into per_molecule/per_reaction. Must NOT be
+    # pulled by summaries.
+    (spec / "eval_holdout" / "_shards").mkdir()
+    (spec / "eval_holdout" / "_shards" / "shard_t1_s0.json").write_text(
+        '{"energies": {}}\n' * 200)
+    (spec / "eval_holdout_val_best" / "_shards").mkdir()
+    (spec / "eval_holdout_val_best" / "_shards" / "names_t1_s0.json").write_text(
+        '["h2"]\n' * 200)
+    # The staged validation slice (inputs._stage_validation_slice): the
+    # identity record the figures' validation-column reader requires; a pull
+    # without it silently rendered a DIFFERENT slice.
+    (run / "validation").mkdir()
+    (run / "validation" / "val_reactions.json").write_text(
+        '{"reactions": []}\n')
+    # The run-level representative-subset ledger.
+    (run / "subset_ledger.json").write_text('{"jsd": {}}\n')
     # Pretrain
     pre = run / "pretrain" / "deep_combined_attn"
     pre.mkdir(parents=True)
@@ -828,6 +846,11 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "pretrain/deep_combined_attn/cnet.eqx.class.json",
         "pretrain/deep_combined_attn/xnet/xnet_val_best.eqx",
         "pretrain/deep_combined_attn/cnet/cnet_val_best.eqx",
+        # The staged validation slice + the run-level subset ledger: the
+        # figures' validation-column reader hard-requires the former, and
+        # the ledger names every cell's selected points.
+        "validation/val_reactions.json",
+        "subset_ledger.json",
     ]
     for rel in must_have:
         assert (dest / rel).is_file(), (
@@ -854,6 +877,11 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "scripts/train_array.sbatch",
         "specs",
         "specs/spec_0000.spec",
+        # Shard scratch: merged into the summary JSONs already; ~60 percent
+        # of an eval_holdout tree's bytes.
+        "checkpoints/spec_0000/eval_holdout/_shards",
+        "checkpoints/spec_0000/eval_holdout/_shards/shard_t1_s0.json",
+        "checkpoints/spec_0000/eval_holdout_val_best/_shards",
     ]
     for rel in must_not_have:
         assert not (dest / rel).exists(), (
@@ -1172,8 +1200,16 @@ def test_build_multi_filter_full_profile_and_rule_refusals():
         sync.build_multi_filter("+ checkpoints/\n- *\n", [p1])
     with pytest.raises(ValueError, match="terminal"):
         sync.build_multi_filter("- *\n+ /manifest.json\n", [p1])
+    # Anchored excludes are part of the grammar (the shard-scratch drop):
+    # re-emitted per run, packaged order preserved ahead of later includes.
+    out_exc = sync.build_multi_filter(
+        "- /logs/\n+ /checkpoints/\n- *\n", [p1]).splitlines()
+    assert f"- /{p1}/logs/" in out_exc
+    assert out_exc.index(f"- /{p1}/logs/") < out_exc.index(
+        f"+ /{p1}/checkpoints/")
+    # An UNANCHORED exclude stays refused.
     with pytest.raises(ValueError, match="unsupported filter rule"):
-        sync.build_multi_filter("- /logs/\n- *\n", [p1])
+        sync.build_multi_filter("- logs/\n- *\n", [p1])
     with pytest.raises(ValueError):
         sync.build_multi_filter("+ /x\n- *\n", ["bad path/with space/run"])
     with pytest.raises(ValueError):
