@@ -1809,17 +1809,24 @@ cells' slices):
 
 | channel | WTMAD-2, NN / PBE | $\varepsilon_{\lvert n\rvert}$, NN / PBE | $\mathcal{ED}_{\lvert n\rvert}$, NN / PBE | energy beats | density beats | $\mathcal{ED}$ beats |
 |---|---|---|---|---|---|---|
-| BH76 | 18.39--33.72 / 22.11 | 0.00904--0.01576 / 0.00928 | 12.99--22.58 / 13.83 | 10/29 | 2/29 | 6/29 |
-| W4-11 | 1.13--2.29 / 2.54 | 0.00895--0.01341 / 0.00891 | 2.03--3.90 / 4.02 | 29/29 | 0/29 | 29/29 |
-| combined | 7.09--12.94 / 8.92 | 0.00912--0.01427 / 0.00921 | 8.53--13.74 / 9.42 | 13/29 | 1/29 | 8/29 |
+| BH76 | 18.39--33.72 / 22.11 | 0.00905--0.01610 / 0.00928 | 13.06--22.90 / 13.83 | 10/29 | 1/29 | 6/29 |
+| W4-11 | 1.13--2.29 / 2.54 | 0.00895--0.01350 / 0.00891 | 2.03--3.92 / 4.02 | 29/29 | 0/29 | 29/29 |
+| combined | 7.09--12.94 / 8.92 | 0.00918--0.01456 / 0.00923 | 8.57--13.86 / 9.43 | 13/29 | 1/29 | 8/29 |
+
+(Table recomputed 2026-09-01 from the regenerated figure record: supervised
+species out of the density means, case twins deduped, identity-unit counts.
+The density columns moved at the third to fourth decimal and the BH76
+density-beat count fell from 2 to 1 of 29; every energy column is
+unchanged.)
 
 The finding is in row 2. **The anchored cells improve the energy while the cell-level species
 mean of the density error does not fall below PBE's**: on the combined channel exactly one of
 29 cells has a smaller per-electron density error than PBE, the best cell's
-$\varepsilon_{|n|}$ ($0.00912$) 1 percent below PBE's $0.00921$, and on W4-11 the density-beat
-count is zero -- the best-$\varepsilon_{|n|}$ cell, `medium` at ss=1, reads $0.008945$ against
-PBE's $0.008911$ (0.38 percent worse) while its WTMAD-2 is **51.98 percent** better ($1.2176$
-against $2.5357$), or 52.25 percent on the plain mean absolute error of Section 9.2. Two
+$\varepsilon_{|n|}$ ($0.00918$) 0.6 percent below PBE's $0.00923$, and on W4-11 the
+density-beat count is zero -- the best-$\varepsilon_{|n|}$ cell, `medium` at ss=1, reads
+$0.008953$ against PBE's $0.008911$ (0.47 percent worse) while its WTMAD-2 is **51.98
+percent** better ($1.2176$ against $2.5357$), or 52.25 percent on the plain mean absolute
+error of Section 9.2. Two
 caveats are load-bearing for that cell statistic. First, it is a SPECIES MEAN
 (`README_density_figures.md`, "Cell mean held-out density error vs CCSD") dominated by a small
 multireference tail (bn worst): at the per-species level the direction reverses -- on
@@ -1862,9 +1869,11 @@ Two things separate this from the anchored panel. The **range** is enormous -- t
 retired-fidelity descriptor architectures produce WTMAD-2 values in the hundreds and density
 errors five times PBE's, which is what a network that started 25.7 to 56.1 kcal/mol from its
 parent on its worst system and then diverged looks like. But the **density beat rate is an order of magnitude higher**:
-27 of 54 BH76 cells improve the per-electron density error where 2 of 29 anchored cells do, and
-the best unanchored density error, $0.00759$, is 20 percent below PBE's where the best anchored
-one is 3 percent below. **Conclusion:** the unanchored parameterization moved the density and
+35 of 61 BH76 cells improve the per-electron density error where 1 of 29 anchored cells does
+(both sides recomputed 2026-09-01 on the corrected reductions -- supervised species out of
+the means, case twins deduped -- over the merged view's current 61-cell coverage), and
+the best unanchored density error, $0.00620$ (`deep_mgga_3x16` at ss=1), is 31 percent below
+PBE's where the best anchored one is 2.4 percent below. **Conclusion:** the unanchored parameterization moved the density and
 the anchored one has not -- on the species-mean reduction; the comparison inherits the tail
 sensitivity and the capped-SCF asymmetry of Sec. 10.2 and has not been repeated on a median
 or fraction-improved statistic. Read together with Section 8.2 this is consistent: the large-gradient
@@ -1879,15 +1888,17 @@ This third panel is embedded because it is not a redundant view of the previous 
 same architectures scored on a **different slice** -- the cross-arm merged slice, which removes
 the union of both arms' validation reactions rather than each arm's own, and which drops the
 diverged rung-3.5-multishell cells. It is the cleaner statement of what the unanchored protocol
-achieved when it worked. From its CSV: BH76 WTMAD-2 8.92--41.81 against PBE's 16.48,
-$\varepsilon_{|n|}$ 0.00681--0.01338 against 0.00903, $\mathcal{ED}_{|n|}$ 9.64--19.04 against
-12.29, with **43 of 47 cells beating PBE on the combined metric, 41 of 47 on energy and 30 of 47
-on density**. No single architecture wins every leg: the best WTMAD-2 is `deep_3x16` at ss=6
-(8.92084), the best $\varepsilon_{|n|}$ is `deep_cusp_3x16` at ss=26 (0.006805), and the best
-$\mathcal{ED}_{|n|}$ is `deep_attn_3x16` at ss=18 (9.63922) -- the descriptor architecture takes
-the density leg while the descriptor-free one takes the energy leg. **Conclusion:** on a slice where
-the failed architectures do not dominate the range, the unanchored protocol improved the density
-in about two thirds of its BH76 cells -- a genuine density result of the kind the Letter reports,
+achieved when it worked. From its CSV (recomputed 2026-09-01 on the corrected reductions --
+supervised species out of the density means, case twins deduped): BH76 WTMAD-2 8.92--41.81
+against PBE's 16.48, $\varepsilon_{|n|}$ 0.00708--0.01364 against 0.00903,
+$\mathcal{ED}_{|n|}$ 9.84--19.13 against 12.29, with **43 of 47 cells beating PBE on the
+combined metric, 41 of 47 on energy and 28 of 47 on density**. No single architecture wins
+every leg: the best WTMAD-2 is `deep_3x16` at ss=6 (8.92084), the best $\varepsilon_{|n|}$ is
+`deep_cusp_3x16` at ss=26 (0.00708), and the best $\mathcal{ED}_{|n|}$ is `deep_attn_3x16` at
+ss=18 (9.84220) -- the descriptor architecture takes the density leg while the descriptor-free
+one takes the energy leg. **Conclusion:** on a slice where the failed architectures do not
+dominate the range, the unanchored protocol improved the density
+in 28 of its 47 BH76 cells -- a genuine density result of the kind the Letter reports,
 and the specific thing the anchored generation has not yet reproduced. It also carries the
 caveat that makes it not a clean comparison target: those same cells' pretrained networks were
 25.7 to 56.1 kcal/mol from their parents on their worst systems, so their density improvement is
@@ -1965,8 +1976,9 @@ Every cell of the following table is sourced in the section named beside it.
    medium/ss=12 against $-0.81$ at medium_attn/ss=12) says the outcome is not foreclosed.
 2. **The density question.** The anchored G1 cells improve energies almost everywhere while
    the cell-level species mean of the per-electron density error beats PBE almost nowhere --
-   1 of 29 combined-channel cells against 18 of 47
-   for the unanchored merged record (Section 10). Three candidate explanations are separable:
+   1 of 29 combined-channel cells against 21 of 61
+   for the unanchored merged record (both recomputed 2026-09-01 on the
+   corrected reductions; Section 10). Three candidate explanations are separable:
    that the pre-image suppression of large-$s$ correlation (Section 8.2)
    removes the freedom a density improvement needs, in which case the anchored deep_cusp and
    rung-3.5 cells will show the same pattern; that the unanchored density improvements were
