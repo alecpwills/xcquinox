@@ -1447,9 +1447,9 @@ def provenance_footer(baseline: Dict[str, float],
                     fidelity.get("max_dAE_kcalmol"))
         bounds = []
         if _is_num(atom):
-            bounds.append(f"|dE_xc| atom <= {float(atom):.2f} mHa")
+            bounds.append(f"|dE_xc| atom <= {float(atom):.2e} mHa")
         if _is_num(ae):
-            bounds.append(f"|dAE| <= {float(ae):.2f} kcal/mol")
+            bounds.append(f"|dAE| <= {float(ae):.2e} kcal/mol")
         s += (": " + " / ".join(bounds) if bounds
               else ": no certificate of this run states a bound")
         if half:
@@ -1465,23 +1465,28 @@ def provenance_footer(baseline: Dict[str, float],
 
 def nn_vs_pbe_caveat(reaction_rows: List[Dict[str, Any]],
                      baseline: Dict[str, float]) -> str:
-    """Data-derived NN-vs-PBE headline for the parity figure: the live BH76 PBE
-    baseline, the best NN arch/subset cell on BH76 barriers, and how many
-    arch x subset cells beat PBE. Replaces the old hardcoded claim."""
+    """Data-derived NN-vs-PBE headline for the parity figure: the best NN
+    arch/subset cell on BH76 barriers and how many cells beat PBE ON THEIR
+    OWN SLICE -- each cell's NN MAE against the SAME cell's PBE MAE (both
+    identity-deduped by reaction_mae_by_arch_subset), not against the
+    full-pool baseline: a strict cell excludes its supervised twins, so the
+    full-pool anchor is a different slice and the comparison was
+    slice-mismatched. The full-pool baseline is still printed for scale."""
     pbe_bh76 = baseline.get("bh76")
-    cells: Dict[Tuple[str, int], List[float]] = {}
-    for r in reaction_rows:
-        if r.get("pool") == "bh76" and _is_num(r.get("abs_error_nn_kcalmol")):
-            cells.setdefault((r.get("arch"), r.get("subset_size")), []).append(
-                float(r["abs_error_nn_kcalmol"]))
-    cell_mae = {k: sum(v) / len(v) for k, v in cells.items() if v}
-    if not cell_mae or not _is_num(pbe_bh76):
+    bh_rows = [r for r in reaction_rows if r.get("pool") == "bh76"]
+    nn_cells = reaction_mae_by_arch_subset(bh_rows, key="abs_error_nn_kcalmol")
+    pbe_cells = reaction_mae_by_arch_subset(bh_rows,
+                                            key="abs_error_pbe_kcalmol")
+    if not nn_cells:
         return "NN vs PBE on BH76 barriers: insufficient held-out data."
-    (best_arch, best_ss), best = min(cell_mae.items(), key=lambda kv: kv[1])
-    n_beat = sum(1 for m in cell_mae.values() if m < pbe_bh76)
-    return (f"PBE BH76 baseline {pbe_bh76:.2f} kcal/mol; best NN "
-            f"{best_arch}/subset-{best_ss} ({best:.2f} kcal/mol); "
-            f"{n_beat}/{len(cell_mae)} arch x subset cell(s) beat PBE on barriers.")
+    (best_arch, best_ss), best = min(nn_cells.items(), key=lambda kv: kv[1])
+    scored = [k for k in nn_cells if _is_num(pbe_cells.get(k))]
+    n_beat = sum(1 for k in scored if nn_cells[k] < pbe_cells[k])
+    pool_txt = (f" (full-pool PBE {pbe_bh76:.2f} for scale)"
+                if _is_num(pbe_bh76) else "")
+    return (f"Best NN {best_arch}/subset-{best_ss} ({best:.2f} kcal/mol); "
+            f"{n_beat}/{len(scored)} arch x subset cell(s) beat their own "
+            f"slice-matched PBE on barriers{pool_txt}.")
 
 
 def _scan_cache_name(basis: str) -> str:
@@ -2802,11 +2807,19 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
                     ax.annotate(f"{val:.1f}", (xc, val), ha="center", va="bottom",
                                 fontsize=6.5, xytext=(0, 1.5),
                                 textcoords="offset points")
-        pbe_c = (pbe_baseline or {}).get("combined")
-        if _is_num(pbe_c):
-            ax.axhline(pbe_c, ls="--", color="0.35", linewidth=1.4,
-                       label=(f"PBE (combined {pbe_c:.1f}"
-                              f"{pool_line_suffix(pbe_baseline)})"))
+        # The bars are per pool (BH76 solid / W4-11 hatched), so the PBE
+        # reference is drawn per pool too; a single combined line beside
+        # split bars invited reading a pool bar against the wrong anchor.
+        pbe_b = (pbe_baseline or {}).get("bh76")
+        pbe_w = (pbe_baseline or {}).get("w411")
+        if _is_num(pbe_b):
+            ax.axhline(pbe_b, ls="--", color="0.25", linewidth=1.4,
+                       label=(f"PBE BH76 ({pbe_b:.1f}"
+                              f"{pool_line_suffix(pbe_baseline, 'bh76')})"))
+        if _is_num(pbe_w):
+            ax.axhline(pbe_w, ls="--", color="0.6", linewidth=1.4,
+                       label=(f"PBE W4-11 ({pbe_w:.1f}"
+                              f"{pool_line_suffix(pbe_baseline, 'w411')})"))
         scan_c, scan_cov = scan_line_value(scan_baseline, "combined")
         if scan_c is not None:
             ax.axhline(scan_c, ls=":", color="#555555", linewidth=1.6,
@@ -7192,20 +7205,26 @@ def plot_size_consistency_diagnostic(rows: List[Dict[str, Any]], out_path: Path,
             axA.legend(fontsize=7, title="fit slope = kcal/mol per atom",
                        title_fontsize=6)
         axA.grid(True, alpha=0.3)
-        axB.bar([], [], color="#4477aa", label="BH76 (barriers)")
-        axB.bar([], [], color="#cc6677", label="W4-11 (atomizations)")
+        legend_handles = [
+            Patch(facecolor="#4477aa", edgecolor="k",
+                  label="BH76 (barriers)"),
+            Patch(facecolor="#cc6677", edgecolor="k",
+                  label="W4-11 (atomizations)"),
+        ]
         axB.set_xticks(range(len(cells)))
         axB.set_xticklabels([f"{a}/ss{s}" for a, s in cells], rotation=25,
                             ha="right", fontsize=7)
         axB.set_ylabel("MAE (kcal/mol)", fontsize=8)
         axB.set_title("(b) Barriers vs atomizations -- the cancellation fingerprint",
                       fontsize=9)
-        axB.legend(fontsize=7)
+        axB.legend(handles=legend_handles, fontsize=7)
         axB.grid(True, axis="y", alpha=0.3)
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
             dataset=dataset,
-            title="Why deep_attn ss=6 fails: a size-consistency (additivity) breakdown")
+            title=("Size-consistency (additivity) diagnostic -- "
+                   + ", ".join(f"{a}/ss{s}" for a, s in cells[:4])
+                   + (f" (+{len(cells) - 4} more)" if len(cells) > 4 else "")))
         fig.tight_layout(rect=(0, 0.04, 1, 0.93))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)

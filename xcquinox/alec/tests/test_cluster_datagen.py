@@ -175,11 +175,11 @@ def test_datagen_routes_before_anything_that_imports_jax():
     """The switch is only honored before the first jax import, so the routing
     call must precede every other statement of main() and the module must not
     import the generator at module scope."""
-    import inspect
-    src = inspect.getsource(_datagen.main)
+    from xcquinox.alec.tests._source_scan import code_only
+    src = code_only(_datagen.main)
     assert src.index("_route_jax_env()") < src.index("argv = sys.argv")
     assert src.index("_route_jax_env()") < src.index("load_grid_config")
-    module_src = inspect.getsource(_datagen)
+    module_src = code_only(_datagen)
     head = module_src.split("def _route_jax_env")[0]
     assert "import pretrain_data_gen" not in head, (
         "importing the generator at module scope pulls in jax.numpy before "

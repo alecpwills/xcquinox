@@ -1276,11 +1276,10 @@ def test_the_keep_check_and_the_run_record_apply_one_comparison():
     helpers live in the certificate module and both stages import them from
     there.
     """
-    import inspect
-
     from xcquinox.alec.cluster import fidelity, validate_run
+    from xcquinox.alec.tests._source_scan import code_only
 
-    source = inspect.getsource(pt.completed_pretraining)
+    source = code_only(pt.completed_pretraining)
     assert "certificate_describes_run" in source
     for name in ("identity_mismatches", "parent_mismatch",
                  "checkpoint_digest_findings"):

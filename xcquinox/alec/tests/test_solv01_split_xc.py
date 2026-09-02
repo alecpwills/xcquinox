@@ -962,11 +962,11 @@ def test_uks_zeta_is_shared_by_energy_and_potential():
     Held by comments in three places previously; a drift between the energy's
     zeta and the potential's zeta silently breaks v_c = dE_c/drho_sigma.
     """
-    import inspect
     from xcquinox.alec import oneshot
+    from xcquinox.alec.tests._source_scan import code_only
     for fn in (oneshot.split_exc_energy_uks,
                oneshot.compute_vc_polarized_per_spin):
-        src = inspect.getsource(fn)
+        src = code_only(fn)
         assert "uks_zeta(" in src, (
             f"{fn.__name__} must form zeta via oneshot.uks_zeta")
         assert "_ZETA_BOUNDARY_EPS" not in src, (

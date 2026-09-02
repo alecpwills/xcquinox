@@ -447,7 +447,8 @@ def test_preflight_uks_oep_signature_and_imports():
     assert params["grid_level"].default == 1
     assert params["orientation_lock_strength"].default == 0.0
 
-    src = inspect.getsource(preflight_uks_oep)
+    from xcquinox.alec.tests._source_scan import code_only
+    src = code_only(preflight_uks_oep)
     assert 'SpeciesEntry("HO", 0, 1, "dfs_ae")' in src, (
         "HO smoke spec must be (name='HO', charge=0, spin=1, source='dfs_ae')"
     )

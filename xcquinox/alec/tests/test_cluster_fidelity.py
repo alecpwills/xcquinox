@@ -973,8 +973,8 @@ def test_fidelity_never_rebuilds_a_precompute_field():
 
     Assembling libxc's own input rows inside _parent_exc_on_stored_grid is not
     a construction of a mol_data field and is deliberately not listed."""
-    import inspect
-    src = inspect.getsource(fid)
+    from xcquinox.alec.tests._source_scan import code_only
+    src = code_only(fid)
     for forbidden in ("compute_rung35_occupancy",
                       "compute_rung35_multishell_occupancy",
                       "compute_dm_features_array",

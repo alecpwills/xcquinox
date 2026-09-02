@@ -186,13 +186,12 @@ def test_thread_env_requires_and_encodes_the_bound():
 def test_bound_policy_at_call_sites():
     """The one launcher that must stay unbound is the preflight compile-smoke
     probe (representative of the train array); every pool launcher binds."""
-    import inspect
-
     import xcquinox.alec.cluster._holdout_parallel as hp
     import xcquinox.alec.cluster._preflight as pf
-    assert "bound_worker=True" in inspect.getsource(hp)
-    assert "bound_worker=False" in inspect.getsource(pf)
-    assert "bound_worker=True" not in inspect.getsource(pf)
+    from xcquinox.alec.tests._source_scan import code_only
+    assert "bound_worker=True" in code_only(hp)
+    assert "bound_worker=False" in code_only(pf)
+    assert "bound_worker=True" not in code_only(pf)
 
 
 def _fake_affinity(monkeypatch, allowed, applied):

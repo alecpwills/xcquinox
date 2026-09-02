@@ -2049,14 +2049,22 @@ def test_energy_figures_accept_dataset_line(tmp_path):
 
 def test_nn_vs_pbe_caveat_picks_best_bh76_cell():
     rows = [
-        {"arch": "deep", "subset_size": 5, "pool": "bh76", "abs_error_nn_kcalmol": 6.0},
-        {"arch": "deep", "subset_size": 5, "pool": "bh76", "abs_error_nn_kcalmol": 8.0},
-        {"arch": "deep_attn", "subset_size": 3, "pool": "bh76", "abs_error_nn_kcalmol": 20.0},
-        {"arch": "deep", "subset_size": 5, "pool": "w411", "abs_error_nn_kcalmol": 99.0},
+        {"arch": "deep", "subset_size": 5, "pool": "bh76", "name": "r1",
+         "abs_error_nn_kcalmol": 6.0, "abs_error_pbe_kcalmol": 9.0},
+        {"arch": "deep", "subset_size": 5, "pool": "bh76", "name": "r2",
+         "abs_error_nn_kcalmol": 8.0, "abs_error_pbe_kcalmol": 9.0},
+        {"arch": "deep_attn", "subset_size": 3, "pool": "bh76", "name": "r1",
+         "abs_error_nn_kcalmol": 20.0, "abs_error_pbe_kcalmol": 9.0},
+        {"arch": "deep", "subset_size": 5, "pool": "w411", "name": "w1",
+         "abs_error_nn_kcalmol": 99.0, "abs_error_pbe_kcalmol": 1.0},
     ]
     s = fig.nn_vs_pbe_caveat(rows, {"bh76": 11.83})
     assert "deep/subset-5" in s and "7.00" in s   # best cell = mean(6,8)=7
-    assert "1/2" in s                              # 1 of 2 bh76 cells beats 11.83
+    # deep cell (7.00) beats ITS OWN slice-matched PBE (9.00); deep_attn
+    # (20.0) does not -- the anchor is per cell, not the full-pool 11.83,
+    # which is printed for scale only.
+    assert "1/2" in s
+    assert "slice-matched" in s
     assert "11.83" in s
 
 
@@ -6162,8 +6170,10 @@ def test_provenance_footer_carries_the_certificate_numbers():
                                "max_dAE_kcalmol": 0.71})
     assert "Pretraining fidelity" in s
     assert "7 arch" in s
-    assert "0.42 mHa" in s
-    assert "0.71 kcal/mol" in s
+    # Scientific notation: the production bounds are of order 1e-4 to 1e-2
+    # mHa, which the old %.2f rendered as a vacuous "0.00 mHa".
+    assert "4.20e-01 mHa" in s
+    assert "7.10e-01 kcal/mol" in s
 
 
 def test_fidelity_summary_counts_only_the_certificates_that_state_numbers(
@@ -6362,7 +6372,7 @@ def test_fidelity_summary_keeps_a_bound_no_certificate_states_alone(tmp_path):
                                     "deep_notransform (no max_atom_mHa)"]
     footer = fig.provenance_footer(
         {"bh76": 8.0, "w411": 12.0, "combined": 10.0}, None, got)
-    assert "44.00 mHa" in footer and "25.70 kcal/mol" in footer
+    assert "4.40e+01 mHa" in footer and "2.57e+01 kcal/mol" in footer
     assert "deep (no max_dAE_kcalmol)" in footer
     assert "deep_notransform (no max_atom_mHa)" in footer
 
@@ -6483,7 +6493,7 @@ def test_the_footer_omits_a_worst_of_zero_arch_clause(tmp_path):
     assert "0 arch" not in footer
     assert "2 stating one number only" in footer
     assert "1 with no readable certificate" in footer
-    assert "44.00 mHa" in footer and "25.70 kcal/mol" in footer
+    assert "4.40e+01 mHa" in footer and "2.57e+01 kcal/mol" in footer
     assert "deep (no max_dAE_kcalmol)" in footer
 
 
@@ -6823,3 +6833,48 @@ def test_val_identities_refuse_missing_record_on_validation_run(tmp_path):
     fig._VAL_IDENTITY_CACHE.clear()
     ids = fig._val_reaction_identities(run)
     assert ids == {(("a", "b"), ("ts",))}
+
+
+def test_eval_writer_to_figure_reader_seam(tmp_path):
+    """Cross-module seam: the CSV/JSON the EVALUATION layer writes
+    (_finalize_holdout_outputs) is read back by the FIGURE layer's
+    collectors and reductions on the same real mini pool -- twins included,
+    so the identity-unit convention is exercised end to end rather than
+    assumed on both sides separately."""
+    import xcquinox.alec.eval_holdout as eh
+
+    run = _make_run_dir(tmp_path)
+    sd = run / "checkpoints" / "spec_0000"
+    reactions = [
+        {"name": "bh76_fwd", "source_pool": "bh76",
+         "reactants": ["x", "y"], "products": ["ts"],
+         "coeffs": [-1.0, -1.0, 1.0], "reaction_energy_ref": 0.02},
+        {"name": "bh76_fwd_perm", "source_pool": "bh76",
+         "reactants": ["y", "x"], "products": ["ts"],
+         "coeffs": [-1.0, -1.0, 1.0], "reaction_energy_ref": 0.02},
+        {"name": "w411_x", "source_pool": "w411",
+         "reactants": ["x"], "products": ["y"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.05},
+    ]
+    e_nn = {"x": -1.0, "y": -1.4, "ts": -2.35}
+    e_pbe = {"x": -1.0, "y": -1.42, "ts": -2.36}
+    out = eh._finalize_holdout_outputs(
+        reactions, e_nn, e_pbe, mol_records=[], training_names=(),
+        n_species=3, out_dir=sd / "eval_holdout", strict=False)
+    # Writer side: the twin pair is one identity.
+    assert out["combined"][2] == 2  # n_used identities (bh76 twin + w411)
+    # Reader side: the figure collector joins the rows to the manifest cell
+    # and its per-cell reduction counts the twin once, agreeing with the
+    # writer's test_set.csv MAE for the same pool.
+    rows = fig.collect_holdout_reaction_rows(run)
+    r0 = [r for r in rows if r["idx"] == 0]
+    assert len(r0) == 3
+    mae_map = fig.reaction_mae_by_arch_subset(
+        [r for r in r0 if r["pool"] == "bh76"])
+    import csv as _csv
+    with (sd / "eval_holdout" / "test_set.csv").open() as f:
+        csv_rows = {r["set"]: r for r in _csv.DictReader(f)}
+    assert float(csv_rows["test_set_bh76"]["n_reactions"]) == 1
+    # The CSV serializes to 6 decimals; agreement is to that precision.
+    assert mae_map[("deep", 1)] == pytest.approx(
+        float(csv_rows["test_set_bh76"]["mae_nn_kcalmol"]), abs=5e-7)

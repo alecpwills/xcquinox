@@ -457,7 +457,11 @@ def _main(run, refs, *extra):
 # ---------------------------------------------------------------------------
 
 def test_kcal_constant_pinned_to_repo_source():
-    src = (HERE.parent / "xcquinox" / "alec" / "eval_holdout.py").read_text()
+    import sys as _sys
+    _sys.path.insert(0, str(HERE.parent))
+    from xcquinox.alec.tests._source_scan import code_only
+    src = code_only(
+        (HERE.parent / "xcquinox" / "alec" / "eval_holdout.py").read_text())
     m = re.search(r"KCAL_PER_HA: float = ([0-9.]+)", src)
     assert m, "KCAL_PER_HA not found in eval_holdout.py"
     assert float(m.group(1)) == rcp.KCAL_PER_HA
