@@ -553,3 +553,36 @@ def test_run_slurm_applies_timeout(monkeypatch):
 def test_run_slurm_rejects_unknown_verb():
     with pytest.raises(ValueError, match="unrecognized SLURM verb"):
         _run_slurm(["ls", "-l"])
+
+
+def test_classify_sacct_state_live_states_are_live():
+    """RUNNING / PENDING / COMPLETING (and requeue/suspend transients) are
+    LIVE queue states, not evidence a task never ran: mapping them to
+    dependency_never_satisfied put live jobs in the retry set and reported
+    a healthy queue as failed (specs 30-43 behind a %3 throttle)."""
+    for state in ("RUNNING", "PENDING", "COMPLETING", "REQUEUED",
+                  "SUSPENDED", "RESIZING"):
+        assert jt._classify_sacct_state(state, "0:0") == "live", state
+    # The terminal mappings are untouched.
+    assert jt._classify_sacct_state("COMPLETED", "0:0") == "success"
+    assert jt._classify_sacct_state("TIMEOUT", "0:0") == "timeout"
+    assert jt._classify_sacct_state("FAILED", "1:0") == (
+        "dependency_never_satisfied")
+
+
+def test_parse_sacct_expands_pending_range_rows():
+    """Array PENDING rows come back as one '<job>_[a-b(%t)]' range row; the
+    parser must expand them per index instead of dropping them (dropped
+    ranges made every throttled pending task invisible -> 'never ran')."""
+    out = jt._parse_sacct(
+        "123_[3-5]|PENDING|0:0\n"
+        "123_[7-9%3]|PENDING|0:0\n"
+        "123_[11,14-15]|PENDING|0:0\n"
+        "123_1|RUNNING|0:0\n"
+        "123_0|COMPLETED|0:0\n"
+        "123_0.batch|COMPLETED|0:0\n")
+    assert out[0] == ("COMPLETED", "0:0")
+    assert out[1] == ("RUNNING", "0:0")
+    for idx in (3, 4, 5, 7, 8, 9, 11, 14, 15):
+        assert out[idx] == ("PENDING", "0:0"), idx
+    assert len(out) == 11

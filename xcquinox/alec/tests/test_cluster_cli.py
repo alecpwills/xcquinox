@@ -698,6 +698,28 @@ def test_resubmit_classifies_oom_via_sacct_and_submits_sparse(tmp_path,
     assert attempts == {"1": 1, "2": 1}
 
 
+def test_resubmit_refuses_while_train_tasks_live(tmp_path, monkeypatch):
+    """A run with tasks still RUNNING/PENDING in the queue is draining, not
+    failed: resubmitting beside it double-writes checkpoints and re-queues
+    work the scheduler already holds. resubmit must refuse, naming the live
+    indices, and submit nothing -- even when other indices are retryable."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    open(os.path.join(_spec_dir(rd, 0), "model.eqx"), "wb").close()
+    train_rows = "\n".join([
+        "1000_1|OUT_OF_MEMORY|0:125",   # retryable on its own
+        "1000_2|RUNNING|0:0",           # live
+        "1000_[3-3%2]|PENDING|0:0",     # live behind a throttle
+    ])
+    fake = _fake_slurm(ids=["7001", "7002", "7003", "7004"],
+                       sacct_rows={"1000": train_rows})
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 1
+    sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+    assert not sbatch, "no submission may happen while tasks are live"
+
+
 def test_resubmit_dry_run_makes_no_sbatch_call(tmp_path, monkeypatch):
     rd = _make_resubmit_run(tmp_path, monkeypatch)
     open(os.path.join(_spec_dir(rd, 0), "model.eqx"), "wb").close()

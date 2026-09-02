@@ -354,6 +354,10 @@ def _classify_sacct_state(state: str, exit_code: str) -> str:
     - ``TIMEOUT``  -> ``"timeout"``
     - ``COMPLETED`` -> ``"success"`` (disk evidence should normally have
       caught this already; kept for completeness)
+    - ``RUNNING`` / ``PENDING`` / ``COMPLETING`` / ``REQUEUED`` /
+      ``SUSPENDED`` / ``RESIZING`` -> ``"live"``: the task is in the queue
+      or on a node right now; it is in no retry set and must not be
+      reported as never-ran.
     - ``CANCELLED`` (not OOM) / ``FAILED`` / ``NODE_FAIL`` / empty / unknown
                    -> ``"dependency_never_satisfied"``: for a newest
       non-superseded generation this almost always means the train -> eval
@@ -370,6 +374,12 @@ def _classify_sacct_state(state: str, exit_code: str) -> str:
         return "timeout"
     if head == "COMPLETED":
         return "success"
+    # LIVE queue states: the task is running, waiting, or in a scheduler
+    # transient. Mapping these to "dependency_never_satisfied" reported a
+    # healthy draining array as failed and put live tasks in the retry set.
+    if head in {"RUNNING", "PENDING", "COMPLETING", "REQUEUED",
+                "SUSPENDED", "RESIZING"}:
+        return "live"
     if head == "CANCELLED":
         # A cgroup OOM-kill frequently surfaces as CANCELLED with a 0:125 /
         # 0:9-style exit code; treat an OOM-ish signal as oom, else as a
@@ -408,10 +418,25 @@ def _parse_sacct(stdout: str) -> dict[int, tuple[str, str]]:
         if "_" not in job_id:
             continue
         task_part = job_id.rsplit("_", 1)[1]
-        # "12345_[3-7]" pending-range rows are not concrete tasks, skip.
-        if not task_part.isdigit():
+        if task_part.isdigit():
+            outcomes[int(task_part)] = (state, exit_code)
             continue
-        outcomes[int(task_part)] = (state, exit_code)
+        # "12345_[3-7]" / "[3-7%2]" / "[1,4-5]" PENDING-range rows: one row
+        # covers every not-yet-dispatched task. Expand per index -- dropping
+        # them made throttled pending tasks invisible ("never ran").
+        if task_part.startswith("[") and task_part.endswith("]"):
+            body = task_part[1:-1].split("%", 1)[0]
+            for piece in body.split(","):
+                piece = piece.strip()
+                if not piece:
+                    continue
+                if "-" in piece:
+                    lo, _, hi = piece.partition("-")
+                    if lo.strip().isdigit() and hi.strip().isdigit():
+                        for idx in range(int(lo), int(hi) + 1):
+                            outcomes[idx] = (state, exit_code)
+                elif piece.isdigit():
+                    outcomes[int(piece)] = (state, exit_code)
     return outcomes
 
 

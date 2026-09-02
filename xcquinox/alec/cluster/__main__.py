@@ -1464,6 +1464,18 @@ def cmd_resubmit(args) -> int:
             _log("resubmit: SLURM controller unreachable, retry.")
             return 1
 
+        # A draining run is not a failed run: any train task still live in
+        # the queue (RUNNING/PENDING/COMPLETING/...) means a resubmission
+        # would double-write checkpoints beside the scheduler's own copy and
+        # re-queue work it already holds. Refuse outright; retry when the
+        # array has drained.
+        live = sorted(i for i, v in outcomes.items() if v == "live")
+        if live:
+            _log(f"resubmit: {len(live)} train task(s) still live in the "
+                 f"queue (indices {live}); refusing to resubmit into a "
+                 f"draining run -- wait for the array to finish.")
+            return 1
+
         failed = _failed_train_indices(run_dir, width, outcomes)
         if not failed:
             _log("resubmit: no failed train tasks, nothing to do.")
