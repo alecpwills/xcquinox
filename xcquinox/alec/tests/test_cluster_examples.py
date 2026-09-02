@@ -1752,21 +1752,56 @@ def test_every_dfs_domain_config_states_bh76_mode_explicitly():
         "reaction_energy in the file.")
 
 
-def test_v6_files_train_barrier_heights_and_the_rest_state_the_substitution():
+#: The v7 restart trio: unanchored functional cloning (the published
+#: xcquinox-clone protocol), barrier objective, derived from the v6
+#: counterparts.
+_V7_FILES = (
+    "dfs_step7.dfs6311_grid3_v7g1_size.yaml",
+    "dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml",
+    "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml",
+)
+
+
+def test_v6_and_v7_files_train_barrier_heights_and_the_rest_state_the_substitution():
     paths = dict(_dfs_profile_config_paths())
     if not paths:
         pytest.skip("no hpcjobs/configs deployment tree in this checkout")
     wrong = []
     for name, path in paths.items():
         mode = _raw_yaml(path).get("bh76_mode")
-        want = "barrier_height" if name in _V6_FILES else "reaction_energy"
+        want = ("barrier_height" if name in _V6_FILES + _V7_FILES
+                else "reaction_energy")
         if mode != want:
             wrong.append((name, mode, want))
     assert not wrong, (
         "bh76_mode mismatches (name, stated, expected): "
-        f"{wrong} -- the seven v6 files train the staged-TS barrier "
-        "objective; every other DFS-domain file records the substitution "
-        "it actually trained.")
+        f"{wrong} -- the seven v6 files and the three v7 files train the "
+        "staged-TS barrier objective; every other DFS-domain file records "
+        "the substitution it actually trained.")
+
+
+def test_v7_files_are_the_unanchored_cloning_protocol():
+    """The v7 trio's method keys, pinned: parent_anchor false (the networks
+    LEARN the parent -- functional cloning, arXiv:2605.10331), DFS
+    coordinates, the published cloning schedule, a nonzero energy weight
+    (the unanchored weight-zero refusal requires one), and the 24 h
+    pretrain wall for real fits."""
+    cdir = _campaign_configs_dir()
+    if cdir is None:
+        pytest.skip("no hpcjobs/configs deployment tree in this checkout")
+    for name in _V7_FILES:
+        path = os.path.join(cdir, name)
+        assert os.path.isfile(path), f"missing v7 file {name}"
+        raw = _raw_yaml(path)
+        assert raw["model"]["parent_anchor"] is False, name
+        assert raw["model"]["descriptor_coordinates"] == "dfs", name
+        pt = raw["pretrain"]
+        assert pt["n_steps"] == 20000, name
+        assert pt["lr_start"] == 0.001, name
+        assert pt["lr_end"] == 0.00001, name
+        assert pt["lr_decay_start"] == 0.5, name
+        assert pt["energy_term_weight"] == 0.1, name
+        assert raw["cluster"]["pretrain_time"] == "24:00:00", name
 
 
 def test_every_dfs_domain_config_states_bh76_mode_exactly_once():
