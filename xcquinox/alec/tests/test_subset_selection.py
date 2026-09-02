@@ -563,29 +563,32 @@ def test_dfs_ip13_c_matches_nist():
 
 
 def test_dfs_bh76_oh_n2_to_h_n2o_value():
-    """OH+N2 -> H+N2O: forward barrier 82.27 (rev. NHTBH38 #1, REF1),
-    reaction energy ΔE = +64.91 kcal/mol (GMTKN55-BH76RC W2-F12)."""
+    """OH+N2 -> H+N2O: forward barrier 82.6 (GMTKN55 BH76/.res 'oh n2
+    n2ohts'; Minnesota REF1 provenance 82.27), reaction energy
+    ΔE = +64.91 kcal/mol (GMTKN55-BH76RC W2-F12)."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "OH+N2_to_H+N2O")
-    assert rxn["barrier_ref"] == pytest.approx(82.27, abs=0.01)
+    assert rxn["barrier_ref"] == pytest.approx(82.6, abs=0.01)
     assert rxn["reaction_energy_ref"] == pytest.approx(64.91, abs=0.01)
 
 
 def test_dfs_bh76_oh_ch3_to_o_ch4_value():
-    """OH+CH3 -> O+CH4: forward barrier 7.90 (rev. HTBH38 #19-20, REF1),
-    reaction energy ΔE = −5.44 kcal/mol (GMTKN55-BH76RC W2-F12)."""
+    """OH+CH3 -> O+CH4: forward barrier 8.9 (GMTKN55 BH76/.res 'oh ch3
+    RKT11'; Minnesota REF1 provenance 7.90), reaction energy
+    ΔE = −5.44 kcal/mol (GMTKN55-BH76RC W2-F12)."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "OH+CH3_to_O+CH4")
-    assert rxn["barrier_ref"] == pytest.approx(7.90, abs=0.01)
+    assert rxn["barrier_ref"] == pytest.approx(8.9, abs=0.01)
     assert rxn["reaction_energy_ref"] == pytest.approx(-5.44, abs=0.01)
 
 
 def test_dfs_bh76_hf_f_to_h_f2_value():
-    """HF+F -> H+F2: forward barrier 105.80 (rev. NHTBH38 #5, REF1),
-    reaction energy ΔE = +103.28 kcal/mol (GMTKN55-BH76RC W2-F12)."""
+    """HF+F -> H+F2: forward barrier 104.8 (GMTKN55 BH76/.res 'hf f
+    hf2ts'; Minnesota REF1 provenance 105.80), reaction energy
+    ΔE = +103.28 kcal/mol (GMTKN55-BH76RC W2-F12)."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "HF+F_to_H+F2")
-    assert rxn["barrier_ref"] == pytest.approx(105.80, abs=0.01)
+    assert rxn["barrier_ref"] == pytest.approx(104.8, abs=0.01)
     assert rxn["reaction_energy_ref"] == pytest.approx(103.28, abs=0.01)
 
 

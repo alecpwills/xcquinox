@@ -148,7 +148,8 @@ def test_training_point_metadata_preserved():
     bh = by_name["OH+N2_to_H+N2O"]
     assert bh.metadata["e_rxn_ref"] == 64.91
     assert bh.metadata["bh76_mode"] == "reaction_energy"
-    assert bh.metadata["barrier_ref"] == 82.27
+    # GMTKN55 BH76/.res 'oh n2 n2ohts' forward barrier.
+    assert bh.metadata["barrier_ref"] == 82.6
     assert bh.metadata["reaction_energy_ref"] == 64.91
     assert bh.metadata["reactants"] == ("HO", "N2")
     assert bh.metadata["products"] == ("H", "N2O")
@@ -169,11 +170,23 @@ _EXPECTED_REACTION_ENERGIES = {
     "OH+CH3_to_O+CH4": -5.44,
     "HF+F_to_H+F2":    103.28,
 }
-# Forward barrier heights kept for the opt-in barrier_height mode.
+# Forward barrier heights for the barrier_height mode: the GMTKN55-BH76
+# values (BH76/.res: 'oh n2 n2ohts' = 82.6, 'oh ch3 RKT11' = 8.9,
+# 'hf f hf2ts' = 104.8 kcal/mol), the same reference layer the held-out
+# BH76 evaluation scores against. The Minnesota REF1 barriers (82.27,
+# 7.90, 105.80) differ at the sub-kcal/mol level and are retained in the
+# dfs_pool provenance comments only.
 _EXPECTED_BARRIERS = {
-    "OH+N2_to_H+N2O":  82.27,
-    "OH+CH3_to_O+CH4": 7.90,
-    "HF+F_to_H+F2":    105.80,
+    "OH+N2_to_H+N2O":  82.6,
+    "OH+CH3_to_O+CH4": 8.9,
+    "HF+F_to_H+F2":    104.8,
+}
+# The transition state each reaction climbs through, and the tracked
+# bh76_full_pool.json reaction row carrying the same forward barrier.
+_EXPECTED_TS = {
+    "OH+N2_to_H+N2O":  ("n2ohts", "bh76_oh_n2_to_n2ohts"),
+    "OH+CH3_to_O+CH4": ("RKT11", "bh76_oh_ch3_to_RKT11"),
+    "HF+F_to_H+F2":    ("hf2ts", "bh76_hf_f_to_hf2ts"),
 }
 
 
@@ -209,18 +222,25 @@ def test_bh76_reaction_energy_species_are_reactants_and_products():
 
 
 def test_bh76_reaction_energy_consistent_with_vr_minus_vf():
-    """Sanity cross-check: the GMTKN55-BH76RC reaction energy is CLOSE to the
-    Minnesota REF1 barrier difference Vr − Vf (they are different best-estimate
-    references, W2-F12 vs the barrier database, so they agree only to within
-    the ~0.3 kcal/mol method delta, not exactly). GMTKN55 is authoritative."""
-    vf = {"OH+N2_to_H+N2O": 17.13,
-          "OH+CH3_to_O+CH4": 13.47,
-          "HF+F_to_H+F2": 2.27}
+    """Internal consistency of the GMTKN55 reference layer: the BH76RC
+    reaction energy equals forward minus reverse barrier of the same TS, both
+    read from the tracked bh76_full_pool.json (BH76/.res values). One W2-F12
+    layer, so agreement is ~0.1 kcal/mol (82.6-17.7=64.9 vs 64.91;
+    8.9-14.4=-5.5 vs -5.44; 104.8-1.5=103.3 vs 103.28)."""
+    import json
+    from pathlib import Path
+    json_path = (Path(__file__).parents[1] / "data" / "bh76_full_pool.json")
+    with open(json_path) as f:
+        rows = {r["name"]: r for r in json.load(f)["reactions"]}
+    reverse_row = {"OH+N2_to_H+N2O": "bh76_h_n2o_to_n2ohts",
+                   "OH+CH3_to_O+CH4": "bh76_O_CH4_to_RKT11",
+                   "HF+F_to_H+F2": "bh76_h_f2_to_hf2ts"}
     for name, re_gmtkn55 in _EXPECTED_REACTION_ENERGIES.items():
-        vr_minus_vf = _EXPECTED_BARRIERS[name] - vf[name]
-        assert abs(vr_minus_vf - re_gmtkn55) < 0.3, (
-            f"{name}: GMTKN55 ΔE {re_gmtkn55} vs Vr−Vf {vr_minus_vf} "
-            f"differ by more than the expected method delta")
+        fwd = _EXPECTED_BARRIERS[name]
+        rev = rows[reverse_row[name]]["reaction_energy_ref"]
+        assert abs((fwd - rev) - re_gmtkn55) < 0.1, (
+            f"{name}: GMTKN55 dE {re_gmtkn55} vs fwd-rev {fwd - rev} "
+            f"disagree beyond rounding within one reference layer")
 
 
 def test_bh76_reactions_carry_both_reference_values():
@@ -237,9 +257,26 @@ def test_bh76_reactions_carry_both_reference_values():
         # dict: it held the barrier height under a name the metadata
         # uses for the mode-selected value, which is misleading.
         assert "e_rxn_ref" not in rxn
-        # TS geometry slot exists and is not yet staged.
-        assert "ts_species" in rxn
-        assert rxn["ts_species"] is None
+        # TS slot names the staged transition state (bh76_full_pool.json).
+        assert rxn["ts_species"] == _EXPECTED_TS[name][0]
+
+
+def test_bh76_barrier_refs_match_tracked_benchmark_json():
+    """Each barrier_ref equals the forward-barrier reference of the SAME
+    reaction in the tracked bh76_full_pool.json (GMTKN55 BH76/.res values),
+    so training and held-out evaluation share one reference layer."""
+    import json
+    from pathlib import Path
+    from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
+    json_path = (Path(__file__).parents[1] / "data" / "bh76_full_pool.json")
+    with open(json_path) as f:
+        rows = {r["name"]: r for r in json.load(f)["reactions"]}
+    for rxn in DFS_BH76_REACTIONS:
+        ts_name, row_name = _EXPECTED_TS[rxn["name"]]
+        row = rows[row_name]
+        assert row["products"] == [ts_name]
+        assert rxn["barrier_ref"] == pytest.approx(
+            row["reaction_energy_ref"], abs=1e-9)
 
 
 def test_bh76_unknown_mode_raises():
@@ -249,13 +286,51 @@ def test_bh76_unknown_mode_raises():
         build_dfs_pool_points(bh76_mode="not_a_mode")
 
 
-def test_bh76_barrier_height_mode_raises_gated_error():
-    """bh76_mode='barrier_height' is wired but gated on transition-state
-    geometries that are not yet staged, it must raise a clear,
-    actionable NotImplementedError rather than silently mislabelling."""
+def test_bh76_barrier_height_mode_builds_ts_points():
+    """bh76_mode='barrier_height' builds reactants -> TS points: species are
+    the reactants plus the staged transition state, coeffs (-1, ..., +1), and
+    e_rxn_ref is the forward barrier, so sum(coeffs*E) = E(TS) - E(reactants)
+    is a true forward barrier height."""
     from xcquinox.alec.training_points import build_dfs_pool_points
-    with pytest.raises(NotImplementedError, match="transition-state"):
-        build_dfs_pool_points(bh76_mode="barrier_height")
+
+    points = build_dfs_pool_points(bh76_mode="barrier_height")
+    bh76 = [p for p in points if p.kind == "bh76"
+            and p.name in _EXPECTED_BARRIERS]
+    assert len(bh76) == 3
+    ts_spin = {"n2ohts": 1, "RKT11": 2, "hf2ts": 1}
+    for p in bh76:
+        ts_name = _EXPECTED_TS[p.name][0]
+        md = p.metadata
+        assert md["bh76_mode"] == "barrier_height"
+        assert md["e_rxn_ref"] == pytest.approx(
+            _EXPECTED_BARRIERS[p.name], abs=1e-9)
+        # Stoichiometry: every reactant at -1, the TS at +1, no products.
+        assert md["products"] == (ts_name,)
+        n_react = len(md["reactants"])
+        assert md["coeffs"] == (-1.0,) * n_react + (1.0,)
+        # The TS species itself is staged with the benchmark identity.
+        ts = next(a for a in p.species if a.info.get("name") == ts_name)
+        assert ts.info["spin"] == ts_spin[ts_name]
+        assert ts.info["charge"] == 0
+        assert len(ts) >= 3  # a real polyatomic geometry, not an atom stub
+
+
+def test_bh76_barrier_mode_missing_ts_raises():
+    """A reaction dict without a staged TS still refuses barrier mode with
+    an error naming the reaction (no silent reaction-energy fallback)."""
+    from xcquinox.alec.training_points import _bh76_point_from_dict
+    rxn = {
+        "name": "synthetic_no_ts",
+        "reactants": ["H2"], "products": ["H"],
+        "coeffs": [-1.0, 2.0],
+        "barrier_ref": 1.0, "reaction_energy_ref": 2.0,
+        "ts_species": None,
+        "species_spins": {"H2": 0, "H": 1},
+        "species_charges": {"H2": 0, "H": 0},
+    }
+    with pytest.raises(ValueError, match="synthetic_no_ts"):
+        _bh76_point_from_dict(rxn, atoms_by_name={},
+                              bh76_mode="barrier_height")
 
 
 def test_ae_reaction_point_predicted_atom_form():

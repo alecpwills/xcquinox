@@ -178,6 +178,23 @@ def _ae_reaction_point_from_atoms(compound: Atoms) -> TrainingPoint:
     )
 
 
+def _ts_atoms(name: str) -> Atoms:
+    """ASE ``Atoms`` for a staged BH76 transition state, resolved from the
+    tracked benchmark geometry cache (``data/bh76_full_pool.json``) so
+    training and held-out evaluation share ONE TS identity (geometry, spin,
+    charge). The basis/grid arguments below only fill MoleculeSpec fields
+    that are discarded at the Atoms level."""
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+
+    specs, _ = load_full_held_out_pools(basis="def2-svp", grid_level=1)
+    if name not in specs:
+        raise ValueError(
+            f"transition state {name!r} is not a species of "
+            f"bh76_full_pool.json; staged TSs include n2ohts/RKT11/hf2ts."
+        )
+    return _molspec_to_atoms(specs[name])
+
+
 def _bh76_point_from_dict(
     rxn: dict,
     *,
@@ -186,42 +203,46 @@ def _bh76_point_from_dict(
 ) -> TrainingPoint:
     """Build a BH76 TrainingPoint from one DFS_BH76_REACTIONS dict.
 
-    species = (every reactant + every product, deduped by name) +
-              atom anchors for every element appearing in any species.
-
-    ``bh76_mode`` selects which reference value is attached as the
-    point's ``e_rxn_ref`` metadata (consumed mode-agnostically by
+    ``bh76_mode`` selects the trained quantity (the loss consumes
+    ``metadata["e_rxn_ref"]`` mode-agnostically via
     ``losses._rxn_residual_term`` as ``Σ coeffs·E``):
 
     - ``"reaction_energy"`` (DEFAULT), the true reaction energy ΔE
-      (GMTKN55-BH76RC). The loss is trained against E(products) -
+      (GMTKN55-BH76RC): species = reactants + products with the dict's
+      stoichiometric coeffs, so the loss trains E(products) -
       E(reactants). This DEVIATES from Dick & Fernandez-Serra 2021,
-      whose SI (Sec. I) used the *barrier heights* of these reactions;
-      our loss is a reactant -> product stoichiometric sum with no TS
-      geometries staged, so a reaction energy is what we can train
-      (barrier heights cannot be reproduced by the stoichiometry).
-    - ``"barrier_height"`` (opt-in), the forward barrier height. A
-      true forward barrier is ``E(TS) - E(reactants)``, so each
-      reaction must additionally supply a transition-state geometry
-      (``rxn["ts_species"]``). Those geometries are not yet staged in
-      the repo; this path raises a clear, actionable error until they
-      are (the toggle is fully wired, only the data is missing).
+      whose SI (Sec. I) used the *barrier heights* of these reactions
+      (approved 2026-05-24; HISTORY Phase 7).
+    - ``"barrier_height"``, the Letter's quantity: species = reactants
+      + the staged transition state (``rxn["ts_species"]``, resolved
+      from the tracked ``bh76_full_pool.json`` geometry cache), coeffs
+      (-1, ..., +1), so the loss trains the true forward barrier
+      ``E(TS) - E(reactants)`` against ``rxn["barrier_ref"]``
+      (GMTKN55-BH76). A dict without a staged TS refuses this mode.
+
+    Either way the species list is deduped by name and appends atom
+    anchors for every Dick-regularized element appearing in any species.
     """
     if bh76_mode not in BH76_MODES:
         raise ValueError(
             f"Unknown bh76_mode {bh76_mode!r}; expected one of {BH76_MODES}."
         )
+    ts_atoms_by_name: dict = {}
     if bh76_mode == "barrier_height":
-        if rxn.get("ts_species") is None:
-            raise NotImplementedError(
-                "bh76_mode='barrier_height' requires transition-state "
-                "geometries for the 3 BH76 reactions, which are not yet "
-                "staged in dfs_pool.py (every DFS_BH76_REACTIONS entry has "
-                "ts_species=None). Supply the transition-state geometries "
-                "(populate the 'ts_species' slot) or use the default "
-                "bh76_mode='reaction_energy'."
+        ts_name = rxn.get("ts_species")
+        if not ts_name:
+            raise ValueError(
+                f"bh76_mode='barrier_height': reaction {rxn['name']!r} "
+                f"carries no staged transition state "
+                f"(ts_species={ts_name!r}). The DFS_BH76_REACTIONS entries "
+                f"name theirs (resolved from bh76_full_pool.json); a custom "
+                f"reaction dict must stage one too, or use "
+                f"bh76_mode='reaction_energy'."
             )
-    species_names: list[str] = list(rxn["reactants"]) + list(rxn["products"])
+        ts_atoms_by_name[ts_name] = _ts_atoms(ts_name)
+        species_names: list[str] = list(rxn["reactants"]) + [ts_name]
+    else:
+        species_names = list(rxn["reactants"]) + list(rxn["products"])
     species: list = []
     seen_names: set[str] = set()
     elements: set[str] = set()
@@ -231,7 +252,11 @@ def _bh76_point_from_dict(
         if sp_name in seen_names:
             continue
         seen_names.add(sp_name)
-        if sp_name in atoms_by_name:
+        if sp_name in ts_atoms_by_name:
+            # Transition state: geometry/spin/charge carried from the
+            # tracked benchmark cache, not the g2_97 trajectory.
+            a = ts_atoms_by_name[sp_name].copy()
+        elif sp_name in atoms_by_name:
             a = atoms_by_name[sp_name].copy()
         elif len(sp_name) <= 2 and sp_name.isalpha():
             # Single-atom reactant/product (H, F, O, ...).
@@ -247,7 +272,9 @@ def _bh76_point_from_dict(
             )
         a.info["name"] = sp_name
         a.info["spin"] = int(species_spins.get(sp_name, a.info.get("spin", 0)))
-        a.info["charge"] = int(species_charges.get(sp_name, 0))
+        # A species outside the dict's charge map (the TS) keeps its own.
+        a.info["charge"] = int(species_charges.get(sp_name,
+                                                   a.info.get("charge", 0)))
         species.append(a)
         elements.update(a.get_chemical_symbols())
     # Atom anchors ONLY for Dick-regularized elements (H, Li) that
@@ -257,24 +284,32 @@ def _bh76_point_from_dict(
         if sym in DICK_ATOM_REGULARIZER_SYMS and sym not in seen_names:
             species.append(_atom_anchor_atoms(sym))
             seen_names.add(sym)
-    # Mode selects which reference the loss is trained against. The
-    # loss reads only metadata["e_rxn_ref"]; barrier_ref /
-    # reaction_energy_ref are kept alongside for provenance. A missing
-    # source key must KeyError loudly rather than silently fall back.
+    # Mode selects the trained reference AND the stoichiometry the loss
+    # sums. The loss reads only metadata["e_rxn_ref"] over
+    # reactants+products with coeffs; barrier_ref / reaction_energy_ref
+    # are kept alongside for provenance. A missing source key must
+    # KeyError loudly rather than silently fall back.
     if bh76_mode == "reaction_energy":
         e_rxn_ref = rxn["reaction_energy_ref"]
+        md_products = tuple(rxn["products"])
+        md_coeffs = tuple(rxn["coeffs"])
     else:  # "barrier_height": already validated above (TS present)
         e_rxn_ref = rxn["barrier_ref"]
+        # Forward barrier: every reactant at -1, the TS at +1, so
+        # sum(coeffs*E) = E(TS) - E(reactants).
+        md_products = (rxn["ts_species"],)
+        md_coeffs = (-1.0,) * len(rxn["reactants"]) + (1.0,)
     return TrainingPoint(
         kind="bh76",
         name=rxn["name"],
         species=tuple(species),
         metadata={
             "reactants": tuple(rxn["reactants"]),
-            "products": tuple(rxn["products"]),
-            "coeffs": tuple(rxn["coeffs"]),
+            "products": md_products,
+            "coeffs": md_coeffs,
             "e_rxn_ref": e_rxn_ref,
             "bh76_mode": bh76_mode,
+            "ts_species": rxn.get("ts_species"),
             "barrier_ref": rxn["barrier_ref"],
             "reaction_energy_ref": rxn["reaction_energy_ref"],
             "source": rxn.get("source"),
