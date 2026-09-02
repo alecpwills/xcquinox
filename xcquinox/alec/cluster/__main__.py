@@ -1460,6 +1460,19 @@ def cmd_resubmit(args) -> int:
     an OOM takes ``oom_retry_*``.
     """
     run_dir = os.path.abspath(args.run_dir)
+    # resolved_config.yaml outlives the submit that validated it and this
+    # command re-renders train work from it, so the same objective
+    # explicitness prepare/submit require is required of the edited file: a
+    # hand-strip of bh76_mode must refuse, not silently load the dataclass
+    # default and train a different objective than the run was created with.
+    # A missing file is left to the command's own handling below.
+    _resolved = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
+    if os.path.isfile(_resolved):
+        try:
+            require_explicit_bh76_mode(_resolved)
+        except ValueError as exc:
+            _log(f"ERROR: {exc}")
+            return 1
     manifest = _try_read_manifest(run_dir)
     if manifest is None:
         _log(f"resubmit: {run_dir}/manifest.json is missing/corrupt, "
@@ -1739,6 +1752,13 @@ def cmd_resubmit_preflight(args) -> int:
         _log(f"resubmit-preflight: {cfg_path} not found, cannot reconstruct "
              "the grid. Use a fresh run dir (`submit`).")
         return 1
+    # Same objective-explicitness requirement as prepare/submit/resubmit: the
+    # file is editable after the submit that validated it.
+    try:
+        require_explicit_bh76_mode(cfg_path)
+    except ValueError as exc:
+        _log(f"ERROR: {exc}")
+        return 1
     cfg = load_grid_config(cfg_path)
     # This command re-submits the whole pretrain -> preflight -> train -> eval
     # graph from the resolved config, so that config is re-validated here for
@@ -1896,6 +1916,13 @@ def cmd_repair_manifest(args) -> int:
         _log(f"repair-manifest: {cfg_path} not found, the resolved config is "
              "the only source of truth for the grid. It is unrecoverable; "
              "start a fresh run dir with `submit`.")
+        return 1
+    # The rebuilt manifest's idx->cell map comes from this editable file, so
+    # the objective must be stated in it (same rule as prepare/submit).
+    try:
+        require_explicit_bh76_mode(cfg_path)
+    except ValueError as exc:
+        _log(f"ERROR: {exc}")
         return 1
     try:
         cfg = load_grid_config(cfg_path)

@@ -1593,20 +1593,29 @@ def require_explicit_bh76_mode(path: str) -> None:
     loudly, so only one value is legal there and explicitness adds nothing.
 
     Raises ``ValueError`` naming the file, the key, and both legal values.
+    An UNPARSEABLE file is not this guard's concern: it returns silently so
+    the caller's own ``load_grid_config`` failure handling (richer, and in
+    ``repair-manifest`` deliberately different: corrupt means unrecoverable)
+    produces the message instead of a parse error dressed as a mode refusal.
     """
     lower = path.lower()
-    if lower.endswith((".yaml", ".yml")):
-        import yaml
-        with open(path) as f:
-            raw = yaml.safe_load(f)
-    elif lower.endswith(".json"):
-        import json
-        with open(path) as f:
-            raw = json.load(f)
-    else:
-        raise ValueError(
-            f"unsupported grid config extension for {path!r}: "
-            "expected .yaml, .yml, or .json")
+    try:
+        if lower.endswith((".yaml", ".yml")):
+            import yaml
+            with open(path) as f:
+                raw = yaml.safe_load(f)
+        elif lower.endswith(".json"):
+            import json
+            with open(path) as f:
+                raw = json.load(f)
+        else:
+            raise ValueError(
+                f"unsupported grid config extension for {path!r}: "
+                "expected .yaml, .yml, or .json")
+    except ValueError:
+        raise
+    except Exception:
+        return
     if not isinstance(raw, dict) or raw.get("domain_profile") != "dfs_step7":
         return
     if "bh76_mode" not in raw:
@@ -1647,6 +1656,18 @@ def load_grid_config(path: str) -> GridConfig:
         with open(path) as f:
             text = f.read()
         raw = yaml.safe_load(text)
+        # YAML keeps the LAST of two duplicated top-level keys, so a second
+        # bh76_mode line silently decides the trained objective while the
+        # first is dead text an operator may edit to no effect (the same
+        # last-wins hazard the duplicated-walltime refusal covers). Scanned
+        # on the text because safe_load has already collapsed the duplicate.
+        n_modes = len(re.findall(r"(?m)^bh76_mode\s*:", text))
+        if n_modes > 1:
+            raise ValueError(
+                f"{path}: bh76_mode appears {n_modes} times at the top "
+                "level; YAML keeps only the last, so the others are dead "
+                "text. State the objective exactly once."
+            )
     elif lower.endswith(".json"):
         import json
         with open(path) as f:
@@ -1809,11 +1830,18 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"on_precompute_failure {opf!r} is not valid; must be one of "
             f"{sorted(VALID_ON_PRECOMPUTE_FAILURE)}"
         )
-    bh76_mode = getattr(cfg, "bh76_mode", None)
-    if bh76_mode is not None and bh76_mode not in VALID_BH76_MODE:
+    # A stub config without the attribute is a construction-time artifact and
+    # keeps the dataclass default; a REAL config whose loaded value is None
+    # means the YAML stated ``bh76_mode:`` with no value -- presence without a
+    # choice -- and must refuse rather than short-circuit past the enum check
+    # (previously such a config staged a full run with ``bh76_mode: null`` in
+    # its resolved_config.yaml).
+    bh76_mode = getattr(cfg, "bh76_mode", "reaction_energy")
+    if bh76_mode is None or bh76_mode not in VALID_BH76_MODE:
         raise ValueError(
             f"bh76_mode {bh76_mode!r} is not valid; must be one of "
-            f"{sorted(VALID_BH76_MODE)}"
+            f"{sorted(VALID_BH76_MODE)} (a bare 'bh76_mode:' with no value "
+            "states no objective)"
         )
 
     # --- arch-name resolvability -------------------------------------------

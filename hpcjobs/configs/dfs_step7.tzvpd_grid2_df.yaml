@@ -116,10 +116,3 @@ held_out_strict: true
 
 inline_eval: true
 defer_eval: false
-
-# BH76 objective: this campaign trained the historical reaction-energy
-# substitution (GMTKN55 BH76RC reaction energies; no transition states in
-# the pool). Stated explicitly for the record -- prepare/submit refuse a
-# DFS config that leaves the mode silent. Resubmitting this file reproduces
-# the substitution; barrier training sets bh76_mode: barrier_height.
-bh76_mode: reaction_energy

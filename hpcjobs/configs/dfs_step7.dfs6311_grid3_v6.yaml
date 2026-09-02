@@ -504,7 +504,7 @@ cluster:
 domain_profile: dfs_step7
 
 on_precompute_failure: abort
-bh76_mode: reaction_energy
+bh76_mode: barrier_height
 ae_as_reactions: true
 use_polarized_correlation: true
 held_out_strict: true
@@ -551,14 +551,15 @@ fidelity:
   tol_atom: 1.0             # mHa
   override_reason: null
   enforce: true
-
-# BH76 objective: the three BH76 points train true forward barrier heights,
-# E(TS) - sum E(reactants), against the GMTKN55 BH76 references (82.6, 8.9,
-# 104.8 kcal/mol) with the staged transition states n2ohts / RKT11 / hf2ts.
-# This is the reference dpyscf treatment (its training trajectory carries the
-# HNNO / CH3OH-frame / FHF transition states with reference_height values;
-# dpyscf additionally trains the reverse H+N2O direction, which the fixed
-# 26-point pool does not carry -- a documented deviation). Every campaign
-# before this line trained the reaction-energy substitution; prepare/submit
-# refuse a DFS config that leaves the mode silent.
-bh76_mode: barrier_height
+# BH76 objective -- barrier_height (stated at the bh76_mode key above): the
+# three BH76 points train true forward barrier heights, E(TS) - sum
+# E(reactants), against the GMTKN55 BH76 references (82.6, 8.9, 104.8
+# kcal/mol) with the staged transition states n2ohts / RKT11 / hf2ts. This is
+# the reference dpyscf treatment: its training trajectory carries the HNNO,
+# CH4O-composition and FHF transition states with reference_height values
+# (83.2, 8.1, 106.2 kcal/mol there), plus a reverse H+N2O direction the fixed
+# 26-point pool does not carry -- a documented deviation. Every campaign
+# before this change stated and trained bh76_mode: reaction_energy (the
+# GMTKN55-BH76RC substitution); this file's value was changed for the
+# post-remediation restart. prepare/submit refuse a DFS config whose text
+# omits the key, and load_grid_config refuses a duplicated one.

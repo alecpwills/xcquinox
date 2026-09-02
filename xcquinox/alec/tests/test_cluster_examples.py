@@ -1767,3 +1767,21 @@ def test_v6_files_train_barrier_heights_and_the_rest_state_the_substitution():
         f"{wrong} -- the seven v6 files train the staged-TS barrier "
         "objective; every other DFS-domain file records the substitution "
         "it actually trained.")
+
+
+def test_every_dfs_domain_config_states_bh76_mode_exactly_once():
+    """PyYAML keeps the LAST duplicate of a top-level key, so a second
+    bh76_mode line silently decides the objective while the first is dead
+    text an operator may edit to no effect. One key per file."""
+    paths = _dfs_profile_config_paths()
+    if not paths:
+        pytest.skip("no hpcjobs/configs deployment tree in this checkout")
+    import re as _re
+    bad = []
+    for name, path in paths:
+        n = len(_re.findall(r"(?m)^bh76_mode\s*:", open(path).read()))
+        if n != 1:
+            bad.append((name, n))
+    assert not bad, (
+        f"DFS-domain configs with a duplicated (or missing) top-level "
+        f"bh76_mode key: {bad}")

@@ -3004,3 +3004,29 @@ def test_require_explicit_bh76_mode_reads_json_too(tmp_path):
     p.write_text(json.dumps({"domain_profile": "dfs_step7"}))
     with pytest.raises(ValueError, match="bh76_mode"):
         require_explicit_bh76_mode(str(p))
+
+
+def test_duplicated_bh76_mode_key_is_refused(tmp_path):
+    """YAML keeps the LAST of two duplicated keys, so a second bh76_mode line
+    silently decides the trained objective while the first is dead text an
+    operator may edit to no effect. Two spellings of one objective is a config
+    defect (the walltime duplicate above is refused on the same ground)."""
+    p = tmp_path / "grid.yaml"
+    p.write_text("domain_profile: dfs_step7\n"
+                 "bh76_mode: reaction_energy\n"
+                 "bh76_mode: barrier_height\n")
+    with pytest.raises(ValueError, match="bh76_mode"):
+        load_grid_config(str(p))
+
+
+def test_null_bh76_mode_is_refused_by_validation():
+    """``bh76_mode:`` with no value passes a presence check but states no
+    objective; validation must refuse None instead of short-circuiting on it
+    (the ``is not None`` guard existed for construction-time ergonomics and
+    let a stated-but-empty key stage a full run)."""
+    from xcquinox.alec.cluster.grid_config import validate_grid_semantics
+    from xcquinox.alec.cluster.domain import get_domain_profile
+    import dataclasses as _dc
+    cfg = _dc.replace(_cfg(), bh76_mode=None, domain_profile="dfs_step7")
+    with pytest.raises(ValueError, match="bh76_mode"):
+        validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))

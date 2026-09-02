@@ -2434,3 +2434,24 @@ def test_submit_refuses_a_dfs_grid_without_explicit_bh76_mode(tmp_path, capsys):
     assert list(run_root.iterdir()) == []
     out = capsys.readouterr().out
     assert "bh76_mode" in out
+
+
+@pytest.mark.parametrize("command", ["resubmit", "resubmit-preflight",
+                                     "repair-manifest"])
+def test_resubmission_commands_refuse_a_resolved_config_stripped_of_bh76_mode(
+        tmp_path, monkeypatch, capsys, command):
+    """The resubmission family re-renders and re-submits work from
+    resolved_config.yaml precisely because that file is untrusted after the
+    submit that validated it; a hand-edit that deletes the bh76_mode key must
+    refuse like prepare/submit do, not silently load the dataclass default
+    and train a different objective than the run was created with."""
+    rd = _make_run_dir(tmp_path)
+    resolved = os.path.join(rd, "resolved_config.yaml")
+    lines = [ln for ln in open(resolved).read().splitlines(keepends=True)
+             if not ln.startswith("bh76_mode:")]
+    with open(resolved, "w") as f:
+        f.writelines(lines)
+    rc = main([command, rd])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "bh76_mode" in out
