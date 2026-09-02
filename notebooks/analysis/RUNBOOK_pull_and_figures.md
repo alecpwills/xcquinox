@@ -367,3 +367,45 @@ training.
 
 Figures are regenerated artifacts -- the `figures_*` dirs are not version
 controlled. Re-run the suite any time after a fresh pull.
+
+---
+
+## v7 (2026-09-02): the functional-cloning campaign -- pull + figures
+
+The v7 trio (unanchored cloning per arXiv:2605.10331, barrier-height BH76
+objective) lands under three new categories. Pull and figures are the
+standard machinery -- the pull is category-driven and the figure collectors
+read whatever architectures the run dirs carry -- so the only v7-specific
+content is the category names and output dirs:
+
+```bash
+python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_size/runs
+python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g2a_families_core/runs
+python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g2_families_mgga/runs
+
+python notebooks/analysis/make_ablation_arch_figure.py --suite \
+    --domain dfs_step7 \
+    --bases dfs6311_grid3_v7g1_size,dfs6311_grid3_v7g2a_families_core,dfs6311_grid3_v7g2_families_mgga \
+    --outroot notebooks/analysis
+```
+
+(`pull auto --category dfs_step7` also discovers the v7 runs by activity.)
+Outputs land at `figures_dfs_step7_dfs6311_grid3_v7*` (+ `_val_best`).
+Before the train arrays complete, the artifact worth pulling is the
+pretrain stage itself: each run's `pretrain/<arch>/fidelity_certificate.json`
+states whether the clone reproduced its parent (the campaign's gate), and
+`pretrain/<arch>/pretrain_metadata.json` carries `best_step` / `steps_run`
+/ the validation history for reading the cloning trajectory.
+
+ARCHIVE NOTE (2026-09-02): every figure set produced from the
+pre-remediation trainings (the reaction-energy BH76 substitution, the
+padded V_xc denominators, the scoped-regularizer defect, and the anchored
+v6 method), together with the two reports built on them
+(`REPORT_pretraining_evolution`, `REPORT_problem_species`, .md and .pdf),
+was removed from the repository and kept on disk under
+`notebooks/analysis/figures_archive/` (gitignored; reports under
+`figures_archive/reports/`). Rebuilding those PDFs requires restoring the
+archived paths; the archived PDFs are the frozen record. The evaluation
+tables under `rescore_depth_symmetric_out/` and the audit trail
+(`AUDIT_2026-09-01.md`) stay tracked -- they document the invalidated
+record and the corrections.
