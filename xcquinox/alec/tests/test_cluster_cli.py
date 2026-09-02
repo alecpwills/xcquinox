@@ -2455,3 +2455,34 @@ def test_resubmission_commands_refuse_a_resolved_config_stripped_of_bh76_mode(
     assert rc == 1
     out = capsys.readouterr().out
     assert "bh76_mode" in out
+
+
+@pytest.mark.parametrize("command", ["resubmit", "resubmit-preflight"])
+def test_resubmission_commands_handle_a_corrupt_resolved_config(
+        tmp_path, capsys, command):
+    """A syntactically invalid resolved_config.yaml must produce each
+    command's own unrecoverable-config refusal (rc 1, named path, direction
+    to a fresh run dir), not an uncaught parser traceback -- repair-manifest
+    already had this handling; resubmit and resubmit-preflight did not."""
+    rd = _make_run_dir(tmp_path)
+    with open(os.path.join(rd, "resolved_config.yaml"), "w") as f:
+        f.write("a: [unclosed\nb: {broken\n")
+    rc = main([command, rd])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "resolved_config.yaml" in out
+    assert "fresh run dir" in out
+
+
+def test_submit_refuses_a_null_bh76_mode_at_the_cli(tmp_path):
+    """Pin of the CLI-level refusal for a stated-but-null bh76_mode: the
+    presence guard passes (the key exists), validation raises, nothing is
+    staged. Validation failures surface as the raised ValueError, the
+    pre-existing behavior for every semantic refusal in submit."""
+    grid = _write_grid(tmp_path, mutate=lambda d: d.update(bh76_mode=None))
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    with pytest.raises(ValueError, match="bh76_mode"):
+        main(["submit", grid, "--run-root", str(run_root),
+              "--partition", "long-40core"])
+    assert list(run_root.iterdir()) == []

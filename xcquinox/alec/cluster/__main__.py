@@ -1546,10 +1546,18 @@ def cmd_resubmit(args) -> int:
                  "directory beside the scheduler's own copy. Retry them "
                  "after the array drains.")
 
-        # Resolve retry-knob routing from resolved_config.yaml.
-        cfg = load_grid_config(
-            os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
-        )
+        # Resolve retry-knob routing from resolved_config.yaml. A file that
+        # no longer parses is unrecoverable for the same reason it is in
+        # repair-manifest: it is the only source of truth for the grid.
+        try:
+            cfg = load_grid_config(
+                os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
+            )
+        except Exception as exc:
+            _log(f"resubmit: cannot parse "
+                 f"{os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)} "
+                 f"({exc!r}); start a fresh run dir with `submit`.")
+            return 1
         # resolved_config.yaml is an ordinary file that outlives the `submit`
         # which validated it; this command re-renders and re-submits train +
         # eval arrays from it, so it re-runs the same semantic validation
@@ -1759,7 +1767,14 @@ def cmd_resubmit_preflight(args) -> int:
     except ValueError as exc:
         _log(f"ERROR: {exc}")
         return 1
-    cfg = load_grid_config(cfg_path)
+    # And the same unrecoverable-config handling as repair-manifest: a
+    # resolved config that no longer parses cannot reconstruct the graph.
+    try:
+        cfg = load_grid_config(cfg_path)
+    except Exception as exc:
+        _log(f"resubmit-preflight: cannot parse {cfg_path} ({exc!r}); "
+             "start a fresh run dir with `submit`.")
+        return 1
     # This command re-submits the whole pretrain -> preflight -> train -> eval
     # graph from the resolved config, so that config is re-validated here for
     # the same reason `resubmit` re-validates it: the file can be edited after

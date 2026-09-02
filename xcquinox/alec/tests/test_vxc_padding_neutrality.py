@@ -131,3 +131,57 @@ def test_dm_term_is_padding_neutral(monkeypatch):
     assert padded_loss == pytest.approx(unpadded_loss, rel=1e-12), (
         f"padding rescaled loss_dm: {padded_loss} vs {unpadded_loss} "
         f"(ratio {padded_loss / unpadded_loss:.6f})")
+
+
+# ---------------------------------------------------------------------------
+# Grid density channel: padding-neutral BY CONSTRUCTION (zero-padded
+# quadrature weights), pinned here so the claim has an in-tree oracle.
+# ---------------------------------------------------------------------------
+
+def _grid_mol(n_grid, seed):
+    rng = np.random.default_rng(seed)
+    return {
+        "rho_ref_grid": jnp.asarray(rng.uniform(0.1, 1.0, n_grid)),
+        "grid_weights": jnp.asarray(rng.uniform(0.01, 0.1, n_grid)),
+    }
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"relative": True},
+                                    {"per_electron": True}])
+def test_grid_term_is_padding_neutral(monkeypatch, kwargs):
+    """_grid_term's error and normalizations are quadrature-weighted sums and
+    the padder zero-pads grid_weights, so padding the grid axis must leave
+    the loss bit-identical in all three normalization modes. The mutation
+    control at the end proves the comparison can fail: edge-padding the
+    WEIGHTS (nonzero rows in the padded tail) separates the two values."""
+    monkeypatch.setattr(
+        losses_mod, "grid_density_for_loss",
+        lambda model, md, solver_config: md["rho_ref_grid"] * 1.1)
+    mols = [_grid_mol(40, 0), _grid_mol(64, 1)]
+    unpadded = float(losses_mod._grid_term(None, mols, range(2), **kwargs))
+
+    target = padding.PadTarget(n_ao=1, n_grid=64, naux=None)
+    padded = []
+    for m in mols:
+        out = dict(m)
+        out["grid_weights"] = padding._pad_grid(
+            m["grid_weights"], target.n_grid, "zero")
+        out["rho_ref_grid"] = padding._pad_grid(
+            m["rho_ref_grid"], target.n_grid, "edge")
+        padded.append(out)
+    padded_val = float(losses_mod._grid_term(None, padded, range(2), **kwargs))
+    assert unpadded > 0.0
+    assert padded_val == unpadded, (padded_val, unpadded)
+
+    # Mutation control: edge-padded weights carry nonzero padded rows; the
+    # padded tail then contributes and the values must separate.
+    mutated = []
+    for m in mols:
+        out = dict(m)
+        out["grid_weights"] = padding._pad_grid(
+            m["grid_weights"], target.n_grid, "edge")
+        out["rho_ref_grid"] = padding._pad_grid(
+            m["rho_ref_grid"], target.n_grid, "edge")
+        mutated.append(out)
+    mutated_val = float(losses_mod._grid_term(None, mutated, range(2), **kwargs))
+    assert mutated_val != unpadded, "mutation control failed to separate"

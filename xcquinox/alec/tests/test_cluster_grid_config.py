@@ -3030,3 +3030,78 @@ def test_null_bh76_mode_is_refused_by_validation():
     cfg = _dc.replace(_cfg(), bh76_mode=None, domain_profile="dfs_step7")
     with pytest.raises(ValueError, match="bh76_mode"):
         validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
+
+
+# ===========================================================================
+# Duplicate bh76_mode detection must be STRUCTURAL, not textual: quoted keys,
+# uniformly indented documents and JSON all evade a column-0 regex while the
+# second key silently decides the objective (YAML/JSON last-wins), and a
+# column-0 flow continuation false-positives it. The count is taken from the
+# parsed document's root mapping.
+# ===========================================================================
+
+def test_duplicate_bh76_mode_quoted_key_is_refused(tmp_path):
+    p = tmp_path / "grid.yaml"
+    p.write_text('domain_profile: dfs_step7\n'
+                 'bh76_mode: reaction_energy\n'
+                 '"bh76_mode": barrier_height\n')
+    with pytest.raises(ValueError, match="bh76_mode"):
+        load_grid_config(str(p))
+
+
+def test_duplicate_bh76_mode_in_indented_document_is_refused(tmp_path):
+    """A YAML document indented uniformly by two spaces is the same mapping;
+    a column-0 scan sees no key at all."""
+    p = tmp_path / "grid.yaml"
+    p.write_text('  domain_profile: dfs_step7\n'
+                 '  bh76_mode: reaction_energy\n'
+                 '  bh76_mode: barrier_height\n')
+    with pytest.raises(ValueError, match="bh76_mode"):
+        load_grid_config(str(p))
+
+
+def test_duplicate_bh76_mode_in_json_is_refused(tmp_path):
+    p = tmp_path / "grid.json"
+    p.write_text('{"domain_profile": "dfs_step7", '
+                 '"bh76_mode": "reaction_energy", '
+                 '"bh76_mode": "barrier_height"}')
+    with pytest.raises(ValueError, match="bh76_mode"):
+        load_grid_config(str(p))
+
+
+def test_single_bh76_mode_with_flow_continuation_is_not_a_duplicate():
+    """One real key plus a column-0 flow-sequence continuation that BEGINS
+    with the key's spelling is one key; the structural count must not refuse
+    it (the textual scan did)."""
+    from xcquinox.alec.cluster.grid_config import _top_level_bh76_mode_count
+    text = ("domain_profile: dfs_step7\n"
+            "bh76_mode: reaction_energy\n"
+            "note: [x,\n"
+            "bh76_mode: y]\n")
+    assert _top_level_bh76_mode_count(text, "grid.yaml") == 1
+
+
+def test_top_level_bh76_mode_count_sees_the_evasions():
+    from xcquinox.alec.cluster.grid_config import _top_level_bh76_mode_count
+    quoted = ('bh76_mode: a\n"bh76_mode": b\n')
+    indented = ('  bh76_mode: a\n  bh76_mode: b\n')
+    comment = ('# bh76_mode: a\nbh76_mode: b\n')
+    js = '{"bh76_mode": "a", "bh76_mode": "b"}'
+    assert _top_level_bh76_mode_count(quoted, "g.yaml") == 2
+    assert _top_level_bh76_mode_count(indented, "g.yaml") == 2
+    assert _top_level_bh76_mode_count(comment, "g.yaml") == 1
+    assert _top_level_bh76_mode_count(js, "g.json") == 2
+
+
+def test_bh76_mode_guard_is_silent_on_corrupt_json_and_yaml(tmp_path):
+    """The guard's contract: an unparseable file is not its concern (the
+    caller's load produces the message). json.JSONDecodeError subclasses
+    ValueError, so a naive re-raise leaks a parse error dressed as a mode
+    refusal; both extensions must return silently."""
+    from xcquinox.alec.cluster.grid_config import require_explicit_bh76_mode
+    y = tmp_path / "bad.yaml"
+    y.write_text("a: [unclosed\nb: {broken\n")
+    j = tmp_path / "bad.json"
+    j.write_text("{,broken")
+    require_explicit_bh76_mode(str(y))  # must not raise
+    require_explicit_bh76_mode(str(j))  # must not raise

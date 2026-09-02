@@ -1573,6 +1573,32 @@ def _resolve_eval_workers(cl: ClusterResources, *, n_molecules: int) -> int:
     return max(1, min(int(base), max(1, n_molecules)))
 
 
+def _top_level_bh76_mode_count(text: str, path: str) -> int:
+    """How many times ``bh76_mode`` appears as a ROOT-mapping key in ``text``.
+
+    Structural, not textual: ``yaml.compose`` (or a JSON ``object_pairs_hook``
+    for ``.json`` paths) sees the parsed document's root mapping, so a quoted
+    key, a uniformly indented document, and a JSON duplicate all count, while
+    a commented line or a column-0 flow-sequence continuation that merely
+    begins with the key's spelling does not. A column-0 regex failed all four
+    of those cases. Raises nothing for a non-mapping root (returns 0); parse
+    errors propagate to the caller.
+    """
+    if path.lower().endswith(".json"):
+        import json
+        seen: list = []
+        json.loads(text, object_pairs_hook=lambda pairs: (seen.append(pairs),
+                                                          dict(pairs))[1])
+        top = seen[-1] if seen else []
+        return sum(1 for k, _v in top if k == "bh76_mode")
+    import yaml
+    node = yaml.compose(text, Loader=yaml.SafeLoader)
+    if not isinstance(node, yaml.MappingNode):
+        return 0
+    return sum(1 for k, _v in node.value
+               if getattr(k, "value", None) == "bh76_mode")
+
+
 def require_explicit_bh76_mode(path: str) -> None:
     """Refuse a DFS-domain config FILE whose text does not state ``bh76_mode``.
 
@@ -1593,27 +1619,26 @@ def require_explicit_bh76_mode(path: str) -> None:
     loudly, so only one value is legal there and explicitness adds nothing.
 
     Raises ``ValueError`` naming the file, the key, and both legal values.
-    An UNPARSEABLE file is not this guard's concern: it returns silently so
-    the caller's own ``load_grid_config`` failure handling (richer, and in
-    ``repair-manifest`` deliberately different: corrupt means unrecoverable)
-    produces the message instead of a parse error dressed as a mode refusal.
+    An UNPARSEABLE file is not this guard's concern: it returns silently for
+    BOTH extensions (``json.JSONDecodeError`` subclasses ``ValueError``, so a
+    naive re-raise would leak a parse error dressed as a mode refusal) and
+    the caller's own ``load_grid_config`` failure handling produces the
+    message (in the resubmission commands: corrupt means unrecoverable).
     """
     lower = path.lower()
+    if not lower.endswith((".yaml", ".yml", ".json")):
+        raise ValueError(
+            f"unsupported grid config extension for {path!r}: "
+            "expected .yaml, .yml, or .json")
     try:
-        if lower.endswith((".yaml", ".yml")):
-            import yaml
-            with open(path) as f:
-                raw = yaml.safe_load(f)
-        elif lower.endswith(".json"):
+        if lower.endswith(".json"):
             import json
             with open(path) as f:
                 raw = json.load(f)
         else:
-            raise ValueError(
-                f"unsupported grid config extension for {path!r}: "
-                "expected .yaml, .yml, or .json")
-    except ValueError:
-        raise
+            import yaml
+            with open(path) as f:
+                raw = yaml.safe_load(f)
     except Exception:
         return
     if not isinstance(raw, dict) or raw.get("domain_profile") != "dfs_step7":
@@ -1656,22 +1681,11 @@ def load_grid_config(path: str) -> GridConfig:
         with open(path) as f:
             text = f.read()
         raw = yaml.safe_load(text)
-        # YAML keeps the LAST of two duplicated top-level keys, so a second
-        # bh76_mode line silently decides the trained objective while the
-        # first is dead text an operator may edit to no effect (the same
-        # last-wins hazard the duplicated-walltime refusal covers). Scanned
-        # on the text because safe_load has already collapsed the duplicate.
-        n_modes = len(re.findall(r"(?m)^bh76_mode\s*:", text))
-        if n_modes > 1:
-            raise ValueError(
-                f"{path}: bh76_mode appears {n_modes} times at the top "
-                "level; YAML keeps only the last, so the others are dead "
-                "text. State the objective exactly once."
-            )
     elif lower.endswith(".json"):
         import json
         with open(path) as f:
-            raw = json.load(f)
+            text = f.read()
+        raw = json.loads(text)
     else:
         raise ValueError(
             f"unsupported grid config extension for {path!r}: "
@@ -1682,6 +1696,19 @@ def load_grid_config(path: str) -> GridConfig:
         raise ValueError(
             f"grid config {path!r}: top-level must be a mapping, got "
             f"{type(raw).__name__}"
+        )
+    # Both formats keep only the LAST of two duplicated top-level keys, so a
+    # second bh76_mode entry silently decides the trained objective while the
+    # first is dead text an operator may edit to no effect (the last-wins
+    # hazard the duplicated-walltime refusal covers). Counted STRUCTURALLY on
+    # the root mapping (yaml.compose / a JSON pairs hook): a column-0 text
+    # scan missed quoted keys, indented documents and JSON entirely.
+    n_modes = _top_level_bh76_mode_count(text, path)
+    if n_modes > 1:
+        raise ValueError(
+            f"{path}: bh76_mode appears {n_modes} times at the top level; "
+            "the parser keeps only the last, so the others are dead text. "
+            "State the objective exactly once."
         )
     _reject_unknown_keys(raw, GridConfig, "<root>")
 
