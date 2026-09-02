@@ -306,9 +306,15 @@ def run_workers(
             if running[idx].get("cpu_slot") is not None:
                 free_cpu_slots.append(running[idx]["cpu_slot"])
             del running[idx]
-            if pending:
+            # Drain pending until one job actually spawns: a failed spawn
+            # records its own failure without entering `running`, and a
+            # single-shot replacement would end the chain there, orphaning
+            # every job queued behind it (their results stayed None).
+            while pending:
                 next_idx, next_job = pending.popleft()
                 _start(next_idx, next_job)
+                if next_idx in running:
+                    break
 
     # Strict index-ordered return.
     return [results[i] for i in range(len(jobs))]

@@ -897,3 +897,27 @@ def test_pyscf_pool_threads_caps_each_pool_at_the_measured_knee():
     assert PYSCF_POOL_THREADS_MAX == 8
     assert [pyscf_pool_threads(n) for n in (0, 1, 4, 8, 9, 24, 40, 96)] == \
         [1, 1, 4, 8, 8, 8, 8, 8]
+
+
+def test_failed_spawn_does_not_orphan_pending_jobs(tmp_path):
+    """A replacement job whose binary cannot spawn must not end the
+    replenishment chain: at max_parallel=1 with [good, unspawnable, good],
+    the third job must still run and all three results return."""
+    ok = _write_worker_script(
+        tmp_path, "ok", """
+        import json
+        print(json.dumps({"ok": True}))
+        """)
+    jobs = [
+        _make_job(tmp_path, "good1", ok),
+        WorkerJob(name="bad", cmd=["/nonexistent/binary/xyz"],
+                  progress_file=str(tmp_path / "bad_progress.json")),
+        _make_job(tmp_path, "good2", ok),
+    ]
+    results = run_workers(jobs, max_parallel=1, poll_interval=0.05)
+    assert len(results) == 3
+    assert results[0].status == "success"
+    assert results[1].status == "failed"
+    assert "failed to spawn" in results[1].payload.get("error", "")
+    assert results[2] is not None and results[2].status == "success", (
+        "the job queued behind a failed spawn was orphaned")
