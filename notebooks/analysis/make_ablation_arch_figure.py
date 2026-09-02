@@ -213,11 +213,27 @@ def _reaction_identity(r: Dict[str, Any]) -> Optional[Tuple]:
             tuple(sorted(str(x).casefold() for x in prod)))
 
 
+def _run_used_validation(run_dir: Path) -> bool:
+    """True when the run demonstrably trained with a validation slice: any
+    spec carries a validation-best held-out channel. Pre-validation runs
+    (no such channel anywhere) return False and render unchanged."""
+    for _idx, sd in ccp._spec_dirs(run_dir):
+        if (sd / "eval_holdout_val_best").is_dir():
+            return True
+    return False
+
+
 def _val_reaction_identities(run_dir: Path) -> set:
     """Identities of the run's validation-slice reactions, from
     ``validation/val_reactions.json`` -- checked in ``run_dir`` itself and in
-    every source run a merged symlink view resolves into. Empty set when no
-    validation record exists (pre-validation runs render unchanged)."""
+    every source run a merged symlink view resolves into.
+
+    A run that trained WITH a validation slice (:func:`_run_used_validation`)
+    but has no readable record REFUSES: without the record the validation
+    reactions cannot be removed from the test columns, so the figures would
+    silently render a DIFFERENT slice than every other pull of the same run.
+    Only a pre-validation run (no val-best channel anywhere) returns the
+    empty set and renders unchanged."""
     cands = [Path(run_dir) / "validation" / "val_reactions.json"]
     for _idx, sd in ccp._spec_dirs(run_dir):
         if sd.is_symlink():
@@ -225,6 +241,7 @@ def _val_reaction_identities(run_dir: Path) -> set:
                          / "val_reactions.json")
     out: set = set()
     seen_files: set = set()
+    n_read = 0
     for p in cands:
         try:
             rp = p.resolve()
@@ -238,10 +255,21 @@ def _val_reaction_identities(run_dir: Path) -> set:
                 entries = json.load(f)
         except (json.JSONDecodeError, OSError):
             continue
+        n_read += 1
         for e in entries:
             ident = _reaction_identity(e)
             if ident is not None:
                 out.add(ident)
+    if n_read == 0 and _run_used_validation(run_dir):
+        raise RuntimeError(
+            f"{run_dir}: the run trained with a validation slice "
+            f"(eval_holdout_val_best/ present) but no readable "
+            f"validation/val_reactions.json was found -- rendering would "
+            f"silently use a different slice. Re-pull the run with the "
+            f"summaries profile (it carries /validation/), e.g. "
+            f"`python -m xcquinox.alec.cluster pull <run> --profile "
+            f"summaries`."
+        )
     return out
 
 
@@ -1643,11 +1671,16 @@ def scan_density_mean(records: Optional[Dict[str, Dict[str, Any]]],
     row and the pooled line can never be averaged over different species sets.
     ``(nan, 0, n)`` when the cache holds none of them."""
     scan_key = _SCAN_DENSITY_KEY.get(key)
-    mols = sorted(molecules)
+    mols = sorted(str(m).casefold() for m in molecules)
     if not records or scan_key is None:
         return float("nan"), 0, len(mols)
-    vals = [records[m][scan_key] for m in mols
-            if m in records and _is_num(records[m].get(scan_key))]
+    # Casefolded view of the cache: the PBE map's keys are casefolded
+    # (case twins pre-averaged there), the SCAN cache's are raw.
+    rec_cf: Dict[str, List[float]] = {}
+    for m, d in records.items():
+        if _is_num(d.get(scan_key)):
+            rec_cf.setdefault(str(m).casefold(), []).append(d[scan_key])
+    vals = [float(np.mean(rec_cf[m])) for m in mols if m in rec_cf]
     return (float(np.mean(vals)) if vals else float("nan"),
             len(vals), len(mols))
 
@@ -1881,23 +1914,28 @@ def reaction_mae_by_arch_subset(
 ) -> Dict[Tuple[str, int], float]:
     """``{(arch, subset_size): MAE}`` over held-out reactions for ``key``
     (``abs_error_nn_kcalmol`` or ``abs_error_pbe_kcalmol``). Deduplicated by
-    reaction name WITHIN each cell (first FINITE value per key wins) -- the
-    canonical pool lists four reactions twice under one name, and the PBE
-    baselines dedup, so an un-deduped cell metric would double-count those
-    rows against a deduped reference line. Finiteness is tested BEFORE the
-    name slot is consumed (matching ``_cell_counts``): a NaN first instance
-    of a duplicated name cannot discard its finite twin."""
+    reaction IDENTITY within each cell (first FINITE value per identity
+    wins): the canonical pool lists three reactions twice under one name AND
+    four barrier pairs under permuted-reactant names
+    (``species_matching.reaction_identity_keys`` with the casefolded-name
+    fallback collapses both classes; production BH76 = 61 rows over 54
+    identities), and the PBE baselines dedup, so an un-deduped cell metric
+    would double-count those rows against a deduped reference line.
+    Finiteness is tested BEFORE the identity slot is consumed (matching
+    ``_cell_counts``): a NaN first instance cannot discard its finite twin.
+    Rows without species lists fall back to the name key."""
+    from xcquinox.alec.species_matching import reaction_identity_keys
     buckets: Dict[Tuple[str, int], List[float]] = {}
     seen: set = set()
     for r in rows:
         arch, ss = r.get("arch"), r.get("subset_size")
         if arch is None or ss is None or not _is_num(r.get(key)):
             continue
-        nm = r.get("name")
-        if nm is not None:
-            if (arch, ss, nm) in seen:
+        ident = reaction_identity_keys(r, {}) or r.get("name")
+        if ident is not None:
+            if (arch, ss, ident) in seen:
                 continue
-            seen.add((arch, ss, nm))
+            seen.add((arch, ss, ident))
         buckets.setdefault((arch, ss), []).append(r[key])
     return {k: float(np.mean(v)) for k, v in buckets.items() if v}
 
@@ -3893,7 +3931,7 @@ def scan_density_by_cell(hd_rows: List[Dict[str, Any]],
         a, s = r.get("arch"), r.get("subset_size")
         if a is None or s is None:
             continue
-        m = r.get("molecule")
+        m = _mol_cf(r.get("molecule"))
         if m in pbe_mol:
             by_cell.setdefault((a, s), set()).add(m)
     out: Dict[Tuple[str, int], float] = {}
@@ -4025,6 +4063,8 @@ def collect_holdout_density_rows(run_dir: Path,
     raw: List[Dict[str, Any]] = []
     n_alias = 0
     alias_hits: set = set()
+    n_supervised = 0
+    supervised_hits: set = set()
     for idx, spec_dir in ccp._spec_dirs(run_dir):
         assert_channel_not_sliced(spec_dir, eval_subdir)
         pm_path = spec_dir / eval_subdir / "per_molecule.json"
@@ -4042,6 +4082,13 @@ def collect_holdout_density_rows(run_dir: Path,
                     or _is_num(r.get("density_rmse_pbe"))):
                 continue
             mol = r.get("molecule")
+            # Supervised species (the eval's own alias-aware flag) are
+            # training-fit measurements, not held-out ones: a spec_0021-class
+            # cell carried 28 such rows inside its "held-out" density mean.
+            if r.get("from_training_subset"):
+                n_supervised += 1
+                supervised_hits.add(str(mol))
+                continue
             if aliases_cf and str(mol).casefold() in aliases_cf:
                 n_alias += 1
                 alias_hits.add(str(mol))
@@ -4062,6 +4109,10 @@ def collect_holdout_density_rows(run_dir: Path,
                 "ref_density_method": r.get("ref_density_method"),
                 "from_training_subset": r.get("from_training_subset"),
             })
+    if n_supervised:
+        print(f"  (strict-holdout repair: dropped {n_supervised} density rows "
+              f"flagged from_training_subset "
+              f"({len(supervised_hits)} species))")
     if n_alias:
         print(f"  (strict-holdout repair: dropped {n_alias} density rows for "
               f"trained species under pool names {sorted(alias_hits)})")
@@ -4130,14 +4181,25 @@ def holdout_density_by_arch_subset(hd_rows: List[Dict[str, Any]],
     per-electron L1 when the eval emitted it). Same bucketing rule as
     ``reaction_mae_by_arch_subset``; atoms never contribute (their density
     columns are None at eval time)."""
-    buckets: Dict[Tuple[str, int], List[float]] = {}
+    buckets: Dict[Tuple[str, int], Dict[str, List[float]]] = {}
     for r in hd_rows:
         arch, ss = r.get("arch"), r.get("subset_size")
         if arch is None or ss is None:
             continue
         if _is_num(r.get(key)):
-            buckets.setdefault((arch, ss), []).append(r[key])
-    return {k: float(np.mean(v)) for k, v in buckets.items() if v}
+            buckets.setdefault((arch, ss), {}).setdefault(
+                _mol_cf(r.get("molecule")), []).append(r[key])
+    # Within-species mean first (case twins count once), then across species.
+    return {k: float(np.mean([float(np.mean(v)) for v in sp.values()]))
+            for k, sp in buckets.items() if sp}
+
+
+def _mol_cf(m: Any) -> str:
+    """Canonical species key for density reductions: the casefolded name.
+    The benchmark pools list the same molecule under two case variants
+    (BH76 'h2' vs W4-11 'H2'; 10 such pairs over the 199 density species),
+    and a mean keyed on raw names counts those twice."""
+    return str(m).casefold()
 
 
 def _pbe_density_map(hd_rows: List[Dict[str, Any]],
@@ -4147,17 +4209,19 @@ def _pbe_density_map(hd_rows: List[Dict[str, Any]],
     ``_pbe_anchor_coverage_warning``: the run-level table when given (finite
     entries only), else the per-molecule mean of the inline ``key`` columns
     (default the grid-weighted RMSE; ``density_eps_l1_pbe`` selects the DFS
-    Eq. 20 per-electron L1 twin)."""
-    pbe_mol: Dict[str, float] = {
-        m: d[key] for m, d in (pbe_table or {}).items()
-        if _is_num(d.get(key))}
-    if not pbe_mol:
-        acc: Dict[str, List[float]] = {}
+    Eq. 20 per-electron L1 twin). Keys are CASEFOLDED species names
+    (:func:`_mol_cf`) with case twins averaged, so every consumer of this
+    map -- pooled and per-cell anchors, coverage warnings, parity lookups --
+    counts one physical molecule once."""
+    acc: Dict[str, List[float]] = {}
+    for m, d in (pbe_table or {}).items():
+        if _is_num(d.get(key)):
+            acc.setdefault(_mol_cf(m), []).append(d[key])
+    if not acc:
         for r in hd_rows:
             if _is_num(r.get(key)) and r.get("molecule"):
-                acc.setdefault(r["molecule"], []).append(r[key])
-        pbe_mol = {m: float(np.mean(v)) for m, v in acc.items()}
-    return pbe_mol
+                acc.setdefault(_mol_cf(r["molecule"]), []).append(r[key])
+    return {m: float(np.mean(v)) for m, v in acc.items()}
 
 
 def pbe_density_baseline(hd_rows: List[Dict[str, Any]],
@@ -4191,7 +4255,8 @@ def _pbe_anchor_coverage_warning(hd_rows: List[Dict[str, Any]],
     channel (defaults: the RMSE pair; the ``density_eps_l1`` pair guards the
     DFS-units legs, where a partial backfill shrinks both sets)."""
     anchor = set(_pbe_density_map(hd_rows, pbe_table, key=pbe_key))
-    nn = {r.get("molecule") for r in hd_rows if _is_num(r.get(nn_key))}
+    nn = {_mol_cf(r.get("molecule"))
+          for r in hd_rows if _is_num(r.get(nn_key))}
     if not anchor or anchor == nn:
         return ""
 
@@ -4233,7 +4298,7 @@ def pbe_density_by_cell(hd_rows: List[Dict[str, Any]],
         a, s = r.get("arch"), r.get("subset_size")
         if a is None or s is None:
             continue
-        m = r.get("molecule")
+        m = _mol_cf(r.get("molecule"))
         if m in pbe_mol:
             by_cell.setdefault((a, s), set()).add(m)
     out: Dict[Tuple[str, int], float] = {}
@@ -4764,10 +4829,12 @@ def _holdout_eval_note(rows: List[Dict[str, Any]],
 
 
 def _species_pools(rows: List[Dict[str, Any]]) -> Dict[str, set]:
-    """``{molecule: {pools}}`` from the held-out reaction rows' reactants and
-    products. Species appearing in reactions of both pools (the BH76/W4-11
-    overlap) map to both -- the per-channel density panels show them in each
-    channel, stated on the figure. Pool-less rows are ignored."""
+    """``{casefolded molecule: {pools}}`` from the held-out reaction rows'
+    reactants and products (:func:`_mol_cf` keys, so case twins like BH76
+    'h2' / W4-11 'H2' are one species). Species appearing in reactions of
+    both pools (the BH76/W4-11 overlap) map to both -- the per-channel
+    density panels show them in each channel, stated on the figure.
+    Pool-less rows are ignored. Look up with a casefolded name."""
     out: Dict[str, set] = {}
     for r in rows:
         p = r.get("pool")
@@ -4775,7 +4842,7 @@ def _species_pools(rows: List[Dict[str, Any]]) -> Dict[str, set]:
             continue
         for sp in list(r.get("reactants") or []) + list(r.get("products") or []):
             if sp:
-                out.setdefault(sp, set()).add(p)
+                out.setdefault(_mol_cf(sp), set()).add(p)
     return out
 
 
@@ -4816,11 +4883,11 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
         else:
             ch_rows = [r for r in rows if r.get("pool") == ch]
             ch_hd = [r for r in hd_rows
-                     if ch in pools_of.get(r.get("molecule"), ())]
+                     if ch in pools_of.get(_mol_cf(r.get("molecule")), ())]
             ch_tab = None
             if pbe_table:
                 ch_tab = {m: v for m, v in pbe_table.items()
-                          if ch in pools_of.get(m, ())}
+                          if ch in pools_of.get(_mol_cf(m), ())}
         e_cells = wtmad2_by_arch_subset(ch_rows)
         e_pbe = wtmad2_pbe_baseline(ch_rows)
         d_cells = holdout_density_by_arch_subset(ch_hd, key=density_key)
@@ -5508,6 +5575,24 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
     return out_path
 
 
+def holdout_density_cell_points(density_rows: List[Dict[str, Any]],
+                                arch: str, key: str = "density_rmse"
+                                ) -> List[Tuple[int, float, int]]:
+    """``[(subset_size, mean, n_species)]`` for one arch's held-out density
+    line: within each cell the finite ``key`` values are averaged PER
+    CASEFOLDED SPECIES first (:func:`_mol_cf` -- the pools list 10 molecules
+    under two case variants), then across species, so a case twin weights
+    the cell mean once. ``n`` counts species, not rows."""
+    by_s: Dict[int, Dict[str, List[float]]] = {}
+    for r in density_rows:
+        if r.get("arch") == arch and _is_num(r.get(key)):
+            by_s.setdefault(r["subset_size"], {}).setdefault(
+                _mol_cf(r.get("molecule")), []).append(r[key])
+    return sorted(
+        (s, float(np.mean([float(np.mean(v)) for v in sp.values()])), len(sp))
+        for s, sp in by_s.items())
+
+
 def _holdout_density_lines_panel(ax, density_rows: List[Dict[str, Any]],
                                  pbe_mol: Dict[str, float],
                                  scan_records: Optional[
@@ -5520,13 +5605,7 @@ def _holdout_density_lines_panel(ax, density_rows: List[Dict[str, Any]],
     ``_mgga`` archs are judged against (they pretrain to SCAN); absent cache ->
     no line, panel unchanged."""
     for a in (_archs_present(density_rows) or []):
-        by_s: Dict[int, List[float]] = {}
-        for r in density_rows:
-            if r.get("arch") == a and _is_num(r.get("density_rmse")):
-                by_s.setdefault(r["subset_size"], []).append(
-                    r["density_rmse"])
-        pts = sorted((s, float(np.mean(v)), len(v))
-                     for s, v in by_s.items())
+        pts = holdout_density_cell_points(density_rows, a)
         if pts:
             ax.plot([s for s, _, _ in pts], [m for _, m, _ in pts],
                     marker="o", ms=5, color=ARCH_COLOR.get(a, "0.5"),
@@ -5573,7 +5652,7 @@ def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
     n_pairs = 0
     fin_xy: List[float] = []
     for r in density_rows:
-        x = pbe_mol.get(r.get("molecule"))
+        x = pbe_mol.get(_mol_cf(r.get("molecule")))
         y = r.get(nn_key)
         if not (_is_num(x) and _is_num(y)):
             continue
@@ -6332,9 +6411,9 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                 hd_ch, pbe_ch = hd_rows, pbe_mol
             else:
                 hd_ch = [r for r in hd_rows
-                         if ch in pools_of.get(r.get("molecule"), ())]
+                         if ch in pools_of.get(_mol_cf(r.get("molecule")), ())]
                 pbe_ch = {m: v for m, v in pbe_mol.items()
-                          if ch in pools_of.get(m, ())}
+                          if ch in pools_of.get(_mol_cf(m), ())}
             d_map = holdout_density_by_arch_subset(hd_ch,
                                                    key=density_nn_key)
             ttl_d = (f"({letters[3 + j]}) {density_unit_label} vs CCSD, "
@@ -6464,7 +6543,7 @@ def plot_density_parity_by_channel(rows: List[Dict[str, Any]],
     # superset): identical x and y limits on every panel
     row_pairs: List[float] = []
     for r in hd_rows:
-        x = pbe_mol.get(r.get("molecule"))
+        x = pbe_mol.get(_mol_cf(r.get("molecule")))
         y = r.get(nn_key)
         if _is_num(x) and x > 0.0 and _is_num(y) and y > 0.0:
             row_pairs.extend((float(x), float(y)))
@@ -6480,9 +6559,9 @@ def plot_density_parity_by_channel(rows: List[Dict[str, Any]],
                 hd_ch, pbe_ch = hd_rows, pbe_mol
             else:
                 hd_ch = [r for r in hd_rows
-                         if ch in pools_of.get(r.get("molecule"), ())]
+                         if ch in pools_of.get(_mol_cf(r.get("molecule")), ())]
                 pbe_ch = {m: v for m, v in pbe_mol.items()
-                          if ch in pools_of.get(m, ())}
+                          if ch in pools_of.get(_mol_cf(m), ())}
             _density_parity_panel(ax, hd_ch, pbe_ch, nn_key=nn_key,
                                   unit_label=unit_label, limits=row_limits)
             ax.set_title(f"({'ABC'[j]}) {lab} species -- "
@@ -8404,7 +8483,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 r for r in rows if r.get("pool") == ch]
             ch_hd = hd_rows if ch == "combined" else [
                 r for r in hd_rows
-                if ch in pools_of.get(r.get("molecule"), ())]
+                if ch in pools_of.get(_mol_cf(r.get("molecule")), ())]
             counts3[leg] = (_cell_counts(ch_rows, "abs_error_nn_kcalmol"),
                             _cell_counts(ch_hd, "density_rmse"),
                             _cell_counts(ch_rows, "abs_error_pbe_kcalmol"))

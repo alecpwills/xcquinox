@@ -54,7 +54,8 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
     It is matched on the NN side by the IDENTICAL aggregation in
     ``oneshot._nn_fx_local_uks`` (also ``0.5*(fx_a+fx_b)`` at the same
     sigma_eff), so a PBE-faithful functional drives the anchor loss to ~0
-    (verified bit-for-bit). It is deliberately NOT the energy-density-weighted
+    (verified to 2 ulps; bit-exact in a fresh process, up to 4.44e-16 on ~2%
+    of rows under prior XLA state -- see test_pbe_anchor). It is deliberately NOT the energy-density-weighted
     combination ``0.5*[(1+zeta)^{4/3} F_a + (1-zeta)^{4/3} F_b]`` that would
     reproduce the TOTAL spin-polarized E_x: that weighting already lives in the
     PRODUCTION exchange ENERGY (``split_exc_energy_uks`` evaluates

@@ -3578,7 +3578,8 @@ def test_pbe_anchor_coverage_warning_flags_set_divergence():
     tab = {"HO": {"density_rmse_pbe": 8e-4},
            "CH4": {"density_rmse_pbe": 3e-4}}
     warn = fig._pbe_anchor_coverage_warning(rows, tab)
-    assert "CH4" in warn
+    # Species names are reported in the canonical casefolded key.
+    assert "ch4" in warn
     # matched sets -> silent (table and inline variants)
     assert fig._pbe_anchor_coverage_warning(
         rows, {"HO": {"density_rmse_pbe": 8e-4}}) == ""
@@ -3586,7 +3587,7 @@ def test_pbe_anchor_coverage_warning_flags_set_divergence():
     # inline divergence: PBE column present where the NN channel failed
     rows2 = rows + [{"arch": "deep", "subset_size": 1, "molecule": "F2",
                      "density_rmse": None, "density_rmse_pbe": 5e-4}]
-    assert "F2" in fig._pbe_anchor_coverage_warning(rows2, None)
+    assert "f2" in fig._pbe_anchor_coverage_warning(rows2, None)
 
 
 def test_plot_combined_energy_density_renders(tmp_path):
@@ -3808,10 +3809,13 @@ def test_species_pools_maps_overlap():
         {"pool": None, "reactants": ["ghost"], "products": []},
     ]
     m = fig._species_pools(rows)
-    assert m["HO"] == {"bh76", "w411"}          # overlap species: both channels
-    assert m["HOh_ts"] == {"bh76"}
+    # Keys are casefolded (one entry per physical species; 'h2'/'H2' twins
+    # coincide) -- look up with _mol_cf.
+    assert m["ho"] == {"bh76", "w411"}          # overlap species: both channels
+    assert m["hoh_ts"] == {"bh76"}
     assert m["o"] == {"w411"}
     assert "ghost" not in m                     # pool-less rows ignored
+    assert "HO" not in m                        # raw-cased keys are gone
 
 
 def test_channel_ed_summaries_per_channel_gammas(tmp_path):
@@ -4071,7 +4075,8 @@ def test_build_discloses_eps_anchor_only_species(tmp_path, capsys):
         pm.write_text(json.dumps(rows))
     fig.build_density_energy_figures(run, tmp_path / "f")
     printed = capsys.readouterr().out
-    assert "DFS-units ED eps anchor:" in printed and "OF2" in printed
+    # Species names surface in the canonical casefolded key.
+    assert "DFS-units ED eps anchor:" in printed and "of2" in printed
     assert "DFS-units ED eps cells:" not in printed
 
 
@@ -6689,3 +6694,113 @@ def test_density_energy_builder_takes_the_restriction(tmp_path, monkeypatch):
     fig.build_density_energy_figures(run, tmp_path / "de", archs=("deep",))
     assert seen["archs"] == ["deep"]
     assert "Architectures rendered: deep." in seen["note"]
+
+
+# ---------------------------------------------------------------------------
+# Identity/casefold dedup at the figure reductions (B2)
+# ---------------------------------------------------------------------------
+
+def test_reaction_mae_by_arch_subset_dedups_identity_twins():
+    """Permuted-reactant twins (different names, one species multiset --
+    production BH76 carries 4 such pairs) count ONCE per cell, like the
+    exact-name duplicates already did."""
+    rows = [
+        {"arch": "deep", "subset_size": 1, "name": "bh76_a_b_to_ts",
+         "reactants": ["a", "b"], "products": ["ts"],
+         "coeffs": [-1.0, -1.0, 1.0], "abs_error_nn_kcalmol": 2.0},
+        {"arch": "deep", "subset_size": 1, "name": "bh76_b_a_to_ts",
+         "reactants": ["b", "a"], "products": ["ts"],
+         "coeffs": [-1.0, -1.0, 1.0], "abs_error_nn_kcalmol": 2.0},
+        {"arch": "deep", "subset_size": 1, "name": "other",
+         "reactants": ["a"], "products": ["b"],
+         "coeffs": [-1.0, 1.0], "abs_error_nn_kcalmol": 8.0},
+    ]
+    mae = fig.reaction_mae_by_arch_subset(rows)
+    assert mae[("deep", 1)] == pytest.approx((2.0 + 8.0) / 2, rel=1e-12), (
+        f"twin double-count: got {mae[('deep', 1)]}, want 5.0")
+
+
+def test_pbe_density_baseline_dedups_case_twins():
+    """Case twins of one molecule (BH76 'h2' vs W4-11 'H2'; production:
+    199 rows -> 189 casefolded species) average WITHIN the species before
+    the pool mean."""
+    rows = [
+        {"molecule": "H2", "density_rmse_pbe": 0.2},
+        {"molecule": "h2", "density_rmse_pbe": 0.4},
+        {"molecule": "o", "density_rmse_pbe": 0.6},
+    ]
+    base = fig.pbe_density_baseline(rows)
+    assert base == pytest.approx(((0.2 + 0.4) / 2 + 0.6) / 2, rel=1e-12), (
+        f"case-twin double-count: got {base}, want 0.45")
+
+
+def test_pbe_density_by_cell_dedups_case_twins():
+    """The per-cell PBE density anchor counts a case-twin species once."""
+    rows = [
+        {"arch": "deep", "subset_size": 1, "molecule": "H2",
+         "density_rmse_pbe": 0.2},
+        {"arch": "deep", "subset_size": 1, "molecule": "h2",
+         "density_rmse_pbe": 0.4},
+        {"arch": "deep", "subset_size": 1, "molecule": "o",
+         "density_rmse_pbe": 0.6},
+    ]
+    cell = fig.pbe_density_by_cell(rows)
+    assert cell[("deep", 1)] == pytest.approx(0.45, rel=1e-12)
+
+
+def test_holdout_density_cell_means_dedup_case_twins():
+    """The per-arch NN density line averages a case-twin species once per
+    cell (within-species mean first, then across species)."""
+    rows = [
+        {"arch": "deep", "subset_size": 1, "molecule": "H2",
+         "density_rmse": 0.2},
+        {"arch": "deep", "subset_size": 1, "molecule": "h2",
+         "density_rmse": 0.4},
+        {"arch": "deep", "subset_size": 1, "molecule": "o",
+         "density_rmse": 0.6},
+    ]
+    pts = fig.holdout_density_cell_points(rows, "deep")
+    assert pts == [(1, pytest.approx(0.45, rel=1e-12), 2)], pts
+
+
+def test_collect_holdout_density_drops_supervised_rows(tmp_path):
+    """Rows the eval flagged from_training_subset=True are supervised
+    species and must not enter the held-out density means (production
+    ss=26 cells carried 18 such species inside the mean)."""
+    run = _make_run_dir(tmp_path)
+    sd = run / "checkpoints" / "spec_0000" / "eval_holdout"
+    (sd / "per_molecule.json").write_text(json.dumps([
+        {"molecule": "co2", "density_rmse": 1e-3, "density_rmse_pbe": 2e-3,
+         "from_training_subset": True},
+        {"molecule": "hcl", "density_rmse": 3e-3, "density_rmse_pbe": 4e-3,
+         "from_training_subset": False},
+    ]))
+    rows = fig.collect_holdout_density_rows(run)
+    mols = {r["molecule"] for r in rows}
+    assert "hcl" in mols
+    assert "co2" not in mols, "supervised species leaked into density rows"
+
+
+def test_val_identities_refuse_missing_record_on_validation_run(tmp_path):
+    """A run that trained with a validation slice (val-best channel on disk)
+    but lost its validation/val_reactions.json must refuse to render rather
+    than silently drawing a different slice; a pre-validation run (no
+    val-best channel) still renders with the empty set."""
+    run = _make_run_dir(tmp_path)
+    # Pre-validation shape: no val-best channels anywhere -> empty set, no error.
+    assert fig._val_reaction_identities(run) == set()
+    # Validation-trained shape without the record -> hard refusal.
+    vb = run / "checkpoints" / "spec_0000" / "eval_holdout_val_best"
+    vb.mkdir()
+    (vb / "test_set.csv").write_text("set,mae\n")
+    fig._VAL_IDENTITY_CACHE.clear()
+    with pytest.raises(RuntimeError, match="val_reactions.json"):
+        fig._val_reaction_identities(run)
+    # With the record staged, identities resolve.
+    vdir = run / "validation"
+    vdir.mkdir()
+    (vdir / "val_reactions.json").write_text(json.dumps([
+        {"name": "bh76_x", "reactants": ["a", "b"], "products": ["ts"]}]))
+    fig._VAL_IDENTITY_CACHE.clear()
+    ids = fig._val_reaction_identities(run)
+    assert ids == {(("a", "b"), ("ts",))}

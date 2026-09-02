@@ -459,17 +459,19 @@ def test_anchor_is_round_off_with_pbe_exchange_through_the_anchor_path(
     density, the undoubled channel density or a differently scaled sigma would
     differ from the PBE target by O(1e-2) or more.
 
-    Measured: the difference is exactly 0.0 on every row (O 4504, H2 4616;
-    also OH 6846 and H2O 9146 grid rows and the 200-point production sample).
-    The agreement is exact rather than round-off because the two sides call
-    the same libxc kernel on bitwise identical ``(2 rho_sigma,
-    sigma_sigma_eff)`` rows -- the XLA-formed rows of ``_nn_fx_local_uks``
-    match the numpy-formed rows of ``_pbe_fx_libxc`` bit for bit on all 25,112
-    grid rows and on the synthetic sample -- and divide by the same
-    ``np.power`` LDA denominator. The 1e-13 bound is the durable form of that
+    Measured: agreement to at most 2 ulps (4.44e-16). Run alone, the
+    difference is exactly 0.0 on every row (O 4504, H2 4616; also OH 6846
+    and H2O 9146 grid rows and the 200-point production sample) -- the two
+    sides call the same libxc kernel on bitwise identical ``(2 rho_sigma,
+    sigma_sigma_eff)`` rows and divide by the same ``np.power`` LDA
+    denominator -- but the XLA-formed rows of ``_nn_fx_local_uks`` are
+    PROCESS-STATE-DEPENDENT: with other suites in the same pytest process
+    (test_constraints + test_descriptors ahead of this file) 101/4504 O rows
+    and 105/4616 H2 rows land 2 ulps off, so bit-exactness is not a durable
+    contract and is not asserted. The 1e-13 bound is the durable form of the
     agreement: it sits thirteen orders below the 0.79 max abs(dF_x) (anchor
-    0.197 at weight 1) that a random descriptor-free network gives on the same
-    O rows.
+    0.197 at weight 1) that a random descriptor-free network gives on the
+    same O rows.
     """
     import dataclasses
     import xcquinox.alec as alec
@@ -486,11 +488,10 @@ def test_anchor_is_round_off_with_pbe_exchange_through_the_anchor_path(
                                      sample.s))
     assert np.all(np.isfinite(fx))
     diff = np.abs(fx - np.asarray(sample.Fx_target))
-    assert np.max(diff) < 1e-13
-    n_differing = int(np.count_nonzero(diff))
-    assert n_differing == 0, (
-        f"{n_differing} of {diff.size} rows differ, max abs(dF_x) = "
-        f"{float(np.max(diff)):.3e}; the two sides are expected to agree to "
-        "the bit (same libxc call, bitwise identical channel rows, same "
-        "np.power LDA denominator)")
+    # 2-ulp ceiling: bit-exact when this file runs alone, up to 4.44e-16 on
+    # ~2% of rows when other suites' XLA state precedes it in the process.
+    assert np.max(diff) < 1e-13, (
+        f"max abs(dF_x) = {float(np.max(diff)):.3e}; the two sides call the "
+        "same libxc kernel at the same doubled-channel rows and must agree "
+        "to round-off")
     assert float(_anchor_term(model, sample, 1.0)) < 1e-26
