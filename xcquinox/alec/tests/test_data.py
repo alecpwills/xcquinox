@@ -2571,3 +2571,25 @@ def test_c2_pbe_reference_lands_on_the_ground_scf_branch():
     assert data_mod._REFERENCE_SCF_MAX_CYCLE < cycles <= (
         data_mod._REFERENCE_SCF_MAX_CYCLE
         + 2 * data_mod._REFERENCE_SCF_NEWTON_MAX_CYCLE), cycles
+
+
+def test_load_external_data_returns_stored_pbe_density(tmp_path):
+    """A benchmark-refs .npz's rho_pbe_grid (the reference calculation's own
+    PBE density, DF- and orientation-consistent with rho_ref_grid) is
+    RETURNED, not discarded: the model-free PBE baseline must compare the
+    reference against the PBE density of the SAME provenance, not against a
+    locally recomputed twin (measured 0.39 percent apart on c2)."""
+    from xcquinox.alec.data import _load_external_data
+    path = str(tmp_path / "bench.npz")
+    rho_ref = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    rho_pbe = rho_ref * 1.01
+    np.savez(path, rho_ref_grid=rho_ref, rho_pbe_grid=rho_pbe,
+             ref_density_method=np.array("ccsd"))
+    out = _load_external_data(
+        path, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
+        vxc_pbe_shape=(2, 2), mol_name="c2", grid_level=1,
+    )
+    assert len(out) == 6, "loader must return the stored PBE density"
+    rho_pbe_ref = out[5]
+    assert rho_pbe_ref is not None
+    np.testing.assert_allclose(np.asarray(rho_pbe_ref), rho_pbe)

@@ -1898,3 +1898,24 @@ def test_run_scf_escalation_keeps_first_attempt_grid(tmp_path, monkeypatch):
     assert payload["n_grid"] == seen["stub_size"] - 7
     assert payload["grid_weights"].size == payload["n_grid"]
     assert payload["grid_coords"].shape == (payload["n_grid"], 3)
+
+
+def test_require_ccsd_converged_refuses_unconverged():
+    """An unconverged CCSD must refuse before any density write: make_rdm1
+    on unconverged amplitudes has no stated accuracy and nothing downstream
+    can detect it (the npz carries no residual)."""
+    from xcquinox.alec.external_refs import _require_ccsd_converged
+
+    class _CC:
+        def __init__(self, ok):
+            self.converged = ok
+
+    with pytest.raises(RuntimeError, match="c2"):
+        _require_ccsd_converged(_CC(False), "c2")
+    _require_ccsd_converged(_CC(True), "c2")  # no raise
+
+    class _NoAttr:
+        pass
+
+    with pytest.raises(RuntimeError, match="did not converge"):
+        _require_ccsd_converged(_NoAttr(), "h2o")

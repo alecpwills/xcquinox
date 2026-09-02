@@ -116,6 +116,7 @@ _PAD_AO_ZERO_BLOCK = ("dm_pbe", "dm_seed", "j_matrix", "vxc_pbe", "dm_target",
                       "vxc_ref")
 # grid-only fields holding FINITE per-point data (edge-padded, weight-0 rows)
 _PAD_GRID_EDGE = ("rho_grid", "sigma_grid", "nabla_rho_grid", "rho_ref_grid",
+                  "rho_pbe_ref_grid",
                   "cusp_features", "dm_features", "rung35_features",
                   "rung35ms_features", "metagga_features",
                   # Per-spin-channel blocks of diag(P_sigma, P_sigma). Same

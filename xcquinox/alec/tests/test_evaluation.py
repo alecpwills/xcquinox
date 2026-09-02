@@ -1095,3 +1095,29 @@ def test_density_rmse_metric_emits_pbe_channel(tiny_model, h2o_data):
     no_ref["rho_ref_grid"] = None
     out_no_ref = m.compute(tiny_model, no_ref)
     assert out_no_ref["density_rmse_pbe"] is None
+
+
+def test_pbe_density_legs_prefer_stored_reference_twin():
+    """When mol_data carries rho_pbe_ref_grid (the reference calculation's
+    own PBE density), both model-free PBE legs use IT against rho_ref_grid,
+    not the locally recomputed rho_grid -- the two PBE densities differ by
+    provenance (DF vs full-ERI Coulomb, grid drift; 0.39 percent on c2), and
+    that difference is not a PBE-vs-CCSD error."""
+    import jax.numpy as jnp
+    from xcquinox.alec.evaluation import pbe_density_errors, pbe_density_eps
+    md = {
+        "rho_ref_grid": jnp.array([1.0, 1.0]),
+        "rho_grid": jnp.array([1.5, 0.5]),          # local twin: |diff| 0.5
+        "rho_pbe_ref_grid": jnp.array([1.2, 0.8]),  # stored twin: |diff| 0.2
+        "grid_weights": jnp.array([3.0, 1.0]),
+    }
+    rmse, l1 = pbe_density_errors(md)
+    assert rmse == pytest.approx(0.2)
+    assert l1 == pytest.approx(0.2)
+    eps, n_e, wsum = pbe_density_eps(md)
+    # eps = sum(w |rho_pbe_ref - rho_ref|) / sum(w rho_ref) = (0.6+0.2)/4
+    assert eps == pytest.approx(0.2)
+    # Fallback unchanged without the stored twin.
+    md2 = {k: v for k, v in md.items() if k != "rho_pbe_ref_grid"}
+    rmse2, _ = pbe_density_errors(md2)
+    assert rmse2 == pytest.approx(0.5)

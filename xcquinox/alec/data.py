@@ -45,9 +45,12 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     "basis_used",
     # Benchmark density-only refs (xcquinox.alec.benchmark_refs) also carry
     # the generator-side PBE density + grid weights so the model-free
-    # PBE-vs-CCSD baseline is pure npz arithmetic. Shape-validated here but
-    # NOT returned into MoleculeData (the precompute computes its own PBE
-    # quantities on the identical grid).
+    # PBE-vs-CCSD baseline is pure npz arithmetic. rho_pbe_grid is returned
+    # into MoleculeData as rho_pbe_ref_grid -- the PBE twin sharing the
+    # reference's DF setting, grid and orientation -- and the model-free
+    # baseline prefers it over the locally recomputed rho_grid (the two
+    # measured 0.39 percent apart on c2). grid_weights stays informational
+    # (the consumer's own quadrature applies).
     "rho_pbe_grid",
     "grid_weights",
     # Orientation-lock strength the reference density was generated with
@@ -55,6 +58,10 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     # SolverConfig; the demo threads one shared constant to ref-gen + eval so
     # they match. Tolerated here so the loader does not reject a locked ref.
     "orientation_lock_strength",
+    # CCSD-convergence provenance stamp (True by construction where present:
+    # external_refs._require_ccsd_converged refuses an unconverged solve
+    # before any write). Absent on refs generated before the check.
+    "ccsd_converged",
     # Whether the reference was generated with density fitting. Identity
     # guard consumed by benchmark_refs._benchmark_npz_is_complete (a stamped
     # DF reference is never silently reused by a non-DF run or vice versa);
@@ -159,7 +166,13 @@ def _load_external_data(
         if "ref_density_method" in present:
             method_arr = np.asarray(npz["ref_density_method"])
             ref_density_method = str(method_arr.item())
-        # informational benchmark-refs arrays: validate shape, do not return
+        # Benchmark-refs arrays. rho_pbe_grid is the REFERENCE calculation's
+        # own PBE density -- DF-, grid- and orientation-consistent with
+        # rho_ref_grid -- and is RETURNED so the model-free PBE baseline
+        # compares like provenance with like (the locally recomputed
+        # rho_grid twin measured 0.39 percent apart on c2). grid_weights
+        # stays informational: the consumer's own quadrature weights apply.
+        rho_pbe_ref_grid = None
         for grid_key in ("rho_pbe_grid", "grid_weights"):
             if grid_key in present:
                 arr = np.asarray(npz[grid_key])
@@ -169,6 +182,8 @@ def _load_external_data(
                         f"not match rho_grid shape {tuple(rho_pbe_shape)} "
                         f"for {mol_name!r}"
                     )
+                if grid_key == "rho_pbe_grid":
+                    rho_pbe_ref_grid = jnp.array(arr)
 
         E_ref_literature = None
         if "E_ref_literature" in present:
@@ -192,7 +207,8 @@ def _load_external_data(
                 )
             vxc_ref = jnp.array(vxc_arr)
 
-    return dm_target, rho_ref_grid, ref_density_method, E_ref_literature, vxc_ref
+    return (dm_target, rho_ref_grid, ref_density_method, E_ref_literature,
+            vxc_ref, rho_pbe_ref_grid)
 
 
 class MoleculeData(TypedDict, total=True):
@@ -232,6 +248,12 @@ class MoleculeData(TypedDict, total=True):
     E_ref_literature: float | None
     dm_target: jnp.ndarray | None
     rho_ref_grid: jnp.ndarray | None
+    # The reference calculation's own PBE density on the same grid as
+    # rho_ref_grid (benchmark-refs npz "rho_pbe_grid"); None outside
+    # benchmark-density records. The model-free PBE baseline prefers it
+    # over the locally recomputed rho_grid so both densities in the
+    # PBE-vs-reference comparison share one provenance.
+    rho_pbe_ref_grid: jnp.ndarray | None
     ref_density_method: str | None
     vxc_ref: jnp.ndarray | None
     rho_grid: jnp.ndarray
@@ -1448,8 +1470,10 @@ def precompute_fixed_density_data(
     ref_density_method = None
     E_ref_literature = None
     vxc_ref = None
+    rho_pbe_ref_grid = None
     if mol_spec.external_data_path is not None:
-        dm_target, rho_ref_grid, ref_density_method, E_ref_literature, vxc_ref = _load_external_data(
+        (dm_target, rho_ref_grid, ref_density_method, E_ref_literature,
+         vxc_ref, rho_pbe_ref_grid) = _load_external_data(
             mol_spec.external_data_path,
             dm_pbe_shape=tuple(np.asarray(dm_pbe).shape),
             rho_pbe_shape=tuple(np.asarray(rho_pbe).shape),
@@ -1514,6 +1538,7 @@ def precompute_fixed_density_data(
         E_ref_literature=E_ref_literature,
         dm_target=dm_target,
         rho_ref_grid=rho_ref_grid,
+        rho_pbe_ref_grid=rho_pbe_ref_grid,
         ref_density_method=ref_density_method,
         vxc_ref=vxc_ref,
         rho_grid=jnp.array(rho_pbe),

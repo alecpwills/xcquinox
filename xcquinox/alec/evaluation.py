@@ -170,7 +170,14 @@ def pbe_density_errors(mol_data) -> tuple:
     rho_ref = mol_data.get("rho_ref_grid")
     if rho_ref is None:
         return None, None
-    rho_pbe = jnp.asarray(mol_data["rho_grid"])
+    # Prefer the reference calculation's own PBE density (same DF setting,
+    # grid and orientation as rho_ref_grid) over the locally recomputed
+    # rho_grid: the two PBE twins measured 0.39 percent apart on c2, and
+    # that provenance difference is not a PBE-vs-reference error.
+    rho_pbe = mol_data.get("rho_pbe_ref_grid")
+    if rho_pbe is None:
+        rho_pbe = mol_data["rho_grid"]
+    rho_pbe = jnp.asarray(rho_pbe)
     rho_ref = jnp.asarray(rho_ref)
     if rho_pbe.shape != rho_ref.shape:
         raise ValueError(
@@ -217,7 +224,10 @@ def pbe_density_eps(mol_data) -> tuple:
     rho_ref = mol_data.get("rho_ref_grid")
     if rho_ref is None:
         return None, None, None
-    return density_eps_terms(mol_data["rho_grid"], rho_ref,
+    rho_pbe = mol_data.get("rho_pbe_ref_grid")
+    if rho_pbe is None:
+        rho_pbe = mol_data["rho_grid"]
+    return density_eps_terms(rho_pbe, rho_ref,
                              mol_data["grid_weights"])
 
 

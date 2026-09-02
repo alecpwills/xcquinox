@@ -645,6 +645,23 @@ def run_scf_with_cache(
     return result
 
 
+def _require_ccsd_converged(mycc, name: str) -> None:
+    """Refuse an unconverged CCSD amplitude solve.
+
+    ``make_rdm1`` on unconverged amplitudes returns a density with no
+    stated accuracy, and nothing downstream can detect it (the npz carries
+    no residual). The reference layer's contract is fail-loud, matching
+    the reference-SCF refusal in ``data.precompute_fixed_density_data``.
+    Caches written before this check exist carry no ``ccsd_converged``
+    stamp; ones written after it are converged by construction."""
+    if not bool(getattr(mycc, "converged", False)):
+        raise RuntimeError(
+            f"CCSD did not converge for {name!r}; refusing to write a "
+            f"reference density from unconverged amplitudes. Raise "
+            f"max_cycle / adjust the system before regenerating."
+        )
+
+
 def run_ccsd_with_cache(
     spec: SpeciesEntry,
     atoms,
@@ -741,6 +758,7 @@ def run_ccsd_with_cache(
         from pyscf.cc import ccsd
         mycc = ccsd.RCCSD(mf_hf)
     mycc.kernel()
+    _require_ccsd_converged(mycc, spec.name)
     dm_cc = np.asarray(mycc.make_rdm1(ao_repr=True))
 
     # Spin-sum the AO-basis DM for grid evaluation.  The unrestricted DM
@@ -763,6 +781,9 @@ def run_ccsd_with_cache(
         "rho_ref_grid": rho_ref_grid,
         "grid_weights": grid_weights,
         "ao_grid": ao_grid,
+        # Provenance stamp: True by construction (unconverged CCSD refuses
+        # above). Caches without the key predate the convergence check.
+        "ccsd_converged": np.array(True),
     }
     # Atomic write: temp file + os.replace.
     import os

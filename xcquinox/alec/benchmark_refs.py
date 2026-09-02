@@ -241,6 +241,10 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
         basis_used=np.array(str(basis)),
         orientation_lock_strength=np.array(float(orientation_lock_strength)),
         density_fit_used=np.array(bool(density_fit)),
+        # Optional provenance stamp (True by construction: an unconverged
+        # CCSD refuses in external_refs._require_ccsd_converged). NOT in
+        # _DENSITY_NPZ_KEYS: files written before the check stay valid.
+        ccsd_converged=np.array(True),
     )
     return "OK"
 
