@@ -504,18 +504,30 @@ def test_spin_boundary_fallback_is_the_channel_limit():
     F_x(s) produced a 0.316 jump there: 1.460996 at zeta = 1 - 1e-12 vs
     1.145212 on the fallback branch)."""
     from xcquinox.alec.pbe_anchor import _pbe_fx_libxc
-    near = float(_pbe_fx_libxc(
-        np.array([0.1 * (1 + (1 - 1e-12)) / 2]),
-        np.array([0.1 * (1 - (1 - 1e-12)) / 2]),
-        np.array([1.0]))[0])
-    at = float(_pbe_fx_libxc(
-        np.array([0.1]), np.array([0.0]), np.array([1.0]))[0])
-    assert abs(near - at) < 1e-5, (
-        f"fallback discontinuity at the spin boundary: "
-        f"F(zeta->1) = {near:.6f} vs F(zeta=1) = {at:.6f}")
-    # The zeta = 0 (rho_tot -> 0) leg is unchanged: s_sigma = s there.
-    lo = float(_pbe_fx_libxc(
-        np.array([5e-301]), np.array([5e-301]), np.array([1.0]))[0])
+    def F(one_minus_zeta, s=1.0, rho_tot=0.1):
+        z = 1.0 - one_minus_zeta
+        return float(_pbe_fx_libxc(
+            np.array([rho_tot * (1 + z) / 2]),
+            np.array([rho_tot * (1 - z) / 2]),
+            np.array([s]))[0])
+
+    at = F(0.0)
+    # Continuity through the WHOLE approach, including the libxc
+    # dense-floor window (2.5e-90 < 2 rho_sigma <= 2e-15) where the raw
+    # ratio read -0.0 and the pre-correction value jumped by 0.90 at
+    # 1-zeta = 1e-14 while the boundary pair (1e-12 vs 0) agreed.
+    for omz in (1e-12, 1e-13, 1e-14, 1e-16, 1e-30):
+        near = F(omz)
+        assert abs(near - at) < 1e-5, (
+            f"fallback discontinuity at 1-zeta={omz:g}: "
+            f"F = {near:.6f} vs F(zeta=1) = {at:.6f}")
+    # The zeta = 0 (rho_tot -> 0) leg: s_sigma = s there, at round-off
+    # densities AND inside the libxc dense-floor window.
     from xcquinox.alec.pbe_anchor import _fx_pbe_analytic
-    assert lo == pytest.approx(float(_fx_pbe_analytic(np.array([1.0]))[0]),
-                               rel=1e-6)
+    fx_s1 = float(_fx_pbe_analytic(np.array([1.0]))[0])
+    for rho_tot in (5e-301 * 2, 1e-16, 1e-15):
+        lo = float(_pbe_fx_libxc(
+            np.array([rho_tot / 2]), np.array([rho_tot / 2]),
+            np.array([1.0]))[0])
+        assert lo == pytest.approx(fx_s1, rel=1e-6), (
+            f"rho_tot={rho_tot:g}: {lo} vs analytic {fx_s1}")

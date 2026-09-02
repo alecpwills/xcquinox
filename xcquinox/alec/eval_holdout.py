@@ -1319,8 +1319,9 @@ def _n_nan_union(energies_ha: Dict[str, float],
     NN or the PBE metric, i.e. the union. The two metrics can drop DIFFERENT
     reactions, so max(n_nan_nn, n_nan_pbe) undercounts the true dropped set.
     Identity units match ``reaction_mae_kcalmol``'s ``n_used`` -- one CSV row
-    must not mix identity counts with row counts (rows within one identity
-    share a species multiset, hence share energy availability)."""
+    must not mix identity counts with row counts. An identity is dropped
+    only when NO row of it is finite on both legs (matching the mean, which
+    averages whatever finite rows an identity has)."""
     from xcquinox.alec.species_matching import reaction_identity_keys
     nn = list(per_reaction_errors(energies_ha, reactions))
     pb = list(per_reaction_errors(pbe_energies_ha, reactions))

@@ -31,18 +31,22 @@ _RHO_FLOOR_INTEGRATION = 1e-18
 
 
 class PretrainDiverged(RuntimeError):
-    """Raised when a validated pretraining recorded no finite validation score.
+    """Raised when a validated pretraining recorded no finite
+    POST-INITIALIZATION validation score.
 
-    Every score being non-finite means the fit left the region where the
-    objective is defined -- a learning rate above the stability bound, or a
-    target column carrying a non-finite entry. The best-model bookkeeping
-    starts at ``inf`` and a non-finite score never improves on it, so the
-    network such a loop would hand back is the UNTRAINED initialization,
-    carrying ``best_step`` 0 in a record that otherwise looks ordinary.
-    Serializing it would put a random network behind the training stage's
-    ``xnet.eqx``, where only the Section 3.3 certificate could still catch it,
-    so :func:`run_pretrain` raises instead and leaves no final checkpoint of
-    its own; the scores it did see are written to ``pretrain_failed.json``.
+    Every training-step score being non-finite means the fit left the region
+    where the objective is defined -- a learning rate above the stability
+    bound, or a target column carrying a non-finite entry -- and training
+    produced nothing usable, so the network such a loop would hand back is
+    the UNTRAINED initialization. (The step-0 record scores the incoming
+    model; ``best_step`` 0 with a FINITE ``best_value`` is a legitimate
+    anchored result where the initialization stayed best against finite
+    later scores, and is NOT this condition.) Serializing a diverged run's
+    product would put a random network behind the training stage's
+    ``xnet.eqx``, where only the Section 3.3 certificate could still catch
+    it, so :func:`run_pretrain` raises instead, removes the step-0-written
+    val-best checkpoint, and leaves no final checkpoint of its own; the
+    scores it did see are written to ``pretrain_failed.json``.
     """
 
 
@@ -607,7 +611,14 @@ def _train_pretrain_network(model, optimizer, loss_train, desc_train,
     onward cannot select it (``best_step`` 0 with a FINITE ``best_value``
     means the incoming model won). When ``checkpoint_path`` is given the best
     model is written there at every improvement, so a job that dies mid-run
-    leaves its best weights on disk. A non-finite score never counts as an
+    leaves its best weights on disk. Because step 0 is scored, the patience
+    counter can start accruing at the FIRST in-loop validation: a fit that
+    never improves on its initialization stops after ``patience`` intervals
+    (``patience * validate_every`` steps), one interval earlier than the
+    pre-step-0 schedule -- on the production anchored schedule (2500 steps,
+    validate_every 50, patience 10) such a fit stops at step 500 and ships
+    the initialization, which for an anchored architecture is the exact
+    optimum of this objective. A non-finite score never counts as an
     improvement; a run whose every score is non-finite therefore leaves
     ``best_step`` 0 and a NON-FINITE ``best_value``, and the model it returns
     is the incoming (untrained) one. That state is a diverged fit, not a
@@ -1637,9 +1648,13 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         validation_record["x"] = record_x
         # Before anything is serialized: a fit that never scored a finite
         # validation would write its untrained initialization here.
-        _refuse_a_diverged_fit(record_x, network="xnet",
-                               arch_name=spec.arch.name,
-                               checkpoint_dir=checkpoint_dir)
+        _refuse_a_diverged_fit(
+            record_x, network="xnet", arch_name=spec.arch.name,
+            checkpoint_dir=checkpoint_dir,
+            # Step-0 scoring writes the initialization to the val-best
+            # path before any refusal can fire; a refused run must not
+            # leave that untrained network behind for the pull to carry.
+            also_remove=(os.path.join(xnet_ckpt_dir, "xnet_val_best.eqx"),))
         fit_x = (lx_tr, dx_tr, fx_tr)
     else:
         xnet_trained, losses_x, _unvalidated_x = _train_pretrain_network(
@@ -1681,10 +1696,12 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # The xnet was serialized above so a job that dies in the cnet phase
         # keeps it; a DIVERGED cnet is not that case -- the run has no product
         # -- so the half-pair it would leave behind is removed with it.
-        _refuse_a_diverged_fit(record_c, network="cnet",
-                               arch_name=spec.arch.name,
-                               checkpoint_dir=checkpoint_dir,
-                               also_remove=(xnet_path,))
+        _refuse_a_diverged_fit(
+            record_c, network="cnet", arch_name=spec.arch.name,
+            checkpoint_dir=checkpoint_dir,
+            also_remove=(xnet_path,
+                         os.path.join(xnet_ckpt_dir, "xnet_val_best.eqx"),
+                         os.path.join(cnet_ckpt_dir, "cnet_val_best.eqx")))
         fit_c = (lc_tr, dc_tr, fc_tr)
     else:
         cnet_trained, losses_c, _unvalidated_c = _train_pretrain_network(

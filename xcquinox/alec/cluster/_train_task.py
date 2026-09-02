@@ -483,8 +483,8 @@ def main(argv=None) -> int:
     try:
         width = _read_width(run_dir)
     except Exception as exc:  # noqa: BLE001 - any manifest defect is fatal here
-        _log(f"cannot read manifest width for {run_dir}: {exc!r}; "
-             "run repair-manifest and resubmit")
+        _log(idx, f"cannot read manifest width for {run_dir}: {exc!r}; "
+                  "run repair-manifest and resubmit")
         return 2
     spec_path = _spec_path(run_dir, idx, width)
     checkpoint_dir = _checkpoint_dir(run_dir, idx, width)

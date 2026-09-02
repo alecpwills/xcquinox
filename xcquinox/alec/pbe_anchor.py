@@ -113,6 +113,10 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
     # finite s (F_x(1e8) = 1 + kappa to double precision); the tiny floor
     # only routes the exactly-empty channel onto that saturated branch.
     _s_cap = 1.0e8
+    # libxc GGA_X_PBE (spin=0) returns exactly 0 below this doubled-channel
+    # density (bisected at 2.0e-15); the analytic fallback takes over above
+    # round-off but below it.
+    _LIBXC_DENSE_FLOOR = 1.0e-14
     frac_a = np.clip(1.0 + zeta, 1e-15, None)
     frac_b = np.clip(1.0 - zeta, 1e-15, None)
     s_chan_a = np.minimum(s_arr * frac_a ** (-1.0 / 3.0), _s_cap)
@@ -140,9 +144,17 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
         # the CHANNEL's own s_sigma (NOT the total-density F_x(s), whose
         # value is wrong for an emptying channel -- its own gradient
         # diverges and F_x -> 1 + kappa; and NOT the pre-fix F_x = 1,
-        # which biased the target toward UEG at every boundary).
+        # which biased the target toward UEG at every boundary). The
+        # fallback ALSO engages below libxc's own dense-density floor:
+        # GGA_X_PBE (spin=0) returns exactly 0 for rho <= 2e-15 (bisected)
+        # while the analytic ex_lda stays finite, so the raw ratio reads
+        # -0.0 across (2.5e-90, 2e-15] and a channel there contributed
+        # nothing instead of its limit (a 0.90 jump two decades inside the
+        # boundary). 1e-14 sits above that floor with margin; F_x is
+        # rho-independent at fixed s_sigma, so the branch is seamless.
         return np.where(
-            np.abs(ex_lda_per_e) > 1e-30,
+            (rho_spin_doubled > _LIBXC_DENSE_FLOOR)
+            & (np.abs(ex_lda_per_e) > 1e-30),
             ex_per_e / ex_lda_per_e,
             fallback_fx,
         )

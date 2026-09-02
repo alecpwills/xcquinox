@@ -3082,6 +3082,18 @@ def test_run_level_empty_allowlist_regularizes_nothing():
     )
     groups = _training_groups(spec)
     assert all(not g["label"].startswith("anchor:") for g in groups)
+    # The absence above needs a positive control: the SAME molecules under
+    # ('H',) DO derive an anchor group (an unconfigured None also derives
+    # none at this layer, so absence alone cannot distinguish () from None).
+    spec_h = TrainingSpec.from_dicts(
+        arch=_make_arch(), molecules=(h_atom(), h2_molecule()),
+        targets={"H": -0.5, "H2": 0.17}, atom_energies={"H": -0.5},
+        loss_name="L5_gradnorm_vxc_step7",
+        loss_kwargs={"bh76_reactions": [rxn],
+                     "regularize_atom_syms": ("H",)},
+        update_scheme="per_molecule", require_atom_anchors=False,
+    )
+    assert any(g["label"] == "anchor:H" for g in _training_groups(spec_h))
     g = next(gr for gr in groups if gr["label"] == "bh76:r1")
     batch = {"mol_data": tuple({} for _ in spec.molecules),
              "targets": spec.targets_dict,

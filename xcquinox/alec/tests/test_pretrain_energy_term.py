@@ -1194,6 +1194,10 @@ def test_run_pretrain_refuses_a_diverged_fit_and_writes_no_checkpoint(
                            validation_seed=3, validate_every=1, patience=2))
     assert not (ck / "xnet.eqx").exists()
     assert not (ck / "cnet.eqx").exists()
+    # Step-0 scoring writes the initialization to the val-best path before
+    # the refusal fires; a refused run must not leave that untrained
+    # network behind (the summaries pull carries xnet/xnet_val_best.eqx).
+    assert not (ck / "xnet" / "xnet_val_best.eqx").exists()
     failure = json.loads((ck / "pretrain_failed.json").read_text())
     assert failure["network"] == "xnet"
     assert failure["n_validations"] == 2
@@ -1223,6 +1227,8 @@ def test_a_diverged_correlation_fit_takes_the_exchange_checkpoint_with_it(
                            validation_seed=3, validate_every=1, patience=2))
     assert not (ck / "xnet.eqx").exists()
     assert not (ck / "cnet.eqx").exists()
+    assert not (ck / "xnet" / "xnet_val_best.eqx").exists()
+    assert not (ck / "cnet" / "cnet_val_best.eqx").exists()
     assert json.loads((ck / "pretrain_failed.json").read_text())["network"] \
         == "cnet"
 

@@ -770,3 +770,26 @@ def test_certificate_classifications_are_deterministic_not_retryable():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_missing_manifest_refuses_with_exit_2_and_the_cause(tmp_path, capsys):
+    """The structural refusal must actually EXECUTE: a run dir without a
+    readable manifest.json exits 2 with the cause named on stdout. The
+    first-landed version of this path crashed on its own log call
+    (TypeError: _log() missing 'message'), mapping to the unhandled exit 1
+    and burning attempt_cap resubmits -- a refusal path that had never run
+    once."""
+    empty = tmp_path / "no_manifest_run"
+    empty.mkdir()
+    rc = tt.main([str(empty), "0"])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "cannot read manifest width" in out
+    assert "repair-manifest" in out
+
+    corrupt = tmp_path / "bad_manifest_run"
+    corrupt.mkdir()
+    (corrupt / "manifest.json").write_text("{not json")
+    rc2 = tt.main([str(corrupt), "3"])
+    assert rc2 == 2
+    assert "cannot read manifest width" in capsys.readouterr().out

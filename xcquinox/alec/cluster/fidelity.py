@@ -18,9 +18,8 @@ PASS requires max |dE_xc| over the free atoms <= tol_atom (mHa) AND max |dAE|
 two parent-route agreements (the seven failure sources
 ``fidelity_certificate`` assembles). The spin-scaling oracle tests O1-O4
 (SPEC_pretrain_fidelity_program.md Section 3.4) are NOT part of this driver:
-they exercise fixed library code, run in CI and in the offline
-``workflow_matrix``, and no per-checkpoint certificate evaluates them --
-wiring them into the compute-node driver is the recorded alternative. The parent is PBE for
+they exercise fixed library code and run in CI and in the offline
+``workflow_matrix``; no per-checkpoint certificate evaluates them. The parent is PBE for
 a GGA-rung architecture and SCAN for a meta-GGA one (rungs.seed_xc_for_arch),
 which is what each rung was pretrained against. The parent's E_xc on each
 record is computed three independent ways (point-wise libxc on the stored
@@ -390,11 +389,13 @@ def dfs_level_for_parent(parent: str) -> str:
     """The DFS pretraining-set level matching a parent functional.
 
     The meta-GGA variant of the DFS protocol drops H2 and N2 from the
-    PRETRAINING set (36 systems vs the GGA level's 38). The certificate's
-    oracle set is larger than either: ``_FIXED_MOLECULE_POOL_NAMES``
-    unconditionally restores N2 and adds H2O, so a SCAN-parent architecture
-    is certified on 38 systems, two of which (N2, H2O) it was not pretrained
-    on -- see ``build_oracle_set``, whose docstring states the composition.
+    PRETRAINING set (28 systems vs the GGA level's 30,
+    ``dfs_pretrain_set.dfs_pretrain_systems``: 30 and 28, executed). The certificate's oracle set is larger than
+    either: ``_FIXED_MOLECULE_POOL_NAMES`` (H2O, N2, CH4) restores N2 and
+    adds H2O beside the pool atoms, so a GGA-parent architecture is
+    certified on 39 systems (16 atoms + 23 molecules) and a SCAN-parent one
+    on 38, including systems (N2, H2O) it was not pretrained on -- see
+    ``build_oracle_set``, whose docstring states the composition.
     """
     return "mgga" if parent == "scan" else "gga"
 
