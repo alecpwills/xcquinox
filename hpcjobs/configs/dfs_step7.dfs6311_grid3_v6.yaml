@@ -38,15 +38,17 @@
 #
 # MEASURED DIFF against v5. Both files were loaded and every field of the
 # resolved GridConfig tree flattened and compared, defaults included: of 137
-# fields, FIFTEEN differ. Nine are the method above (sweep.arch,
+# fields, SIXTEEN differ. Ten are the method above (sweep.arch,
 # pretrain.dfs_set / pool_atoms / parent_density / exchange_footing /
 # validation_fraction / patience, model.parent_anchor /
-# descriptor_coordinates); the other six are bookkeeping and resources, each
+# descriptor_coordinates, and bh76_mode -- v6 trains the staged transition
+# states as forward barrier heights where v5 trained the reaction-energy
+# substitution); the other six are bookkeeping and resources, each
 # documented at its own key -- pretrain.data_dir and inputs.output_root
 # (fresh roots), cluster.datagen_time and cluster.pretrain_throttle (a stage
 # v5 did not have, and a throttle v5 did not need at three architectures),
 # cluster.time and cluster.timeout_retry_time (the train wall, raised for the
-# four-channel inline eval). The remaining 122 fields are identical,
+# four-channel inline eval). The remaining 121 fields are identical,
 # including every hyperparameter, both solver blocks, the whole run identity,
 # the three reference-cache roots, the subset ledger, the seeding protocol
 # and every eval flag. The `fidelity:` block is not a difference either: v5
@@ -549,3 +551,14 @@ fidelity:
   tol_atom: 1.0             # mHa
   override_reason: null
   enforce: true
+
+# BH76 objective: the three BH76 points train true forward barrier heights,
+# E(TS) - sum E(reactants), against the GMTKN55 BH76 references (82.6, 8.9,
+# 104.8 kcal/mol) with the staged transition states n2ohts / RKT11 / hf2ts.
+# This is the reference dpyscf treatment (its training trajectory carries the
+# HNNO / CH3OH-frame / FHF transition states with reference_height values;
+# dpyscf additionally trains the reverse H+N2O direction, which the fixed
+# 26-point pool does not carry -- a documented deviation). Every campaign
+# before this line trained the reaction-energy substitution; prepare/submit
+# refuse a DFS config that leaves the mode silent.
+bh76_mode: barrier_height

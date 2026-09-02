@@ -263,3 +263,10 @@ fidelity:
   tol_atom: 1.0             # mHa
   override_reason: null
   enforce: true
+
+# BH76 objective: this example states the historical reaction-energy
+# substitution (GMTKN55 BH76RC reaction energies). prepare/submit refuse a
+# DFS config that leaves the mode silent; barrier training (the reference
+# dpyscf treatment, staged transition states against the GMTKN55 forward
+# barriers) sets bh76_mode: barrier_height.
+bh76_mode: reaction_energy

@@ -68,6 +68,10 @@ def _base_config_dict():
             "conda_env": "xcq",
         },
         "domain_profile": "dfs_step7",
+        # prepare/submit refuse a DFS-domain FILE that leaves the BH76
+        # objective silent (require_explicit_bh76_mode); the fixture states
+        # the substitution the historical campaigns trained.
+        "bh76_mode": "reaction_energy",
     }
 
 
@@ -2399,3 +2403,34 @@ def test_status_says_gated_out_for_an_enforced_failing_certificate(
     remedy = out.split("remedy:")[-1]
     assert "gated out" in remedy, out
     assert "0/1" in remedy, out
+
+
+# ===========================================================================
+# bh76_mode explicitness: prepare/submit refuse a DFS-domain grid FILE that
+# does not state its BH76 objective (the silent default trained the
+# reaction-energy substitution through every campaign to v6).
+# ===========================================================================
+
+def test_prepare_refuses_a_dfs_grid_without_explicit_bh76_mode(tmp_path, capsys):
+    grid = _write_grid(tmp_path, mutate=lambda d: d.pop("bh76_mode", None))
+    rc = main(["prepare", grid, "--no-recompute-refs"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "bh76_mode" in out
+    assert "barrier_height" in out
+
+
+def test_submit_refuses_a_dfs_grid_without_explicit_bh76_mode(tmp_path, capsys):
+    """The refusal lands BEFORE the run directory is created: a refused
+    submission must leave no half-staged run tree behind. (The fixture grid
+    WITH its stated mode passing submit is covered by the pre-existing
+    dry-run submit test.)"""
+    grid = _write_grid(tmp_path, mutate=lambda d: d.pop("bh76_mode", None))
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core"])
+    assert rc == 1
+    assert list(run_root.iterdir()) == []
+    out = capsys.readouterr().out
+    assert "bh76_mode" in out

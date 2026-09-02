@@ -1573,6 +1573,52 @@ def _resolve_eval_workers(cl: ClusterResources, *, n_molecules: int) -> int:
     return max(1, min(int(base), max(1, n_molecules)))
 
 
+def require_explicit_bh76_mode(path: str) -> None:
+    """Refuse a DFS-domain config FILE whose text does not state ``bh76_mode``.
+
+    The knob selects WHAT the three BH76 training points supervise: the
+    staged transition states as true forward barrier heights
+    (``barrier_height``, the treatment in the reference dpyscf training set,
+    whose trajectory carries the HNNO / CH3OH / FHF transition states with
+    ``reference_height`` values) or the historical reaction-energy
+    substitution (``reaction_energy``). The dataclass default filled the key
+    in silently, and every campaign through v6 trained the substitution that
+    way; the two submission entry points (``prepare`` / ``submit``) call this
+    so a submitted file states its objective. In-process construction (test
+    fixtures, resolved-config round-trips, ``resubmit`` on an existing run
+    directory) keeps the dataclass default and is not checked here.
+
+    Scoped to ``domain_profile: dfs_step7`` -- the bh76w411 pool carries no
+    transition states and its builder already rejects ``barrier_height``
+    loudly, so only one value is legal there and explicitness adds nothing.
+
+    Raises ``ValueError`` naming the file, the key, and both legal values.
+    """
+    lower = path.lower()
+    if lower.endswith((".yaml", ".yml")):
+        import yaml
+        with open(path) as f:
+            raw = yaml.safe_load(f)
+    elif lower.endswith(".json"):
+        import json
+        with open(path) as f:
+            raw = json.load(f)
+    else:
+        raise ValueError(
+            f"unsupported grid config extension for {path!r}: "
+            "expected .yaml, .yml, or .json")
+    if not isinstance(raw, dict) or raw.get("domain_profile") != "dfs_step7":
+        return
+    if "bh76_mode" not in raw:
+        raise ValueError(
+            f"{path}: domain_profile dfs_step7 requires an explicit "
+            "bh76_mode ('barrier_height' trains the staged transition "
+            "states as forward barrier heights; 'reaction_energy' trains "
+            "the historical reaction-energy substitution). The silent "
+            "default trained the substitution through every campaign to "
+            "v6 -- state the objective in the file.")
+
+
 def load_grid_config(path: str) -> GridConfig:
     """Load a ``.yaml`` or ``.json`` grid config and build the nested frozen
     dataclasses.

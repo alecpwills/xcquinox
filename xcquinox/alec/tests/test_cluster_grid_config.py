@@ -2958,3 +2958,49 @@ def test_a_retired_key_warning_names_the_file(tmp_path):
     messages = [str(w.message) for w in caught if "is retired" in str(w.message)]
     assert messages, "the retired key did not warn"
     assert any(str(dst) in m for m in messages), messages
+
+
+# ===========================================================================
+# require_explicit_bh76_mode: a DFS-domain config FILE must state its BH76
+# objective (barrier_height / reaction_energy) rather than inherit the silent
+# dataclass default -- the default trained the reaction-energy substitution
+# through every campaign to v6.
+# ===========================================================================
+
+def test_require_explicit_bh76_mode_refuses_a_dfs_yaml_without_the_key(tmp_path):
+    from xcquinox.alec.cluster.grid_config import require_explicit_bh76_mode
+    p = tmp_path / "grid.yaml"
+    p.write_text("domain_profile: dfs_step7\n")
+    with pytest.raises(ValueError) as exc:
+        require_explicit_bh76_mode(str(p))
+    msg = str(exc.value)
+    assert "bh76_mode" in msg
+    assert "barrier_height" in msg
+    assert "reaction_energy" in msg
+    assert str(p) in msg
+
+
+def test_require_explicit_bh76_mode_accepts_a_stated_mode(tmp_path):
+    from xcquinox.alec.cluster.grid_config import require_explicit_bh76_mode
+    for mode in ("barrier_height", "reaction_energy"):
+        p = tmp_path / f"grid_{mode}.yaml"
+        p.write_text(f"domain_profile: dfs_step7\nbh76_mode: {mode}\n")
+        require_explicit_bh76_mode(str(p))  # must not raise
+
+
+def test_require_explicit_bh76_mode_ignores_non_dfs_profiles(tmp_path):
+    """bh76w411_step7 rejects barrier_height in its pool builder already, and
+    its pool carries no transition states; the explicitness requirement is
+    scoped to the profile whose builder honors both modes."""
+    from xcquinox.alec.cluster.grid_config import require_explicit_bh76_mode
+    p = tmp_path / "grid.yaml"
+    p.write_text("domain_profile: bh76w411_step7\n")
+    require_explicit_bh76_mode(str(p))  # must not raise
+
+
+def test_require_explicit_bh76_mode_reads_json_too(tmp_path):
+    from xcquinox.alec.cluster.grid_config import require_explicit_bh76_mode
+    p = tmp_path / "grid.json"
+    p.write_text(json.dumps({"domain_profile": "dfs_step7"}))
+    with pytest.raises(ValueError, match="bh76_mode"):
+        require_explicit_bh76_mode(str(p))

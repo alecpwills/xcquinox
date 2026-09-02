@@ -54,6 +54,7 @@ from xcquinox.alec.cluster.grid_config import (
     load_grid_config,
     normalize_cluster_walltimes,
     pretrain_checkpoint_dir,
+    require_explicit_bh76_mode,
     validate_grid_semantics,
 )
 from xcquinox.alec.cluster.domain import get_domain_profile
@@ -754,6 +755,11 @@ def cmd_prepare(args) -> int:
     the precompute entirely so ``prepare`` can validate the ledger cheaply on a
     login node.
     """
+    try:
+        require_explicit_bh76_mode(args.grid)
+    except ValueError as exc:
+        _log(f"ERROR: {exc}")
+        return 1
     cfg = load_grid_config(args.grid)
     # Same semantic validation `submit` runs. `prepare` accepts any grid
     # config, a run's already-written resolved_config.yaml included, so the
@@ -999,6 +1005,11 @@ def cmd_submit(args) -> int:
     ``submit_jobs`` (dry-run unless ``--submit``) which renders + submits the
     5-stage datagen -> pretrain -> preflight -> train -> eval graph.
     """
+    try:
+        require_explicit_bh76_mode(args.grid)
+    except ValueError as exc:
+        _log(f"ERROR: {exc}")
+        return 1
     cfg = load_grid_config(args.grid)
     cfg = _apply_partition_overrides(cfg, args)
     cfg = _apply_max_nodes_overrides(cfg, args)

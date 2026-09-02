@@ -722,8 +722,8 @@ def test_v6_carries_the_stony_brook_job_mail():
 
 
 def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
-    """The header states a MEASURED diff -- 15 of 137 resolved fields -- and
-    names all fifteen. It is the file's own claim that everything except the
+    """The header states a MEASURED diff -- 16 of 137 resolved fields -- and
+    names all sixteen. It is the file's own claim that everything except the
     method, the model class, the roots and the walls is v5's, which is what
     makes v5-vs-v6 on the five meta-GGA architectures a controlled comparison;
     a hyperparameter or a solver knob that drifted in would break that reading
@@ -735,7 +735,11 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
     plus a correction rather than a correction to F = 1, and the MLPs read the
     row in the DFS coordinates rather than the committed ones), so a v5 result
     and a v6 result are read against different starting functionals. The field
-    count moves from 135 to 137 with them.
+    count moves from 135 to 137 with them. ``bh76_mode`` is method too: v6
+    trains the staged transition states as true forward barrier heights where
+    v5 trained the reaction-energy substitution (v5 now states that value
+    explicitly, which equals the dataclass default, so only the v6 side
+    registers as a difference).
 
     Both trees are flattened, so DEFAULTS are compared too: a field v5 leaves
     unstated and v6 states at the same value is not a difference, and one v6
@@ -754,6 +758,7 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
                        if a.get(k, "<absent>") != b.get(k, "<absent>"))
     assert len(keys) == 137, len(keys)
     assert differing == [
+        "bh76_mode",
         "cluster.datagen_time",
         "cluster.pretrain_throttle",
         "cluster.time",
@@ -772,8 +777,8 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
     ], differing
     # ... and the file says so, in the count it states.
     text = open(path6).read()
-    assert "FIFTEEN differ" in text, path6
-    assert "The remaining 122 fields are identical" in text, path6
+    assert "SIXTEEN differ" in text, path6
+    assert "The remaining 121 fields are identical" in text, path6
 
 
 def _v6_semantics(cfg):
@@ -1702,3 +1707,63 @@ def test_v6_reference_names_the_six_group_files_in_order():
         f"{path} names the group files out of submission order")
     assert "NOT THE SUBMISSION" in text, path
     assert "220 of the 341 cells" in text, path
+
+
+# ===========================================================================
+# bh76_mode: every DFS-domain configuration file states its BH76 objective.
+# The v6 files train true barrier heights (the dpyscf treatment: staged
+# transition states against the GMTKN55 forward-barrier references); every
+# other DFS-domain file states the reaction-energy substitution it trained,
+# so the record is explicit in the file rather than filled by a default.
+# ===========================================================================
+
+def _dfs_profile_config_paths():
+    """(name, path) for every hpcjobs config plus the two shipped example
+    grids whose ``domain_profile`` is ``dfs_step7``."""
+    import glob as _glob
+    out = []
+    cdir = _campaign_configs_dir()
+    if cdir is not None:
+        for path in sorted(_glob.glob(os.path.join(cdir, "*.yaml"))):
+            raw = _raw_yaml(path)
+            if isinstance(raw, dict) and raw.get("domain_profile") == "dfs_step7":
+                out.append((os.path.basename(path), path))
+    import xcquinox.alec.cluster as cluster_pkg
+    ex_dir = os.path.join(
+        os.path.dirname(os.path.abspath(cluster_pkg.__file__)), "examples")
+    for name in ("grid_step7.yaml", "workflow_matrix_template.yaml"):
+        path = os.path.join(ex_dir, name)
+        if os.path.isfile(path):
+            raw = _raw_yaml(path)
+            if isinstance(raw, dict) and raw.get("domain_profile") == "dfs_step7":
+                out.append((name, path))
+    return out
+
+
+def test_every_dfs_domain_config_states_bh76_mode_explicitly():
+    paths = _dfs_profile_config_paths()
+    if not paths:
+        pytest.skip("no hpcjobs/configs deployment tree in this checkout")
+    missing = [name for name, path in paths
+               if "bh76_mode" not in _raw_yaml(path)]
+    assert not missing, (
+        f"DFS-domain configs without an explicit bh76_mode: {missing} -- "
+        "prepare/submit refuse these; state barrier_height or "
+        "reaction_energy in the file.")
+
+
+def test_v6_files_train_barrier_heights_and_the_rest_state_the_substitution():
+    paths = dict(_dfs_profile_config_paths())
+    if not paths:
+        pytest.skip("no hpcjobs/configs deployment tree in this checkout")
+    wrong = []
+    for name, path in paths.items():
+        mode = _raw_yaml(path).get("bh76_mode")
+        want = "barrier_height" if name in _V6_FILES else "reaction_energy"
+        if mode != want:
+            wrong.append((name, mode, want))
+    assert not wrong, (
+        "bh76_mode mismatches (name, stated, expected): "
+        f"{wrong} -- the seven v6 files train the staged-TS barrier "
+        "objective; every other DFS-domain file records the substitution "
+        "it actually trained.")
