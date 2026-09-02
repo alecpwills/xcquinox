@@ -50,7 +50,8 @@
 # 192 GB Skylake node but with modest headroom, and deep_attn r=26 measured
 # 42.14 h on 96 Milan cores, which on 40 Skylake cores can exceed the
 # queue's wall. The train wall is v4gga's own recorded 40-core figure, 48 h;
-# the 96 h timeout retry and every other stage wall are the reference file's,
+# the 96 h timeout retry and the other stage walls are the reference
+# file's, except the pretrain wall (48 h here, for the real cloning fits),
 # sized to the four-channel inline evaluation. cluster.time states what
 # becomes of the cells that exceed 48 h.
 #
@@ -94,14 +95,17 @@ sweep:
   #       11-21 are `deep_attn_3x16`,
   #       22-32 are `deep_cusp_3x16`.
   #
-  # THE SIX GROUP AXES ARE PAIRWISE DISJOINT, and together with the eleven
-  # architectures the campaign directive excludes from v6 they cover the
-  # registry exactly. A NEW ARCHITECTURE ADDED TO THE REGISTRY MAKES THE GROUP
-  # SET STALE: the pin `test_v6_groups_and_the_exclusions_partition_the_registry`
-  # compares the union against sorted(ARCHITECTURES) and goes red naming the
-  # new name, which is the intent -- an architecture may only be left out of
-  # the campaign deliberately, in the exclusion list, never by falling through
-  # the gap between six files.
+  # THE THREE v7 GROUP AXES ARE PAIRWISE DISJOINT and cover 12 of the
+  # registry's 31 architectures. v7 does NOT partition the registry: the
+  # eight architectures of the v6 groups that were not resubmitted (deep,
+  # deep_attn, deep_combined_3x16, deep_combined_attn_3x16, deep_dm_3x16,
+  # deep_rung35_3x16, deep_rung35_attn_3x16, deep_rung35ms_3x16) are
+  # outside this campaign by the restart's scope -- the three groups chosen
+  # for the rerun -- and rejoin it only through a v7 counterpart of their
+  # group file. The v6 partition pin
+  # (`test_v6_groups_and_the_exclusions_partition_the_registry`) covers the
+  # v6 six-file set, not this trio; the v7 structural pins cover the roots,
+  # the walls and the method keys.
   arch:
     - deep_3x16
     - deep_attn_3x16
@@ -209,10 +213,10 @@ inputs:
   seed_xc: auto
   # Root whose _intermediates/ holds the SCAN seeds. Carried from the reference
   # file and NEVER READ on this axis -- a PBE-seeded architecture consults no
-  # cache -- so it is stated only to keep the six groups' `inputs` blocks one
+  # cache -- so it is stated only to keep the v7 groups' `inputs` blocks one
   # identical block. hpcjobs/seed_cache_scan.sbatch is not a prerequisite here.
   seed_cache_dir: /gpfs/scratch/awills/seed_cache_scan_6311ppg3df2pd_g3
-  # SAME subsets as v3/v4/v5 and as the other five groups (apples-to-apples
+  # SAME subsets as v3/v4/v5/v6 and as the other v7 groups (apples-to-apples
   # across the campaign lineage AND across the ladder).
   subset_ledger_path: /gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/alpha_on/subset_index_log.json
   # SHARED with v3/v4/v5 and with the other groups (complete, relocked; input
@@ -235,7 +239,7 @@ pretrain:
   # independent submissions with no ordering between them. The per-group copies
   # are value-identical by construction: the rows are a deterministic function
   # of the set, the footing, the objective and the run identity, all five of
-  # which are the same in all six files.
+  # which are the same in all three v7 files.
   data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v7g2a_families_core
   # Cloning schedule, aligned to the published protocol (arXiv:2605.10331:
   # 2e4 epochs at 1e-3 with linear decay to 1e-5 from the midpoint) in
@@ -285,7 +289,7 @@ pretrain:
   # the merged BH76 / W4-11 pools at their production charges and spins (the 12
   # neutral elements plus the F- and Cl- anions that are BH76 reactants). Both
   # replace the historical four-atom default; the `atoms` list above extends it
-  # by Na. The set is the same in all six groups: a certificate is only
+  # by Na. The set is the same in all three v7 groups: a certificate is only
   # comparable across groups if the networks were fitted to the same rows.
   dfs_set: true
   pool_atoms: true
@@ -335,18 +339,25 @@ pretrain:
   # the MULTI-NUCLEUS systems is withheld and scored every 50 steps; training
   # stops after 10 validations with no improvement and keeps the best weights,
   # replacing the DFS protocol's hand interruption (Section 6, deviation 3).
-  # n_steps 20000 / validate_every 50 = 400 checks, so patience 10 is far
-  # from the degenerate regime.
+  # n_steps 20000 / validate_every 50 = 400 checks. patience 300 (15000
+  # steps of grace) cannot fire before the LR decay (steps 10000-20000)
+  # completes most of its course, so a cloning fit effectively runs to
+  # completion as the published protocol prescribes, with the validation
+  # tracker still keeping the best weights; patience 10 could have stopped
+  # a fit inside the constant-1e-3 phase on a 500-step plateau, before any
+  # decay. Stays under the degenerate-patience refusal (>= 399). The LIVE
+  # 2026-09-02T14:36Z submissions carry patience 10 in their resolved
+  # configs; this value applies from the next submission.
   validation_fraction: 0.2
   validation_seed: 0
   validate_every: 50
-  patience: 10
+  patience: 300
 
 cluster:
   partition: ""
   # 48 h, the recorded long-40core cap: `inline_eval: true` runs the eval
-  # INSIDE the train task, so this one wall has to hold both, and v6's eval
-  # is four channels where v3's was three. The arithmetic below puts the
+  # INSIDE the train task, so this one wall has to hold both, and the eval
+  # is four channels where v3's was three (unchanged from v6). The arithmetic below puts the
   # large-subset attention cells above this wall deliberately; what happens
   # to them is under QUEUE ADMISSIBILITY.
   #
@@ -354,7 +365,7 @@ cluster:
   # solver: deep_attn_3x16 at subset 26 took 42.14 h (attention is 2.3-2.9x
   # its non-attention twin), under a THREE-channel inline eval --
   # hpcjobs/configs/dfs_step7.dfs6311_grid3_v3.yaml states inline_eval: true,
-  # eval_time: "02:00:00" and no eval_coldstart. v6 runs FOUR channels, one
+  # eval_time: "02:00:00" and no eval_coldstart. v7 runs FOUR channels (unchanged from v6), one
   # of them the 25-cycle coldstart diagnostic, budgeted at 08:00:00 below.
   # The same cell is then
   #     42.14 - 2 + 8 = 48.1 h   if the 42.14 h already contained a 2 h eval
@@ -394,7 +405,7 @@ cluster:
   # If sinfo shows a cap of 72 h or more, `--train-time 72:00:00` at submit
   # sizes the train array to the larger reading up front and avoids the
   # wall-kill entirely -- `--train-time`, NOT the base `--time`, which raises
-  # EVERY stage's wall including the 12 h pretrain and preflight jobs.
+  # EVERY stage's wall including the 48 h pretrain and 12 h preflight jobs.
   #
   # Peak measured RSS is 142.8 GB: a 192 GB Skylake node holds it with modest
   # headroom, and an OOM routes onto the 256 GB Milan nodes (see the retry keys
@@ -470,20 +481,24 @@ cluster:
   # NOT REQUESTED under `inline_eval: true` -- no eval array is submitted, so
   # no job carries this wall; the eval runs inside the train task under
   # `time` above. It is the eval BUDGET the train wall's arithmetic uses, and
-  # it is carried here so v5-vs-v6 reads the same key. Read it as an input to
+  # it is carried here so the lineage files read the same key. Read it as an input to
   # that derivation, never as headroom the train task has on its own.
   eval_time: "08:00:00"
-  # 12 h covers pretraining AND the fidelity certificate, which now runs on
-  # this node after the networks are written. Measured anchors: the
-  # certificate is ~39 systems (the pools' free atoms, the DFS pretraining
-  # molecules, H2O / N2 / CH4), each a reference SCF at the run's identity plus
-  # the network and parent XC evaluations -- 39 systems in 32 s at sto-3g /
-  # grid level 1, against a per-species precompute wall of 0.6 s (Li) to 5.2 s
-  # (CH4) at THIS identity and several times that for the set's largest
-  # molecules, so of order tens of minutes here. Pretraining itself is 2500
-  # full-batch steps whose per-step cost is milliseconds now that the loop is
-  # jitted once rather than per snapshot interval. The margin is the point:
-  # the train array is gated afterok on this job.
+  # The pretrain job runs the cloning fit AND the fidelity certificate on
+  # the same node after the networks are written. The certificate is ~39
+  # systems (the pools' free atoms, the DFS pretraining molecules,
+  # H2O / N2 / CH4), each a reference SCF at the run's identity plus the
+  # network and parent XC evaluations -- of order tens of minutes at this
+  # identity (39 systems in 32 s at sto-3g / grid 1). The cloning fit is
+  # 20000 full-batch steps; the wall below carries the sizing arithmetic.
+  # GATING IS ARRAY-LEVEL: the train array's afterok covers the WHOLE
+  # pretrain array, one task per architecture, so a single architecture's
+  # certificate FAIL holds every cell of the group until that architecture
+  # is recloned or the group is resubmitted without it. The one prior
+  # measurement of unanchored cloning at legacy coordinates put
+  # deep_cusp_3x16 at 23-27 kcal/mol (SPEC_parent_anchor.md Section 2);
+  # whether the DFS coordinates and the full schedule close that is
+  # exactly what its certificate will state.
   # 48 h: v7 runs REAL 20000-step cloning fits where v6's anchored fits
   # patienced out at step 500 inside a 12 h wall sized for those. The v5-era
   # real fits ran 2500 steps against that same 12 h wall; 20000 steps is 8x

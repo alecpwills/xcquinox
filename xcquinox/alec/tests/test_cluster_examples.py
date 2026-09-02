@@ -1801,6 +1801,10 @@ def test_v7_files_are_the_unanchored_cloning_protocol():
         assert pt["lr_end"] == 0.00001, name
         assert pt["lr_decay_start"] == 0.5, name
         assert pt["energy_term_weight"] == 0.1, name
+        # patience 300 = 15000 steps of grace: the cloning fit runs to
+        # completion as the published protocol prescribes (patience 10 could
+        # stop inside the constant-LR phase before any decay).
+        assert pt["patience"] == 300, name
         assert raw["cluster"]["pretrain_time"] == "48:00:00", name
 
 
@@ -1820,3 +1824,52 @@ def test_every_dfs_domain_config_states_bh76_mode_exactly_once():
     assert not bad, (
         f"DFS-domain configs with a duplicated (or missing) top-level "
         f"bh76_mode key: {bad}")
+
+
+def test_v7_roots_are_disjoint_from_every_v6_root_and_each_other():
+    """A v7 file sharing a v6 group's output_root or pretrain data_dir would
+    interleave two campaigns' artifacts in one tree (and two groups sharing a
+    pretrain root collide on parent-named files); the v6 structural pins are
+    parametrized on the v6 set only, so the v7 trio is pinned here."""
+    cdir = _campaign_configs_dir()
+    if cdir is None:
+        pytest.skip("no hpcjobs/configs deployment tree in this checkout")
+    roots = {}
+    data_dirs = {}
+    for name in _V6_FILES + _V7_FILES:
+        path = os.path.join(cdir, name)
+        if not os.path.isfile(path):
+            continue
+        raw = _raw_yaml(path)
+        roots[name] = raw["inputs"]["output_root"]
+        data_dirs[name] = raw["pretrain"]["data_dir"]
+    for label, mapping in (("output_root", roots), ("data_dir", data_dirs)):
+        seen = {}
+        for name, val in mapping.items():
+            assert val not in seen, (
+                f"{label} shared between {seen[val]} and {name}: {val}")
+            seen[val] = name
+
+
+def test_v7_files_carry_the_walls_and_the_job_mail():
+    """The v7 trio's walls and mail, pinned through the loader: 48 h pretrain
+    (the real cloning fits), the inherited train walls (48 h for the 40core
+    GGA groups, 72 h in-config for the 96core mgga group), and the standing
+    SLURM mail directives."""
+    cdir = _campaign_configs_dir()
+    if cdir is None:
+        pytest.skip("no hpcjobs/configs deployment tree in this checkout")
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    want_time = {
+        "dfs_step7.dfs6311_grid3_v7g1_size.yaml": "48:00:00",
+        "dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml": "48:00:00",
+        "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml": "72:00:00",
+    }
+    for name in _V7_FILES:
+        path = os.path.join(cdir, name)
+        assert os.path.isfile(path), name
+        cfg = load_grid_config(path)
+        assert cfg.cluster.pretrain_time == "48:00:00", name
+        assert cfg.cluster.time == want_time[name], (name, cfg.cluster.time)
+        assert cfg.cluster.mail_user == "alec.wills@stonybrook.edu", name
+        assert cfg.cluster.mail_type == "BEGIN,END,FAIL", name
