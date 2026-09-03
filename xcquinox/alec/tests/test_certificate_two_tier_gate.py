@@ -219,10 +219,14 @@ def test_regate_at_exactly_the_route_tolerance_is_not_refused():
 
 
 def test_regate_refuses_an_unrecognized_verdict():
+    # The refusal must fire (new is None) AND the report must name the
+    # unrecognised verdict; a single and/or chain here previously made this
+    # test vacuous ((A and B) or C with C true on every report).
     new, report = fid.regate_certificate_payload(
         _payload(verdict="pass"), MAE_CFG, config_source="x")
-    assert new is None and "recognised verdict" in report.replace(
-        "recognized", "recognised") or "verdict" in report
+    assert new is None
+    assert "recorded verdict 'pass'" in report
+    assert "not regateable" in report
 
 
 def test_regate_of_an_identically_gated_pass_is_a_noop():
@@ -244,3 +248,86 @@ def test_regate_under_the_max_gate_rewrites_a_stale_tolerance_block():
     assert new["verdict"] == fid.VERDICT_PASS
     assert new["tolerances"]["tol_AE_aggregate"] == "max"
     assert new["tolerances"]["tol_AE_max_backstop"] is None
+
+
+# ---------------------------------------------------------------------------
+# Non-finite handling and provenance across repeated regates (review round)
+# ---------------------------------------------------------------------------
+
+def test_gate_terms_fail_loud_on_a_raw_nan_row():
+    """NaN passes an ``is not None`` filter and every ``>`` comparison is
+    False, so an unguarded gate returns nan statistics with NO reasons -- a
+    silent PASS input. The gate must instead name the non-finite row."""
+    rows = [{"name": "a", "dAE_kcalmol": float("nan")},
+            {"name": "b", "dAE_kcalmol": 0.1}]
+    t = fid._ae_gate_terms(rows, MAE_CFG)
+    assert any("non-finite" in r and "a" in r for r in t["reasons"]), \
+        t["reasons"]
+    # Statistics come from the finite rows alone, never nan.
+    assert t["max"] == 0.1 and t["mean"] == 0.1
+    assert t["rmse"] == 0.1
+    inf_rows = [{"name": "c", "dAE_kcalmol": float("inf")}]
+    t = fid._ae_gate_terms(inf_rows, MAE_CFG)
+    assert any("non-finite" in r for r in t["reasons"])
+
+
+def test_regate_refuses_a_nulled_molecular_measurement():
+    """The fresh writer nulls a non-finite measurement to ``None`` and FAILs
+    on its own non-finite reason; the regate cannot see that reason, so it
+    must refuse on the nulled row itself -- otherwise the only unrepairable
+    failure class the writer records is silently repaired in place."""
+    p = _payload(0.2)
+    p["per_system"].append(
+        {"name": "H2O", "dE_xc_mHa": None, "is_atom": False,
+         "parent_grid_diff_Ha": 0.0, "parent_record_diff_Ha": 0.0,
+         "reference_scf_converged": True})
+    p["per_atomization"].append({"name": "H2O", "dAE_kcalmol": None,
+                                 "error": "dE_xc of H2O is not finite"})
+    new, report = fid.regate_certificate_payload(
+        p, MAE_CFG, config_source="x")
+    assert new is None and "H2O" in report
+    assert "non-finite" in report or "nulled" in report
+
+
+def test_regate_refuses_a_nulled_free_atom():
+    p = _payload(0.2)
+    p["per_system"].append(
+        {"name": "atom_O", "dE_xc_mHa": None, "is_atom": True,
+         "parent_grid_diff_Ha": 0.0, "parent_record_diff_Ha": 0.0,
+         "reference_scf_converged": True})
+    new, report = fid.regate_certificate_payload(
+        p, MAE_CFG, config_source="x")
+    assert new is None and "atom_O" in report
+
+
+def test_regate_refuses_on_a_recorded_non_finite_count_alone():
+    """Belt beside the row scan: a summary stating n_non_finite_systems > 0
+    refuses even if the rows themselves were lost or rewritten."""
+    p = _payload(0.2)
+    p["summary"]["n_non_finite_systems"] = 1
+    new, report = fid.regate_certificate_payload(
+        p, MAE_CFG, config_source="x")
+    assert new is None and "non-finite" in report
+
+
+def test_second_regate_preserves_the_first_ever_verdict():
+    """A regate of an already-regated payload must keep the TRUE original
+    verdict/tolerances/reasons and record the chain of rewrites -- not
+    overwrite history with the intermediate state."""
+    p = _payload(1.63)  # FAIL under max; PASS under mae (mean 0.915, max<2)
+    step1, _ = fid.regate_certificate_payload(
+        p, MAE_CFG, config_source="one.yaml")
+    assert step1["verdict"] == fid.VERDICT_PASS
+    step2, _ = fid.regate_certificate_payload(
+        step1, MAX_CFG, config_source="two.yaml")
+    assert step2 is not None and step2["verdict"] == fid.VERDICT_FAIL
+    r = step2["regate"]
+    assert r["original_verdict"] == "FAIL"
+    assert r["original_tolerances"] == {"tol_AE": 1.0, "tol_atom": 1.0,
+                                        "override_reason": None}
+    assert r["original_failure_reasons"] == ["max |dAE| ..."]
+    assert r["config_source"] == "two.yaml"
+    chain = r["chain"]
+    assert [c["to_verdict"] for c in chain] == ["PASS", "FAIL"]
+    assert chain[0]["config_source"] == "one.yaml"
+    assert chain[1]["config_source"] == "two.yaml"

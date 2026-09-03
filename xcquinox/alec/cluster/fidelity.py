@@ -1627,14 +1627,34 @@ def _ae_gate_terms(per_atomization, fid_cfg):
     and :func:`regate_certificate_payload` so the gate cannot drift between
     a first verdict and an in-place re-verdict.
     """
-    values = [(str(r.get("name")), abs(float(r["dAE_kcalmol"])))
-              for r in per_atomization
-              if isinstance(r, dict) and r.get("dAE_kcalmol") is not None]
+    values, non_finite_names = [], []
+    for r in per_atomization:
+        if not isinstance(r, dict) or r.get("dAE_kcalmol") is None:
+            continue
+        value = abs(float(r["dAE_kcalmol"]))
+        if math.isfinite(value):
+            values.append((str(r.get("name")), value))
+        else:
+            non_finite_names.append(str(r.get("name")))
+    reasons = []
+    if non_finite_names:
+        # A raw NaN passes an ``is not None`` filter and satisfies neither
+        # sense of any ordinary comparison, so an unguarded gate would return
+        # nan statistics with NO reasons -- a silent PASS input. Named and
+        # failed here instead; the statistics below come from the finite
+        # rows alone.
+        reasons.append(
+            f"a non-finite dAE_kcalmol is recorded for "
+            f"{len(non_finite_names)} system(s): "
+            + ", ".join(non_finite_names)
+            + " -- NaN satisfies no tolerance, so the gate fails before any "
+            "comparison")
     if not values:
         return {"max": None, "mean": None, "rmse": None,
                 "species_over_1_kcalmol": [],
-                "reasons": ["no atomization offset could be formed, so "
-                            "tol_AE is untested"]}
+                "reasons": reasons + [
+                    "no atomization offset could be formed, so "
+                    "tol_AE is untested"]}
     tol_ae = float(fid_cfg.tol_AE)
     aggregate = str(getattr(fid_cfg, "tol_AE_aggregate", "max"))
     backstop = float(getattr(fid_cfg, "tol_AE_max_backstop", 2.0))
@@ -1643,7 +1663,6 @@ def _ae_gate_terms(per_atomization, fid_cfg):
     mean_ae = sum(devs) / len(devs)
     rmse_ae = math.sqrt(sum(v * v for v in devs) / len(devs))
     species_over = [name for name, v in values if v > SPECIES_FLAG_KCALMOL]
-    reasons = []
     if aggregate == "mae":
         if mean_ae > tol_ae:
             reasons.append(
@@ -1710,6 +1729,35 @@ def regate_certificate_payload(payload, fid_cfg, *, config_source):
         problems.append(
             "the reference SCF did not converge for: "
             + ", ".join(unconverged))
+    # The fresh writer NULLS a non-finite measurement to None and FAILs the
+    # certificate on its own non-finite reason; that reason is measurement-
+    # time state the regate cannot see, so the nulled row itself is the
+    # signal here. Skipping such rows would let the one failure class the
+    # writer marks unrepairable be silently repaired in place.
+    non_finite_rows = []
+    for r in per_system:
+        if "error" in r:
+            continue
+        value = r.get("dE_xc_mHa")
+        if value is None or not math.isfinite(float(value)):
+            non_finite_rows.append(str(r.get("name")))
+    if non_finite_rows:
+        problems.append(
+            "a nulled or non-finite measurement is recorded for: "
+            + ", ".join(non_finite_rows)
+            + "; the writer FAILs such a certificate on its non-finite "
+            "reason, which no atomization aggregate can repair")
+    # Belt beside the row scan: a recorded non-finite count refuses even if
+    # the rows were rewritten or lost.
+    recorded_nf = (payload.get("summary") or {}).get("n_non_finite_systems")
+    try:
+        recorded_nf = int(recorded_nf)
+    except (TypeError, ValueError):
+        recorded_nf = 0
+    if recorded_nf > 0:
+        problems.append(
+            f"the summary records n_non_finite_systems = {recorded_nf}; a "
+            "non-finite measurement cannot be repaired by the aggregate")
     tol_atom = float(fid_cfg.tol_atom)
     atom_dev = [abs(float(r["dE_xc_mHa"])) for r in per_system
                 if "error" not in r and r.get("is_atom")
@@ -1759,13 +1807,40 @@ def regate_certificate_payload(payload, fid_cfg, *, config_source):
     summary["species_over_1_kcalmol"] = ae_terms["species_over_1_kcalmol"]
     summary["failure_reasons"] = new_reasons
     new_payload["summary"] = summary
+    # Provenance survives REPEATED regates: the original_* fields always
+    # describe the FIRST-EVER verdict (a second rewrite must not overwrite
+    # history with the intermediate state), and the chain appends one entry
+    # per rewrite so the certificate's whole gate history is in the file.
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    prior = payload.get("regate")
+    if isinstance(prior, dict):
+        original_verdict = prior.get("original_verdict", verdict)
+        original_tolerances = copy.deepcopy(
+            prior.get("original_tolerances", old_tolerances))
+        original_reasons = copy.deepcopy(
+            prior.get("original_failure_reasons"))
+        chain = copy.deepcopy(prior.get("chain") or [])
+        if not chain:
+            # A block written before the chain existed records exactly one
+            # rewrite: the one that produced the CURRENT verdict.
+            chain.append({"to_verdict": verdict,
+                          "regated_at": prior.get("regated_at"),
+                          "config_source": prior.get("config_source")})
+    else:
+        original_verdict = verdict
+        original_tolerances = copy.deepcopy(old_tolerances)
+        original_reasons = copy.deepcopy(
+            (payload.get("summary") or {}).get("failure_reasons"))
+        chain = []
+    chain.append({"to_verdict": new_verdict, "regated_at": now,
+                  "config_source": str(config_source)})
     new_payload["regate"] = {
-        "original_verdict": verdict,
-        "original_tolerances": copy.deepcopy(old_tolerances),
-        "original_failure_reasons": copy.deepcopy(
-            (payload.get("summary") or {}).get("failure_reasons")),
-        "regated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "original_verdict": original_verdict,
+        "original_tolerances": original_tolerances,
+        "original_failure_reasons": original_reasons,
+        "regated_at": now,
         "config_source": str(config_source),
+        "chain": chain,
     }
     still = ("; still failing: " + "; ".join(new_reasons)
              if new_reasons else "")
