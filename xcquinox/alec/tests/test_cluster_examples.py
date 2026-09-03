@@ -1818,6 +1818,22 @@ def test_v7_files_are_the_unanchored_cloning_protocol():
         # stop inside the constant-LR phase before any decay).
         assert pt["patience"] == 300, name
         assert raw["cluster"]["pretrain_time"] == "48:00:00", name
+        # 2026-09-03 protocol completion: the constant-1e-5 tail (decay ends
+        # at 90 percent of steps) and the rho*w point sampling (Sect. II.3;
+        # 800 = the paper's N_p/N_m) applied from the next fresh submission.
+        assert pt["lr_decay_end"] == 0.9, name
+        assert pt["loss_weighting"] == "rho_w_sampled", name
+        assert pt["points_per_system"] == 800, name
+        assert pt["sampling_seed"] == 42, name
+        # ... and the two-tier certificate gate the same day: the set mean at
+        # chemical accuracy with a per-species ceiling at the config layer's
+        # own loosening bound, atoms unchanged.
+        fdl = raw["fidelity"]
+        assert fdl["tol_AE"] == 1.0 and fdl["tol_atom"] == 1.0, name
+        assert fdl["tol_AE_aggregate"] == "mae", name
+        assert fdl["tol_AE_max_backstop"] == 2.0, name
+        assert fdl["override_reason"] is None, name
+        assert fdl["enforce"] is True, name
 
 
 def test_every_dfs_domain_config_states_bh76_mode_exactly_once():

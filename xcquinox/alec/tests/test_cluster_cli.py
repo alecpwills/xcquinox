@@ -2512,3 +2512,144 @@ def test_prepare_and_submit_refuse_a_corrupt_grid_cleanly(
         assert "cannot parse" in out, (argv, out)
         assert str(p) in out, (argv, out)
     assert list(run_root.iterdir()) == []
+
+
+# ===========================================================================
+# regate-certificates: in-place re-verdict under a changed gate
+# ===========================================================================
+
+_REGATE_FIDELITY = {"tol_AE": 1.0, "tol_atom": 1.0,
+                    "tol_AE_aggregate": "mae", "tol_AE_max_backstop": 2.0,
+                    "override_reason": None, "enforce": True}
+
+
+def _regate_cert_payload(mol_dae=1.42, verdict="FAIL"):
+    """A certificate for the base sweep's one arch, shaped like the writer's."""
+    return {
+        "verdict": verdict,
+        "arch": "medium",
+        "per_system": [
+            {"name": "atom_H", "dE_xc_mHa": 0.5, "is_atom": True,
+             "parent_grid_diff_Ha": 0.0, "parent_record_diff_Ha": 0.0,
+             "reference_scf_converged": True},
+            {"name": "H2", "dE_xc_mHa": 1.5, "is_atom": False,
+             "parent_grid_diff_Ha": 0.0, "parent_record_diff_Ha": 0.0,
+             "reference_scf_converged": True},
+        ],
+        "per_atomization": [{"name": "H2", "dAE_kcalmol": mol_dae},
+                            {"name": "H2O", "dAE_kcalmol": 0.2}],
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": None},
+        "summary": {"max_atom_mHa": 0.5, "max_dAE_kcalmol": mol_dae,
+                    "failure_reasons": (
+                        [] if verdict == "PASS" else ["max |dAE| ..."])},
+    }
+
+
+def _regate_fixture(tmp_path, *, mol_dae=1.42, verdict="FAIL",
+                    with_cert=True, tracked_overrides=None):
+    """(run_dir, tracked_config_path, cert_path) for regate tests."""
+    rd = _make_run_dir(tmp_path, manifest=False)
+    cert_path = os.path.join(cli.pretrain_checkpoint_dir(rd, "medium"),
+                             fid_CERTIFICATE_FILENAME)
+    if with_cert:
+        os.makedirs(os.path.dirname(cert_path), exist_ok=True)
+        with open(cert_path, "w") as f:
+            json.dump(_regate_cert_payload(mol_dae, verdict), f)
+    raw = _base_config_dict()
+    raw["fidelity"] = dict(_REGATE_FIDELITY)
+    for key, value in (tracked_overrides or {}).items():
+        section, _, name = key.partition(".")
+        raw[section][name] = value
+    tracked = str(tmp_path / "tracked_config.json")
+    with open(tracked, "w") as f:
+        json.dump(raw, f)
+    return rd, tracked, cert_path
+
+
+# The certificate filename constant, through the module the CLI imports it
+# from, so a rename breaks here and not silently in the fixture.
+from xcquinox.alec.cluster.fidelity import (  # noqa: E402
+    CERTIFICATE_FILENAME as fid_CERTIFICATE_FILENAME)
+
+
+def test_regate_dry_run_flips_nothing_and_exits_zero_when_all_would_pass(
+        tmp_path):
+    rd, tracked, cert_path = _regate_fixture(tmp_path)
+    resolved = os.path.join(rd, cli._RESOLVED_CONFIG_FILENAME)
+    before_cert = open(cert_path, "rb").read()
+    before_resolved = open(resolved, "rb").read()
+    rc = main(["regate-certificates", rd, "--config", tracked])
+    assert rc == 0
+    assert open(cert_path, "rb").read() == before_cert
+    assert open(resolved, "rb").read() == before_resolved
+
+
+def test_regate_apply_rewrites_the_certificate_and_the_resolved_config(
+        tmp_path):
+    rd, tracked, cert_path = _regate_fixture(tmp_path)
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+    assert rc == 0
+    with open(cert_path) as f:
+        cert = json.load(f)
+    assert cert["verdict"] == "PASS"
+    assert cert["regate"]["original_verdict"] == "FAIL"
+    assert cert["regate"]["config_source"] == tracked
+    assert cert["tolerances"]["tol_AE_aggregate"] == "mae"
+    assert cert["summary"]["species_over_1_kcalmol"] == ["H2"]
+    cfg2 = cli.load_grid_config(os.path.join(rd,
+                                             cli._RESOLVED_CONFIG_FILENAME))
+    assert cfg2.fidelity.tol_AE_aggregate == "mae"
+    assert cfg2.fidelity.tol_AE_max_backstop == 2.0
+
+
+def test_regate_apply_is_idempotent(tmp_path):
+    rd, tracked, cert_path = _regate_fixture(tmp_path)
+    assert main(["regate-certificates", rd, "--config", tracked,
+                 "--apply"]) == 0
+    after_first = open(cert_path, "rb").read()
+    assert main(["regate-certificates", rd, "--config", tracked,
+                 "--apply"]) == 0
+    assert open(cert_path, "rb").read() == after_first
+
+
+def test_regate_missing_certificate_is_reported_not_raised(tmp_path):
+    rd, tracked, _ = _regate_fixture(tmp_path, with_cert=False)
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+    assert rc == 1
+
+
+def test_regate_backstop_fail_exits_nonzero_but_records_the_new_gate(
+        tmp_path):
+    rd, tracked, cert_path = _regate_fixture(tmp_path, mol_dae=4.6)
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+    assert rc == 1
+    with open(cert_path) as f:
+        cert = json.load(f)
+    assert cert["verdict"] == "FAIL"
+    assert any("tol_AE_max_backstop" in r
+               for r in cert["summary"]["failure_reasons"])
+    assert cert["tolerances"]["tol_AE_aggregate"] == "mae"
+
+
+def test_regate_refuses_an_identity_mismatch_and_writes_nothing(tmp_path):
+    rd, tracked, cert_path = _regate_fixture(
+        tmp_path, tracked_overrides={"inputs.basis": "def2-svp"})
+    before = open(cert_path, "rb").read()
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+    assert rc == 1
+    assert open(cert_path, "rb").read() == before
+
+
+def test_regate_refuses_a_run_dir_without_a_resolved_config(tmp_path):
+    rd, tracked, _ = _regate_fixture(tmp_path)
+    os.unlink(os.path.join(rd, cli._RESOLVED_CONFIG_FILENAME))
+    assert main(["regate-certificates", rd, "--config", tracked]) == 1
+
+
+def test_regate_reports_a_corrupt_certificate_without_crashing(tmp_path):
+    rd, tracked, cert_path = _regate_fixture(tmp_path)
+    with open(cert_path, "w") as f:
+        f.write("{not json")
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+    assert rc == 1
