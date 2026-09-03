@@ -397,6 +397,52 @@ states whether the clone reproduced its parent (the campaign's gate), and
 `pretrain/<arch>/pretrain_metadata.json` carries `best_step` / `steps_run`
 / the validation history for reading the cloning trajectory.
 
+### Pretrain-stage quick-look figures (before any training lands)
+
+```bash
+python notebooks/analysis/plot_pretraining_curves.py <pulled run dir> \
+    -o notebooks/analysis/figures_dfs_step7_v7_pretrain/pretrain_curves_<label>.png
+JAX_PLATFORMS=cpu python notebooks/analysis/pretrain_fx_fc.py \
+    --run-dir <pulled run dir> \
+    --outdir notebooks/analysis/figures_dfs_step7_v7_pretrain/fx_fc_<label>
+```
+
+The first is the per-arch loss trajectories; the second draws the LEARNED
+F_x/F_c over the parent's curves with difference panels -- under the
+unanchored cloning class this is the direct is-it-learning visual.
+
+### Certificate gate changes on a LIVE run (2026-09-03 flow)
+
+A gate-policy change (e.g. the two-tier `tol_AE_aggregate: mae` +
+`tol_AE_max_backstop`) applies to certificates already on disk WITHOUT
+refits: `regate-certificates` re-verdicts each one from its recorded
+measurements, writes full provenance into the file, and updates the run's
+`resolved_config.yaml` fidelity block. Run ON THE CLUSTER from the repo
+root after a `git pull`:
+
+```bash
+python -m xcquinox.alec.cluster regate-certificates <run_dir> \
+    --config hpcjobs/configs/<the run's tracked yaml> --apply
+```
+
+Exit 0 = every architecture's certificate exists and ends PASS; exit 1
+lists what is missing or still failing (rerun after in-flight fits land --
+the command is idempotent). SLURM side: `afterok` on a pretrain array that
+already contains a failed task is permanently unsatisfiable, so BEFORE the
+array completes, reroute and hold --
+
+```bash
+scontrol update job=<preflight id> dependency=afterany:<pretrain array id>
+scontrol update job=<train id> dependency=afterok:<preflight id>
+scontrol hold <preflight id>
+```
+
+-- then `scontrol release <preflight id>` once the regate exits 0; the
+train array follows on its own. A chain that was already
+dependency-killed is rebuilt with `resubmit-preflight <run_dir> --submit`
+instead: the completed-pretraining keep-gate sees the regated PASS
+certificates and the pretrain tasks exit 0 in seconds.
+
 ARCHIVE NOTE (2026-09-02): every figure set produced from the
 pre-remediation trainings (the reaction-energy BH76 substitution, the
 padded V_xc denominators, the scoped-regularizer defect, and the anchored
