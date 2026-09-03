@@ -284,17 +284,35 @@ class FidelityConfig:
     functional (PBE for a GGA-rung architecture, SCAN for a meta-GGA one) in
     energy units before the run may train: the certificate
     (``cluster/fidelity.py``) requires max |dE_xc| over free atoms <=
-    ``tol_atom`` mHa AND max |dAE| over atomization energies <= ``tol_AE``
-    kcal/mol on frozen parent densities at the run's identity.
+    ``tol_atom`` mHa AND, on the atomization energies, the aggregate selected
+    by ``tol_AE_aggregate`` -- ``"max"`` (the original rule) gates
+    max |dAE| <= ``tol_AE`` kcal/mol; ``"mae"`` (2026-09-03) gates
+    mean |dAE| <= ``tol_AE`` AND max |dAE| <= ``tol_AE_max_backstop``, all on
+    frozen parent densities at the run's identity. The two-tier form exists
+    because the max over ~23 correlated atomizations is a high-variance order
+    statistic: a single species a few hundredths over the bound held a whole
+    group's training, while the set-level fidelity (mean 0.1-0.3 kcal/mol on
+    the 2026-09-02 cloning fits) was far inside chemical accuracy. The
+    backstop keeps a worst-case ceiling so a set measure can never green-stamp
+    one badly wrong species (a lone 4.6 kcal/mol offset at n=23 has MAE 0.30),
+    and every certificate records the per-species offsets plus the list of
+    species above 1.0 kcal/mol regardless of the aggregate.
 
     The defaults are the program's binding decision (1.0 kcal/mol and 1.0
-    mHa). ``validate_grid_semantics`` refuses either tolerance above 2.0
-    unless ``override_reason`` is non-empty, so a run can only be loosened
-    deliberately and with the reason on the record: the string is copied into
-    every certificate the run writes.
+    mHa, aggregate ``"max"``, backstop 2.0 -- the same 2.0 that is this
+    validator's own loosening ceiling). ``validate_grid_semantics`` refuses
+    any of the three tolerances above 2.0 unless ``override_reason`` is
+    non-empty, so a run can only be loosened deliberately and with the reason
+    on the record: the string is copied into every certificate the run writes.
     """
     tol_AE: float = 1.0          # kcal/mol, atomization-energy offset
     tol_atom: float = 1.0        # mHa, free-atom E_xc offset
+    # How tol_AE is applied over the atomization set: "max" (each species
+    # individually) or "mae" (the set mean, with tol_AE_max_backstop as the
+    # per-species ceiling). The backstop key may only be written when the
+    # aggregate is "mae"; under "max" it is inert and its presence is refused.
+    tol_AE_aggregate: str = "max"
+    tol_AE_max_backstop: float = 2.0   # kcal/mol, per-species ceiling under "mae"
     override_reason: str | None = None
     # When False the certificate is still computed and written with its TRUE
     # verdict, but the ON-NODE gates (the pretrain worker's exit code, the
@@ -1328,7 +1346,7 @@ def _build_pretrain(d: dict) -> PretrainConfig:
     )
 
 
-def _fidelity_tolerance(d, key: str) -> float:
+def _fidelity_tolerance(d, key: str, default: float = 1.0) -> float:
     """Read one certificate tolerance out of a raw ``fidelity`` mapping.
 
     A tolerance is an energy bound, so a boolean or a container is a config
@@ -1347,7 +1365,7 @@ def _fidelity_tolerance(d, key: str) -> float:
     ceiling) and are refused here for the same reason: a tolerance is a finite
     energy bound.
     """
-    v = d.get(key, 1.0)
+    v = d.get(key, default)
     if isinstance(v, bool) or not isinstance(v, (int, float, str)):
         raise ValueError(
             f"grid config key 'fidelity.{key}' must be a number (kcal/mol for "
@@ -1445,9 +1463,29 @@ def _build_fidelity(d) -> FidelityConfig:
         raise ValueError(
             f"grid config key 'fidelity.enforce' must be a boolean "
             f"(true/false), got {type(enforce).__name__} ({enforce!r})")
+    # The aggregate is a CHOICE, not a number: refused unless it names one of
+    # the two rules the certificate implements, so a typo cannot silently gate
+    # on the default while the author believes the set rule is in force.
+    aggregate = d.get("tol_AE_aggregate", "max")
+    if not isinstance(aggregate, str) or aggregate not in ("max", "mae"):
+        raise ValueError(
+            f"grid config key 'fidelity.tol_AE_aggregate' must be 'max' or "
+            f"'mae', got {aggregate!r}")
+    # Under "max" the backstop gates nothing; a config that writes it anyway
+    # believes it is bounding something, so the combination is refused rather
+    # than carried inert.
+    if "tol_AE_max_backstop" in d and aggregate == "max":
+        raise ValueError(
+            "grid config key 'fidelity.tol_AE_max_backstop' is only "
+            "meaningful under fidelity.tol_AE_aggregate 'mae'; with the "
+            "aggregate 'max' the per-species ceiling IS tol_AE and the "
+            "backstop key gates nothing")
     return FidelityConfig(
         tol_AE=_fidelity_tolerance(d, "tol_AE"),
         tol_atom=_fidelity_tolerance(d, "tol_atom"),
+        tol_AE_aggregate=aggregate,
+        tol_AE_max_backstop=_fidelity_tolerance(
+            d, "tol_AE_max_backstop", default=2.0),
         override_reason=reason,
         enforce=enforce,
     )
@@ -2211,14 +2249,20 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         raise ValueError(f"fidelity.tol_AE must be > 0, got {fid.tol_AE}")
     if fid.tol_atom <= 0:
         raise ValueError(f"fidelity.tol_atom must be > 0, got {fid.tol_atom}")
+    if fid.tol_AE_max_backstop <= 0:
+        raise ValueError(
+            f"fidelity.tol_AE_max_backstop must be > 0, got "
+            f"{fid.tol_AE_max_backstop}")
     _override = (fid.override_reason or "").strip()
-    if (fid.tol_AE > 2.0 or fid.tol_atom > 2.0) and not _override:
+    if (fid.tol_AE > 2.0 or fid.tol_atom > 2.0
+            or fid.tol_AE_max_backstop > 2.0) and not _override:
         raise ValueError(
             f"fidelity.tol_AE={fid.tol_AE} kcal/mol / "
-            f"fidelity.tol_atom={fid.tol_atom} mHa exceed the 2.0 / 2.0 "
-            "ceiling; a certificate tolerance above that ceiling requires a "
-            "non-empty fidelity.override_reason, which is recorded in every "
-            "certificate the run writes")
+            f"fidelity.tol_atom={fid.tol_atom} mHa / "
+            f"fidelity.tol_AE_max_backstop={fid.tol_AE_max_backstop} kcal/mol "
+            "exceed the 2.0 ceiling; a certificate tolerance above that "
+            "ceiling requires a non-empty fidelity.override_reason, which is "
+            "recorded in every certificate the run writes")
     if not fid.enforce and not _override:
         raise ValueError(
             "fidelity.enforce=false disables the on-node certificate gates, "

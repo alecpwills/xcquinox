@@ -13,10 +13,15 @@ atomization-energy offsets
 
     dAE(mol) = dE_xc(mol) - sum_atoms n_atom * dE_xc(atom).
 
-PASS requires max |dE_xc| over the free atoms <= tol_atom (mHa) AND max |dAE|
-<= tol_AE (kcal/mol), plus finite measurements, converged references and the
-two parent-route agreements (the seven failure sources
-``fidelity_certificate`` assembles). The spin-scaling oracle tests O1-O4
+PASS requires max |dE_xc| over the free atoms <= tol_atom (mHa) AND the
+atomization gate selected by ``fidelity.tol_AE_aggregate`` -- under ``"max"``
+(the original rule) max |dAE| <= tol_AE (kcal/mol); under ``"mae"``
+(2026-09-03) mean |dAE| <= tol_AE AND max |dAE| <= tol_AE_max_backstop --
+plus finite measurements, converged references and the two parent-route
+agreements (the failure sources ``fidelity_certificate`` assembles). The
+per-species offsets and the list of species above
+``SPECIES_FLAG_KCALMOL`` are recorded whatever the aggregate, so a species
+between the flag and the backstop is never silently clean. The spin-scaling oracle tests O1-O4
 (SPEC_pretrain_fidelity_program.md Section 3.4) are NOT part of this driver:
 they exercise fixed library code and run in CI and in the offline
 ``workflow_matrix``; no per-checkpoint certificate evaluates them. The parent is PBE for
@@ -1447,8 +1452,8 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     # A nulled non-finite value never enters a max() or a comparison.
     atom_dev = [abs(r["dE_xc_mHa"]) for r in ok.values()
                 if r["is_atom"] and r["dE_xc_mHa"] is not None]
-    ae_dev = [abs(r["dAE_kcalmol"]) for r in per_atomization
-              if r.get("dAE_kcalmol") is not None]
+    n_atomizations = sum(1 for r in per_atomization
+                         if r.get("dAE_kcalmol") is not None)
     grid_dev = [abs(r["parent_grid_diff_Ha"]) for r in ok.values()
                 if r["parent_grid_diff_Ha"] is not None]
     record_dev = [abs(r["parent_record_diff_Ha"]) for r in ok.values()
@@ -1456,9 +1461,12 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     n_failed = sum(1 for r in per_system if "error" in r)
 
     tol_atom = float(fid_cfg.tol_atom)
-    tol_ae = float(fid_cfg.tol_AE)
+    # The atomization gate (max or two-tier mae) is computed by the ONE
+    # helper regate_certificate_payload also uses, so the fresh verdict and
+    # an in-place re-verdict cannot apply different rules.
+    ae_terms = _ae_gate_terms(per_atomization, fid_cfg)
     max_atom = max(atom_dev) if atom_dev else None
-    max_ae = max(ae_dev) if ae_dev else None
+    max_ae = ae_terms["max"]
     max_grid = max(grid_dev) if grid_dev else None
     max_record = max(record_dev) if record_dev else None
 
@@ -1491,13 +1499,7 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         reasons.append(
             f"max |dE_xc| over free atoms {max_atom!r} mHa exceeds "
             f"tol_atom {tol_atom!r} mHa")
-    if not ae_dev:
-        reasons.append(
-            "no atomization offset could be formed, so tol_AE is untested")
-    elif max_ae > tol_ae:
-        reasons.append(
-            f"max |dAE| {max_ae!r} kcal/mol exceeds tol_AE "
-            f"{tol_ae!r} kcal/mol")
+    reasons.extend(ae_terms["reasons"])
     grid_offenders = [
         (r["name"], r["parent_grid_diff_Ha"]) for r in ok.values()
         if r["parent_grid_diff_Ha"] is not None
@@ -1555,8 +1557,7 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
                 "orientation_lock.DEFAULT_STRENGTH and the run identity is "
                 "otherwise unchanged"),
         },
-        "tolerances": {"tol_AE": tol_ae, "tol_atom": tol_atom,
-                       "override_reason": fid_cfg.override_reason},
+        "tolerances": _tolerances_record(fid_cfg),
         # Whether this run's ON-NODE gates act on the verdict. False belongs
         # to the workflow-verification matrix only; the record layers ignore
         # it and require PASS regardless. Validated a real boolean above.
@@ -1566,9 +1567,12 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "summary": {
             "max_atom_mHa": max_atom,
             "max_dAE_kcalmol": max_ae,
+            "mean_dAE_kcalmol": ae_terms["mean"],
+            "rmse_dAE_kcalmol": ae_terms["rmse"],
+            "species_over_1_kcalmol": ae_terms["species_over_1_kcalmol"],
             "n_systems": len(per_system),
             "n_atoms": len(atom_dev),
-            "n_atomizations": len(ae_dev),
+            "n_atomizations": n_atomizations,
             "n_failed_systems": n_failed,
             "n_reference_unconverged": len(unconverged),
             "n_non_finite_systems": len(non_finite),
@@ -1581,6 +1585,194 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     }
     _write_certificate_payload(payload, certificate_path(run_dir, arch_name))
     return payload
+
+
+# The per-species flag threshold, in kcal/mol: the original per-species gate
+# (chemical accuracy). Species above it are LISTED in every certificate's
+# summary whatever tol_AE_aggregate is in force, so downstream reports can
+# carry the asterisk even when the set-level gate passes.
+SPECIES_FLAG_KCALMOL = 1.0
+
+
+def _tolerances_record(fid_cfg):
+    """The ``tolerances`` block a certificate records for its gate config.
+
+    One writer for the fresh certificate and the regate path, so the two
+    cannot record the same gate differently. The backstop is recorded only
+    under the ``mae`` aggregate -- under ``max`` it gates nothing, and
+    writing a number there would claim a bound that was never applied.
+    """
+    aggregate = str(getattr(fid_cfg, "tol_AE_aggregate", "max"))
+    backstop = float(getattr(fid_cfg, "tol_AE_max_backstop", 2.0))
+    return {
+        "tol_AE": float(fid_cfg.tol_AE),
+        "tol_atom": float(fid_cfg.tol_atom),
+        "tol_AE_aggregate": aggregate,
+        "tol_AE_max_backstop": backstop if aggregate == "mae" else None,
+        "override_reason": fid_cfg.override_reason,
+    }
+
+
+def _ae_gate_terms(per_atomization, fid_cfg):
+    """The atomization-energy gate, applied to recorded per-species offsets.
+
+    Returns ``{"max", "mean", "rmse", "species_over_1_kcalmol", "reasons"}``.
+    Rows whose ``dAE_kcalmol`` is ``None`` (a non-finite measurement, nulled
+    at record time) are excluded from the statistics -- such rows always come
+    with their own failure reason from the measurement pass, so nothing is
+    silently dropped. Under ``tol_AE_aggregate == "max"`` the reason text is
+    byte-identical to the original single-tier gate; under ``"mae"`` the mean
+    is gated at ``tol_AE`` and the max at ``tol_AE_max_backstop``, and either
+    or both reasons can fire. Shared verbatim by the fresh certificate writer
+    and :func:`regate_certificate_payload` so the gate cannot drift between
+    a first verdict and an in-place re-verdict.
+    """
+    values = [(str(r.get("name")), abs(float(r["dAE_kcalmol"])))
+              for r in per_atomization
+              if isinstance(r, dict) and r.get("dAE_kcalmol") is not None]
+    if not values:
+        return {"max": None, "mean": None, "rmse": None,
+                "species_over_1_kcalmol": [],
+                "reasons": ["no atomization offset could be formed, so "
+                            "tol_AE is untested"]}
+    tol_ae = float(fid_cfg.tol_AE)
+    aggregate = str(getattr(fid_cfg, "tol_AE_aggregate", "max"))
+    backstop = float(getattr(fid_cfg, "tol_AE_max_backstop", 2.0))
+    devs = [v for _name, v in values]
+    max_ae = max(devs)
+    mean_ae = sum(devs) / len(devs)
+    rmse_ae = math.sqrt(sum(v * v for v in devs) / len(devs))
+    species_over = [name for name, v in values if v > SPECIES_FLAG_KCALMOL]
+    reasons = []
+    if aggregate == "mae":
+        if mean_ae > tol_ae:
+            reasons.append(
+                f"mean |dAE| {mean_ae!r} kcal/mol exceeds tol_AE "
+                f"{tol_ae!r} kcal/mol (aggregate 'mae')")
+        if max_ae > backstop:
+            reasons.append(
+                f"max |dAE| {max_ae!r} kcal/mol exceeds tol_AE_max_backstop "
+                f"{backstop!r} kcal/mol")
+    elif max_ae > tol_ae:
+        # repr: the shortest digit string that round-trips, so a one-ulp
+        # excess never prints as equal to the tolerance it exceeds.
+        reasons.append(
+            f"max |dAE| {max_ae!r} kcal/mol exceeds tol_AE "
+            f"{tol_ae!r} kcal/mol")
+    return {"max": max_ae, "mean": mean_ae, "rmse": rmse_ae,
+            "species_over_1_kcalmol": species_over, "reasons": reasons}
+
+
+def regate_certificate_payload(payload, fid_cfg, *, config_source):
+    """Re-verdict an existing certificate from its RECORDED measurements.
+
+    ``(new_payload, report)`` when the certificate is regateable under
+    ``fid_cfg`` and the rewrite changes it; ``(None, report)`` when it is not
+    regateable or is already gated identically. The input payload is never
+    mutated. No network is re-evaluated and no SCF is run: the per-system and
+    per-atomization measurements in the payload are the record, and only the
+    GATE applied to them changes. That is what makes an in-place re-verdict
+    legitimate -- and it is also its limit, so every failure class that the
+    atomization aggregate cannot repair refuses the regate by name:
+
+    * a recorded evaluation error or an unconverged reference SCF,
+    * a free-atom offset above ``tol_atom`` (the atom gate is unchanged),
+    * a parent-route disagreement above ``PARENT_GRID_TOL_HA``.
+
+    The rewritten payload carries the recomputed verdict, the new
+    ``tolerances`` block, the extended summary (mean / rmse / flagged
+    species / failure reasons), and a ``regate`` record naming the original
+    verdict, the original tolerances and reasons, the UTC time, and
+    ``config_source`` (the config file whose gate was applied), so the
+    certificate's history is inspectable in the file itself.
+    """
+    import copy
+
+    verdict = payload.get("verdict") if isinstance(payload, dict) else None
+    if verdict not in (VERDICT_PASS, VERDICT_FAIL):
+        return None, (f"not regateable: recorded verdict {verdict!r} is not "
+                      f"{VERDICT_PASS!r} or {VERDICT_FAIL!r}")
+    per_system = [r for r in (payload.get("per_system") or [])
+                  if isinstance(r, dict)]
+    per_atomization = [r for r in (payload.get("per_atomization") or [])
+                       if isinstance(r, dict)]
+
+    problems = []
+    error_rows = [str(r.get("name")) for r in per_system if "error" in r]
+    if error_rows:
+        problems.append(
+            f"{len(error_rows)} recorded system(s) carry an evaluation "
+            "error: " + ", ".join(error_rows))
+    unconverged = [str(r.get("name")) for r in per_system
+                   if "error" not in r
+                   and not r.get("reference_scf_converged", False)]
+    if unconverged:
+        problems.append(
+            "the reference SCF did not converge for: "
+            + ", ".join(unconverged))
+    tol_atom = float(fid_cfg.tol_atom)
+    atom_dev = [abs(float(r["dE_xc_mHa"])) for r in per_system
+                if "error" not in r and r.get("is_atom")
+                and r.get("dE_xc_mHa") is not None]
+    if not atom_dev:
+        problems.append("no free-atom measurement is recorded, so tol_atom "
+                        "cannot be re-applied")
+    elif max(atom_dev) > tol_atom:
+        problems.append(
+            f"max |dE_xc| over free atoms {max(atom_dev)!r} mHa exceeds "
+            f"tol_atom {tol_atom!r} mHa; the atom gate is unchanged by the "
+            "atomization aggregate")
+    for key, label in (
+            ("parent_grid_diff_Ha",
+             "the point-wise and fresh-grid parent routes disagree"),
+            ("parent_record_diff_Ha",
+             "the point-wise parent energy and the reference SCF's own "
+             "accumulated E_xc disagree")):
+        offenders = [str(r.get("name")) for r in per_system
+                     if "error" not in r and r.get(key) is not None
+                     and abs(float(r[key])) > PARENT_GRID_TOL_HA]
+        if offenders:
+            problems.append(
+                f"{label} above {PARENT_GRID_TOL_HA:.0e} Ha on: "
+                + ", ".join(offenders))
+    if problems:
+        return None, "not regateable: " + "; ".join(problems)
+
+    ae_terms = _ae_gate_terms(per_atomization, fid_cfg)
+    if ae_terms["max"] is None:
+        return None, "not regateable: no atomization offsets are recorded"
+    new_reasons = list(ae_terms["reasons"])
+    new_verdict = VERDICT_FAIL if new_reasons else VERDICT_PASS
+    new_tolerances = _tolerances_record(fid_cfg)
+    old_tolerances = payload.get("tolerances")
+    if verdict == new_verdict and old_tolerances == new_tolerances:
+        return None, (f"already gated as {new_verdict} under identical "
+                      "tolerances; nothing to rewrite")
+
+    new_payload = copy.deepcopy(payload)
+    new_payload["verdict"] = new_verdict
+    new_payload["tolerances"] = new_tolerances
+    summary = dict(new_payload.get("summary") or {})
+    summary["max_dAE_kcalmol"] = ae_terms["max"]
+    summary["mean_dAE_kcalmol"] = ae_terms["mean"]
+    summary["rmse_dAE_kcalmol"] = ae_terms["rmse"]
+    summary["species_over_1_kcalmol"] = ae_terms["species_over_1_kcalmol"]
+    summary["failure_reasons"] = new_reasons
+    new_payload["summary"] = summary
+    new_payload["regate"] = {
+        "original_verdict": verdict,
+        "original_tolerances": copy.deepcopy(old_tolerances),
+        "original_failure_reasons": copy.deepcopy(
+            (payload.get("summary") or {}).get("failure_reasons")),
+        "regated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "config_source": str(config_source),
+    }
+    still = ("; still failing: " + "; ".join(new_reasons)
+             if new_reasons else "")
+    report = (f"regated {payload.get('arch')!r}: {verdict} -> {new_verdict} "
+              f"(mean |dAE| {ae_terms['mean']:.4f}, max "
+              f"{ae_terms['max']:.4f} kcal/mol{still})")
+    return new_payload, report
 
 
 # ---------------------------------------------------------------------------

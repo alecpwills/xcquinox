@@ -756,7 +756,11 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
     keys = sorted(set(a) | set(b))
     differing = sorted(k for k in keys
                        if a.get(k, "<absent>") != b.get(k, "<absent>"))
-    assert len(keys) == 137, len(keys)
+    # 139 since the two-tier certificate gate (2026-09-03) added
+    # ``fidelity.tol_AE_aggregate`` and ``fidelity.tol_AE_max_backstop``;
+    # both load at their defaults on every pre-gate file, identical on the
+    # two sides, so neither joins the difference list.
+    assert len(keys) == 139, len(keys)
     assert differing == [
         "bh76_mode",
         "cluster.datagen_time",
@@ -775,10 +779,12 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
         "pretrain.validation_fraction",
         "sweep.arch",
     ], differing
-    # ... and the file says so, in the count it states.
+    # ... and the file says so, in the count it states (123 identical since
+    # the 2026-09-03 gate fields joined the flattened universe at equal
+    # defaults; the header records both counts).
     text = open(path6).read()
     assert "SIXTEEN differ" in text, path6
-    assert "The remaining 121 fields are identical" in text, path6
+    assert "The remaining 123 fields are identical" in text, path6
 
 
 def _v6_semantics(cfg):
@@ -1526,8 +1532,11 @@ def test_v6_group_differs_from_the_reference_in_exactly_what_it_claims(name):
     # 137 since the parent anchor added ``model.parent_anchor`` and
     # ``model.descriptor_coordinates``; both are the campaign's model class
     # and are therefore IDENTICAL in every group and in the reference, so
-    # neither joins the difference list here.
-    assert len(keys) == 137, len(keys)
+    # neither joins the difference list here. 139 since the two-tier
+    # certificate gate (2026-09-03) added ``fidelity.tol_AE_aggregate`` and
+    # ``fidelity.tol_AE_max_backstop``, equal at their defaults on every v6
+    # file for the same reason.
+    assert len(keys) == 139, len(keys)
     assert differing == sorted(expected), (path, ref_path, differing)
     # The header makes the same claim in prose, and that is where an operator
     # reads it. What is asserted is the EXCEPT clause -- the list of fields

@@ -3105,3 +3105,247 @@ def test_bh76_mode_guard_is_silent_on_corrupt_json_and_yaml(tmp_path):
     j.write_text("{,broken")
     require_explicit_bh76_mode(str(y))  # must not raise
     require_explicit_bh76_mode(str(j))  # must not raise
+
+
+# ===========================================================================
+# Two-tier atomization gate: fidelity.tol_AE_aggregate + tol_AE_max_backstop
+#
+# The certificate's atomization leg gains a second tier. At the default
+# aggregate ("max") the gate is exactly today's -- max |dAE| <= tol_AE -- so
+# every configuration written before the tier existed keeps its verdict. At
+# "mae" the PASS condition is mean |dAE| <= tol_AE AND max |dAE| <=
+# tol_AE_max_backstop, so a set whose typical offset is inside the tolerance
+# is not failed by one outlier while an outlier LARGE enough to be a different
+# physics still fails.
+#
+# The backstop is inert under the "max" aggregate (nothing reads it), so a
+# configuration that states it beside the default aggregate is refused rather
+# than silently ignored: the file would otherwise appear to bound the outlier
+# while the gate applies the single-tier rule.
+# ===========================================================================
+
+def _fidelity_value_error(tmp_path, name, raw):
+    """``load_grid_config`` must refuse ``raw`` on the VALUE, and return the
+    message.
+
+    The unknown-key guard also names the offending key, so a bare
+    ``match="tol_AE_aggregate"`` passes against a loader that has never heard
+    of the field. The message is therefore required NOT to be the unknown-key
+    refusal, which is what separates "the value is wrong" from "the schema
+    does not carry this field yet".
+    """
+    with pytest.raises(ValueError) as exc:
+        load_grid_config(_write(tmp_path, name, raw))
+    msg = str(exc.value)
+    assert "unknown key" not in msg, (
+        f"refused as an unknown key rather than on the value: {msg}")
+    return msg
+
+
+def test_fidelity_aggregate_defaults_to_max_with_the_2_kcalmol_backstop(tmp_path):
+    """A config with no fidelity block carries the single-tier gate: the
+    aggregate is 'max' (today's behaviour, byte for byte) and the backstop
+    field exists at 2.0 kcal/mol without being read."""
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert cfg.fidelity.tol_AE_aggregate == "max"
+    assert cfg.fidelity.tol_AE_max_backstop == 2.0
+
+
+def test_fidelity_block_without_the_aggregate_key_is_the_max_gate(tmp_path):
+    """A fidelity block that states the tolerances and nothing else resolves
+    to the single-tier gate, so no pre-existing campaign file changes verdict."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0, "override_reason": None,
+                       "enforce": True}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    assert cfg.fidelity.tol_AE_aggregate == "max"
+    assert cfg.fidelity.tol_AE_max_backstop == 2.0
+
+
+def test_fidelity_mae_gate_parses(tmp_path):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": "mae", "tol_AE_max_backstop": 2.0}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    assert cfg.fidelity.tol_AE_aggregate == "mae"
+    assert cfg.fidelity.tol_AE_max_backstop == 2.0
+    assert cfg.fidelity.tol_AE == 1.0
+    assert cfg.fidelity.tol_atom == 1.0
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+@pytest.mark.parametrize("bad", ["mean", "MAE", "Max", "rmse", "", "average"])
+def test_fidelity_aggregate_must_name_a_known_tier(tmp_path, bad):
+    """Only 'max' and 'mae' select a gate. A near-miss spelling would
+    otherwise have to fall back to one of them, and the fallback decides the
+    verdict of every architecture in the run."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": bad}
+    msg = _fidelity_value_error(tmp_path, "grid.json", raw)
+    assert "tol_AE_aggregate" in msg
+
+
+@pytest.mark.parametrize("bad", [True, False, 1, 0, None, ["mae"], {"a": "mae"}])
+def test_fidelity_aggregate_refuses_a_non_string(tmp_path, bad):
+    """A boolean, a number or a container is not one of the two tiers, and is
+    refused rather than coerced: ``str(True)`` is 'True', which is not a gate
+    either but would have to be mapped to one."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": bad}
+    msg = _fidelity_value_error(tmp_path, "grid.json", raw)
+    assert "tol_AE_aggregate" in msg
+
+
+def test_fidelity_backstop_beside_an_explicit_max_aggregate_is_refused(tmp_path):
+    """The backstop is read only by the 'mae' gate. Stated beside 'max' it is
+    an inert knob: the file appears to bound the worst species while the gate
+    in force fails on the same worst species against tol_AE instead."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": "max", "tol_AE_max_backstop": 2.0}
+    msg = _fidelity_value_error(tmp_path, "grid.json", raw)
+    assert "tol_AE_aggregate" in msg
+
+
+def test_fidelity_backstop_without_an_aggregate_key_is_refused(tmp_path):
+    """Same refusal by omission: an unstated aggregate IS 'max', so a
+    backstop next to it is equally inert."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_max_backstop": 2.0}
+    msg = _fidelity_value_error(tmp_path, "grid.json", raw)
+    assert "tol_AE_aggregate" in msg
+
+
+@pytest.mark.parametrize("bad", [True, False, [2.0], {"v": 2.0}, None])
+def test_fidelity_backstop_must_be_a_number(tmp_path, bad):
+    """Mirrors the tol_AE / tol_atom refusals: ``float(True)`` is 1.0 (a
+    silent half-tolerance) and ``float(None)`` raises TypeError past every
+    ``except ValueError`` handler in the load path."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": "mae", "tol_AE_max_backstop": bad}
+    msg = _fidelity_value_error(tmp_path, "grid.json", raw)
+    assert "tol_AE_max_backstop" in msg
+
+
+@pytest.mark.parametrize("token", [".nan", ".NaN", "'nan'", ".inf", "-.inf"])
+def test_fidelity_backstop_must_be_finite(tmp_path, token):
+    """A NaN backstop satisfies neither the positivity floor nor the 2.0
+    ceiling in ``validate_grid_semantics`` and turns the outlier comparison
+    into the sense of that comparison rather than a measurement."""
+    yaml = pytest.importorskip("yaml")
+    raw = _base_config_dict()
+    path = tmp_path / "grid.yaml"
+    path.write_text(
+        yaml.safe_dump(raw)
+        + "fidelity:\n  tol_AE: 1.0\n  tol_atom: 1.0\n"
+          "  tol_AE_aggregate: mae\n"
+          f"  tol_AE_max_backstop: {token}\n"
+    )
+    with pytest.raises(ValueError) as exc:
+        load_grid_config(str(path))
+    msg = str(exc.value)
+    assert "unknown key" not in msg, msg
+    assert "tol_AE_max_backstop" in msg
+
+
+@pytest.mark.parametrize("good,expected", [(2, 2.0), (1.5, 1.5), ("2.0", 2.0)])
+def test_fidelity_backstop_accepts_numeric_yaml_scalars(tmp_path, good,
+                                                        expected):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": "mae", "tol_AE_max_backstop": good}
+    cfg = load_grid_config(_write(tmp_path, "grid.json", raw))
+    assert cfg.fidelity.tol_AE_max_backstop == expected
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0])
+def test_validate_rejects_a_nonpositive_backstop(tmp_path, bad):
+    """No measurement satisfies max |dAE| <= 0, so a zero or negative
+    backstop is a config error in its own right -- the mirror of the tol_AE
+    and tol_atom floors."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": "mae", "tol_AE_max_backstop": bad}
+    cfg = load_grid_config(_write(tmp_path, f"grid_{bad}.json", raw))
+    with pytest.raises(ValueError, match="tol_AE_max_backstop"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_rejects_a_loose_backstop_without_an_override_reason(tmp_path):
+    """The outlier tier carries the same 2.0 ceiling as the two tolerances: a
+    backstop above it is the run declaring that a species several kcal/mol off
+    its parent is acceptable, which is a written decision or it does not
+    happen."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": "mae", "tol_AE_max_backstop": 3.0}
+    cfg = load_grid_config(_write(tmp_path, "grid.json", raw))
+    with pytest.raises(ValueError, match="override_reason"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_accepts_a_loose_backstop_with_an_override_reason(tmp_path):
+    """The discriminating half of the pair above: the two tolerances are
+    unchanged at 1.0 / 1.0 in both, so the refusal there and the acceptance
+    here are decided by the backstop and the reason alone."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": "mae", "tol_AE_max_backstop": 3.0,
+                       "override_reason": "deep_cusp_3x16 legacy-coordinate "
+                                          "outlier, documented in HISTORY"}
+    cfg = load_grid_config(_write(tmp_path, "grid.json", raw))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+    assert cfg.fidelity.tol_AE_max_backstop == 3.0
+
+
+def test_validate_accepts_the_backstop_ceiling_without_an_override_reason(
+        tmp_path):
+    """2.0 is the ceiling, not past it."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": "mae", "tol_AE_max_backstop": 2.0}
+    cfg = load_grid_config(_write(tmp_path, "grid.json", raw))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_fidelity_two_tier_gate_resolved_round_trip(tmp_path):
+    """The resolved config is what the pretrain worker, the preflight and the
+    regate verb re-read; a dropped aggregate would silently revert a two-tier
+    run to the single-tier gate mid-run, changing the verdict of every
+    architecture whose worst species sits between tol_AE and the backstop."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    raw = _base_config_dict()
+    # A NON-default backstop, so the value has to be carried by the
+    # serialization rather than restored from the dataclass default.
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "tol_AE_aggregate": "mae", "tol_AE_max_backstop": 1.5}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    cfg2 = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.fidelity.tol_AE_aggregate == "mae"
+    assert cfg2.fidelity.tol_AE_max_backstop == 1.5
+    assert cfg2.fidelity == cfg.fidelity
+
+
+def test_default_max_gate_survives_the_resolved_round_trip(tmp_path):
+    """Every stage re-reads ``resolved_config.yaml``, so a single-tier run's
+    serialized config must still LOAD.
+
+    ``_config_to_raw_dict`` writes every dataclass field, the backstop
+    included, and the inert-knob refusal above rejects a fidelity mapping that
+    carries the backstop under the 'max' aggregate. The two meet here: a
+    default config whose own resolved file no longer parses would break
+    resubmit, resubmit-preflight, repair-manifest, the pretrain worker and the
+    preflight on every existing run. This test states only that the round trip
+    survives and lands on the same FidelityConfig, not how."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert cfg.fidelity.tol_AE_aggregate == "max"
+    cfg2 = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.fidelity.tol_AE_aggregate == "max"
+    assert cfg2.fidelity == cfg.fidelity

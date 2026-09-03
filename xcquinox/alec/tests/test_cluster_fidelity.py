@@ -1154,6 +1154,8 @@ def test_certificate_passes_within_tolerance_and_writes_the_schema(tmp_path):
     assert payload["parent"] == "pbe"
     assert payload["identity"] == fid.run_identity(cfg)
     assert payload["tolerances"] == {"tol_AE": 1.0, "tol_atom": 1.0,
+                                     "tol_AE_aggregate": "max",
+                                     "tol_AE_max_backstop": None,
                                      "override_reason": None}
     assert payload["enforced"] is True
     assert isinstance(payload["xcquinox_version"], str)

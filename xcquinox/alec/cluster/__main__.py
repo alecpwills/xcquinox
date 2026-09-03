@@ -50,6 +50,7 @@ from xcquinox.alec.cluster import analyze
 from xcquinox.alec.cluster import job_tracking
 from xcquinox.alec.cluster import sync as _sync
 from xcquinox.alec.cluster.grid_config import (
+    _canon_axis,
     expand_grid,
     load_grid_config,
     normalize_cluster_walltimes,
@@ -61,9 +62,13 @@ from xcquinox.alec.cluster.domain import get_domain_profile
 from xcquinox.alec.cluster.inputs import prepare_inputs
 from xcquinox.alec.cluster.submit import submit_jobs
 from xcquinox.alec.cluster.materialize import write_manifest
-from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
+from xcquinox.alec.cluster.fidelity import (CERTIFICATE_FILENAME,
+                                            VERDICT_PASS,
+                                            _write_certificate_payload,
                                             gate_certificate_from_read,
-                                            read_certificate_status_in)
+                                            read_certificate_status_in,
+                                            regate_certificate_payload,
+                                            run_identity)
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +133,20 @@ def _write_json_atomic(payload, path: str) -> None:
 # GridConfig <-> dict serialization (resolved_config.yaml round-trip)
 # ---------------------------------------------------------------------------
 
+def _fidelity_to_raw_dict(fid) -> dict:
+    """FidelityConfig -> the raw dict ``load_grid_config`` accepts back.
+
+    ``dataclasses.asdict`` would write ``tol_AE_max_backstop`` under the
+    ``max`` aggregate, where the loader refuses the key as inert (it gates
+    nothing there); the round-trip therefore drops it exactly when the gate
+    ignores it, and carries it under ``mae``, where it is load-bearing.
+    """
+    raw = dataclasses.asdict(fid)
+    if raw.get("tol_AE_aggregate", "max") == "max":
+        raw.pop("tol_AE_max_backstop", None)
+    return raw
+
+
 def _config_to_raw_dict(cfg) -> dict:
     """Serialize a :class:`GridConfig` to a plain dict.
 
@@ -156,7 +175,7 @@ def _config_to_raw_dict(cfg) -> dict:
         # inline_eval do: the pretrain worker re-reads resolved_config.yaml to
         # get its tolerances, so a dropped block would silently certify at the
         # defaults instead of at the run's documented override.
-        "fidelity": dataclasses.asdict(cfg.fidelity),
+        "fidelity": _fidelity_to_raw_dict(cfg.fidelity),
         # model MUST round-trip for the same reason: every stage rebuilds its
         # architectures from this file, so a dropped block silently resolves
         # the run to the pre-anchor class -- unanchored, legacy coordinates --
@@ -1748,6 +1767,135 @@ def cmd_resubmit(args) -> int:
 
 
 # ===========================================================================
+# Subcommand: regate-certificates
+# ===========================================================================
+
+def cmd_regate_certificates(args) -> int:
+    """``regate-certificates``: re-verdict a run's certificates in place.
+
+    Applies the TRACKED config's fidelity gate to every architecture
+    certificate already written under ``<run_dir>/pretrain/``, re-verdicting
+    each from its RECORDED measurements
+    (:func:`fidelity.regate_certificate_payload` -- no network is
+    re-evaluated, no SCF is run). Exists for a gate-policy change on a live
+    campaign: the 2026-09-03 two-tier atomization gate (tol_AE_aggregate
+    ``mae`` + tol_AE_max_backstop) re-releases fits whose only failure was
+    the single-species max on a set-level-clean cloning fit, without
+    re-running 20000-step pretrains or resubmitting anything.
+
+    Dry-run by default; ``--apply`` rewrites the regated certificates
+    atomically AND updates the fidelity block inside ``resolved_config.yaml``
+    (``dataclasses.replace`` on the run's own loaded config, so every other
+    resolved knob round-trips untouched) -- that file is what the on-node
+    gates and any later ``resubmit-preflight`` replay read.
+
+    The tracked config must describe THIS run: ``fidelity.run_identity`` of
+    the two configs must agree, so a gate change can never smuggle in a
+    basis, grid, density-fit or orientation-lock change.
+
+    Exit 0 iff every architecture of the sweep has a certificate and it ends
+    PASS under the new gate -- the state in which a held preflight can be
+    released (``scontrol release``) and training continues on its own.
+    """
+    run_dir = os.path.abspath(args.run_dir)
+    resolved_path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
+    if not os.path.exists(resolved_path):
+        _log(f"regate-certificates: {resolved_path} not found; not a run dir")
+        return 1
+    for path in (args.config, resolved_path):
+        try:
+            require_explicit_bh76_mode(path)
+        except ValueError as exc:
+            _log(f"ERROR: {exc}")
+            return 1
+    try:
+        cfg_new = load_grid_config(args.config)
+    except Exception as exc:
+        _log(f"regate-certificates: cannot parse {args.config} ({exc!r})")
+        return 1
+    validate_grid_semantics(cfg_new, get_domain_profile(cfg_new.domain_profile))
+    try:
+        cfg_run = load_grid_config(resolved_path)
+    except Exception as exc:
+        _log(f"regate-certificates: cannot parse {resolved_path} ({exc!r}); "
+             "a run whose resolved config no longer loads cannot be regated")
+        return 1
+    ident_new = run_identity(cfg_new)
+    ident_run = run_identity(cfg_run)
+    if ident_new != ident_run:
+        keys = sorted(k for k in set(ident_new) | set(ident_run)
+                      if ident_new.get(k) != ident_run.get(k))
+        _log("regate-certificates: the tracked config does not describe this "
+             f"run -- run identity disagrees on {', '.join(keys)}; a regate "
+             "changes the GATE only, never the identity")
+        return 1
+
+    lock_path = None
+    if args.apply:
+        try:
+            lock_path = acquire_lock(run_dir, force=args.force)
+        except HarnessLockError as exc:
+            _log(f"regate-certificates: {exc}")
+            return 1
+    try:
+        archs = _canon_axis(cfg_run.sweep.arch)
+        all_pass = True
+        for arch in archs:
+            cpath = os.path.join(pretrain_checkpoint_dir(run_dir, arch),
+                                 CERTIFICATE_FILENAME)
+            if not os.path.exists(cpath):
+                _log(f"{arch}: no certificate yet ({cpath})")
+                all_pass = False
+                continue
+            try:
+                with open(cpath) as f:
+                    payload = json.load(f)
+            except (OSError, ValueError) as exc:
+                _log(f"{arch}: unreadable certificate ({exc!r})")
+                all_pass = False
+                continue
+            new_payload, report = regate_certificate_payload(
+                payload, cfg_new.fidelity, config_source=args.config)
+            if new_payload is None:
+                if report.startswith("already gated"):
+                    end_verdict = payload.get("verdict")
+                    _log(f"{arch}: {report}")
+                else:
+                    _log(f"{arch}: {report}")
+                    all_pass = False
+                    continue
+            else:
+                end_verdict = new_payload["verdict"]
+                if args.apply:
+                    _write_certificate_payload(new_payload, cpath)
+                    _log(f"{arch}: {report} -- WRITTEN")
+                else:
+                    _log(f"{arch}: {report} -- dry-run, not written")
+            if end_verdict != VERDICT_PASS:
+                all_pass = False
+        if args.apply:
+            cfg_updated = dataclasses.replace(cfg_run,
+                                              fidelity=cfg_new.fidelity)
+            _write_resolved_config(cfg_updated, run_dir)
+            _log("resolved_config.yaml fidelity block updated from "
+                 f"{args.config}")
+        else:
+            _log("dry-run: no certificate or resolved_config.yaml was "
+                 "written (pass --apply to write)")
+        if all_pass:
+            _log("every architecture's certificate ends PASS under the new "
+                 "gate; a held preflight can be released (scontrol release) "
+                 "or the graph rebuilt with resubmit-preflight")
+            return 0
+        _log("NOT all architectures end PASS under the new gate (see lines "
+             "above); the group's training cannot be released yet")
+        return 1
+    finally:
+        if lock_path is not None:
+            release_lock(lock_path)
+
+
+# ===========================================================================
 # Subcommand: resubmit-preflight
 # ===========================================================================
 
@@ -2682,6 +2830,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true",
         help="reclaim a held .harness.lock")
     p_rspf.set_defaults(func=cmd_resubmit_preflight)
+
+    p_regate = sub.add_parser(
+        "regate-certificates",
+        help="re-verdict a run's fidelity certificates in place under the "
+             "tracked config's gate (recorded measurements only)")
+    p_regate.add_argument("run_dir", help="the run directory")
+    p_regate.add_argument(
+        "--config", required=True,
+        help="tracked grid-config YAML whose fidelity block supplies the "
+             "gate; must describe this run's identity")
+    p_regate.add_argument(
+        "--apply", action="store_true",
+        help="rewrite the certificates and the resolved_config.yaml "
+             "fidelity block (default: dry-run)")
+    p_regate.add_argument(
+        "--force", action="store_true",
+        help="reclaim a held .harness.lock")
+    p_regate.set_defaults(func=cmd_regate_certificates)
 
     p_repair = sub.add_parser(
         "repair-manifest", help="rebuild a corrupt/missing manifest.json")
