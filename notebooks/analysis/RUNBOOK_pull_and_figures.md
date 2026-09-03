@@ -411,6 +411,21 @@ The first is the per-arch loss trajectories; the second draws the LEARNED
 F_x/F_c over the parent's curves with difference panels -- under the
 unanchored cloning class this is the direct is-it-learning visual.
 
+The certificate summary (mean |dAE| bars + per-species max markers per
+architecture, gate lines read from the certificates' own tolerances, FAIL
+hatching, flagged species; CSV written beside the PNG) compares rounds:
+
+```bash
+JAX_PLATFORMS=cpu python notebooks/analysis/plot_certificate_summary.py \
+    --runs v7=<v7 run dir> --runs v7=<second v7 run dir> \
+    --runs legacy=<pre-protocol run dir> \
+    --out notebooks/analysis/figures_dfs_step7_v7_pretrain/certificate_summary_v7.png
+```
+
+A repeated label merges disjoint architecture sets under one color; the
+figure states whichever gate each certificate recorded, so a re-pull after
+an on-cluster regate switches the drawn gate lines automatically.
+
 ### Certificate gate changes on a LIVE run (2026-09-03 flow)
 
 A gate-policy change (e.g. the two-tier `tol_AE_aggregate: mae` +
