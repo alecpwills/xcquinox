@@ -83,6 +83,16 @@ def test_none_rows_are_excluded_from_the_statistics():
     assert abs(t["mean"] - 0.25) < 1e-15
 
 
+def test_an_error_marked_row_never_enters_the_statistics():
+    """Unreachable from the real writer (error rows are nulled there), but a
+    hand-edited or corrupted row carrying both an error and a finite value
+    must not smuggle that value into the gate."""
+    rows = _rows(0.2, 0.3) + [{"name": "odd", "dAE_kcalmol": 9.9,
+                               "error": "inconsistent row"}]
+    t = fid._ae_gate_terms(rows, MAE_CFG)
+    assert t["max"] == 0.3 and abs(t["mean"] - 0.25) < 1e-15
+
+
 def test_no_usable_rows_is_the_untested_reason():
     t = fid._ae_gate_terms([], MAE_CFG)
     assert t["max"] is None and t["mean"] is None and t["rmse"] is None

@@ -1543,7 +1543,9 @@ def pretrain_to_raw_dict(pt) -> dict:
     :func:`_build_pretrain` refuses both keys as inert; the round-trip
     therefore drops them exactly when no sample is drawn, and carries them
     under ``rho_w_sampled``, where they are load-bearing. Lives beside the
-    loader so the two cannot drift apart.
+    loader so the two cannot drift apart. A PROGRAMMATIC config carrying a
+    non-default value in a dropped field does not round-trip that value --
+    by construction it gates nothing under the mode that drops it.
     """
     raw = asdict(pt)
     if raw.get("loss_weighting") != "rho_w_sampled":
@@ -1559,7 +1561,9 @@ def fidelity_to_raw_dict(fid) -> dict:
     ``max`` aggregate, where :func:`_build_fidelity` refuses the key as inert
     (it gates nothing there); the round-trip therefore drops it exactly when
     the gate ignores it, and carries it under ``mae``, where it is
-    load-bearing.
+    load-bearing. A PROGRAMMATIC config carrying a non-default backstop
+    under ``max`` does not round-trip that value -- by construction it gates
+    nothing there.
     """
     raw = asdict(fid)
     if raw.get("tol_AE_aggregate", "max") == "max":
@@ -2177,8 +2181,9 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         )
     if pt.loss_weighting not in _LOSS_WEIGHTINGS:
         raise ValueError(
-            f"pretrain.loss_weighting must be 'unweighted' or "
-            f"'integration', got {pt.loss_weighting!r}"
+            "pretrain.loss_weighting must be one of "
+            + ", ".join(repr(v) for v in _LOSS_WEIGHTINGS)
+            + f", got {pt.loss_weighting!r}"
         )
 
     # --- pretraining-protocol bounds ----------------------------------------

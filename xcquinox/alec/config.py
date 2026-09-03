@@ -948,11 +948,28 @@ class PretrainSpec:
                 f"lr_decay_start={self.lr_decay_start}")
         if self.lr_start < self.lr_end:
             raise ValueError(f"lr_start ({self.lr_start}) must be >= lr_end ({self.lr_end})")
-        # A per-system sample size is a COUNT; zero rows is not a fit. The
-        # bound holds whatever the weighting mode so a spec cannot carry a
-        # nonsensical value that a later mode switch would activate.
-        if int(self.points_per_system) != self.points_per_system or \
-                self.points_per_system < 1:
+        # The decay-window end is a fraction, and True/False are ints in
+        # Python: a boolean would satisfy every float bound while stating no
+        # fraction at all.
+        if isinstance(self.lr_decay_end, bool):
+            raise ValueError(
+                f"lr_decay_end must be a fraction in [lr_decay_start, 1], "
+                f"got the boolean {self.lr_decay_end!r}")
+        # A per-system sample size is a COUNT and the seed is an integer
+        # label; both hold whatever the weighting mode so a spec cannot
+        # carry a nonsensical value that a later mode switch would activate.
+        # Whole numbers ONLY (booleans and truncating floats refused): a
+        # truncated seed ALIASES another sample while the record shows the
+        # value that was written, and int(inf) raises the wrong error class.
+        for field_name in ("points_per_system", "sampling_seed"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not (
+                    isinstance(value, int)
+                    or (isinstance(value, float) and math.isfinite(value)
+                        and float(value).is_integer())):
+                raise ValueError(
+                    f"{field_name} must be a whole number, got {value!r}")
+        if self.points_per_system < 1:
             raise ValueError(
                 f"points_per_system must be a whole number >= 1, got "
                 f"{self.points_per_system}")

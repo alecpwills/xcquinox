@@ -1629,7 +1629,12 @@ def _ae_gate_terms(per_atomization, fid_cfg):
     """
     values, non_finite_names = [], []
     for r in per_atomization:
-        if not isinstance(r, dict) or r.get("dAE_kcalmol") is None:
+        # An error-marked row never contributes to the statistics, even in
+        # the (writer-unreachable) case where it carries a finite value
+        # beside its error text: its failure is recorded by the error
+        # itself, not by the number.
+        if (not isinstance(r, dict) or "error" in r
+                or r.get("dAE_kcalmol") is None):
             continue
         value = abs(float(r["dAE_kcalmol"]))
         if math.isfinite(value):

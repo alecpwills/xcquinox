@@ -47,10 +47,15 @@ import matplotlib
 matplotlib.use("Agg")  # headless-safe; must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
 
-# Validated categorical palette (dataviz reference instance, light surface):
-# slot 1 blue, slot 2 orange, then aqua/yellow for further labels. Color
-# follows the LABEL (the campaign generation); the FAIL state is carried by
-# hatching and the verdict text, never by color alone.
+# Categorical palette: slot 1 blue, slot 2 orange, then aqua/yellow for
+# further labels. Color follows the LABEL (the campaign generation); the FAIL
+# state is carried by hatching and the verdict text, never by color alone.
+# Separation was checked by execution with an OKLab-based colorblind
+# validator (Delta E x100 in OKLab, light surface #fcfcfb): worst adjacent
+# pair 24.7 protan / 33.6 normal for the first two slots. Note the METRIC:
+# under CIEDE2000 with the Vienot 1999 protan model the same pair measures
+# ~48.5 normal / ~57.3 protan -- different formulations, both comfortably
+# above their guidelines; any quoted number must name its metric.
 _LABEL_COLORS = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
 
 # The per-species flag threshold the certificates record (kcal/mol; the
@@ -79,8 +84,13 @@ def collect_certificates(runs):
         for path in paths:
             with open(path) as f:
                 cert = json.load(f)
-            arch = str(cert.get("arch") or
-                       os.path.basename(os.path.dirname(path)))
+            dir_arch = os.path.basename(os.path.dirname(path))
+            arch = str(cert.get("arch") or dir_arch)
+            if cert.get("arch") and str(cert["arch"]) != dir_arch:
+                raise ValueError(
+                    f"certificate at {path} names arch {cert['arch']!r} but "
+                    f"sits in directory {dir_arch!r}; a mislabeled "
+                    "certificate must not be plotted under either name")
             key = (label, arch)
             if key in seen:
                 raise ValueError(
@@ -132,7 +142,13 @@ def write_csv(records, path):
 
 
 def plot_certificate_summary(records, out_path):
-    """Render the grouped mean-bar / max-marker figure to ``out_path``."""
+    """Render the grouped mean-bar / max-marker figure to ``out_path``.
+
+    Returns the render manifest -- what was actually drawn (gate lines with
+    their rule text, hatched FAIL bars, clipped max markers with their
+    values, note texts, per-label colors, the y cap), built at the draw
+    sites so tests pin drawn behaviour without parsing pixels.
+    """
     labels = []
     for label, _arch, _r in records:
         if label not in labels:
@@ -140,13 +156,17 @@ def plot_certificate_summary(records, out_path):
     archs = sorted({arch for _l, arch, _r in records})
     by_key = {(label, arch): r for label, arch, r in records}
 
-    tol_lines = {}
+    # One line per DISTINCT (kind, value): certificates recording different
+    # aggregates at the same tol_AE (a partially regated pull) merge into a
+    # single caption, instead of two annotations overprinting at one anchor.
+    tol_lines: dict = {}
     for _l, _a, r in records:
         if r["tol_AE"] is not None:
-            tol_lines[("tol_AE", float(r["tol_AE"]), r["aggregate"])] = True
+            key = ("tol_AE", float(r["tol_AE"]))
+            tol_lines.setdefault(key, set()).add(str(r["aggregate"]))
         if r["backstop"] is not None:
-            tol_lines[("backstop", float(r["backstop"]), None)] = True
-    gate_values = [v for _kind, v, _agg in tol_lines]
+            tol_lines.setdefault(("backstop", float(r["backstop"])), set())
+    gate_values = [v for _kind, v in tol_lines]
     finite_max = [r["max"] for _l, _a, r in records if r["max"] is not None]
     finite_mean = [r["mean"] for _l, _a, r in records if r["mean"] is not None]
     # The cap always covers every BAR (a clipped bar misstates its mean); only
@@ -165,17 +185,34 @@ def plot_certificate_summary(records, out_path):
     fig_w = max(7.5, 1.05 * len(archs) * n_labels + 2.5)
     fig, ax = plt.subplots(figsize=(fig_w, 5.2))
 
+    # The render manifest is built AT the draw sites and returned, so tests
+    # can pin every drawn behaviour (gate lines and their rule text, FAIL
+    # hatching, clipped markers with their values, note text, per-label
+    # colors, the bar-covering cap) without parsing pixels.
+    manifest = {"out_path": out_path, "y_cap": y_cap, "gate_lines": [],
+                "hatched": [], "clipped": [], "colors": {}, "notes": {}}
+
     for li, label in enumerate(labels):
         color = _LABEL_COLORS[li % len(_LABEL_COLORS)]
-        xs, means = [], []
+        manifest["colors"][label] = color
         for ai, arch in enumerate(archs):
             r = by_key.get((label, arch))
-            if r is None or r["mean"] is None:
+            if r is None:
+                continue
+            if r["mean"] is None:
+                # A certificate with no usable atomization rows still shows:
+                # an unmarked gap would read as a clean absence.
+                x = ai - group_w / 2 + (li + 0.5) * bar_w
+                text = f"{r['verdict']}\nno atomization data"
+                ax.annotate(text, (x, 0.0), xytext=(0, 6),
+                            textcoords="offset points", ha="center",
+                            fontsize=7, color="#444444", zorder=5)
+                manifest["notes"][(label, arch)] = text
                 continue
             x = ai - group_w / 2 + (li + 0.5) * bar_w
-            xs.append(x)
-            means.append(r["mean"])
             hatch = "///" if r["verdict"] != "PASS" else None
+            if hatch:
+                manifest["hatched"].append((label, arch))
             ax.bar(x, r["mean"], width=0.92 * bar_w, color=color,
                    hatch=hatch, edgecolor="white", linewidth=0.5,
                    zorder=3)
@@ -196,6 +233,7 @@ def plot_certificate_summary(records, out_path):
                                 xytext=(0, -11), textcoords="offset points",
                                 ha="center", fontsize=7, color="#444444",
                                 zorder=5)
+                    manifest["clipped"].append((label, arch, r["max"]))
             note = []
             if r["verdict"] != "PASS":
                 note.append(r["verdict"])
@@ -211,18 +249,23 @@ def plot_certificate_summary(records, out_path):
                 # cannot collide with the title band or a clipped-value
                 # number.
                 below = y_note > 0.86 * y_cap
-                ax.annotate("\n".join(note), (x, y_note),
+                text = "\n".join(note)
+                ax.annotate(text, (x, y_note),
                             xytext=(0, -22 if below else 6),
                             textcoords="offset points",
                             va="top" if below else "bottom",
                             ha="center", fontsize=7, color="#444444",
                             zorder=5)
+                manifest["notes"][(label, arch)] = text
 
-    for kind, value, aggregate in sorted(tol_lines):
+    for (kind, value), aggregates in sorted(tol_lines.items()):
         if kind == "tol_AE":
-            what = ("gates the set mean" if aggregate == "mae"
-                    else "gates every species")
-            text = f"tol_AE = {value:g} ({aggregate}: {what})"
+            parts = []
+            if "mae" in aggregates:
+                parts.append("mae: gates the set mean")
+            if "max" in aggregates:
+                parts.append("max: gates every species")
+            text = f"tol_AE = {value:g} ({'; '.join(parts)})"
             style = dict(color="#555555", linestyle="--", linewidth=1.2)
         else:
             text = f"tol_AE_max_backstop = {value:g} (per-species ceiling)"
@@ -231,6 +274,7 @@ def plot_certificate_summary(records, out_path):
         ax.annotate(text, (len(archs) - 0.52, value),
                     xytext=(0, 3), textcoords="offset points",
                     ha="right", fontsize=8, color="#555555")
+        manifest["gate_lines"].append((value, text))
 
     ax.set_xticks(range(len(archs)))
     ax.set_xticklabels(archs, rotation=20, ha="right", fontsize=9)
@@ -255,7 +299,7 @@ def plot_certificate_summary(records, out_path):
                 exist_ok=True)
     fig.savefig(out_path, dpi=160)
     plt.close(fig)
-    return out_path
+    return manifest
 
 
 def _parse_runs(values):

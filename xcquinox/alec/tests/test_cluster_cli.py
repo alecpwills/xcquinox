@@ -2648,8 +2648,53 @@ def test_regate_refuses_a_run_dir_without_a_resolved_config(tmp_path):
 
 
 def test_regate_reports_a_corrupt_certificate_without_crashing(tmp_path):
+    """... and, on --apply, does NOT rewrite resolved_config.yaml: a run
+    with an unreadable certificate is a broken run, and changing its gate
+    policy on disk after a failed command leaves state the operator never
+    successfully applied (a later resubmit-preflight would certify fresh
+    pretrains under it)."""
     rd, tracked, cert_path = _regate_fixture(tmp_path)
+    resolved = os.path.join(rd, cli._RESOLVED_CONFIG_FILENAME)
+    before_resolved = open(resolved, "rb").read()
     with open(cert_path, "w") as f:
         f.write("{not json")
     rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
     assert rc == 1
+    assert open(resolved, "rb").read() == before_resolved
+    cfg = cli.load_grid_config(resolved)
+    assert cfg.fidelity.tol_AE_aggregate == "max"
+
+
+def test_regate_apply_names_the_fidelity_values_it_writes(tmp_path, capsys):
+    """The resolved rewrite replaces the WHOLE fidelity block from the
+    tracked config; the log must state old -> new so a tracked-config edit
+    to tol_atom or enforce cannot ride along unremarked."""
+    rd, tracked, _ = _regate_fixture(tmp_path)
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "resolved fidelity" in out
+    assert "tol_AE_aggregate" in out and "mae" in out
+
+
+def test_regate_skips_a_certificate_that_changed_since_it_was_read(
+        tmp_path, monkeypatch):
+    """Compute-node workers hold no .harness.lock: a certificate rewritten
+    between the command's read and its write (a fresh pretrain finishing)
+    must not be clobbered with a re-verdict of the STALE content."""
+    rd, tracked, cert_path = _regate_fixture(tmp_path)
+    sneaky = json.dumps(_regate_cert_payload(0.3, "PASS"))
+    real = cli.regate_certificate_payload
+
+    def _swap_then_regate(payload, fid_cfg, *, config_source):
+        with open(cert_path, "w") as f:
+            f.write(sneaky)
+        return real(payload, fid_cfg, config_source=config_source)
+
+    monkeypatch.setattr(cli, "regate_certificate_payload", _swap_then_regate)
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+    assert rc == 1
+    with open(cert_path) as f:
+        on_disk = json.load(f)
+    assert on_disk == json.loads(sneaky), \
+        "the concurrent write was clobbered with a stale re-verdict"

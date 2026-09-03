@@ -192,20 +192,20 @@ def _rho_w_sampling_mask(rho, grid_weights, segment, points_per_system, seed,
     differ), and iterates systems in sorted segment order, so a rerun on the
     same data file reproduces the mask bit for bit.
 
+    A synthetic mesh block (``n_mesh_rows`` appended rows, the meta-GGA
+    files) carries no quadrature measure: it is never sampled and its rows
+    are appended to the mask at weight zero, so the published objective --
+    which has no mesh regularizer -- holds while the tensors keep their
+    concatenated length. Rows with exactly-zero measure inside a physical
+    system likewise cannot be drawn, and the per-system draw clamps to the
+    positive-measure support.
+
     Raises ``ValueError`` when the data cannot support the protocol: a
-    synthetic-mesh block (no quadrature measure to sample under), a missing
-    quadrature-weights column, mismatched column lengths, or a system whose
-    total ``|w rho|`` is not positive and finite.
+    missing quadrature-weights column, mismatched column lengths, or a
+    system whose total ``|w rho|`` is not positive and finite.
     """
     if channel not in ("x", "c"):
         raise ValueError(f"channel must be 'x' or 'c', got {channel!r}")
-    if n_mesh_rows:
-        raise ValueError(
-            "loss_weighting 'rho_w_sampled' is defined on physical "
-            "quadrature rows only; this pretraining data appends a synthetic "
-            f"mesh block ({n_mesh_rows} rows) with no quadrature measure to "
-            "sample under. Regenerate the data without the mesh or use "
-            "'integration'.")
     if grid_weights is None:
         raise ValueError(
             "loss_weighting 'rho_w_sampled' requires the Becke quadrature "
@@ -232,9 +232,24 @@ def _rho_w_sampling_mask(rho, grid_weights, segment, points_per_system, seed,
                 f"system segment {sys_id!r} has no positive finite w*rho "
                 f"measure to sample under (sum {total!r}) on the {channel} "
                 "block; the data is unusable for 'rho_w_sampled'")
-        k = min(int(points_per_system), int(idx.size))
+        # A row with exactly-zero measure can never be drawn (production
+        # grids do carry exactly-zero quadrature weights), and numpy's
+        # choice() raises when the requested size exceeds the
+        # positive-probability support -- the draw clamps to that support,
+        # so a system with fewer positive-measure rows than
+        # points_per_system contributes all of them.
+        k = min(int(points_per_system), int(idx.size),
+                int(np.count_nonzero(p_sys > 0.0)))
         chosen = rng.choice(idx, size=k, replace=False, p=p_sys / total)
         mask[chosen] = 1.0
+    if n_mesh_rows:
+        # A synthetic mesh block carries NO quadrature measure: under the
+        # published objective it is never sampled and its rows enter the
+        # loss at weight zero (the paper's protocol has no mesh
+        # regularizer). The rows stay in the tensors so the descriptor and
+        # weight lengths agree; the recorded mesh loss share is then 0 by
+        # construction.
+        mask = np.concatenate([mask, np.zeros(int(n_mesh_rows))])
     return jnp.asarray(mask)
 
 
@@ -1169,6 +1184,23 @@ def _lr_schedule(
             ],
             boundaries=[decay_end_step],
         )
+    if decay_steps == 0 and lr_decay_end < 1.0:
+        # An explicitly EMPTY window (lr_decay_start == lr_decay_end < 1):
+        # the documented shape degenerates to a step function -- constant
+        # lr_start to the boundary, constant lr_end after. Falling through
+        # to the legacy branch here would silently run a FULL-LENGTH linear
+        # decay from step 0, which is neither shape.
+        return optax.join_schedules(
+            schedules=[
+                optax.constant_schedule(lr_start),
+                optax.constant_schedule(lr_end),
+            ],
+            boundaries=[max(decay_start_step, 0)],
+        )
+    # Legacy fallthrough (lr_decay_end == 1.0 with an empty or zero-start
+    # window): a full-length linear decay, preserved bit-for-bit because
+    # every pre-2026-09-03 schedule with lr_decay_start in {0, 1} was built
+    # from exactly this expression.
     return optax.linear_schedule(
         init_value=lr_start,
         end_value=lr_end,
@@ -1616,7 +1648,9 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # term's own full-grid row weights (separate kwargs above) integrate
         # exactly as in the other modes.
         seg_key_x, seg_key_c = "system" + x_suffix, "system_all"
-        missing = [k for k in (seg_key_x, seg_key_c)
+        # dict.fromkeys: under the total footing the two blocks share
+        # 'system_all', and a refusal must not name the same key twice.
+        missing = [k for k in dict.fromkeys((seg_key_x, seg_key_c))
                    if k not in pretrain_data]
         if missing:
             raise ValueError(

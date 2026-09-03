@@ -781,9 +781,10 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
         "pretrain.validation_fraction",
         "sweep.arch",
     ], differing
-    # ... and the file says so, in the count it states (123 identical since
-    # the 2026-09-03 gate fields joined the flattened universe at equal
-    # defaults; the header records both counts).
+    # ... and the file says so, in the count it states (126 identical: the
+    # 2026-09-03 gate fields and the same day's protocol-completion fields
+    # joined the flattened universe at equal defaults; the header records
+    # the counts).
     text = open(path6).read()
     assert "SIXTEEN differ" in text, path6
     assert "The remaining 126 fields are identical" in text, path6

@@ -259,7 +259,10 @@ pretrain:
   # the PLAIN mean-squared enhancement-factor residual over that sample --
   # implemented as a 0/1 row mask through the weighted reduction, so
   # unsampled rows ride at weight zero and the energy term below integrates
-  # over the full grid exactly as before. This replaces the in-house
+  # over the full grid exactly as before. A synthetic mesh block, where the
+  # data carries one (the meta-GGA files), has no quadrature measure: it is
+  # never sampled and rides at weight zero too -- the published objective
+  # carries no mesh regularizer; the integration mode keeps its 0.3 share. This replaces the in-house
   # |rho*eps_LDA|*w full-grid weighting of every round through 2026-09-02
   # (retained then as the codebase convention; its exchange measure
   # ~ rho^(4/3) w pushes weight toward high-density cores where the paper's

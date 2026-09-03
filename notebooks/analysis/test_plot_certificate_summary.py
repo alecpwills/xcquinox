@@ -160,3 +160,67 @@ def test_clipped_outliers_still_render(two_label_tree, tmp_path):
     rc = pcs.main(["--runs", f"v7={v7}", "--runs", f"legacy={big}",
                    "--out", str(out)])
     assert rc == 0 and out.stat().st_size > 0
+
+
+def test_render_manifest_pins_every_drawn_behavior(two_label_tree, tmp_path):
+    """Arithmetic-only pins let every graphical behaviour be deleted
+    silently (a build without gate lines, hatching or the clip branch still
+    writes a non-empty PNG); the manifest, built at the draw sites, pins
+    them: gate lines with the RIGHT rule text, FAIL hatching, the clipped
+    marker and its value, distinct label colors, species notes with
+    truncation, and a cap that covers every bar."""
+    v7, _ = two_label_tree
+    big = _write_run(tmp_path, "run_big", {
+        "shallow": _cert("shallow", [11.3, 0.5], verdict="FAIL",
+                         two_tier=False),
+        "medium": _cert("medium", [0.6, 0.7, 1.1, 1.2, 1.3, 1.4],
+                        verdict="FAIL", two_tier=False,
+                        names=["s1", "s2", "s3", "s4", "s5", "s6"]),
+    })
+    records = pcs.collect_certificates([("v7", v7), ("legacy", big)])
+    manifest = pcs.plot_certificate_summary(records,
+                                            str(tmp_path / "m.png"))
+    # Gate lines exist, and the merged caption names BOTH rules at the
+    # shared tol_AE (mixed schemas: v7 certs record mae, legacy max).
+    tol_lines = {v: text for v, text in manifest["gate_lines"]}
+    assert 1.0 in tol_lines and 2.0 in tol_lines
+    assert "mae: gates the set mean" in tol_lines[1.0]
+    assert "max: gates every species" in tol_lines[1.0]
+    assert sum(1 for v, _t in manifest["gate_lines"] if v == 1.0) == 1
+    assert "per-species ceiling" in tol_lines[2.0]
+    # FAIL bars hatched; PASS bars not.
+    assert ("v7", "shallow") in manifest["hatched"]
+    assert ("legacy", "shallow") in manifest["hatched"]
+    assert ("v7", "medium") not in manifest["hatched"]
+    # The 11.3 outlier clips with its value; the cap still covers every bar.
+    assert ("legacy", "shallow", 11.3) in manifest["clipped"]
+    means = [r["mean"] for _l, _a, r in records if r["mean"] is not None]
+    assert manifest["y_cap"] >= max(means)
+    # Distinct colors per label.
+    assert len(set(manifest["colors"].values())) == 2
+    # Species notes: flagged species inline, truncated at three with the
+    # +N tail.
+    assert "C3H8" in manifest["notes"][("v7", "shallow")]
+    assert "+1" in manifest["notes"][("legacy", "medium")]
+
+
+def test_a_certificate_with_no_usable_rows_is_annotated_not_dropped(
+        tmp_path):
+    run = _write_run(tmp_path, "run_empty_rows", {
+        "medium": {"arch": "medium", "verdict": "FAIL",
+                   "per_atomization": [],
+                   "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                  "override_reason": None},
+                   "summary": {"failure_reasons": ["untested"]}}})
+    records = pcs.collect_certificates([("v7", run)])
+    manifest = pcs.plot_certificate_summary(records,
+                                            str(tmp_path / "e.png"))
+    note = manifest["notes"][("v7", "medium")]
+    assert "no atomization data" in note and "FAIL" in note
+
+
+def test_an_arch_directory_mismatch_is_refused(tmp_path):
+    run = _write_run(tmp_path, "run_mismatch", {
+        "medium": _cert("shallow", [0.2], verdict="PASS")})
+    with pytest.raises(ValueError, match="mislabeled"):
+        pcs.collect_certificates([("v7", run)])

@@ -1828,6 +1828,7 @@ def cmd_regate_certificates(args) -> int:
     try:
         archs = _canon_axis(cfg_run.sweep.arch)
         all_pass = True
+        any_unreadable = False
         for arch in archs:
             cpath = os.path.join(pretrain_checkpoint_dir(run_dir, arch),
                                  CERTIFICATE_FILENAME)
@@ -1841,6 +1842,7 @@ def cmd_regate_certificates(args) -> int:
             except (OSError, ValueError) as exc:
                 _log(f"{arch}: unreadable certificate ({exc!r})")
                 all_pass = False
+                any_unreadable = True
                 continue
             new_payload, report = regate_certificate_payload(
                 payload, cfg_new.fidelity, config_source=args.config)
@@ -1855,6 +1857,22 @@ def cmd_regate_certificates(args) -> int:
             else:
                 end_verdict = new_payload["verdict"]
                 if args.apply:
+                    # Compute-node workers hold no .harness.lock, so a
+                    # fresh pretrain can rewrite the certificate between
+                    # this command's read and its write; a re-verdict of
+                    # STALE content must not clobber the newer file.
+                    try:
+                        with open(cpath) as f:
+                            current = json.load(f)
+                    except (OSError, ValueError):
+                        current = None
+                    if current != payload:
+                        _log(f"{arch}: certificate changed on disk since "
+                             "it was read (a live pretrain worker may have "
+                             "rewritten it); NOT overwritten -- rerun to "
+                             "regate the new content")
+                        all_pass = False
+                        continue
                     _write_certificate_payload(new_payload, cpath)
                     _log(f"{arch}: {report} -- WRITTEN")
                 else:
@@ -1862,11 +1880,25 @@ def cmd_regate_certificates(args) -> int:
             if end_verdict != VERDICT_PASS:
                 all_pass = False
         if args.apply:
-            cfg_updated = dataclasses.replace(cfg_run,
-                                              fidelity=cfg_new.fidelity)
-            _write_resolved_config(cfg_updated, run_dir)
-            _log("resolved_config.yaml fidelity block updated from "
-                 f"{args.config}")
+            if any_unreadable:
+                # A run with an unreadable certificate is broken; a
+                # gate-policy change must not land on disk as the side
+                # effect of a failed command (a later resubmit-preflight
+                # would certify fresh pretrains under it).
+                _log("resolved_config.yaml NOT updated: an unreadable "
+                     "certificate leaves this run's state in question, and "
+                     "a failed command must not change its gate policy")
+            else:
+                old_block = fidelity_to_raw_dict(cfg_run.fidelity)
+                new_block = fidelity_to_raw_dict(cfg_new.fidelity)
+                cfg_updated = dataclasses.replace(cfg_run,
+                                                  fidelity=cfg_new.fidelity)
+                _write_resolved_config(cfg_updated, run_dir)
+                # The rewrite replaces the WHOLE block from the tracked
+                # config; every value is named so a tracked-config edit to
+                # tol_atom or enforce cannot ride along unremarked.
+                _log(f"resolved fidelity block updated from {args.config}: "
+                     f"{old_block} -> {new_block}")
         else:
             _log("dry-run: no certificate or resolved_config.yaml was "
                  "written (pass --apply to write)")

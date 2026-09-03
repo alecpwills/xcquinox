@@ -133,7 +133,6 @@ def test_the_draw_is_biased_toward_the_w_rho_measure():
 
 @pytest.mark.parametrize("kwargs, fragment", [
     (dict(grid_weights=None), "quadrature"),
-    (dict(n_mesh_rows=5), "mesh"),
     (dict(channel="y"), "channel"),
 ])
 def test_mask_refusals_fire_by_name(kwargs, fragment):
@@ -251,3 +250,142 @@ def test_pretrain_raw_dict_round_trips_both_modes():
     raw = pretrain_to_raw_dict(sampled)
     assert raw["points_per_system"] == 640 and raw["sampling_seed"] == 5
     assert _build_pretrain(raw) == sampled
+
+
+# ---------------------------------------------------------------------------
+# Review round: mesh coexistence, degenerate windows, zero-weight rows,
+# and spec-bound hardening
+# ---------------------------------------------------------------------------
+
+def test_mesh_rows_ride_at_zero_weight_and_are_never_sampled():
+    """Meta-GGA pretraining data appends a synthetic (r_s, s, alpha) mesh
+    block with NO quadrature measure; the published objective carries no
+    mesh regularizer, so under rho_w_sampled the mesh is never drawn and its
+    rows enter the loss at weight zero -- a refusal here would make the
+    protocol unrunnable on every meta-GGA architecture."""
+    rho, w, seg = _two_system_columns()
+    m = np.asarray(_rho_w_sampling_mask(rho, w, seg, 30, 42, channel="x",
+                                        n_mesh_rows=7))
+    assert m.shape[0] == rho.shape[0] + 7
+    assert np.all(m[-7:] == 0.0)
+    assert m[:100].sum() == 30 and m[100:160].sum() == 30
+
+
+def test_degenerate_decay_window_is_a_step_function_not_a_full_decay():
+    """lr_decay_start == lr_decay_end < 1 passed both config layers and fell
+    through to a FULL-LENGTH linear decay from step 0 -- neither the
+    documented constant/constant shape nor the legacy one. The empty window
+    now degenerates to a step: constant lr_start to the boundary, constant
+    lr_end after. The legacy quirk (end == 1.0) is preserved bit-for-bit."""
+    z = _sched(lr_decay_start=0.9, lr_decay_end=0.9)
+    assert float(z(0)) == pytest.approx(1e-3)
+    assert float(z(17999)) == pytest.approx(1e-3)
+    assert float(z(18000)) == pytest.approx(1e-5, abs=5e-8)
+    assert float(z(N - 1)) == pytest.approx(1e-5, abs=5e-8)
+    # end == 1.0 keeps the legacy fallthrough (full-length linear decay).
+    legacy = _sched(lr_decay_start=1.0, lr_decay_end=1.0)
+    assert float(legacy(N // 2)) == pytest.approx((1e-3 + 1e-5) / 2, rel=1e-3)
+
+
+def test_zero_measure_rows_shrink_the_draw_instead_of_crashing():
+    """A production grid can carry exactly-zero quadrature weights (the repo
+    reference file does: 570/620 positive rows); numpy's choice() raises an
+    opaque error when size exceeds the positive-probability support. The
+    draw clamps to the positive-measure row count instead."""
+    rho = np.ones(10)
+    w = np.array([1.0] * 6 + [0.0] * 4)
+    seg = np.zeros(10, dtype=int)
+    m = np.asarray(_rho_w_sampling_mask(rho, w, seg, 8, 0, channel="c"))
+    assert m.sum() == 6
+    assert np.all(m[6:] == 0.0)
+
+
+def test_spec_bounds_reject_aliasing_and_non_integral_values(tmp_path):
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import PretrainSpec
+
+    arch = alec.get_architecture("shallow")
+    base = dict(arch=arch, data_dir=str(tmp_path),
+                checkpoint_dir=str(tmp_path / "ckpt"))
+    # A truncating float seed aliases another mask while the record shows the
+    # written value; whole numbers only, booleans included.
+    for kw, fragment in (
+            (dict(sampling_seed=0.7), "sampling_seed"),
+            (dict(points_per_system=float("inf")), "points_per_system"),
+            (dict(points_per_system=True), "points_per_system"),
+            (dict(sampling_seed=True), "sampling_seed"),
+            (dict(lr_decay_end=True), "lr_decay_end"),
+    ):
+        with pytest.raises(ValueError, match=fragment):
+            PretrainSpec(**base, **kw).validate()
+
+
+def test_missing_system_column_is_named_once(tmp_path):
+    """Under the total footing the exchange and correlation blocks share
+    'system_all'; the refusal must not name the same key twice."""
+    import os
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import PretrainSpec
+    from xcquinox.alec.pretrain import run_pretrain
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    n = 40
+    rho = np.linspace(0.01, 5.0, n)
+    np.savez(os.path.join(str(data_dir), "pretrain_data.npz"),
+             rho_all=rho, sigma_all=rho ** 2,
+             Fx_all=np.zeros(n), Fc_all=np.zeros(n),
+             weights_all=np.full(n, 0.05))
+    spec = PretrainSpec(arch=alec.get_architecture("shallow"),
+                        data_dir=str(data_dir),
+                        checkpoint_dir=str(tmp_path / "ckpt"),
+                        n_steps=2, lr_start=1e-2, lr_end=1e-5,
+                        lr_decay_start=0.0, grad_clip=1.0, seed=0,
+                        loss_weighting="rho_w_sampled",
+                        points_per_system=5, sampling_seed=1)
+    with pytest.raises(ValueError) as err:
+        run_pretrain(spec)
+    assert str(err.value).count("'system_all'") == 1
+
+
+def test_metagga_run_with_a_mesh_completes_under_rho_w_sampled(tmp_path):
+    """The v7 meta-GGA group's exact combination: a data file carrying the
+    synthetic mesh block, a pure meta-GGA architecture, and the sampled
+    objective. Before the mesh-at-zero-weight rule this raised at the node
+    and would have killed two of the five mgga pretrain tasks on the next
+    fresh submission; now the fit runs, the mesh contributes zero loss
+    share, and the metadata records the physical sample."""
+    from xcquinox.alec.config import ArchitectureConfig, PretrainSpec
+    from xcquinox.alec.pretrain import run_pretrain
+
+    n_atomic, n_mesh = 60, 12
+    np.savez(tmp_path / "pretrain_data.npz",
+             rho_all=np.linspace(0.1, 2.0, n_atomic),
+             sigma_all=np.linspace(0.0, 1.0, n_atomic),
+             metagga_all=np.linspace(0.0, 2.0, n_atomic).reshape(-1, 1),
+             Fx_all=np.zeros(n_atomic), Fc_all=np.full(n_atomic, -0.1),
+             Fx_scan_all=np.full(n_atomic, 0.3),
+             Fc_scan_all=np.full(n_atomic, -0.4),
+             weights_all=np.full(n_atomic, 0.05),
+             system_all=np.array([0] * 40 + [1] * 20, dtype=np.int64),
+             rho_mesh=np.linspace(0.2, 1.0, n_mesh),
+             sigma_mesh=np.linspace(0.1, 0.6, n_mesh),
+             metagga_mesh=np.linspace(0.0, 3.0, n_mesh).reshape(-1, 1),
+             Fx_scan_mesh=np.full(n_mesh, 0.7),
+             Fc_scan_mesh=np.full(n_mesh, -0.7),
+             weights_mesh=np.full(n_mesh, 0.25))
+    arch = ArchitectureConfig.from_spec(
+        "t_mgga_sampled", 2, 8, descriptors=["metagga"], meta_gga=True)
+    spec = PretrainSpec(arch=arch, data_dir=str(tmp_path),
+                        checkpoint_dir=str(tmp_path / "ck"),
+                        n_steps=3, lr_start=1e-2, lr_end=1e-5,
+                        lr_decay_start=0.0, grad_clip=1.0, seed=0,
+                        loss_weighting="rho_w_sampled",
+                        points_per_system=15, sampling_seed=4)
+    result = run_pretrain(spec)
+    assert result["loss_weighting"] == "rho_w_sampled"
+    assert result["sampled_rows_x"] == 30 and result["sampled_rows_c"] == 30
+    assert np.isfinite(result["final_loss_x"])
+    assert np.isfinite(result["final_loss_c"])
+    assert result["mesh_loss_share_x"] == pytest.approx(0.0)
+    assert result["mesh_loss_share_c"] == pytest.approx(0.0)
