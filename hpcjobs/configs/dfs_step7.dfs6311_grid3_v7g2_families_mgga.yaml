@@ -235,22 +235,43 @@ pretrain:
   # of the set, the footing, the objective and the run identity, all five of
   # which are the same in all three v7 files.
   data_dir: /gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_v7g2_families_mgga
-  # Cloning schedule, aligned to the published protocol (arXiv:2605.10331:
-  # 2e4 epochs at 1e-3 with linear decay to 1e-5 from the midpoint) in
-  # place of the v5/v6 2500 @ 0.01 -- the certificate-missing fits of the
-  # 2026-08-25 sweep had 1/20 of this schedule. Residual deviation: the
-  # published schedule flattens at 1e-5 for the final 10 percent of steps;
-  # the harness's linear_schedule reaches 1e-5 at the last step instead
-  # (pretrain._build_optimizer), so the final tenth runs marginally above
-  # 1e-5. The validation early-stop (patience 10 x every 50) supersedes
-  # both endings for a converged fit.
+  # Cloning schedule, the published protocol in full (arXiv:2605.10331
+  # Sect. II.2: 2e4 epochs, constant 1e-3, linear decay to 1e-5 between 50
+  # and 90 percent of steps, then a constant final phase). The decay-window
+  # end was the last declared schedule deviation of the 2026-09-02 round --
+  # its fits reached 1e-5 only at the final step, running the last tenth at
+  # up to 20.8x the published floor (2.08e-4 at 90 percent of steps) -- and
+  # is closed by `lr_decay_end: 0.9` (pretrain._lr_schedule; 1.0 reproduces
+  # the old shape exactly). Applies from the NEXT fresh submission: the live
+  # 2026-09-02 round pretrained under the old tail, as its resolved snapshot
+  # states.
   n_steps: 20000
   lr_start: 0.001
   lr_end: 0.00001
   lr_decay_start: 0.5
+  lr_decay_end: 0.9
   grad_clip: 1.0
   seed: 42
-  loss_weighting: integration
+  # The published pointwise objective (Sect. II.3): per system,
+  # points_per_system rows are drawn without replacement with probability
+  # proportional to w_i * rho_i ("biases the descriptor sampling toward
+  # regions that contribute most strongly to the energy") and the loss is
+  # the PLAIN mean-squared enhancement-factor residual over that sample --
+  # implemented as a 0/1 row mask through the weighted reduction, so
+  # unsampled rows ride at weight zero and the energy term below integrates
+  # over the full grid exactly as before. This replaces the in-house
+  # |rho*eps_LDA|*w full-grid weighting of every round through 2026-09-02
+  # (retained then as the codebase convention; its exchange measure
+  # ~ rho^(4/3) w pushes weight toward high-density cores where the paper's
+  # ~ rho w samples the energy-carrying regions -- notable because the
+  # 2026-09-02 round's only certificate misses were bonding-region species,
+  # C3H8 and AlCl3). points_per_system 800 is the paper's N_p/N_m; the seed
+  # makes the mask reproducible from the record, and groups sharing a parent
+  # density fit identical samples. Applies from the NEXT fresh submission,
+  # like the schedule tail.
+  loss_weighting: rho_w_sampled
+  points_per_system: 800
+  sampling_seed: 42
   # Explicit atoms, inherited from v5 (lines 141-152). Under `dfs_set` +
   # `pool_atoms` this list is almost entirely redundant -- H, C, N, O, F are
   # pool atoms and Li is one of the DFS inventory's eight -- and contributes
@@ -471,9 +492,11 @@ cluster:
   # real fits ran 2500 steps against that same 12 h wall; 20000 steps is 8x
   # the schedule, and no per-step rate is measured at this basis, so the
   # wall is sized to 4x the old budget rather than to an estimate. The
-  # validation early-stop (patience 10 x every 50) ends a converged fit
-  # long before the wall; an unconverged one is wall-killed and recovered
-  # by resubmit-preflight.
+  # validation early-stop (patience 300 x every 50, a 15000-step grace that
+  # cannot fire before the decay window ends) leaves the schedule to run to
+  # completion; an unconverged fit is wall-killed and recovered by
+  # resubmit-preflight. Measured 2026-09-02 round: full 20000-step fits took
+  # 1.6-3.8 h (non-attention) and ~23 h+ (attention) at this identity.
   pretrain_time: "48:00:00"
   # STATED here although v5 left it unset (v5 had 3 distinct architectures).
   # Unset means every distinct architecture pretrains concurrently, i.e.

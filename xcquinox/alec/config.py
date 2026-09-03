@@ -885,12 +885,32 @@ class PretrainSpec:
     # Validations without improvement before training stops. 0 = no early
     # stop; the best weights are still the ones kept.
     patience: int = 0
+    # --- Published cloning-protocol completion (2026-09-03) ----------------
+    # Fraction of n_steps at which the LR decay ENDS; the schedule holds
+    # lr_end constant from there to the last step. 1.0 reproduces the prior
+    # shape exactly (decay reaching lr_end at the final step). The published
+    # cloning schedule (arXiv:2605.10331 Sect. II.2: "linear decay to 1e-5
+    # between 50% and 90% of the total number of optimization steps, and a
+    # final constant phase") is lr_decay_start 0.5 with lr_decay_end 0.9.
+    lr_decay_end: float = 1.0
+    # Point sampling for loss_weighting == "rho_w_sampled": the paper's
+    # SSII.3 protocol draws points per system with probability proportional
+    # to w_i * rho_i (quadrature weight times density) and minimizes the
+    # PLAIN mean-squared enhancement-factor residual over the sample. The
+    # draw is exact-size per system, without replacement, seeded, and the
+    # unsampled rows enter the loss with weight zero (rows are kept so the
+    # energy term's full-grid integrals are untouched). Both fields are
+    # inert under the other weighting modes and refused at the config layer
+    # there.
+    points_per_system: int = 800
+    sampling_seed: int = 0
 
     def __post_init__(self) -> None:
-        if self.loss_weighting not in ("unweighted", "integration"):
+        if self.loss_weighting not in ("unweighted", "integration",
+                                       "rho_w_sampled"):
             raise ValueError(
-                f"loss_weighting must be 'unweighted' or 'integration', "
-                f"got {self.loss_weighting!r}"
+                f"loss_weighting must be 'unweighted', 'integration' or "
+                f"'rho_w_sampled', got {self.loss_weighting!r}"
             )
         if self.parent_density not in PARENT_DENSITIES:
             raise ValueError(
@@ -911,15 +931,35 @@ class PretrainSpec:
         # against it False downstream. An infinite loss weight is refused on
         # the same grounds, since the objective it defines is not a measurable
         # quantity.
-        for field_name in ("lr_start", "lr_end", "lr_decay_start", "grad_clip",
+        for field_name in ("lr_start", "lr_end", "lr_decay_start",
+                           "lr_decay_end", "grad_clip",
                            "energy_term_weight", "validation_fraction"):
             value = getattr(self, field_name)
             if not math.isfinite(value):
                 raise ValueError(f"{field_name} must be finite, got {value}")
         if not (0.0 <= self.lr_decay_start <= 1.0):
             raise ValueError(f"lr_decay_start must be in [0, 1], got {self.lr_decay_start}")
+        # The decay window is [lr_decay_start, lr_decay_end] as fractions of
+        # n_steps; an end before the start is not a schedule.
+        if not (self.lr_decay_start <= self.lr_decay_end <= 1.0):
+            raise ValueError(
+                f"lr_decay_end must be in [lr_decay_start, 1], got "
+                f"lr_decay_end={self.lr_decay_end} with "
+                f"lr_decay_start={self.lr_decay_start}")
         if self.lr_start < self.lr_end:
             raise ValueError(f"lr_start ({self.lr_start}) must be >= lr_end ({self.lr_end})")
+        # A per-system sample size is a COUNT; zero rows is not a fit. The
+        # bound holds whatever the weighting mode so a spec cannot carry a
+        # nonsensical value that a later mode switch would activate.
+        if int(self.points_per_system) != self.points_per_system or \
+                self.points_per_system < 1:
+            raise ValueError(
+                f"points_per_system must be a whole number >= 1, got "
+                f"{self.points_per_system}")
+        if not (0 <= self.sampling_seed <= MAX_SEED):
+            raise ValueError(
+                f"sampling_seed must be in [0, {MAX_SEED}], got "
+                f"{self.sampling_seed}")
         if self.grad_clip <= 0:
             raise ValueError(f"grad_clip must be > 0, got {self.grad_clip}")
         if self.energy_term_weight < 0:

@@ -37,10 +37,12 @@
 # comment wherever it is load-bearing.
 #
 # MEASURED DIFF against v5. Both files were loaded and every field of the
-# resolved GridConfig tree flattened and compared, defaults included: of 139
+# resolved GridConfig tree flattened and compared, defaults included: of 142
 # fields (137 at this file's writing; the 2026-09-03 two-tier certificate
-# gate added fidelity.tol_AE_aggregate and tol_AE_max_backstop, equal at
-# their defaults on both sides), SIXTEEN differ. Ten are the method above (sweep.arch,
+# gate added fidelity.tol_AE_aggregate and tol_AE_max_backstop, and the
+# same day's cloning-protocol completion pretrain.lr_decay_end /
+# points_per_system / sampling_seed, all equal at their defaults on both
+# sides), SIXTEEN differ. Ten are the method above (sweep.arch,
 # pretrain.dfs_set / pool_atoms / parent_density / exchange_footing /
 # validation_fraction / patience, model.parent_anchor /
 # descriptor_coordinates, and bh76_mode -- v6 trains the staged transition
@@ -50,7 +52,7 @@
 # (fresh roots), cluster.datagen_time and cluster.pretrain_throttle (a stage
 # v5 did not have, and a throttle v5 did not need at three architectures),
 # cluster.time and cluster.timeout_retry_time (the train wall, raised for the
-# four-channel inline eval). The remaining 123 fields are identical,
+# four-channel inline eval). The remaining 126 fields are identical,
 # including every hyperparameter, both solver blocks, the whole run identity,
 # the three reference-cache roots, the subset ledger, the seeding protocol
 # and every eval flag. The `fidelity:` block is not a difference either: v5

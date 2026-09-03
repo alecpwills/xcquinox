@@ -167,6 +167,77 @@ def _compute_integration_weights(rho, grid_weights=None):
            jnp.broadcast_to(w_c, rho_safe.shape)
 
 
+def _rho_w_sampling_mask(rho, grid_weights, segment, points_per_system, seed,
+                         *, channel, n_mesh_rows=0):
+    """0/1 row mask implementing the published rho*w point sampling.
+
+    The functional-cloning protocol (arXiv:2605.10331 Sect. II.3) draws a
+    fixed number of grid points per system "with probability proportional to
+    w_i rho_i, where w_i are the integration weights associated with each
+    grid point", and minimizes the PLAIN mean-squared enhancement-factor
+    residual over the sample. This helper returns that sample as a float
+    0.0/1.0 mask over the FULL row set: passed as ``_PretrainLoss.weights``,
+    the weighted reduction ``sum w (dF)^2 / sum w`` over a 0/1 mask IS the
+    plain mean over the sampled rows (the paper writes a sum; under Adam the
+    constant factor is a per-parameter step rescale absorbed by the adaptive
+    denominator, and the mean keeps the loss magnitude comparable across
+    modes). Unsampled rows stay in the tensors at weight zero so the
+    per-system energy term -- which carries its OWN full-grid row weights --
+    integrates exactly as before.
+
+    The draw is exact-size (``min(points_per_system, n_rows_of_system)``
+    rows per system, without replacement, probability ``|w_i rho_i|``
+    normalized within the system), deterministic under ``seed`` (the
+    channel joins the seed sequence so the exchange and correlation samples
+    differ), and iterates systems in sorted segment order, so a rerun on the
+    same data file reproduces the mask bit for bit.
+
+    Raises ``ValueError`` when the data cannot support the protocol: a
+    synthetic-mesh block (no quadrature measure to sample under), a missing
+    quadrature-weights column, mismatched column lengths, or a system whose
+    total ``|w rho|`` is not positive and finite.
+    """
+    if channel not in ("x", "c"):
+        raise ValueError(f"channel must be 'x' or 'c', got {channel!r}")
+    if n_mesh_rows:
+        raise ValueError(
+            "loss_weighting 'rho_w_sampled' is defined on physical "
+            "quadrature rows only; this pretraining data appends a synthetic "
+            f"mesh block ({n_mesh_rows} rows) with no quadrature measure to "
+            "sample under. Regenerate the data without the mesh or use "
+            "'integration'.")
+    if grid_weights is None:
+        raise ValueError(
+            "loss_weighting 'rho_w_sampled' requires the Becke quadrature "
+            f"weights column for the {channel} block: the sampling "
+            "probability IS w_i * rho_i. Regenerate pretrain_data.npz from "
+            "a post-2026-04-27 generator.")
+    rho_arr = np.asarray(rho, dtype=np.float64).reshape(-1)
+    w_arr = np.asarray(grid_weights, dtype=np.float64).reshape(-1)
+    seg_arr = np.asarray(segment).reshape(-1)
+    if not (rho_arr.shape == w_arr.shape == seg_arr.shape):
+        raise ValueError(
+            f"rho / weights / segment column lengths disagree on the "
+            f"{channel} block: {rho_arr.shape[0]} / {w_arr.shape[0]} / "
+            f"{seg_arr.shape[0]}")
+    prob = np.abs(w_arr * rho_arr)
+    rng = np.random.default_rng([int(seed), 0 if channel == "x" else 1])
+    mask = np.zeros(rho_arr.shape[0], dtype=np.float64)
+    for sys_id in np.unique(seg_arr):
+        idx = np.flatnonzero(seg_arr == sys_id)
+        p_sys = prob[idx]
+        total = float(p_sys.sum())
+        if not np.isfinite(total) or total <= 0.0:
+            raise ValueError(
+                f"system segment {sys_id!r} has no positive finite w*rho "
+                f"measure to sample under (sum {total!r}) on the {channel} "
+                "block; the data is unusable for 'rho_w_sampled'")
+        k = min(int(points_per_system), int(idx.size))
+        chosen = rng.choice(idx, size=k, replace=False, p=p_sys / total)
+        mask[chosen] = 1.0
+    return jnp.asarray(mask)
+
+
 class _PretrainLoss(eqx.Module):
     """Pretraining objective: point-wise enhancement-factor residual plus an
     optional per-system energy term.
@@ -1044,6 +1115,67 @@ def _append_pretrain_mesh(arch, pretrain_data, descriptors, descriptors_c,
     )
 
 
+def _lr_schedule(
+    *,
+    lr_start: float,
+    lr_end: float,
+    n_steps: int,
+    lr_decay_start: float,
+    lr_decay_end: float = 1.0,
+):
+    """The pretraining LR schedule as a callable ``step -> lr``.
+
+    Constant ``lr_start`` until ``int(lr_decay_start * n_steps)``, linear
+    decay to ``lr_end`` over the window ending at
+    ``int(lr_decay_end * n_steps)``, then constant ``lr_end`` to the last
+    step. ``lr_decay_end = 1.0`` reproduces the pre-2026-09-03 shape exactly
+    (decay reaching ``lr_end`` at the final step, no constant tail);
+    ``lr_decay_start 0.5`` with ``lr_decay_end 0.9`` is the published
+    cloning schedule (arXiv:2605.10331 Sect. II.2: constant 1e-3, "linear
+    decay to 1e-5 between 50% and 90% of the total number of optimization
+    steps, and a final constant phase") -- before this knob the harness LR
+    at 90% of steps was 2.08e-4, 20.8x the published 1e-5, with no polish
+    phase at the floor.
+    """
+    decay_start_step = int(lr_decay_start * n_steps)
+    decay_end_step = int(lr_decay_end * n_steps)
+    decay_steps = decay_end_step - decay_start_step
+
+    if lr_decay_start > 0 and decay_steps > 0:
+        schedules = [
+            optax.constant_schedule(lr_start),
+            optax.linear_schedule(
+                init_value=lr_start,
+                end_value=lr_end,
+                transition_steps=decay_steps,
+            ),
+        ]
+        boundaries = [decay_start_step]
+        if decay_end_step < n_steps:
+            schedules.append(optax.constant_schedule(lr_end))
+            boundaries.append(decay_end_step)
+        return optax.join_schedules(schedules=schedules,
+                                    boundaries=boundaries)
+    if decay_steps > 0 and decay_end_step < n_steps:
+        # No warmup (decay from step 0) but a constant tail after the window.
+        return optax.join_schedules(
+            schedules=[
+                optax.linear_schedule(
+                    init_value=lr_start,
+                    end_value=lr_end,
+                    transition_steps=decay_steps,
+                ),
+                optax.constant_schedule(lr_end),
+            ],
+            boundaries=[decay_end_step],
+        )
+    return optax.linear_schedule(
+        init_value=lr_start,
+        end_value=lr_end,
+        transition_steps=n_steps,
+    )
+
+
 def _build_optimizer(
     *,
     lr_start: float,
@@ -1051,34 +1183,21 @@ def _build_optimizer(
     n_steps: int,
     lr_decay_start: float,
     grad_clip: float,
+    lr_decay_end: float = 1.0,
 ) -> optax.GradientTransformation:
     """Build canonical optimizer chain for pretraining.
 
     Chain order: clip_by_global_norm -> adam(lr_schedule).
-    LR schedule: optional constant warmup then linear decay.
+    LR schedule: :func:`_lr_schedule` (optional constant warmup, linear
+    decay over the configured window, optional constant tail at the floor).
     """
-    decay_start_step = int(lr_decay_start * n_steps)
-    decay_steps = n_steps - decay_start_step
-
-    if lr_decay_start > 0 and decay_steps > 0:
-        lr_schedule = optax.join_schedules(
-            schedules=[
-                optax.constant_schedule(lr_start),
-                optax.linear_schedule(
-                    init_value=lr_start,
-                    end_value=lr_end,
-                    transition_steps=decay_steps,
-                ),
-            ],
-            boundaries=[decay_start_step],
-        )
-    else:
-        lr_schedule = optax.linear_schedule(
-            init_value=lr_start,
-            end_value=lr_end,
-            transition_steps=n_steps,
-        )
-
+    lr_schedule = _lr_schedule(
+        lr_start=lr_start,
+        lr_end=lr_end,
+        n_steps=n_steps,
+        lr_decay_start=lr_decay_start,
+        lr_decay_end=lr_decay_end,
+    )
     return optax.chain(
         optax.clip_by_global_norm(grad_clip),
         optax.adam(learning_rate=lr_schedule),
@@ -1429,6 +1548,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         if e_x_key in pretrain_data else 0
 
     integration_weights_complete: bool | None = None  # set below for "integration" mode
+    sampling_record: dict | None = None  # set below for "rho_w_sampled" mode
     if spec.loss_weighting == "integration":
         # The atomic rows carry the physical importance measure; the mesh
         # rows (when appended) get a FLAT per-channel weight added AFTER the
@@ -1485,6 +1605,43 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
                 [w_x, jnp.full(n_mesh, float(jnp.sum(w_x)) * scale / n_mesh)])
             w_c = jnp.concatenate(
                 [w_c, jnp.full(n_mesh, float(jnp.sum(w_c)) * scale / n_mesh)])
+        loss_fn_x = _PretrainLoss(weights=w_x, **energy_kwargs_x)
+        loss_fn_c = _PretrainLoss(weights=w_c, **energy_kwargs_c)
+    elif spec.loss_weighting == "rho_w_sampled":
+        # The published cloning objective (arXiv:2605.10331 Sect. II.3):
+        # points drawn per system with probability ~ w_i * rho_i, plain MSE
+        # over the sample. Implemented as a 0/1 row mask through the same
+        # weighted reduction the integration mode uses, so unsampled rows
+        # stay in the tensors at weight zero and the per-system energy
+        # term's own full-grid row weights (separate kwargs above) integrate
+        # exactly as in the other modes.
+        seg_key_x, seg_key_c = "system" + x_suffix, "system_all"
+        missing = [k for k in (seg_key_x, seg_key_c)
+                   if k not in pretrain_data]
+        if missing:
+            raise ValueError(
+                "loss_weighting 'rho_w_sampled' needs the per-system segment "
+                f"column(s) {', '.join(repr(k) for k in missing)} to draw "
+                "per-system samples; regenerate pretrain_data.npz from a "
+                "generator that writes the system columns.")
+        w_x = _rho_w_sampling_mask(
+            pretrain_data["rho" + x_suffix],
+            pretrain_data.get("weights" + x_suffix),
+            pretrain_data[seg_key_x],
+            spec.points_per_system, spec.sampling_seed,
+            channel="x", n_mesh_rows=n_mesh_rows)
+        w_c = _rho_w_sampling_mask(
+            pretrain_data["rho_all"],
+            pretrain_data.get("weights_all"),
+            pretrain_data[seg_key_c],
+            spec.points_per_system, spec.sampling_seed,
+            channel="c", n_mesh_rows=n_mesh_rows)
+        sampling_record = {
+            "points_per_system": int(spec.points_per_system),
+            "sampling_seed": int(spec.sampling_seed),
+            "sampled_rows_x": int(round(float(jnp.sum(w_x)))),
+            "sampled_rows_c": int(round(float(jnp.sum(w_c)))),
+        }
         loss_fn_x = _PretrainLoss(weights=w_x, **energy_kwargs_x)
         loss_fn_c = _PretrainLoss(weights=w_c, **energy_kwargs_c)
     else:  # "unweighted": validated at construction
@@ -1632,6 +1789,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         n_steps=spec.n_steps,
         lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
+        lr_decay_end=getattr(spec, "lr_decay_end", 1.0),
     )
     if held_out:
         seg_x = _padded_segment(pretrain_data["system" + x_suffix],
@@ -1679,6 +1837,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         n_steps=spec.n_steps,
         lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
+        lr_decay_end=getattr(spec, "lr_decay_end", 1.0),
     )
     if held_out:
         seg_c = _padded_segment(pretrain_data["system_all"], n_mesh_rows,
@@ -1843,6 +2002,10 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # integration mode.  None means the run did not use integration weighting.
     if integration_weights_complete is not None:
         metadata["integration_weights_complete"] = integration_weights_complete
+    # The rho*w sample the run drew: sizes and seed, so the exact mask is
+    # reproducible from the record (deterministic given data file + seed).
+    if sampling_record is not None:
+        metadata.update(sampling_record)
     if mesh_used:
         # The mesh's pull on each channel, READ BACK from the weight vector
         # the loss was built with rather than restated from the constant: a

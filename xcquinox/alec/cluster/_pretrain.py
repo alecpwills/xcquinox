@@ -428,6 +428,11 @@ def main(argv=None) -> int:
         validation_seed=getattr(pt, "validation_seed", 0),
         validate_every=getattr(pt, "validate_every", 50),
         patience=getattr(pt, "patience", 0),
+        # Published-schedule tail and rho*w sampling (2026-09-03); the
+        # defaults reproduce every earlier resolved snapshot exactly.
+        lr_decay_end=getattr(pt, "lr_decay_end", 1.0),
+        points_per_system=getattr(pt, "points_per_system", 800),
+        sampling_seed=getattr(pt, "sampling_seed", 0),
     )
     # Every protocol knob the YAML can set is stated in the run record, so the
     # log says what the job trained with rather than what its defaults are.
@@ -445,6 +450,9 @@ def main(argv=None) -> int:
         f"pool_atoms={getattr(pt, 'pool_atoms', False)}, "
         f"exchange_footing={getattr(pt, 'exchange_footing', 'total')!r}, "
         f"mesh_fraction={getattr(pt, 'mesh_fraction', 0.3)}, "
+        f"lr_decay_end={getattr(pt, 'lr_decay_end', 1.0)}, "
+        f"points_per_system={getattr(pt, 'points_per_system', 800)}, "
+        f"sampling_seed={getattr(pt, 'sampling_seed', 0)}, "
         f"checkpoint_dir={checkpoint_dir}",
     )
 

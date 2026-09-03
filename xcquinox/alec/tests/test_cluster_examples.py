@@ -756,11 +756,13 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
     keys = sorted(set(a) | set(b))
     differing = sorted(k for k in keys
                        if a.get(k, "<absent>") != b.get(k, "<absent>"))
-    # 139 since the two-tier certificate gate (2026-09-03) added
-    # ``fidelity.tol_AE_aggregate`` and ``fidelity.tol_AE_max_backstop``;
-    # both load at their defaults on every pre-gate file, identical on the
-    # two sides, so neither joins the difference list.
-    assert len(keys) == 139, len(keys)
+    # 142: the two-tier certificate gate (2026-09-03) added
+    # ``fidelity.tol_AE_aggregate`` and ``fidelity.tol_AE_max_backstop``, and
+    # the published-protocol completion of the same day added
+    # ``pretrain.lr_decay_end`` / ``points_per_system`` / ``sampling_seed``;
+    # all five load at their defaults on every pre-change file, identical on
+    # the two sides, so none joins the difference list.
+    assert len(keys) == 142, len(keys)
     assert differing == [
         "bh76_mode",
         "cluster.datagen_time",
@@ -784,7 +786,7 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
     # defaults; the header records both counts).
     text = open(path6).read()
     assert "SIXTEEN differ" in text, path6
-    assert "The remaining 123 fields are identical" in text, path6
+    assert "The remaining 126 fields are identical" in text, path6
 
 
 def _v6_semantics(cfg):
@@ -1532,11 +1534,12 @@ def test_v6_group_differs_from_the_reference_in_exactly_what_it_claims(name):
     # 137 since the parent anchor added ``model.parent_anchor`` and
     # ``model.descriptor_coordinates``; both are the campaign's model class
     # and are therefore IDENTICAL in every group and in the reference, so
-    # neither joins the difference list here. 139 since the two-tier
-    # certificate gate (2026-09-03) added ``fidelity.tol_AE_aggregate`` and
-    # ``fidelity.tol_AE_max_backstop``, equal at their defaults on every v6
-    # file for the same reason.
-    assert len(keys) == 139, len(keys)
+    # neither joins the difference list here. 142 since the 2026-09-03
+    # two-tier certificate gate (``fidelity.tol_AE_aggregate``,
+    # ``tol_AE_max_backstop``) and cloning-protocol completion
+    # (``pretrain.lr_decay_end``, ``points_per_system``, ``sampling_seed``),
+    # all equal at their defaults on every v6 file for the same reason.
+    assert len(keys) == 142, len(keys)
     assert differing == sorted(expected), (path, ref_path, differing)
     # The header makes the same claim in prose, and that is where an operator
     # reads it. What is asserted is the EXCEPT clause -- the list of fields

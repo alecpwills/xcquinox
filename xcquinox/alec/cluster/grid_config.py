@@ -19,7 +19,7 @@ Design note, the ``domain`` dependency:
     the domain object is received as a parameter; we depend only on it
     exposing an integer ``pool_size`` attribute. See the function docstring.
 """
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from itertools import product
 import math
 import os
@@ -439,6 +439,19 @@ class PretrainConfig:
     validation_seed: int = 0
     validate_every: int = 50
     patience: int = 0
+    # --- Published cloning-protocol completion (2026-09-03) ----------------
+    # Fraction of n_steps at which the LR decay ENDS (constant lr_end from
+    # there to the last step). 1.0 = the prior shape exactly; the published
+    # cloning schedule is lr_decay_start 0.5 with lr_decay_end 0.9
+    # (arXiv:2605.10331 Sect. II.2's "final constant phase").
+    lr_decay_end: float = 1.0
+    # Per-system sample size and seed for loss_weighting "rho_w_sampled"
+    # (the paper's Sect. II.3 protocol: points drawn with probability
+    # ~ w_i * rho_i, plain MSE over the sample; the paper's N_p/N_m is 800).
+    # Both keys are REFUSED under any other loss_weighting -- inert knobs
+    # are not carried.
+    points_per_system: int = 800
+    sampling_seed: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1132,7 +1145,7 @@ def _build_inputs(d: dict) -> InputPaths:
 # other refuses cannot ship.
 _PARENT_DENSITIES = ("pbe", "scan", "auto")
 _EXCHANGE_FOOTINGS = ("total", "spin_channel")
-_LOSS_WEIGHTINGS = ("unweighted", "integration")
+_LOSS_WEIGHTINGS = ("unweighted", "integration", "rho_w_sampled")
 # jax.random.PRNGKey wraps modulo 2**32 instead of raising, so a seed outside
 # that range silently ALIASES another run's initialization (measured:
 # PRNGKey(-1) == PRNGKey(2**32 - 1), PRNGKey(2**32) == PRNGKey(0)) while the
@@ -1288,7 +1301,7 @@ def _build_pretrain(d: dict) -> PretrainConfig:
     ctx = "pretrain"
     _reject_unknown_keys(d, PretrainConfig, ctx,
                          retired=_RETIRED_PRETRAIN_KEYS)
-    return PretrainConfig(
+    cfg = PretrainConfig(
         data_dir=_require(d, "data_dir", ctx),
         n_steps=_config_number(d, "n_steps", 1000, whole=True, minimum=0,
                                minimum_open=True),
@@ -1343,7 +1356,38 @@ def _build_pretrain(d: dict) -> PretrainConfig:
                                       minimum=0, minimum_open=True),
         # Validations without improvement before the stop; 0 = no early stop.
         patience=_config_number(d, "patience", 0, whole=True, minimum=0),
+        # The decay window's END, a fraction of n_steps like lr_decay_start;
+        # the start <= end cross-check runs after both parse, below.
+        lr_decay_end=_config_number(d, "lr_decay_end", 1.0, minimum=0,
+                                    maximum=1),
+        # Sample size (a count) and seed for the rho_w_sampled objective;
+        # both refused under any other loss_weighting, below.
+        points_per_system=_config_number(d, "points_per_system", 800,
+                                         whole=True, minimum=0,
+                                         minimum_open=True),
+        sampling_seed=_config_number(d, "sampling_seed", 0, whole=True,
+                                     minimum=0, maximum=_MAX_SEED),
     )
+    # The decay window is [lr_decay_start, lr_decay_end]; an end before the
+    # start is not a schedule and is refused at load rather than at the node.
+    if cfg.lr_decay_end < cfg.lr_decay_start:
+        raise ValueError(
+            f"grid config key 'pretrain.lr_decay_end' ({cfg.lr_decay_end}) "
+            f"must be >= 'pretrain.lr_decay_start' ({cfg.lr_decay_start}); "
+            "the two are fractions of n_steps bounding the linear-decay "
+            "window")
+    # The sampling knobs gate nothing outside the rho_w_sampled objective; a
+    # config that writes them anyway believes they are in force, so the
+    # combination is refused rather than carried inert.
+    if cfg.loss_weighting != "rho_w_sampled":
+        stated = [k for k in ("points_per_system", "sampling_seed") if k in d]
+        if stated:
+            raise ValueError(
+                f"grid config key(s) {', '.join(repr('pretrain.' + k) for k in stated)} "
+                "are only meaningful under pretrain.loss_weighting "
+                f"'rho_w_sampled'; with {cfg.loss_weighting!r} the loss "
+                "draws no sample and the key(s) gate nothing")
+    return cfg
 
 
 def _fidelity_tolerance(d, key: str, default: float = 1.0) -> float:
@@ -1489,6 +1533,38 @@ def _build_fidelity(d) -> FidelityConfig:
         override_reason=reason,
         enforce=enforce,
     )
+
+
+def pretrain_to_raw_dict(pt) -> dict:
+    """PretrainConfig -> the raw dict :func:`load_grid_config` accepts back.
+
+    ``dataclasses.asdict`` would write ``points_per_system`` and
+    ``sampling_seed`` under the non-sampled weighting modes, where
+    :func:`_build_pretrain` refuses both keys as inert; the round-trip
+    therefore drops them exactly when no sample is drawn, and carries them
+    under ``rho_w_sampled``, where they are load-bearing. Lives beside the
+    loader so the two cannot drift apart.
+    """
+    raw = asdict(pt)
+    if raw.get("loss_weighting") != "rho_w_sampled":
+        raw.pop("points_per_system", None)
+        raw.pop("sampling_seed", None)
+    return raw
+
+
+def fidelity_to_raw_dict(fid) -> dict:
+    """FidelityConfig -> the raw dict :func:`load_grid_config` accepts back.
+
+    ``dataclasses.asdict`` would write ``tol_AE_max_backstop`` under the
+    ``max`` aggregate, where :func:`_build_fidelity` refuses the key as inert
+    (it gates nothing there); the round-trip therefore drops it exactly when
+    the gate ignores it, and carries it under ``mae``, where it is
+    load-bearing.
+    """
+    raw = asdict(fid)
+    if raw.get("tol_AE_aggregate", "max") == "max":
+        raw.pop("tol_AE_max_backstop", None)
+    return raw
 
 
 def _parse_mixer_kwargs(raw, ctx):

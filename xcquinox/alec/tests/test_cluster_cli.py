@@ -220,7 +220,8 @@ def test_dispatch_all_subcommands_are_registered():
         choices |= set(action.choices)
     assert choices == {
         "prepare", "submit", "submit-eval", "status", "results", "pull",
-        "list-runs", "resubmit", "resubmit-preflight", "repair-manifest",
+        "list-runs", "resubmit", "resubmit-preflight", "regate-certificates",
+        "repair-manifest",
     }
 
 
@@ -1923,6 +1924,7 @@ def test_resolved_config_round_trip_preserves_every_field(tmp_path):
     assert cfg.ae_as_reactions is True  # the field that was being dropped
     cfg = dataclasses.replace(cfg, fidelity=FidelityConfig(
         tol_AE=0.5, tol_atom=0.25,
+        tol_AE_aggregate="mae", tol_AE_max_backstop=1.5,
         override_reason="round-trip fixture", enforce=False))
     _fid_default = FidelityConfig()
     for fld in dataclasses.fields(FidelityConfig):

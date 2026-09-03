@@ -52,9 +52,11 @@ from xcquinox.alec.cluster import sync as _sync
 from xcquinox.alec.cluster.grid_config import (
     _canon_axis,
     expand_grid,
+    fidelity_to_raw_dict,
     load_grid_config,
     normalize_cluster_walltimes,
     pretrain_checkpoint_dir,
+    pretrain_to_raw_dict,
     require_explicit_bh76_mode,
     validate_grid_semantics,
 )
@@ -133,20 +135,6 @@ def _write_json_atomic(payload, path: str) -> None:
 # GridConfig <-> dict serialization (resolved_config.yaml round-trip)
 # ---------------------------------------------------------------------------
 
-def _fidelity_to_raw_dict(fid) -> dict:
-    """FidelityConfig -> the raw dict ``load_grid_config`` accepts back.
-
-    ``dataclasses.asdict`` would write ``tol_AE_max_backstop`` under the
-    ``max`` aggregate, where the loader refuses the key as inert (it gates
-    nothing there); the round-trip therefore drops it exactly when the gate
-    ignores it, and carries it under ``mae``, where it is load-bearing.
-    """
-    raw = dataclasses.asdict(fid)
-    if raw.get("tol_AE_aggregate", "max") == "max":
-        raw.pop("tol_AE_max_backstop", None)
-    return raw
-
-
 def _config_to_raw_dict(cfg) -> dict:
     """Serialize a :class:`GridConfig` to a plain dict.
 
@@ -170,12 +158,12 @@ def _config_to_raw_dict(cfg) -> dict:
         },
         "hyperparams": dataclasses.asdict(cfg.hyperparams),
         "inputs": dataclasses.asdict(cfg.inputs),
-        "pretrain": dataclasses.asdict(cfg.pretrain),
+        "pretrain": pretrain_to_raw_dict(cfg.pretrain),
         # fidelity MUST round-trip for the same reason ae_as_reactions and
         # inline_eval do: the pretrain worker re-reads resolved_config.yaml to
         # get its tolerances, so a dropped block would silently certify at the
         # defaults instead of at the run's documented override.
-        "fidelity": _fidelity_to_raw_dict(cfg.fidelity),
+        "fidelity": fidelity_to_raw_dict(cfg.fidelity),
         # model MUST round-trip for the same reason: every stage rebuilds its
         # architectures from this file, so a dropped block silently resolves
         # the run to the pre-anchor class -- unanchored, legacy coordinates --

@@ -1898,7 +1898,8 @@ def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
     and eval all read; a dropped field is a silently reverted run."""
     import dataclasses
     from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
-    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    from xcquinox.alec.cluster.grid_config import (_build_pretrain,
+                                                   pretrain_to_raw_dict)
     protocol = {
         "dfs_set": True, "pool_atoms": True,
         "parent_density": "auto", "exchange_footing": "spin_channel",
@@ -1907,9 +1908,16 @@ def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
         "validate_every": 25, "patience": 8,
     }
     pt = _build_pretrain(dict(protocol, data_dir="/d"))
-    raw = dataclasses.asdict(pt)
+    # The round-trip dict is the WRITER's, not a bare asdict: under the
+    # non-sampled weighting modes the loader refuses the inert sampling keys,
+    # so the writer drops exactly those and nothing else.
+    raw = pretrain_to_raw_dict(pt)
     assert _build_pretrain(raw) == pt
+    dropped = {"points_per_system", "sampling_seed"}
+    assert not (dropped & set(raw)), sorted(dropped & set(raw))
     for f in dataclasses.fields(pt):
+        if f.name in dropped:
+            continue
         assert f.name in raw, f.name
     # An unknown key is IGNORED by _build_pretrain, so the equality above holds
     # vacuously for a field the dataclass does not carry; name the protocol
@@ -1922,10 +1930,13 @@ def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
     # value under test whenever the fixture leaves that field alone, and the
     # comparison then passes against a parser that never read it. So every
     # field is taken off its default below, and the guard is asserted.
+    # ``rho_w_sampled`` is the off-default weighting so the sampling keys are
+    # legitimate, carried, and themselves guarded off-default.
     every = _build_pretrain(dict(
         raw, n_steps=7, lr_start=3e-2, lr_end=3e-6, lr_decay_start=0.4,
-        grad_clip=2.5, seed=1234, loss_weighting="unweighted",
-        atoms=[["Li", 1], ["C", 2]]))
+        lr_decay_end=0.7, grad_clip=2.5, seed=1234,
+        loss_weighting="rho_w_sampled", points_per_system=333,
+        sampling_seed=9, atoms=[["Li", 1], ["C", 2]]))
     default = PretrainConfig(data_dir="/d")
     for f in dataclasses.fields(every):
         if f.name == "data_dir":
@@ -1935,6 +1946,8 @@ def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
             "the round trip is NOT guarded for it")
     cfg = dataclasses.replace(_cfg(), pretrain=every)
     serialized = _config_to_raw_dict(cfg)["pretrain"]
+    # Under the sampled mode nothing is inert, so the writer's dict IS the
+    # full asdict and every field -- the sampling keys included -- survives.
     assert serialized == dataclasses.asdict(every)
     assert _build_pretrain(serialized) == every
 
