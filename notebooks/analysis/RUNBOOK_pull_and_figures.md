@@ -444,6 +444,45 @@ A repeated label merges disjoint architecture sets under one color; the
 figure states whichever gate each certificate recorded, so a re-pull after
 an on-cluster regate switches the drawn gate lines automatically.
 
+### Reaction-energy control arm (2026-09-04): submit, copy the g1 clones, release
+
+`hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_rxn.yaml` is the g1 size group
+with `bh76_mode: reaction_energy` and nothing else changed (pin
+`test_v7g1_rxn_control_arm_mirrors_g1_except_the_bh76_objective`). Its
+cells start from the g1 run's certified clones, copied into the new run
+before its pretrain array can start; the pretrain keep-gate then accepts
+each directory (identity, parent, model class and network digests agree;
+the version cross-check is vacuous on the cluster) and exits 0 in seconds.
+On the cluster, from the repo root after `git pull`:
+
+```bash
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox
+git pull
+python -m xcquinox.alec.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_rxn.yaml --partition long-40core --max-nodes 1 --train-time "48:00:00" --submit
+```
+
+Then, before the pretrain array can start (it waits on datagen, but hold it
+anyway):
+
+```bash
+R=/gpfs/scratch/awills/xcquinox_runs/dfs_step7
+NEW=$(ls -d $R/dfs6311_grid3_v7g1_rxn/runs/run_* | tail -1)
+PRE=$(python -c "import json,sys; print([j['array_job_id'] for j in json.load(open('$NEW/jobs.json')) if j['kind']=='pretrain'][0])")
+scontrol hold $PRE
+mkdir -p $NEW/pretrain
+cp -a $R/dfs6311_grid3_v7g1_size/runs/run_20260902T145245Z/pretrain/. $NEW/pretrain/
+ls $NEW/pretrain/*/fidelity_certificate.json
+scontrol release $PRE
+```
+
+Each pretrain task's log then reads `pretrain KEPT: ... already holds
+xnet.eqx + cnet.eqx and a certificate this node's gate releases`; a task
+that instead reads `pretraining from scratch` means the copy was not in
+place, and the run's clones are then its own refits (record it). Pull and
+figures follow the v7 lines above with the category
+`dfs_step7/dfs6311_grid3_v7g1_rxn/runs`; the comparison against the g1 arm
+is cell by cell on the same held-out slice.
+
 ### Certificate gate changes on a LIVE run (2026-09-03 flow)
 
 A gate-policy change (e.g. the two-tier `tol_AE_aggregate: mae` +

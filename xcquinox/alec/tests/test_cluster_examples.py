@@ -1793,6 +1793,71 @@ def test_v6_and_v7_files_train_barrier_heights_and_the_rest_state_the_substituti
         "the substitution it actually trained.")
 
 
+#: The v7 reaction-energy CONTROL ARM (2026-09-04): the g1 size group
+#: resubmitted with the BH76 points as reaction energies, everything else
+#: the g1 file's, the certified g1 clones reused by directory copy.
+_V7_RXN_CONTROL = "dfs_step7.dfs6311_grid3_v7g1_rxn.yaml"
+_V7_RXN_SOURCE = "dfs_step7.dfs6311_grid3_v7g1_size.yaml"
+
+
+def test_v7g1_rxn_control_arm_mirrors_g1_except_the_bh76_objective():
+    """The control arm differs from the running g1 arm in the BH76 objective
+    and in nothing that changes the functional, the data or the gate: same
+    sweep, solvers, hyperparameters, production identity, cluster block,
+    model class, fidelity gate and flags; its own output root; the SAME
+    pretraining-data root (the clones are the g1 run's, copied); and a
+    pretrain block that states the protocol those clones were actually fit
+    under (full-grid integration weighting, decay to the last step) rather
+    than the completed protocol the g1 FILE now carries for future
+    submissions -- so the control run's resolved snapshot documents the
+    networks it trains from."""
+    cdir = _campaign_configs_dir()
+    if cdir is None:
+        pytest.skip("no hpcjobs/configs deployment tree in this checkout")
+    ctrl_path = os.path.join(cdir, _V7_RXN_CONTROL)
+    src_path = os.path.join(cdir, _V7_RXN_SOURCE)
+    assert os.path.isfile(ctrl_path), f"missing control-arm file {_V7_RXN_CONTROL}"
+    ctrl = _raw_yaml(ctrl_path)
+    src = _raw_yaml(src_path)
+    assert ctrl["bh76_mode"] == "reaction_energy"
+    assert src["bh76_mode"] == "barrier_height"
+    # Every top-level key present in either file is present in both.
+    assert set(ctrl) == set(src), (set(ctrl) ^ set(src))
+    same = {k for k in src if k not in ("bh76_mode", "inputs", "pretrain")}
+    for k in sorted(same):
+        assert ctrl[k] == src[k], f"top-level {k!r} differs from the g1 file"
+    # inputs: identical except the run root, which must be its own.
+    for k in src["inputs"]:
+        if k == "output_root":
+            assert ctrl["inputs"][k] != src["inputs"][k]
+            assert ctrl["inputs"][k].endswith("dfs6311_grid3_v7g1_rxn")
+        else:
+            assert ctrl["inputs"][k] == src["inputs"][k], f"inputs.{k}"
+    assert set(ctrl["inputs"]) == set(src["inputs"])
+    # pretrain: the g1 clones' executed protocol, on the g1 data root.
+    pt_c, pt_s = ctrl["pretrain"], src["pretrain"]
+    assert pt_c["data_dir"] == pt_s["data_dir"]
+    assert pt_c["loss_weighting"] == "integration"
+    assert pt_c["lr_decay_end"] == 1.0
+    assert "points_per_system" not in pt_c and "sampling_seed" not in pt_c
+    for k in pt_s:
+        if k in ("loss_weighting", "lr_decay_end", "points_per_system",
+                 "sampling_seed"):
+            continue
+        assert pt_c[k] == pt_s[k], f"pretrain.{k} differs from the g1 file"
+    assert set(pt_c) | {"points_per_system", "sampling_seed"} == set(pt_s)
+    # The file loads through the real loader and resolves to the same
+    # identity the g1 clones were certified at.
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    from xcquinox.alec.cluster.fidelity import run_identity
+    cfg_c = load_grid_config(ctrl_path)
+    cfg_s = load_grid_config(src_path)
+    assert run_identity(cfg_c) == run_identity(cfg_s)
+    assert cfg_c.pretrain.loss_weighting == "integration"
+    assert cfg_c.pretrain.lr_decay_end == 1.0
+    assert cfg_c.bh76_mode == "reaction_energy"
+
+
 def test_v7_files_are_the_unanchored_cloning_protocol():
     """The v7 trio's method keys, pinned: parent_anchor false (the networks
     LEARN the parent -- functional cloning, arXiv:2605.10331), DFS
