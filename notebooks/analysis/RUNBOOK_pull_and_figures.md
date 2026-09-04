@@ -391,11 +391,24 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite \
 
 (`pull auto --category dfs_step7` also discovers the v7 runs by activity.)
 Outputs land at `figures_dfs_step7_dfs6311_grid3_v7*` (+ `_val_best`).
-At partial coverage the suite runs on whatever cells have landed; the
-validation-best `ablation_density_energy_3x3.png` and its CSV under
-`figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best/` are tracked as the
-campaign's visible progress (five cells on 2026-09-04) and the rest of each
-39-file set regenerates from the line above.
+At partial coverage the suite runs on whatever cells have landed and
+skips the basis comparison until two bases carry cells. The optimized
+enhancement factors are a separate script, one call per checkpoint channel
+into the matching figure directory:
+
+```bash
+JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py \
+    --run-dir <pulled run dir> --eval-channel val_best \
+    --outdir notebooks/analysis/figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best
+JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py \
+    --run-dir <pulled run dir> --eval-channel final \
+    --outdir notebooks/analysis/figures_dfs_step7_dfs6311_grid3_v7g1_size
+```
+
+Both g1 figure sets (suite plus trained_fx_fc outputs) are tracked in full
+at partial coverage as the campaign's visible progress (five cells on
+2026-09-04); the empty g2a / mgga placeholder sets are not tracked until
+those arrays produce cells.
 Before the train arrays complete, the artifact worth pulling is the
 pretrain stage itself: each run's `pretrain/<arch>/fidelity_certificate.json`
 states whether the clone reproduced its parent (the campaign's gate), and
