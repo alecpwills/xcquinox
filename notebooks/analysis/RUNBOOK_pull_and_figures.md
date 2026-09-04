@@ -391,6 +391,11 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite \
 
 (`pull auto --category dfs_step7` also discovers the v7 runs by activity.)
 Outputs land at `figures_dfs_step7_dfs6311_grid3_v7*` (+ `_val_best`).
+At partial coverage the suite runs on whatever cells have landed; the
+validation-best `ablation_density_energy_3x3.png` and its CSV under
+`figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best/` are tracked as the
+campaign's visible progress (five cells on 2026-09-04) and the rest of each
+39-file set regenerates from the line above.
 Before the train arrays complete, the artifact worth pulling is the
 pretrain stage itself: each run's `pretrain/<arch>/fidelity_certificate.json`
 states whether the clone reproduced its parent (the campaign's gate), and
