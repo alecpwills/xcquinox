@@ -34,11 +34,75 @@ def _dfs_log_transform(x):
     return (1.0 - jnp.exp(-x * x)) * jnp.log(x + 1.0)
 
 
+#: Floor of the raw iso-orbital indicator fed to the DFS coordinate
+#: ``ln((alpha + 1)/2)``. The logarithm is singular at ``alpha = -1``; the
+#: floor sits halfway to it, far below every value a physical density can
+#: produce (``alpha >= 0`` exactly, with floating-point residues measured at
+#: -3.5e-9 on H and -1.6e-6 on the Li beta channel in one-orbital regions)
+#: and far above the singularity, so the coordinate and its derivative stay
+#: bounded (``ln(1/4)``, slope 2) on the unphysical rows of a non-positive
+#: intermediate density without touching a single physical row.
+_DFS_INDICATOR_FLOOR = -0.5
+
+
 def _dfs_indicator_coordinate(alpha_raw):
     """``ln((alpha + 1)/2)`` of the RAW iso-orbital indicator (dpyscfl net.py
     line 220; PRB 104 L161109 eq. 10): the meta-GGA MLP coordinate under the
-    DFS coordinates."""
-    return jnp.log((alpha_raw + 1.0) / 2.0)
+    DFS coordinates, bounded away from the logarithm's singularity.
+
+    For any N-representable density ``tau_W <= tau`` pointwise (the von
+    Weizsacker bound, Cauchy-Schwarz on the orbitals), so ``alpha = (tau -
+    tau_W)/tau_unif >= 0`` and SCAN defines its switching function on
+    ``[0, inf)`` (Sun, Ruzsinszky, Perdew, PRL 115, 036402 (2015), Eq. 2). A
+    substantially negative raw indicator can only come from an unphysical
+    density -- the ``decaying_linear`` mixer's step-0 coefficient 1.3 takes
+    the density matrix outside the positive-semidefinite cone, and ``tau <
+    tau_W`` follows in the far tail of a doubled spin channel -- and there
+    the logarithm was undefined below ``alpha = -1``: every meta-GGA
+    architecture returned NaN at SCF cycle 1 on open-shell species
+    (2026-09-04; test_metagga_indicator_domain reproduces it on LiH, Li and
+    OH). The indicator is floored at ``_DFS_INDICATOR_FLOOR`` before the
+    logarithm: the identity in value and gradient for every ``alpha_raw``
+    above the floor -- which is every physical row, floating-point residues
+    of the one-orbital limit included, so every pretraining row, certificate
+    and figure slice is unchanged bit for bit and the smooth positive part
+    of ``metagga.compute_alpha`` keeps its differentiability through
+    ``alpha = 0`` -- and the finite floor value with a zero gradient below
+    it. The two-branch ``where`` keeps the gradient finite through
+    ``_raw_indicator``'s inverse, whose derivative grows as the stored
+    column shrinks.
+    """
+    alpha = jnp.asarray(alpha_raw)
+    floor = _DFS_INDICATOR_FLOOR
+    on_domain = alpha >= floor
+    safe = jnp.where(on_domain, alpha, floor)
+    return jnp.where(on_domain, jnp.log((safe + 1.0) / 2.0),
+                     jnp.log((floor + 1.0) / 2.0) + 0.0 * safe)
+
+
+def _domain_indicator(alpha_column):
+    """The raw indicator a stored ``metagga`` column encodes, floored at
+    ``_DFS_INDICATOR_FLOOR`` at the column level.
+
+    The smooth positive part is monotone, so a column at or above
+    ``p(_DFS_INDICATOR_FLOOR)`` encodes an indicator above the floor and is
+    inverted exactly (through ``_raw_indicator``, which also keeps the
+    ``_ALPHA_MAX`` ceiling); a column below it encodes an indicator below the
+    floor -- an unphysical density, see ``_dfs_indicator_coordinate`` -- and
+    returns the floor. The projection is done on the column rather than on
+    the recovered value so that the inverse, whose derivative ``1 +
+    width^2/(4 p^2)`` grows without bound as the column shrinks, is never
+    differentiated below the floor: value and gradient are finite for every
+    column, however small.
+    """
+    column = jnp.asarray(alpha_column)
+    width = _ALPHA_SMOOTHING_WIDTH
+    floor_alpha = _DFS_INDICATOR_FLOOR
+    floor_col = 0.5 * (floor_alpha + jnp.sqrt(floor_alpha * floor_alpha
+                                              + width * width))
+    on_domain = column >= floor_col
+    safe = jnp.where(on_domain, column, floor_col)
+    return jnp.where(on_domain, _raw_indicator(safe), floor_alpha + 0.0 * safe)
 
 
 def _raw_indicator(alpha_column):
@@ -263,9 +327,12 @@ class AlecGGA_XNet(eqx.Module):
         # encodes (``_raw_indicator``): read by the DFS coordinate x_alpha and
         # by the SCAN parent. None on the GGA rungs.
         alpha_raw = None
+        alpha_dom = None
         if self.meta_gga:
-            alpha_raw = _raw_indicator(
-                jnp.atleast_1d(features).flatten()[self.metagga_alpha_index])
+            alpha_column = jnp.atleast_1d(features).flatten()[
+                self.metagga_alpha_index]
+            alpha_raw = _raw_indicator(alpha_column)
+            alpha_dom = _domain_indicator(alpha_column)
 
         # When descriptor_log_transform=True, feed the MLP a Dick XCDiff
         # log-compressed s; otherwise raw s. The tanh(s)² UEG gate below is
@@ -291,7 +358,7 @@ class AlecGGA_XNet(eqx.Module):
                 # net.py line 220; eq. 10) in place of the raw clamped column
                 # the legacy layout feeds; the other extras are unchanged.
                 extras = extras.at[self.metagga_alpha_index].set(
-                    _dfs_indicator_coordinate(alpha_raw))
+                    _dfs_indicator_coordinate(alpha_dom))
             netinp = jnp.concatenate([s_mlp, extras])
         else:
             netinp = s_mlp
@@ -532,9 +599,12 @@ class AlecGGA_CNet(eqx.Module):
         # The raw iso-orbital indicator of the row's total density, from its
         # smoothed, capped column (``_raw_indicator``). None on the GGA rungs.
         alpha_raw = None
+        alpha_dom = None
         if self.meta_gga:
-            alpha_raw = _raw_indicator(
-                jnp.atleast_1d(features).flatten()[self.metagga_alpha_index])
+            alpha_column = jnp.atleast_1d(features).flatten()[
+                self.metagga_alpha_index]
+            alpha_raw = _raw_indicator(alpha_column)
+            alpha_dom = _domain_indicator(alpha_column)
 
         # Log-transform BOTH rs and s for the MLP input when
         # descriptor_log_transform=True. DELIBERATE DEVIATION from DFS Eq. 7:
@@ -578,7 +648,7 @@ class AlecGGA_CNet(eqx.Module):
                 extras = jnp.atleast_1d(features).flatten()
                 if self.meta_gga:
                     extras = extras.at[self.metagga_alpha_index].set(
-                        _dfs_indicator_coordinate(alpha_raw))
+                        _dfs_indicator_coordinate(alpha_dom))
                 netinp = jnp.concatenate([x0, x1, x_s, extras])
             else:
                 netinp = jnp.concatenate([x0, x1, x_s])

@@ -949,6 +949,15 @@ to be measured on Li with two seeds 1e-14 apart before the meta-GGA rungs are tr
 mode; and the size of the response at the production identity, where `d alpha / d sigma`
 reaches 2.2e31 (entry 27's measurement) and the outermost shells are diffuse.
 
+**FIRED 2026-09-04 (in part):** the v7 meta-GGA campaign's FULL-mode training found the
+defect this entry did not anticipate -- the DFS coordinate ln((alpha + 1)/2) undefined on the
+non-positive intermediate density the step-0 mixing coefficient 1.3 produces (alpha_raw < -1 in
+the doubled-channel tail) -- and closed it by flooring the indicator at alpha = -1/2 at the column
+level (networks._domain_indicator, _dfs_indicator_coordinate; test_metagga_indicator_domain;
+AUDIT_2026-09-01.md, 2026-09-04): below every physical row, residues included, so the smooth
+positive part's differentiability through alpha = 0 that this entry measured is preserved. The determinism question
+stated here is untouched and still open.
+
 **TRIGGER:** a FULL-mode meta-GGA training campaign on the open-shell atoms (measure the
 gradient's determinism first), or any finite-difference check of the meta-GGA potential that
 must probe directions off the SCF manifold.
