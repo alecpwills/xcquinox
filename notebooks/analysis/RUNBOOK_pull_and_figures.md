@@ -405,10 +405,11 @@ JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py \
     --outdir notebooks/analysis/figures_dfs_step7_dfs6311_grid3_v7g1_size
 ```
 
-Both g1 figure sets (suite plus trained_fx_fc outputs) are tracked in full
-at partial coverage as the campaign's visible progress (five cells on
-2026-09-04); the empty g2a / mgga placeholder sets are not tracked until
-those arrays produce cells.
+The g1 and g2a figure sets (suite plus trained_fx_fc outputs) are tracked
+in full at partial coverage as the campaign's visible progress (g1 at nine
+cells and g2a at five on 2026-09-05); the empty mgga placeholder set is not
+tracked until that array produces cells, and the shared basis-comparison
+sets stay untracked (regenerated on every suite call).
 Before the train arrays complete, the artifact worth pulling is the
 pretrain stage itself: each run's `pretrain/<arch>/fidelity_certificate.json`
 states whether the clone reproduced its parent (the campaign's gate), and
