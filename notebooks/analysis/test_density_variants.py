@@ -814,8 +814,14 @@ def test_builder_fills_insample_columns_in_the_combined_csv_only(builds):
     combined = _read_csv(builds.std / "ablation_combined_energy_density.csv")
     # in-sample species: HO, CH4 and the H2/h2 pair -> (3e-3 + 1e-3 + 3e-3)/3
     want = (3e-3 + 1e-3 + (1.0e-3 + 5.0e-3) / 2) / 3
+    assert {r["leg"] for r in combined} >= {"wtmad2", "wtmad2_eps_gamma_dfs"}
     for r in combined:
-        assert float(r["D_insample_rmse"]) == pytest.approx(want, rel=1e-9)
+        if "eps" in r["leg"]:
+            # the eps legs carry the in-sample eps mean in their own units;
+            # this fixture's in-sample rows have no eps columns -> blank
+            assert r["D_insample_rmse"] == "", r["leg"]
+        else:
+            assert float(r["D_insample_rmse"]) == pytest.approx(want, rel=1e-9)
         assert r["n_insample_species"] == "3"
     for name in ("ablation_density_energy_3x3.csv",
                  "ablation_density_energy_3x3_dfs_units.csv"):
@@ -850,6 +856,13 @@ def test_insample_density_ccsd_gains_a_ratio_panel(tmp_path, monkeypatch):
     labels = " | ".join((ax.get_title() or "") + " " + (ax.get_ylabel() or "")
                         for ax in axes).lower()
     assert "ratio" in labels or "nn/pbe" in labels, labels
+    # the ratio is NN over PBE: every cell of the fixture has density_rmse_pbe
+    # = 2 x density_rmse, so the arch line sits at 0.5 and the unit line at 1
+    ratio_ax = [ax for ax in axes
+                if "ratio" in ((ax.get_title() or "") + (ax.get_ylabel() or "")).lower()][0]
+    ys = sorted({round(float(y), 9) for line in ratio_ax.get_lines()
+                 for y in line.get_ydata()})
+    assert ys == [0.5, 1.0], ys
 
 
 def test_insample_density_ccsd_dfs_units_twin_iff_eps_columns(tmp_path):
@@ -875,6 +888,139 @@ def test_insample_density_ccsd_dfs_units_twin_iff_eps_columns(tmp_path):
         eps_rows, withe / "ablation_insample_density_ccsd.png", "run_x")
     twin = withe / "ablation_insample_density_ccsd_dfs_units.png"
     assert _png_ok(twin)
+
+
+# ---------------------------------------------------------------------------
+# Review findings on commits A-C (2026-09-07): the variant note's scope, the
+# loaders' robustness, the tail table's provenance, the units of the in-sample
+# leg, and the converged-channel variant
+# ---------------------------------------------------------------------------
+
+_UNFILTERED_TITLE_STARTS = ("In-sample", "Held-out energy")
+
+
+def test_rf_variant_note_reaches_only_the_filtered_figures(builds):
+    """The exclusion note belongs to the held-out density family: the
+    energy-only and in-sample figures of a variant directory hold unfiltered
+    data and must not assert an exclusion."""
+    builds.require()
+    var = builds.notes["var"]
+    unfiltered = [kw for kw in var
+                  if str(kw.get("title", "")).startswith(_UNFILTERED_TITLE_STARTS)
+                  or "rung" in str(kw.get("title", "")).lower()]
+    filtered = [kw for kw in var if not (
+        str(kw.get("title", "")).startswith(_UNFILTERED_TITLE_STARTS)
+        or "rung" in str(kw.get("title", "")).lower())]
+    assert len(unfiltered) >= 5 and len(filtered) >= 3, (len(unfiltered), len(filtered))
+    leaked = [kw["title"] for kw in unfiltered
+              if "excluded in every cell" in (kw.get("note") or "")]
+    assert not leaked, leaked
+    missing = [kw["title"] for kw in filtered
+               if "excluded in every cell" not in (kw.get("note") or "")]
+    assert not missing, missing
+
+
+def test_rf_load_t1_table_tolerates_malformed_files(tmp_path):
+    """A malformed or empty diagnostics file is "no table", never an abort of
+    the whole figure build."""
+    run = _rich_run_dir(tmp_path)
+    for text in ("[1, 2, 3]", '{"t1": {"NO": 0.05}, "threshold": null}',
+                 '{"t1": {"NO": 0.05}, "threshold": "hi"}', '{"t1": "x"}', "{}",
+                 '{"t1": {"NO": "bad"}, "threshold": 0.02}'):
+        (run / "t1_diagnostics.json").write_text(text)
+        assert fig.load_t1_table(run) == {}, text
+
+
+def test_rf_exclude_cf_is_normalized(tmp_path):
+    """Any spelling and any iterable: the set is casefolded on entry, so a
+    raw-name set is not a silent no-op."""
+    run = _rich_run_dir(tmp_path)
+    rows = fig.collect_holdout_density_rows(run, exclude_cf={"NO"})
+    assert {str(r["molecule"]) for r in rows} == {"H2", "h2", "CO", "N2"}
+    tab = fig.load_pbe_density_table(run, exclude_cf=["H2"])
+    assert set(tab) == {"CO", "NO", "N2", "CH2O"}
+
+
+def test_rf_tail_table_skips_rows_without_a_molecule(tmp_path):
+    rows = [{"arch": "deep", "subset_size": 1, "density_rmse": 9e-3,
+             "density_rmse_pbe": 1e-3},
+            {"arch": "deep", "subset_size": 1, "molecule": None,
+             "density_rmse": 9e-3, "density_rmse_pbe": 1e-3},
+            {"arch": "deep", "subset_size": 1, "molecule": "NO",
+             "density_rmse": 9e-3, "density_rmse_pbe": 1e-3}]
+    out = tmp_path / "tail.csv"
+    fig.write_holdout_density_tail_csv(rows, out)
+    assert [r["molecule"] for r in _read_csv(out)] == ["NO"]
+
+
+def test_rf_variant_tail_table_holds_the_filtered_rows(builds):
+    """The tail table describes its own directory's cell means: the variant's
+    table lacks the excluded species."""
+    builds.require()
+    std = {r["molecule"].casefold()
+           for r in _read_csv(builds.std / "holdout_density_tail.csv")}
+    var = {r["molecule"].casefold()
+           for r in _read_csv(builds.var / "holdout_density_tail.csv")}
+    assert std == {"no"} and var == set(), (std, var)
+
+
+def test_rf_insample_leg_units_follow_the_leg(tmp_path):
+    """On the eps legs the in-sample column holds the in-sample eps mean (the
+    leg's own units), blank when no in-sample eps map is given; the species
+    count is filled on every leg."""
+    energy = {("deep", 1): 8.0}
+    density = {("deep", 1): 0.004}
+    wt = fig.combined_ed_by_cell(energy, 10.0, density, 0.005)
+    out = tmp_path / "ed.csv"
+    fig.write_combined_ed_csv(
+        {"wtmad2": wt, "wtmad2_eps_gamma_dfs": wt}, out, n_reactions={},
+        n_density={}, d_insample={("deep", 1): 0.0021},
+        n_insample={("deep", 1): 3}, d_insample_eps={("deep", 1): 0.007})
+    rows = {r["leg"]: r for r in _read_csv(out)}
+    assert float(rows["wtmad2"]["D_insample_rmse"]) == pytest.approx(0.0021)
+    assert float(rows["wtmad2_eps_gamma_dfs"]["D_insample_rmse"]) == pytest.approx(0.007)
+    assert rows["wtmad2_eps_gamma_dfs"]["n_insample_species"] == "3"
+    out2 = tmp_path / "ed2.csv"
+    fig.write_combined_ed_csv(
+        {"wtmad2_eps_gamma_dfs": wt}, out2, n_reactions={}, n_density={},
+        d_insample={("deep", 1): 0.0021}, n_insample={("deep", 1): 3})
+    assert _read_csv(out2)[0]["D_insample_rmse"] == ""
+
+
+def test_rf_unconverged_variant_directory(tmp_path):
+    """The converged-channel variant drops the species whose NN SCF did not
+    converge in any cell, and renders nothing when every species converged."""
+    run = _rich_run_dir(tmp_path)
+    for sd in sorted((run / "checkpoints").glob("spec_*")):
+        eh = sd / "eval_holdout"
+        if not (eh / "per_reaction.json").is_file():
+            continue
+        conv = sd / "eval_holdout_converged"
+        conv.mkdir()
+        (conv / "per_reaction.json").write_text((eh / "per_reaction.json").read_text())
+        (conv / "per_molecule.json").write_text((eh / "per_molecule.json").read_text())
+    fdir = tmp_path / "figs_conv"
+    written = fig._build_outlier_free_variants(run, fdir,
+                                               eval_subdir="eval_holdout_converged")
+    vdir = tmp_path / "figs_conv_excl_unconverged"
+    assert vdir.is_dir() and written
+    rows = [r for r in _read_csv(vdir / "ablation_combined_energy_density.csv")
+            if r["leg"] == "wtmad2"]
+    assert rows
+    for r in rows:
+        assert float(r["D_pbe_rmse"]) == pytest.approx(
+            _expected_d_pbe("density_rmse_pbe", _KEPT_CF), rel=1e-9)
+    for sd in sorted((run / "checkpoints").glob("spec_*")):
+        pm = sd / "eval_holdout_converged" / "per_molecule.json"
+        if pm.is_file():
+            payload = json.loads(pm.read_text())
+            for r in payload:
+                r["scf_converged"] = True
+            pm.write_text(json.dumps(payload))
+    fdir2 = tmp_path / "figs_conv2"
+    assert fig._build_outlier_free_variants(
+        run, fdir2, eval_subdir="eval_holdout_converged") == []
+    assert not (tmp_path / "figs_conv2_excl_unconverged").exists()
 
 
 def test_insample_panel_helpers_take_channel_keywords():

@@ -4187,7 +4187,7 @@ def collect_holdout_density_rows(run_dir: Path,
         bad_cf = {_mol_cf(m) for m in bad}
         raw = [r for r in raw if _mol_cf(r.get("molecule")) not in bad_cf]
     if exclude_cf:
-        excl = {m for m in exclude_cf}
+        excl = {_mol_cf(m) for m in exclude_cf}      # any spelling, any iterable
         kept = [r for r in raw if _mol_cf(r.get("molecule")) not in excl]
         gone = [r for r in raw if _mol_cf(r.get("molecule")) in excl]
         if gone:
@@ -4216,7 +4216,8 @@ def load_pbe_density_table(run_dir: Path, *,
     except (json.JSONDecodeError, OSError):
         return {}
     if exclude_cf:
-        table = {m: d for m, d in table.items() if _mol_cf(m) not in exclude_cf}
+        excl = {_mol_cf(m) for m in exclude_cf}      # any spelling, any iterable
+        table = {m: d for m, d in table.items() if _mol_cf(m) not in excl}
     return table
 
 
@@ -4233,12 +4234,17 @@ def load_t1_table(run_dir: Path) -> Dict[str, Any]:
         return {}
     try:
         raw = json.loads(p.read_text())
-    except (json.JSONDecodeError, OSError):
+        if not isinstance(raw, dict) or not isinstance(raw.get("t1"), dict):
+            raise ValueError("t1_diagnostics.json is not {t1: {...}, ...}")
+        t1 = {_mol_cf(m): float(v) for m, v in raw["t1"].items() if _is_num(v)}
+        threshold = float(raw.get("threshold", 0.02))
+    except (json.JSONDecodeError, OSError, TypeError, ValueError,
+            AttributeError) as exc:
+        print(f"  (t1_diagnostics.json unreadable, no T1 variant: {exc})")
         return {}
-    t1 = {_mol_cf(m): float(v) for m, v in dict(raw.get("t1") or {}).items()
-          if _is_num(v)}
-    return {"t1": t1, "threshold": float(raw.get("threshold", 0.02)),
-            "source": str(raw.get("source", ""))}
+    if not t1:
+        return {}
+    return {"t1": t1, "threshold": threshold, "source": str(raw.get("source", ""))}
 
 
 _TAIL_CSV_FIELDS = ["arch", "subset_size", "molecule", "ratio", "density_rmse",
@@ -4263,7 +4269,8 @@ def write_holdout_density_tail_csv(hd_rows: List[Dict[str, Any]],
     groups: Dict[Tuple[str, int, str], List[Dict[str, Any]]] = {}
     for r in hd_rows:
         arch, ss = r.get("arch"), r.get("subset_size")
-        if arch is None or ss is None or not _is_num(r.get("density_rmse")):
+        if (arch is None or ss is None or not r.get("molecule")
+                or not _is_num(r.get("density_rmse"))):
             continue
         groups.setdefault((arch, ss, _mol_cf(r.get("molecule"))), []).append(r)
     order = {a: i for i, a in enumerate(ARCH_ORDER)}
@@ -5141,6 +5148,8 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                           d_insample: Optional[Dict[Tuple[str, int], float]]
                           = None,
                           n_insample: Optional[Dict[Tuple[str, int], int]]
+                          = None,
+                          d_insample_eps: Optional[Dict[Tuple[str, int], float]]
                           = None) -> Path:
     """Per-cell ED table for the given energy legs, alongside the figure --
     the machine-readable source for a paper table. One row per (leg, cell),
@@ -5156,9 +5165,13 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
     in-sample density leg (``D_insample_rmse``, ``n_insample_species``:
     the cell's trained-species density error and species count, from
     :func:`insample_density_by_arch_subset` and :func:`_cell_counts`);
-    absent, both columns are blank (the per-channel tables). The CSV path
-    is NOT appended to the figure list returned by
-    ``build_density_energy_figures`` (that return contract stays PNG-only)."""
+    absent, both columns are blank (the per-channel tables). On the eps
+    legs (leg names carrying ``eps``: D is the Eq. 20 per-electron L1) the
+    density column is filled from ``d_insample_eps`` instead, so the row's
+    two density values share their units; without that map the eps rows
+    leave it blank while the species count stays. The CSV path is NOT
+    appended to the figure list returned by ``build_density_energy_figures``
+    (that return contract stays PNG-only)."""
     order = {a: i for i, a in enumerate(ARCH_ORDER)}
     out_path = Path(out_path)
     with out_path.open("w", newline="") as fh:
@@ -5200,7 +5213,8 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                         c.get("ed_scan_cell")),
                     "n_reactions_slice": ns.get((arch, ss), ""),
                     "D_insample_rmse": _blank_if_none(
-                        (d_insample or {}).get((arch, ss))),
+                        ((d_insample_eps if "eps" in leg else d_insample)
+                         or {}).get((arch, ss))),
                     "n_insample_species": _blank_if_none(
                         (n_insample or {}).get((arch, ss))),
                 })
@@ -8244,8 +8258,6 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     if ecw:
         print(f"  ({ecw})")
         note = f"{note}  {ecw}" if note else ecw
-    if variant_note:
-        note = f"{note}  {variant_note}" if note else variant_note
     try:
         baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:
@@ -8345,6 +8357,11 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                    "(xcquinox.alec.benchmark_refs); PBE baseline model-free "
                    "on the same grid.")
         ds = _holdout_eval_note(rows, hd_rows)
+        # the variant note describes the held-out density family only: the
+        # six figures already rendered above (energy-only and in-sample)
+        # hold unfiltered data and keep the plain note
+        if variant_note:
+            note = f"{note}  {variant_note}" if note else variant_note
         # the tail table: the species this directory's cell means carry
         # above 1.5x PBE, with their SCF diagnostics and T1 when known
         tail_csv = write_holdout_density_tail_csv(
@@ -8763,9 +8780,12 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 n_reactions_slice=_cell_counts(rows,
                                                "abs_error_pbe_kcalmol"),
                 counts_by_leg=counts_main or None,
-                # the in-sample density leg beside the held-out D
+                # the in-sample density leg beside the held-out D, in the
+                # units of each leg (RMSE legs, eps legs)
                 d_insample=insample_density_by_arch_subset(drows),
-                n_insample=_cell_counts(drows, "density_rmse"))
+                n_insample=_cell_counts(drows, "density_rmse"),
+                d_insample_eps=insample_density_by_arch_subset(
+                    drows, key="density_eps_l1"))
             gtxt = f"gamma_wt = {wt_summary['gamma']:.4g}"
             if mae_summary:
                 gtxt += f", gamma_mae = {mae_summary['gamma']:.4g}"

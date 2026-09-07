@@ -164,6 +164,19 @@ Per basis (two parallel sets -- final-checkpoint and val-best):
 Cross comparison (only when **>= 2** bases are given AND both have eval coverage):
 - `figures_dfs_step7_basis_comparison/`       (+ `_val_best`)
 
+Outlier-free siblings of a per-basis dir (2026-09-07; the density and energy figure set of
+`build_density_energy_figures` rendered a second time from filtered inputs, the rule stated
+in the footer note of every held-out density figure; `README_density_figures.md` decodes them):
+- `figures_dfs_step7_<alias>_excl_t1/`          -- when the run dir carries `t1_diagnostics.json`
+  (written by the benchmark-refs backfill): species with a CCSD T1 diagnostic above the
+  file's threshold are dropped in every cell
+- `figures_dfs_step7_<alias>_excl_unconverged/` -- converged-SCF channels only: species whose NN
+  SCF did not converge in at least one cell are dropped
+Every per-basis dir (and every sibling) also carries `holdout_density_tail.csv`: the species
+above 1.5 x PBE in each cell with their SCF diagnostics and T1 when known. The siblings render
+only when the list names a species present in the held-out rows; a console line says so
+otherwise.
+
 Each per-basis dir contains: the arch-aware ablation set (parity, MAE-by-arch,
 arch×subset heatmap, MAE-vs-subset), held-out energy/density figures, the five
 parity-layout variants, per-run size-consistency / training-loss diagnostics,
