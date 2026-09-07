@@ -5118,7 +5118,11 @@ _ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
                   "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
                   "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol",
                   "beats_scan", "ED_pbe_cell_kcalmol",
-                  "ED_scan_cell_kcalmol", "n_reactions_slice"]
+                  "ED_scan_cell_kcalmol", "n_reactions_slice",
+                  # the in-sample density leg beside the held-out D (the
+                  # combined table only; the per-channel tables leave both
+                  # blank)
+                  "D_insample_rmse", "n_insample_species"]
 
 
 def _blank_if_none(x: Any) -> Any:
@@ -5133,8 +5137,11 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                           n_reactions_slice: Optional[
                               Dict[Tuple[str, int], int]] = None,
                           counts_by_leg: Optional[Dict[str, Tuple[
-                              Dict[Tuple[str, int], int], ...]]] = None
-                          ) -> Path:
+                              Dict[Tuple[str, int], int], ...]]] = None,
+                          d_insample: Optional[Dict[Tuple[str, int], float]]
+                          = None,
+                          n_insample: Optional[Dict[Tuple[str, int], int]]
+                          = None) -> Path:
     """Per-cell ED table for the given energy legs, alongside the figure --
     the machine-readable source for a paper table. One row per (leg, cell),
     cells in ARCH_ORDER-then-subset order; None legs skipped.
@@ -5145,9 +5152,13 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
     ``counts_by_leg`` optionally overrides the flat count maps per leg
     (the per-channel 3x3 CSV, where each channel counts only its own pool's
     rows/species); 2-tuples (older call shape) leave the slice column
-    blank, 3-tuples carry it. The CSV path is NOT appended to the figure
-    list returned by ``build_density_energy_figures`` (that return contract
-    stays PNG-only)."""
+    blank, 3-tuples carry it. ``d_insample`` / ``n_insample`` fill the
+    in-sample density leg (``D_insample_rmse``, ``n_insample_species``:
+    the cell's trained-species density error and species count, from
+    :func:`insample_density_by_arch_subset` and :func:`_cell_counts`);
+    absent, both columns are blank (the per-channel tables). The CSV path
+    is NOT appended to the figure list returned by
+    ``build_density_energy_figures`` (that return contract stays PNG-only)."""
     order = {a: i for i, a in enumerate(ARCH_ORDER)}
     out_path = Path(out_path)
     with out_path.open("w", newline="") as fh:
@@ -5188,6 +5199,10 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                     "ED_scan_cell_kcalmol": _blank_if_none(
                         c.get("ed_scan_cell")),
                     "n_reactions_slice": ns.get((arch, ss), ""),
+                    "D_insample_rmse": _blank_if_none(
+                        (d_insample or {}).get((arch, ss))),
+                    "n_insample_species": _blank_if_none(
+                        (n_insample or {}).get((arch, ss))),
                 })
     return out_path
 
@@ -5610,19 +5625,42 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
     return out_path
 
 
-def _insample_density_lines_panel(ax, density_rows: List[Dict[str, Any]]
-                                  ) -> None:
-    """Per-arch mean in-sample density RMSE vs subset_size (n annotated), with
-    the grey dashed PBE-vs-CCSD line over subset_size when the model-free
-    ``density_rmse_pbe`` column is present. Panel body shared by
-    ``plot_insample_density_ccsd`` and ``plot_insample_overview``."""
+def insample_density_by_arch_subset(drows: List[Dict[str, Any]],
+                                    key: str = "density_rmse"
+                                    ) -> Dict[Tuple[str, int], float]:
+    """``{(arch, subset_size): mean in-sample density error}`` over the
+    trained species -- the in-sample leg beside the held-out D in the
+    combined CSV (``D_insample_rmse``). The same twin-then-species reduction
+    as :func:`holdout_density_by_arch_subset` (a row mean would weight a
+    case twin twice; the in-sample sets are twin-free in production, so
+    the two agree there). ``key`` selects the channel."""
+    return holdout_density_by_arch_subset(drows, key=key)
+
+
+def _insample_density_lines_panel(ax, density_rows: List[Dict[str, Any]], *,
+                                  key: str = "density_rmse",
+                                  pbe_key: str = "density_rmse_pbe",
+                                  xlabel: str = "training subset_size",
+                                  ylabel: str = ("density RMSE vs CCSD (grid, "
+                                                 "weighted-mean)"),
+                                  title: str = ("In-sample density fit vs CCSD "
+                                                "(per arch)"),
+                                  pbe_label: str = "PBE vs CCSD") -> None:
+    """Per-arch mean in-sample density error vs subset_size (n annotated:
+    trained species in the cell), with the grey dashed PBE-vs-CCSD line
+    over subset_size when the model-free ``pbe_key`` column is present.
+    Panel body shared by ``plot_insample_density_ccsd`` and
+    ``plot_insample_overview``. The keyword defaults are the strings the
+    shipped figures carry; the DFS-units twin passes the Eq. 20 eps columns
+    and eps labels. Cell means are twin-then-species means
+    (:func:`insample_density_by_arch_subset`); the n annotation counts
+    species (:func:`_cell_counts`)."""
     archs = _archs_present(density_rows) or ["deep"]
+    means = insample_density_by_arch_subset(density_rows, key=key)
+    counts = _cell_counts(density_rows, key)
     for a in archs:
-        by_s: Dict[int, List[float]] = {}
-        for r in density_rows:
-            if r.get("arch") == a and _is_num(r.get("density_rmse")):
-                by_s.setdefault(r["subset_size"], []).append(r["density_rmse"])
-        pts = sorted((s, float(np.mean(v)), len(v)) for s, v in by_s.items())
+        pts = sorted((s, m, counts.get((arch, s), 0))
+                     for (arch, s), m in means.items() if arch == a)
         if pts:
             ax.plot([s for s, _, _ in pts], [m for _, m, _ in pts],
                     marker="o", ms=5, color=ARCH_COLOR[a], label=a)
@@ -5630,59 +5668,98 @@ def _insample_density_lines_panel(ax, density_rows: List[Dict[str, Any]]
                 ax.annotate(f"n={n}", (s, m), fontsize=5,
                             color=ARCH_COLOR[a], xytext=(0, 4),
                             textcoords="offset points")
-    # PBE-vs-CCSD baseline (arch-independent): mean over the molecules
-    # present at each subset_size, grey dashed
-    pbe_by_s: Dict[int, List[float]] = {}
+    # PBE-vs-CCSD baseline (arch-independent): the species-mean over the
+    # molecules present at each subset_size, grey dashed
+    pbe_by_s: Dict[int, Dict[str, List[float]]] = {}
     for r in density_rows:
-        if _is_num(r.get("density_rmse_pbe")):
-            pbe_by_s.setdefault(r["subset_size"], []).append(
-                r["density_rmse_pbe"])
-    pbe_pts = sorted((s, float(np.mean(v))) for s, v in pbe_by_s.items())
+        if _is_num(r.get(pbe_key)) and r.get("subset_size") is not None:
+            pbe_by_s.setdefault(r["subset_size"], {}).setdefault(
+                _mol_cf(r.get("molecule")), []).append(float(r[pbe_key]))
+    pbe_pts = sorted((s, float(np.mean([float(np.mean(v)) for v in sp.values()])))
+                     for s, sp in pbe_by_s.items() if sp)
     if pbe_pts:
         ax.plot([s for s, _ in pbe_pts], [m for _, m in pbe_pts],
                 ls="--", color="0.35", marker="x", ms=5, lw=1.2,
-                label="PBE vs CCSD")
+                label=pbe_label)
     ax.set_yscale("log")
-    ax.set_xlabel("training subset_size", fontsize=8)
-    ax.set_ylabel("density RMSE vs CCSD (grid, weighted-mean)", fontsize=8)
-    ax.set_title("In-sample density fit vs CCSD (per arch)", fontsize=9)
+    ax.set_xlabel(xlabel, fontsize=8)
+    ax.set_ylabel(ylabel, fontsize=8)
+    ax.set_title(title, fontsize=9)
     if ax.get_legend_handles_labels()[1]:
         ax.legend(fontsize=6, ncol=2)
     ax.grid(True, which="both", alpha=0.3)
 
 
-def _insample_density_strip_panel(ax, density_rows: List[Dict[str, Any]]
+def _insample_ratio_panel(ax, density_rows: List[Dict[str, Any]], *,
+                          key: str = "density_rmse",
+                          pbe_key: str = "density_rmse_pbe",
+                          ylabel: str = "NN/PBE density-error ratio",
+                          title: str = ("In-sample NN/PBE ratio per cell "
+                                        "(below 1: NN closer to CCSD)")
+                          ) -> None:
+    """Per-cell in-sample NN/PBE density-error ratio vs subset_size, one
+    line per arch, with the unit line: the in-sample counterpart of the
+    held-out family's parity reading. Both means are twin-then-species
+    means over the cell's trained species on the ``key`` / ``pbe_key``
+    channels; a cell without a positive PBE mean draws nothing."""
+    nn = insample_density_by_arch_subset(density_rows, key=key)
+    pbe = insample_density_by_arch_subset(density_rows, key=pbe_key)
+    for a in (_archs_present(density_rows) or []):
+        pts = sorted((s, nn[(arch, s)] / pbe[(arch, s)])
+                     for (arch, s) in nn if arch == a and (arch, s) in pbe
+                     and pbe[(arch, s)] > 0.0)
+        if pts:
+            ax.plot([s for s, _ in pts], [v for _, v in pts], marker="o",
+                    ms=5, color=ARCH_COLOR.get(a, "0.5"), label=a)
+    ax.axhline(1.0, ls="--", color="0.35", lw=1.2, label="PBE (ratio 1)")
+    ax.set_xlabel("training subset_size", fontsize=8)
+    ax.set_ylabel(ylabel, fontsize=8)
+    ax.set_title(title, fontsize=9)
+    if ax.get_legend_handles_labels()[1]:
+        ax.legend(fontsize=6, ncol=2)
+    ax.grid(True, which="both", alpha=0.3)
+
+
+def _insample_density_strip_panel(ax, density_rows: List[Dict[str, Any]], *,
+                                  key: str = "density_rmse",
+                                  pbe_key: str = "density_rmse_pbe",
+                                  ylabel: str = "density RMSE vs CCSD",
+                                  title_fmt: str = ("Per-molecule (every point; "
+                                                    "{n} trained species)")
                                   ) -> None:
     """Per-molecule in-sample density strip (every point, arch-jittered) with
-    one grey PBE x per molecule when the PBE column is present. Panel body
-    shared by ``plot_insample_density_ccsd`` and ``plot_insample_overview``."""
+    one grey PBE x per species when the ``pbe_key`` column is present. Panel
+    body shared by ``plot_insample_density_ccsd`` and
+    ``plot_insample_overview``. The keyword defaults are the strings the
+    shipped figures carry; ``title_fmt`` receives the species count as
+    ``n``. Ticks follow :func:`_species_ticks` (every row with a molecule
+    gets a tick, case twins collapsed)."""
     archs = _archs_present(density_rows) or ["deep"]
     arch_idx = {a: i for i, a in enumerate(archs)}
     mols, mol_x = _species_ticks(density_rows)
     noff = max(1, len(archs))
     for r in density_rows:
         cf = _mol_cf(r.get("molecule"))
-        if not _is_num(r.get("density_rmse")) or cf not in mol_x:
+        if not _is_num(r.get(key)) or cf not in mol_x:
             continue
         jit = (arch_idx.get(r.get("arch"), 0) - (noff - 1) / 2) * 0.12
-        ax.scatter(mol_x[cf] + jit, r["density_rmse"], s=18,
+        ax.scatter(mol_x[cf] + jit, r[key], s=18,
                    alpha=0.75, color=ARCH_COLOR.get(r.get("arch"), "0.5"),
                    edgecolor="none")
     # PBE baseline per species (arch-independent -> one grey x each)
     pbe_by_mol: Dict[str, List[float]] = {}
     for r in density_rows:
         cf = _mol_cf(r.get("molecule"))
-        if _is_num(r.get("density_rmse_pbe")) and cf in mol_x:
-            pbe_by_mol.setdefault(cf, []).append(r["density_rmse_pbe"])
+        if _is_num(r.get(pbe_key)) and cf in mol_x:
+            pbe_by_mol.setdefault(cf, []).append(r[pbe_key])
     for m, vals in pbe_by_mol.items():
         ax.scatter(mol_x[m], float(np.mean(vals)), s=26, marker="x",
                    color="0.35", lw=1.2, zorder=3)
     ax.set_yscale("log")
     ax.set_xticks(range(len(mols)))
     ax.set_xticklabels(mols, rotation=60, ha="right", fontsize=6)
-    ax.set_ylabel("density RMSE vs CCSD", fontsize=8)
-    ax.set_title(f"Per-molecule (every point; {len(mols)} trained species)",
-                 fontsize=9)
+    ax.set_ylabel(ylabel, fontsize=8)
+    ax.set_title(title_fmt.format(n=len(mols)), fontsize=9)
     ax.grid(True, axis="y", which="both", alpha=0.3)
 
 
@@ -5738,34 +5815,68 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
                                provenance: Optional[str] = None,
                                caveat: Optional[str] = None) -> Path:
     """In-sample density error vs CCSD (Dick-style diagnostic): (left) per-arch
-    density RMSE vs subset_size with n annotated; (right) per-molecule strip
-    (every point, since the trained-species set is tiny). Labeled IN-SAMPLE.
-    Rows carrying ``density_rmse_pbe`` (the model-free PBE-vs-CCSD baseline on
-    the same grid; emitted by newer evals) add a grey dashed PBE baseline to
-    both panels; older runs without the column render exactly as before.
-    Panel bodies live in ``_insample_density_lines_panel`` /
-    ``_insample_density_strip_panel`` (shared with the in-sample overview)."""
-    with plt.rc_context(_STYLE):
-        archs = _archs_present(density_rows) or ["deep"]
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5.2), squeeze=False)
-        _insample_density_lines_panel(axes[0][0], density_rows)
-        _insample_density_strip_panel(axes[0][1], density_rows)
+    density RMSE vs subset_size with n annotated; (middle) per-molecule strip
+    (every point, since the trained-species set is tiny); (right) the per-cell
+    NN/PBE ratio -- the in-sample counterpart of the held-out family's parity
+    reading. Labeled IN-SAMPLE. Rows carrying ``density_rmse_pbe`` (the
+    model-free PBE-vs-CCSD baseline on the same grid; emitted by newer
+    evals) add a grey dashed PBE baseline to the first two panels and the
+    ratio line to the third; older runs without the column render the ratio
+    panel empty. When every needed row carries the DFS Eq. 20 eps columns
+    (``density_eps_l1`` and ``density_eps_l1_pbe``, any row), the same
+    three panels are written again on that channel as
+    ``<stem>_dfs_units.png`` beside the figure (written, not returned: the
+    return stays this one path). Panel bodies live in
+    ``_insample_density_lines_panel`` / ``_insample_density_strip_panel`` /
+    ``_insample_ratio_panel`` (the first two shared with the in-sample
+    overview)."""
+    out_path = Path(out_path)
+    insample = ("IN-SAMPLE density fit on TRAINING molecules (atoms excluded; "
+                "weighted-mean grid RMSE vs CCSD, NOT N_e-normalized). "
+                "Training-set fit, NOT generalization; not comparable to the "
+                "held-out energy panels.")
+    insample_eps = ("IN-SAMPLE density fit on TRAINING molecules (atoms "
+                    "excluded; DFS Eq. 20 per-electron L1 " + _EPS_N_SYM
+                    + " vs CCSD). Training-set fit, NOT generalization; not "
+                    "comparable to the held-out energy panels.")
 
-        arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
-                        for a in arch_style.sort_by_rung(archs)]
-        fig.legend(handles=arch_handles, loc="lower center",
-                   ncol=len(arch_style.RUNG_ORDER), fontsize=7,
-                   frameon=False, bbox_to_anchor=(0.5, 0.02))
-        insample = ("IN-SAMPLE density fit on TRAINING molecules (atoms excluded; "
-                    "weighted-mean grid RMSE vs CCSD, NOT N_e-normalized). "
-                    "Training-set fit, NOT generalization; not comparable to the "
-                    "held-out energy panels.")
-        _stamp_parity_footer(
-            fig, run_id=run_id, note=note, provenance=provenance, caveat=insample,
+    def _render(path: Path, *, key: str, pbe_key: str, unit: str,
+                caveat_text: str, title: str) -> None:
+        with plt.rc_context(_STYLE):
+            archs = _archs_present(density_rows) or ["deep"]
+            fig, axes = plt.subplots(1, 3, figsize=(18.5, 5.2), squeeze=False)
+            _insample_density_lines_panel(
+                axes[0][0], density_rows, key=key, pbe_key=pbe_key,
+                ylabel=f"{unit} vs CCSD" + (" (grid, weighted-mean)"
+                                            if key == "density_rmse" else ""),
+                title=f"In-sample density fit vs CCSD (per arch)")
+            _insample_density_strip_panel(
+                axes[0][1], density_rows, key=key, pbe_key=pbe_key,
+                ylabel=f"{unit} vs CCSD")
+            _insample_ratio_panel(axes[0][2], density_rows, key=key,
+                                  pbe_key=pbe_key)
+            arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
+                            for a in arch_style.sort_by_rung(archs)]
+            fig.legend(handles=arch_handles, loc="lower center",
+                       ncol=len(arch_style.RUNG_ORDER), fontsize=7,
+                       frameon=False, bbox_to_anchor=(0.5, 0.02))
+            _stamp_parity_footer(
+                fig, run_id=run_id, note=note, provenance=provenance,
+                caveat=caveat_text, title=title)
+            fig.tight_layout(rect=(0, 0.08, 1, 0.92))
+            fig.savefig(path, dpi=150)
+            plt.close(fig)
+
+    _render(out_path, key="density_rmse", pbe_key="density_rmse_pbe",
+            unit="density RMSE", caveat_text=insample,
             title="In-sample density error vs CCSD (Dick-style diagnostic)")
-        fig.tight_layout(rect=(0, 0.08, 1, 0.92))
-        fig.savefig(out_path, dpi=150)
-        plt.close(fig)
+    if any(_is_num(r.get("density_eps_l1")) and _is_num(r.get("density_eps_l1_pbe"))
+           for r in density_rows):
+        _render(out_path.with_name(out_path.stem + "_dfs_units" + out_path.suffix),
+                key="density_eps_l1", pbe_key="density_eps_l1_pbe",
+                unit=_EPS_N_SYM, caveat_text=insample_eps,
+                title="In-sample density error vs CCSD (DFS units, Eq. 20 "
+                      + _EPS_N_SYM + ")")
     return out_path
 
 
@@ -8651,7 +8762,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 n_density=_cell_counts(hd_rows, "density_rmse"),
                 n_reactions_slice=_cell_counts(rows,
                                                "abs_error_pbe_kcalmol"),
-                counts_by_leg=counts_main or None)
+                counts_by_leg=counts_main or None,
+                # the in-sample density leg beside the held-out D
+                d_insample=insample_density_by_arch_subset(drows),
+                n_insample=_cell_counts(drows, "density_rmse"))
             gtxt = f"gamma_wt = {wt_summary['gamma']:.4g}"
             if mae_summary:
                 gtxt += f", gamma_mae = {mae_summary['gamma']:.4g}"

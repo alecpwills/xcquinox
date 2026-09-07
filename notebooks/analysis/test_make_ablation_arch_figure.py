@@ -3654,7 +3654,8 @@ def test_write_combined_ed_csv_columns_and_legs(tmp_path):
         "E_kcalmol", "D_rmse", "gamma", "gammaD_kcalmol", "ED_kcalmol",
         "E_pbe_kcalmol", "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
         "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol", "beats_scan",
-        "ED_pbe_cell_kcalmol", "ED_scan_cell_kcalmol", "n_reactions_slice"}
+        "ED_pbe_cell_kcalmol", "ED_scan_cell_kcalmol", "n_reactions_slice",
+        "D_insample_rmse", "n_insample_species"}
     # absent SCAN legs write as EMPTY cells, never the string "None"
     assert all(r["ED_scan_kcalmol"] == "" and r["beats_scan"] == ""
                for r in rd)

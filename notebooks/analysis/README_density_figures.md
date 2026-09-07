@@ -6,7 +6,8 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 
 | File | One-line purpose |
 |---|---|
-| `ablation_insample_density_ccsd.png` | Training-set density FIT vs CCSD (not generalization) |
+| `ablation_insample_density_ccsd.png` | Training-set density FIT vs CCSD (not generalization): per-arch trend, per-molecule strip, per-cell NN/PBE ratio |
+| `ablation_insample_density_ccsd_dfs_units.png` | The same three in-sample panels on the DFS Eq. 20 eps channel; written when the in-sample rows carry both eps columns (eps pulls only) |
 | `ablation_holdout_density_ccsd.png` | Held-out density GENERALIZATION vs CCSD, NN vs PBE (trend + parity) |
 | `ablation_holdout_density_per_arch.png` | The per-arch held-out density trend alone (standalone) |
 | `ablation_combined_energy_density.png` | DFS Eq. 21 combined energy-density metric ED, per cell |
@@ -246,7 +247,16 @@ plotting-only script).
 
 ## 4. Figure register
 
-### 4.1 `ablation_insample_density_ccsd.png` (`plot_insample_density_ccsd`, :2694)
+### 4.1 `ablation_insample_density_ccsd.png` (`plot_insample_density_ccsd`, :5813)
+
+Three panels since the in-sample parity work: the per-arch trend and the per-molecule strip
+described below, and a third panel, the per-cell NN/PBE density-error ratio vs subset_size
+(`_insample_ratio_panel`; one line per arch, the dashed unit line is PBE; below 1 the trained
+density is closer to CCSD than PBE's on the cell's own trained species), which is the in-sample
+counterpart of the held-out family's parity reading. The cell means behind the trend and the
+ratio are twin-then-species means (`insample_density_by_arch_subset`), the same reduction as
+the held-out D. When the in-sample rows carry both Eq. 20 eps columns the three panels are
+written again on that channel as `ablation_insample_density_ccsd_dfs_units.png`.
 
 Training-set density FIT -- the direct diagnostic of the 20*rho density term the functionals
 were trained with. IN-SAMPLE only; not generalization; final checkpoint always.
@@ -288,7 +298,7 @@ When the SCAN comparator legs resolve, the grey provenance footer names their co
 (`SCAN comparator legs (coverage-gated): WTMAD-2 over u/r reactions, density over u/r
 species.`); with either cache absent the ED panels simply omit the line, as before.
 
-### 4.5 `ablation_combined_energy_density.csv` (`write_combined_ed_csv`, :2341)
+### 4.5 `ablation_combined_energy_density.csv` (`write_combined_ed_csv`, :5133)
 
 One row per (energy leg, arch, subset_size); legs are `wtmad2` and `mae`, plus -- only
 when the pull carries the Eq. 20 eps columns (Sec. 2.3, "Closing deviations 1 and 3") --
@@ -297,7 +307,10 @@ when the nonempirical calibration cache sits in the run dir, `wtmad2_eps_gamma_f
 (gamma = the own-axes six-functional regression slope). On those two legs the `D_rmse` /
 `D_pbe_rmse` columns carry eps values (per-electron L1, not RMSE), `gamma` is the fixed
 slope rather than `E_pbe/D_pbe`, and `ED_pbe_kcalmol` generally differs from
-`E_pbe_kcalmol`. Columns (`_ED_CSV_FIELDS`, :2335):
+`E_pbe_kcalmol`. The list ends with the in-sample density leg, filled in this combined table
+only and blank in the two per-channel tables: `D_insample_rmse` (the cell's trained-species
+density RMSE, twin-then-species mean, `insample_density_by_arch_subset`) and
+`n_insample_species` (the trained species behind it). Columns (`_ED_CSV_FIELDS`, :5115):
 
 | Column | Meaning |
 |---|---|
@@ -429,7 +442,7 @@ the ED figure's headline:
 | Thin colored lines | Per-arch trajectories through the cells in subset_size order (digits = subset_size) |
 | Dotted diagonal | The y=x self-calibration locus; the black `x` is PBE, on it by construction |
 
-### 4.9 `ablation_insample_overview.png` (`plot_insample_overview`, :3337)
+### 4.9 `ablation_insample_overview.png` (`plot_insample_overview`, :6905)
 
 The one-canvas in-sample (training-fit) story; always rendered. Three stamped disclosures:
 final checkpoint only (`eval/` has no val-best variant, so the panels are identical in the
@@ -440,7 +453,7 @@ self-calibrate gamma).
 | Panel | Content |
 |---|---|
 | (A) | In-sample AE MAE per (arch, subset_size) bars, NN only -- no PBE line by construction. The near-zero subset_size-1 bars are real: a one-molecule training set fits its own AE |
-| (B) | Per-molecule \|AE error\| strip (log y), arch-jittered (`_insample_ae_strip_panel`, :2666) |
+| (B) | Per-molecule \|AE error\| strip (log y), arch-jittered (`_insample_ae_strip_panel`, :5786) |
 | (C) | In-sample density RMSE vs subset_size (= left panel of 4.1, PBE dashed line included) |
 | (D) | Per-molecule density strip with grey PBE `x` (= right panel of 4.1) |
 
