@@ -4036,17 +4036,23 @@ def _inconsistent_pbe_density_species(raw_rows: List[Dict[str, Any]]
     Eq. 20 eps). Such a species' reference is broken (the c2 drift class):
     averaging it into anchors weights the candidates by pull coverage, and
     its NN column is judged against whichever reference its arm carries."""
+    # keyed on the casefolded species (the reference drift is a property of
+    # the physical molecule, so a pair listed under two spellings is judged
+    # and dropped together); reported under min of the spellings
     out: Dict[str, Tuple[float, float]] = {}
+    display: Dict[str, str] = {}
     for key in ("density_rmse_pbe", "density_eps_l1_pbe"):
         acc: Dict[str, List[float]] = {}
         for r in raw_rows:
             m = r.get("molecule")
             if m and _is_num(r.get(key)):
-                acc.setdefault(str(m), []).append(float(r[key]))
-        for m, vals in acc.items():
+                cf = _mol_cf(m)
+                display[cf] = min(display.get(cf, str(m)), str(m))
+                acc.setdefault(cf, []).append(float(r[key]))
+        for cf, vals in acc.items():
             lo, hi = min(vals), max(vals)
             if hi > 0.0 and (hi - lo) / hi > _PBE_DENSITY_CONSISTENCY_REL:
-                out.setdefault(m, (lo, hi))
+                out.setdefault(display[cf], (lo, hi))
     return out
 
 
@@ -4067,8 +4073,8 @@ def _pbe_density_outlier_clauses(raw_rows: List[Dict[str, Any]],
                        if isinstance(r.get("idx"), int)
                        else str(r.get("idx"))), float(r[key]))
                      for r in raw_rows
-                     if str(r.get("molecule")) == m and _is_num(r.get(key))
-                     and r.get("idx") is not None]
+                     if _mol_cf(r.get("molecule")) == _mol_cf(m)
+                     and _is_num(r.get(key)) and r.get("idx") is not None]
             if not pairs:
                 continue
             nums = [v for _spec, v in pairs]
@@ -4178,7 +4184,8 @@ def collect_holdout_density_rows(run_dir: Path,
             for m, (lo, hi) in sorted(bad.items()))
         print("  (WARNING: cross-spec-inconsistent PBE density reference -- "
               f"excluding from all density anchors and cell means: {detail})")
-        raw = [r for r in raw if str(r.get("molecule")) not in bad]
+        bad_cf = {_mol_cf(m) for m in bad}
+        raw = [r for r in raw if _mol_cf(r.get("molecule")) not in bad_cf]
     if exclude_cf:
         excl = {m for m in exclude_cf}
         kept = [r for r in raw if _mol_cf(r.get("molecule")) not in excl]
@@ -4848,7 +4855,9 @@ def _density_cell_coverage_warning(hd_rows: List[Dict[str, Any]],
         arch, ss = r.get("arch"), r.get("subset_size")
         if arch is None or ss is None or not _is_num(r.get(key)):
             continue
-        per_cell.setdefault((arch, ss), set()).add(r.get("molecule"))
+        # casefolded: a cell listing a twin under the other spelling covers
+        # the same species
+        per_cell.setdefault((arch, ss), set()).add(_mol_cf(r.get("molecule")))
     if not per_cell:
         return ""
     union = set().union(*per_cell.values())
@@ -4930,22 +4939,31 @@ def _spearman(xs: Sequence[float], ys: Sequence[float]) -> float:
 
 def _cell_counts(rows: List[Dict[str, Any]], key: str
                  ) -> Dict[Tuple[str, int], int]:
-    """``{(arch, subset_size): #rows with a finite key}`` -- the n_* columns
-    of the ED CSV. Rows carrying a reaction ``name`` are deduplicated by
-    name within each cell, matching the effective N of the deduped cell
+    """``{(arch, subset_size): #entities with a finite key}`` -- the n_*
+    columns of the ED CSV. Rows carrying a reaction ``name`` are deduplicated
+    by name within each cell, matching the effective N of the deduped cell
     metrics (the pool lists four reactions twice under one name); rows
-    without a ``name`` (the per-molecule density rows) count as before."""
+    carrying a ``molecule`` but no name (the per-molecule density rows) are
+    deduplicated by casefolded species (:func:`_mol_cf`: the pools' case
+    twins are one molecule, as every cell mean already counts them); rows
+    with neither count once each."""
     out: Dict[Tuple[str, int], int] = {}
     seen: set = set()
     for r in rows:
         arch, ss = r.get("arch"), r.get("subset_size")
         if arch is None or ss is None or not _is_num(r.get(key)):
             continue
-        nm = r.get("name")
+        nm, mol = r.get("name"), r.get("molecule")
         if nm is not None:
-            if (arch, ss, nm) in seen:
+            k: Optional[Tuple[str, str]] = ("name", str(nm))
+        elif mol:
+            k = ("species", _mol_cf(mol))
+        else:
+            k = None
+        if k is not None:
+            if (arch, ss, k) in seen:
                 continue
-            seen.add((arch, ss, nm))
+            seen.add((arch, ss, k))
         out[(arch, ss)] = out.get((arch, ss), 0) + 1
     return out
 
@@ -4970,9 +4988,10 @@ def _holdout_eval_note(rows: List[Dict[str, Any]],
                           for p, n in sorted(pools.items()))
         parts.append(f"{frag} reactions (name-dedup; reaction energies, "
                      "kcal/mol)")
-    n_nn = len({r.get("molecule") for r in hd_rows
+    # species, not rows: the pools' case twins are one molecule (_mol_cf)
+    n_nn = len({_mol_cf(r.get("molecule")) for r in hd_rows
                 if r.get("molecule") and _is_num(r.get("density_rmse"))})
-    n_pbe = len({r.get("molecule") for r in hd_rows
+    n_pbe = len({_mol_cf(r.get("molecule")) for r in hd_rows
                  if r.get("molecule") and _is_num(r.get("density_rmse_pbe"))})
     if n_nn or n_pbe:
         cnt = (f"{n_nn} species" if n_nn == n_pbe
@@ -5639,22 +5658,22 @@ def _insample_density_strip_panel(ax, density_rows: List[Dict[str, Any]]
     shared by ``plot_insample_density_ccsd`` and ``plot_insample_overview``."""
     archs = _archs_present(density_rows) or ["deep"]
     arch_idx = {a: i for i, a in enumerate(archs)}
-    mols = sorted({r["molecule"] for r in density_rows if r.get("molecule")})
-    mol_x = {m: i for i, m in enumerate(mols)}
+    mols, mol_x = _species_ticks(density_rows)
     noff = max(1, len(archs))
     for r in density_rows:
-        if not _is_num(r.get("density_rmse")) or r.get("molecule") not in mol_x:
+        cf = _mol_cf(r.get("molecule"))
+        if not _is_num(r.get("density_rmse")) or cf not in mol_x:
             continue
         jit = (arch_idx.get(r.get("arch"), 0) - (noff - 1) / 2) * 0.12
-        ax.scatter(mol_x[r["molecule"]] + jit, r["density_rmse"], s=18,
+        ax.scatter(mol_x[cf] + jit, r["density_rmse"], s=18,
                    alpha=0.75, color=ARCH_COLOR.get(r.get("arch"), "0.5"),
                    edgecolor="none")
-    # PBE baseline per molecule (arch-independent -> one grey x each)
+    # PBE baseline per species (arch-independent -> one grey x each)
     pbe_by_mol: Dict[str, List[float]] = {}
     for r in density_rows:
-        if _is_num(r.get("density_rmse_pbe")) and r.get("molecule") in mol_x:
-            pbe_by_mol.setdefault(r["molecule"], []).append(
-                r["density_rmse_pbe"])
+        cf = _mol_cf(r.get("molecule"))
+        if _is_num(r.get("density_rmse_pbe")) and cf in mol_x:
+            pbe_by_mol.setdefault(cf, []).append(r["density_rmse_pbe"])
     for m, vals in pbe_by_mol.items():
         ax.scatter(mol_x[m], float(np.mean(vals)), s=26, marker="x",
                    color="0.35", lw=1.2, zorder=3)
@@ -5667,6 +5686,26 @@ def _insample_density_strip_panel(ax, density_rows: List[Dict[str, Any]]
     ax.grid(True, axis="y", which="both", alpha=0.3)
 
 
+def _species_ticks(rows: List[Dict[str, Any]]
+                   ) -> Tuple[List[str], Dict[str, int]]:
+    """Strip-panel tick layout with the pools' case twins collapsed: rows
+    with a ``molecule`` are grouped by casefolded species (:func:`_mol_cf`),
+    each group is displayed under ``min`` of its spellings (so ``H2``, not
+    ``h2``, whichever the rows list first), and the groups are ordered by
+    that display name -- identical to the former raw-name sort on every
+    twin-free set (``NO`` before ``NO2`` before ``Na2``). Returns the
+    ordered display names and ``{casefolded species: x index}``."""
+    display: Dict[str, str] = {}
+    for r in rows:
+        m = r.get("molecule")
+        if not m:
+            continue
+        cf = _mol_cf(m)
+        display[cf] = min(display.get(cf, str(m)), str(m))
+    order = sorted(display.items(), key=lambda kv: kv[1])
+    return [name for _cf, name in order], {cf: i for i, (cf, _n) in enumerate(order)}
+
+
 def _insample_ae_strip_panel(ax, ae_rows: List[Dict[str, Any]]) -> None:
     """Per-molecule in-sample |AE error| strip (kcal/mol, arch-jittered), the
     AE analog of ``_insample_density_strip_panel``. Rows without a molecule or
@@ -5677,13 +5716,12 @@ def _insample_ae_strip_panel(ax, ae_rows: List[Dict[str, Any]]) -> None:
                and abs(r["AE_error_kcalmol"]) > 0.0]
     archs = _archs_present(plotted) or ["deep"]
     arch_idx = {a: i for i, a in enumerate(archs)}
-    mols = sorted({r["molecule"] for r in plotted})
-    mol_x = {m: i for i, m in enumerate(mols)}
+    mols, mol_x = _species_ticks(plotted)
     noff = max(1, len(archs))
     for r in plotted:
         jit = (arch_idx.get(r.get("arch"), 0) - (noff - 1) / 2) * 0.12
-        ax.scatter(mol_x[r["molecule"]] + jit, abs(r["AE_error_kcalmol"]),
-                   s=18, alpha=0.75,
+        ax.scatter(mol_x[_mol_cf(r["molecule"])] + jit,
+                   abs(r["AE_error_kcalmol"]), s=18, alpha=0.75,
                    color=ARCH_COLOR.get(r.get("arch"), "0.5"),
                    edgecolor="none")
     ax.set_yscale("log")
@@ -5805,17 +5843,24 @@ def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
     external square (lo, hi) on both axes -- the 3x3 figures pass one
     row-wide envelope so their three channel panels share a frame and are
     directly comparable; None keeps the own-data envelope."""
+    # one point per (arch, subset_size, casefolded species): the pools' case
+    # twins average into one NN value against the one PBE anchor, so the
+    # point count the title publishes is a species count
+    groups: Dict[Tuple[Any, Any, str], List[float]] = {}
+    for r in density_rows:
+        cf = _mol_cf(r.get("molecule"))
+        y = r.get(nn_key)
+        if not (_is_num(pbe_mol.get(cf)) and _is_num(y)):
+            continue
+        groups.setdefault((r.get("arch"), r.get("subset_size"), cf),
+                          []).append(float(y))
     n_pairs = 0
     fin_xy: List[float] = []
-    for r in density_rows:
-        x = pbe_mol.get(_mol_cf(r.get("molecule")))
-        y = r.get(nn_key)
-        if not (_is_num(x) and _is_num(y)):
-            continue
+    for (arch, _ss, cf), ys in groups.items():
+        x, y = float(pbe_mol[cf]), float(np.mean(ys))
         ax.scatter(x, y, s=14, alpha=0.6,
-                   color=ARCH_COLOR.get(r.get("arch"), "0.5"),
-                   edgecolor="none")
-        fin_xy.extend((float(x), float(y)))
+                   color=ARCH_COLOR.get(arch, "0.5"), edgecolor="none")
+        fin_xy.extend((x, y))
         n_pairs += 1
     pos_xy = [v for v in fin_xy if v > 0.0]
     lims = limits if limits is not None else (

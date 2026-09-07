@@ -305,7 +305,7 @@ slope rather than `E_pbe/D_pbe`, and `ED_pbe_kcalmol` generally differs from
 | `arch` | Architecture (ARCH_ORDER-sorted within each leg) |
 | `subset_size` | Training subset size of the cell |
 | `n_reactions` | Finite-NN reactions in the cell behind E, name-deduplicated (matching the deduped cell metrics; the pool's four duplicate-name entries count once). `n_reactions < n_reactions_slice` is the machine-readable incomplete-eval condition behind the figures' starred bars |
-| `n_density_species` | Finite-NN density rows in the cell behind D (counted on the leg's own channel: RMSE rows, or eps rows on the DFS-units legs) |
+| `n_density_species` | Distinct species (case twins collapsed) with a finite NN density in the cell behind D (counted on the leg's own channel: RMSE rows, or eps rows on the DFS-units legs) |
 | `E_kcalmol` | Cell energy error (2-subset WTMAD-2 or combined reaction MAE) |
 | `D_rmse` | Cell mean held-out density error vs CCSD: grid-weighted RMSE on the self-calibrated legs, per-electron L1 eps on the DFS-units legs |
 | `gamma` | The leg's rescale slope: `E_pbe_kcalmol / D_pbe_rmse` (self-calibrated legs) or the fixed external slope (1084.87 / the own-axes fit) |
