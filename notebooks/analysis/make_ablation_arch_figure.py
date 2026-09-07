@@ -54,7 +54,7 @@ import math
 import sys
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import matplotlib
@@ -4011,6 +4011,12 @@ def collect_insample_density_rows(run_dir: Path) -> List[Dict[str, Any]]:
                 "density_eps_l1_pbe": r.get("density_eps_l1_pbe"),
                 "ref_density_method": r.get("ref_density_method"),
                 "from_training_subset": r.get("from_training_subset"),
+                # SCF diagnostics behind the held-out tail table (None on
+                # evals that predate them)
+                "scf_energy_residual_0": r.get("scf_energy_residual_0"),
+                "scf_converged": r.get("scf_converged"),
+                "cycles_run": r.get("cycles_run"),
+                "n_electrons": r.get("n_electrons"),
             })
     return rows
 
@@ -4077,7 +4083,8 @@ def _pbe_density_outlier_clauses(raw_rows: List[Dict[str, Any]],
 
 
 def collect_holdout_density_rows(run_dir: Path,
-                                 eval_subdir: str = "eval_holdout"
+                                 eval_subdir: str = "eval_holdout", *,
+                                 exclude_cf: FrozenSet[str] = frozenset()
                                  ) -> List[Dict[str, Any]]:
     """Held-out density-vs-CCSD errors from ``<eval_subdir>/per_molecule.json``
     (the un-stubbed NN ``density_rmse`` + model-free ``density_rmse_pbe``
@@ -4092,7 +4099,13 @@ def collect_holdout_density_rows(run_dir: Path,
     PBE reference disagrees across specs
     (``_inconsistent_pbe_density_species``, the c2 reference-drift class) are
     dropped entirely -- from the anchors AND the per-cell means -- so no
-    anchor can drift with pull coverage."""
+    anchor can drift with pull coverage.
+
+    ``exclude_cf`` (casefolded species names, :func:`_mol_cf`) drops the
+    named species after the repairs -- both case spellings of a pool twin go
+    together -- and prints what it removed. The empty set (the default) is
+    the unfiltered read, byte for byte; the outlier-free figure variants pass
+    the T1 or convergence lists here and render into their own directory."""
     cells = ccp._read_manifest_cells(run_dir)
     raw: List[Dict[str, Any]] = []
     n_alias = 0
@@ -4142,6 +4155,12 @@ def collect_holdout_density_rows(run_dir: Path,
                 "density_eps_l1_pbe": r.get("density_eps_l1_pbe"),
                 "ref_density_method": r.get("ref_density_method"),
                 "from_training_subset": r.get("from_training_subset"),
+                # SCF diagnostics behind the held-out tail table (None on
+                # evals that predate them)
+                "scf_energy_residual_0": r.get("scf_energy_residual_0"),
+                "scf_converged": r.get("scf_converged"),
+                "cycles_run": r.get("cycles_run"),
+                "n_electrons": r.get("n_electrons"),
             })
     if n_supervised:
         print(f"  (strict-holdout repair: dropped {n_supervised} density rows "
@@ -4160,21 +4179,124 @@ def collect_holdout_density_rows(run_dir: Path,
         print("  (WARNING: cross-spec-inconsistent PBE density reference -- "
               f"excluding from all density anchors and cell means: {detail})")
         raw = [r for r in raw if str(r.get("molecule")) not in bad]
+    if exclude_cf:
+        excl = {m for m in exclude_cf}
+        kept = [r for r in raw if _mol_cf(r.get("molecule")) not in excl]
+        gone = [r for r in raw if _mol_cf(r.get("molecule")) in excl]
+        if gone:
+            names = sorted({str(r.get("molecule")) for r in gone})
+            print(f"  (variant exclusion: dropped {len(gone)} density rows "
+                  f"for {len(names)} species names {names})")
+        raw = kept
     return raw
 
 
-def load_pbe_density_table(run_dir: Path) -> Dict[str, Dict[str, float]]:
+def load_pbe_density_table(run_dir: Path, *,
+                           exclude_cf: FrozenSet[str] = frozenset()
+                           ) -> Dict[str, Dict[str, float]]:
     """``{molecule: {density_rmse_pbe, density_l1_pbe}}`` from the run-level
     ``pbe_density_errors.json`` written by ``reeval_holdout_fixed.py
     --pbe-density-only`` (model-free, shared across every spec/arch of the
-    run). Empty dict when absent."""
+    run). Empty dict when absent. ``exclude_cf`` drops the keys whose
+    casefold is in the set (both spellings of a pool twin), so an
+    outlier-free variant's PBE anchor spans exactly the species its NN legs
+    keep; the empty set returns the table unchanged."""
     p = Path(run_dir) / "pbe_density_errors.json"
     if not p.is_file():
         return {}
     try:
-        return dict(json.loads(p.read_text()).get("errors", {}))
+        table = dict(json.loads(p.read_text()).get("errors", {}))
     except (json.JSONDecodeError, OSError):
         return {}
+    if exclude_cf:
+        table = {m: d for m, d in table.items() if _mol_cf(m) not in exclude_cf}
+    return table
+
+
+def load_t1_table(run_dir: Path) -> Dict[str, Any]:
+    """The run-level ``t1_diagnostics.json`` written by the benchmark-refs
+    backfill: ``{"t1": {species: T1}, "threshold": float, "source": str}``.
+    The species keys are returned CASEFOLDED (:func:`_mol_cf`), because the
+    file carries the pools' raw spellings while every species set this
+    table is intersected with is casefolded; an un-casefolded table would
+    intersect to nothing and the variant would be skipped silently. Empty
+    dict when the file is absent or unreadable."""
+    p = Path(run_dir) / "t1_diagnostics.json"
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    t1 = {_mol_cf(m): float(v) for m, v in dict(raw.get("t1") or {}).items()
+          if _is_num(v)}
+    return {"t1": t1, "threshold": float(raw.get("threshold", 0.02)),
+            "source": str(raw.get("source", ""))}
+
+
+_TAIL_CSV_FIELDS = ["arch", "subset_size", "molecule", "ratio", "density_rmse",
+                    "density_rmse_pbe", "scf_energy_residual_0",
+                    "scf_converged", "cycles_run", "t1_diagnostic"]
+
+
+def write_holdout_density_tail_csv(hd_rows: List[Dict[str, Any]],
+                                   out_path: Path, *,
+                                   ratio_threshold: float = 1.5,
+                                   t1: Optional[Dict[str, float]] = None
+                                   ) -> Path:
+    """The held-out density tail: one row per (arch, subset_size, casefolded
+    species) whose NN/PBE density-RMSE ratio exceeds ``ratio_threshold``,
+    ratio-descending within each cell, cells in ARCH_ORDER-then-subset order.
+    Case twins collapse to one row: the NN and PBE errors are the twin means
+    (the same reduction as the cell means), the first-cycle SCF residual is
+    the MAX over the pair, ``scf_converged`` the AND, ``cycles_run`` the MAX;
+    the display name is ``min`` of the spellings. ``t1`` (casefolded species
+    -> T1 diagnostic) fills the last column, blank when absent. Rows without
+    a finite NN leg or a positive PBE leg produce nothing."""
+    groups: Dict[Tuple[str, int, str], List[Dict[str, Any]]] = {}
+    for r in hd_rows:
+        arch, ss = r.get("arch"), r.get("subset_size")
+        if arch is None or ss is None or not _is_num(r.get("density_rmse")):
+            continue
+        groups.setdefault((arch, ss, _mol_cf(r.get("molecule"))), []).append(r)
+    order = {a: i for i, a in enumerate(ARCH_ORDER)}
+    out_rows: List[Dict[str, Any]] = []
+    for (arch, ss, cf), rs in groups.items():
+        nn = float(np.mean([float(r["density_rmse"]) for r in rs]))
+        pbe_vals = [float(r["density_rmse_pbe"]) for r in rs
+                    if _is_num(r.get("density_rmse_pbe"))]
+        if not pbe_vals:
+            continue
+        pbe = float(np.mean(pbe_vals))
+        if pbe <= 0.0:
+            continue
+        ratio = nn / pbe
+        if ratio <= ratio_threshold:
+            continue
+        resid = [float(r["scf_energy_residual_0"]) for r in rs
+                 if _is_num(r.get("scf_energy_residual_0"))]
+        conv = [r.get("scf_converged") for r in rs
+                if r.get("scf_converged") is not None]
+        cyc = [int(r["cycles_run"]) for r in rs if _is_num(r.get("cycles_run"))]
+        t1_val = (t1 or {}).get(cf)
+        out_rows.append({
+            "arch": arch, "subset_size": ss,
+            "molecule": min(str(r.get("molecule")) for r in rs),
+            "ratio": ratio, "density_rmse": nn, "density_rmse_pbe": pbe,
+            "scf_energy_residual_0": max(resid) if resid else "",
+            "scf_converged": all(bool(c) for c in conv) if conv else "",
+            "cycles_run": max(cyc) if cyc else "",
+            "t1_diagnostic": t1_val if _is_num(t1_val) else "",
+        })
+    out_rows.sort(key=lambda r: (order.get(r["arch"], len(order)), r["arch"],
+                                 r["subset_size"], -r["ratio"], r["molecule"]))
+    out_path = Path(out_path)
+    with out_path.open("w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=_TAIL_CSV_FIELDS)
+        w.writeheader()
+        for r in out_rows:
+            w.writerow(r)
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -7892,7 +8014,9 @@ def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
 
 def build_density_energy_figures(run_dir: Path, outdir: Path,
                                  eval_subdir: str = "eval_holdout",
-                                 archs=None) -> List[Path]:
+                                 archs=None, *,
+                                 exclude_cf: FrozenSet[str] = frozenset(),
+                                 variant_note: str = "") -> List[Path]:
     """Render the held-out energy (MAE + 2-subset WTMAD-2) figure and the
     in-sample density-vs-CCSD diagnostic, kept SEPARATE. The in-sample density
     panel always reads ``eval/`` (the final-checkpoint in-sample eval); only the
@@ -7927,7 +8051,18 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     architectures, exactly as in :func:`build_all`: the four collected row
     sets are filtered on read, the coverage/fidelity clauses are scoped, and
     the SCAN comparator legs (energy, density and both ED legs) are withdrawn
-    when no rendered architecture is parented by SCAN."""
+    when no rendered architecture is parented by SCAN.
+
+    ``exclude_cf`` / ``variant_note`` render an outlier-free VARIANT of the
+    held-out density family: the casefolded species in the set are dropped
+    from every held-out density read (both collector calls and the run-level
+    PBE table, so both channels' anchors span the surviving species) and the
+    note is appended to the footer band of every figure. At their defaults
+    (empty set, empty note) nothing changes, byte for byte. The suite renders
+    such variants into sibling directories (``<fdir>_excl_t1``,
+    ``<fdir>_excl_unconverged``); the held-out density tail table
+    (``holdout_density_tail.csv``) is written beside the other CSVs from the
+    rows this builder read."""
     archs = _validate_archs(archs)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -7953,6 +8088,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     if ecw:
         print(f"  ({ecw})")
         note = f"{note}  {ecw}" if note else ecw
+    if variant_note:
+        note = f"{note}  {variant_note}" if note else variant_note
     try:
         baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:
@@ -7989,7 +8126,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
               "rendered under this architecture restriction)")
     _report_scan_density(
         scan_density_baseline(filter_rows_by_arch(
-            collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir),
+            collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir,
+                                         exclude_cf=exclude_cf),
             archs), run_dir,
             _records=scan_dens_recs) if scan_dens_recs else None)
     prov = provenance_footer(baseline, scan_baseline,
@@ -8043,13 +8181,20 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     # pbe_density_errors.json from a --pbe-density-only re-eval); skipped with
     # a note otherwise so current refs-free runs are unchanged.
     hd_rows = filter_rows_by_arch(
-        collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir), archs)
-    pbe_table = load_pbe_density_table(run_dir)
+        collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir,
+                                     exclude_cf=exclude_cf), archs)
+    pbe_table = load_pbe_density_table(run_dir, exclude_cf=exclude_cf)
     if hd_rows or pbe_table:
         hd_prov = ("Held-out density vs CCSD: benchmark reference densities "
                    "(xcquinox.alec.benchmark_refs); PBE baseline model-free "
                    "on the same grid.")
         ds = _holdout_eval_note(rows, hd_rows)
+        # the tail table: the species this directory's cell means carry
+        # above 1.5x PBE, with their SCF diagnostics and T1 when known
+        tail_csv = write_holdout_density_tail_csv(
+            hd_rows, outdir / "holdout_density_tail.csv",
+            t1=(load_t1_table(run_dir).get("t1") or None))
+        print(f"  (held-out density tail: wrote {tail_csv})")
         written.append(plot_holdout_density_ccsd(
             hd_rows, outdir / "ablation_holdout_density_ccsd.png", run_id,
             pbe_table=pbe_table, note=note, provenance=hd_prov, dataset=ds,
@@ -8547,6 +8692,61 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     return written
 
 
+def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
+                                 eval_subdir: str = "eval_holdout",
+                                 archs=None) -> List[Path]:
+    """The outlier-free siblings of a figure directory, each a second run of
+    :func:`build_density_energy_figures` with filtered inputs:
+
+    * ``<fdir>_excl_t1`` when the run carries ``t1_diagnostics.json``: the
+      species whose CCSD T1 diagnostic exceeds the file's threshold (0.02,
+      Lee and Taylor 1989) are dropped in every cell.
+    * ``<fdir>_excl_unconverged`` for converged-SCF channels
+      (``eval_holdout_converged*``): the species whose NN SCF did not
+      converge in any cell are dropped.
+
+    A list is intersected with the species actually present in the held-out
+    rows; an empty intersection renders nothing and says so. The architecture
+    restriction is the standard directory's, so the two directories describe
+    the same cells. Nothing is compared between directories."""
+    written: List[Path] = []
+    present_rows = collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir)
+    present_rows = filter_rows_by_arch(present_rows, _validate_archs(archs))
+    display: Dict[str, str] = {}
+    for r in present_rows:
+        cf = _mol_cf(r.get("molecule"))
+        display[cf] = min(display.get(cf, str(r.get("molecule"))),
+                          str(r.get("molecule")))
+    present = set(display)
+    variants: List[Tuple[str, set, str]] = []
+    t1 = load_t1_table(run_dir)
+    if t1:
+        over = {m for m, v in t1["t1"].items() if v > t1["threshold"]}
+        variants.append(("_excl_t1", over,
+                         "T1 > {thr:g}, Lee-Taylor 1989".format(
+                             thr=t1["threshold"])))
+    if eval_subdir.startswith("eval_holdout_converged"):
+        unconv = {_mol_cf(r.get("molecule")) for r in present_rows
+                  if r.get("scf_converged") is False}
+        variants.append(("_excl_unconverged", unconv,
+                         "NN SCF unconverged in at least one cell"))
+    for suffix, candidates, rule in variants:
+        excl = candidates & present
+        if not excl:
+            print(f"   ({suffix[1:]}: nothing to exclude -- no listed species "
+                  "among the held-out density rows)")
+            continue
+        names = sorted(display[m] for m in excl)
+        vnote = (f"{len(excl)} species excluded in every cell ({rule}): "
+                 f"{names}")
+        vdir = fdir.with_name(fdir.name + suffix)
+        print(f"   ({suffix[1:]}: {vnote})")
+        written += build_density_energy_figures(
+            run_dir, vdir, eval_subdir=eval_subdir, archs=archs,
+            exclude_cf=frozenset(excl), variant_note=vnote)
+    return written
+
+
 def build_per_run_diagnostics(run_dir: Path, outdir: Path,
                               basis_label: Optional[str] = None,
                               eval_subdir: str = "eval_holdout",
@@ -8868,6 +9068,9 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
             written += build_all(run, fdir, eval_subdir=eval_subdir,
                                  archs=archs)
             written += build_density_energy_figures(run, fdir,
+                                                    eval_subdir=eval_subdir,
+                                                    archs=archs)
+            written += _build_outlier_free_variants(run, fdir,
                                                     eval_subdir=eval_subdir,
                                                     archs=archs)
             written += build_parity_variants(run, fdir, eval_subdir=eval_subdir,

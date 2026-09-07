@@ -26,6 +26,25 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 | `ablation_ed_decomposition_dfs_units.png` | The enriched decomposition under the operative DFS-units gamma (Eq. 20 eps units, stamped in-panel); eps pulls only |
 | `ablation_insample_overview.png` | One-canvas in-sample story: AE + density (training fit) |
 | `ablation_insample_overview_logy.png` | The same in-sample canvas with panel (A) on a logarithmic y axis |
+| `ablation_energy_wtmad_mae.png` (+ `_logy`) | Held-out energy: per-cell combined MAE and 2-subset WTMAD-2 bars (the builder's energy figure; not a density figure, listed because the directory walk covers it) |
+| `ablation_density_energy_3x3.csv` | The per-channel ED table behind the 3x3 (one row per channel leg and cell) |
+| `ablation_density_energy_3x3_dfs_units.csv` | The per-channel ED table in DFS units (eps density leg, shared gamma); eps pulls only |
+| `holdout_density_tail.csv` | The held-out density TAIL: every (arch, subset_size, species) whose NN/PBE density-RMSE ratio exceeds 1.5, with the first-cycle SCF residual, the convergence flag, the cycle count and the CCSD T1 diagnostic when the run carries `t1_diagnostics.json`; case twins collapsed to one row (means of the errors, max residual, AND of the flags, max cycles) |
+
+Outlier-free variants. Beside a figure directory the suite renders sibling directories holding
+the SAME figure set from filtered inputs, so the held-out density story can be read with and
+without the species that do not generalize:
+
+| Directory | Rule (stated in every figure's footer note) |
+|---|---|
+| `figures_<alias>_excl_t1/` | Species whose CCSD T1 diagnostic exceeds the threshold of the run's `t1_diagnostics.json` (0.02, Lee and Taylor 1989) are dropped in every cell; rendered only when that file exists and lists a species present in the held-out rows |
+| `figures_<alias>_excl_unconverged/` | For converged-SCF channels (`eval_holdout_converged*`): species whose NN SCF did not converge in at least one cell are dropped in every cell |
+
+A variant drops the species from both density collector reads AND the run-level PBE table, so
+the PBE anchors of both channels (RMSE and eps) span exactly the surviving species; the
+footer's dataset band carries the remaining species count and the note band the rule and the
+names. Nothing is compared between directories. The standard directory is byte-identical to a
+render without the variant machinery (`exclude_cf` empty).
 
 The six figures whose bars come from the shared per-(arch, subset_size) panel helper are
 written in BOTH scalings: the linear file listed above and a `_logy` sibling holding the
