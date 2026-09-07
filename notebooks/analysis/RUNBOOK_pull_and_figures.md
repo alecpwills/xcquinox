@@ -406,8 +406,8 @@ JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py \
 ```
 
 The g1 and g2a figure sets (suite plus trained_fx_fc outputs) are tracked
-in full at partial coverage as the campaign's visible progress (g1 at nine
-cells and g2a at five on 2026-09-05); the empty mgga placeholder set is not
+in full at partial coverage as the campaign's visible progress (g1 at sixteen
+cells and g2a at nine on 2026-09-07); the empty mgga placeholder set is not
 tracked until that array produces cells, and the shared basis-comparison
 sets stay untracked (regenerated on every suite call).
 Before the train arrays complete, the artifact worth pulling is the
