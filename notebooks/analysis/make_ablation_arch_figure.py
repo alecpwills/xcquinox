@@ -4263,6 +4263,61 @@ _TAIL_CSV_FIELDS = ["arch", "subset_size", "molecule", "ratio", "density_rmse",
                     "scf_converged", "cycles_run", "t1_diagnostic"]
 
 
+def cell_species_density_ratios(hd_rows: List[Dict[str, Any]]
+                                ) -> Dict[Tuple[str, int, str], Dict[str, Any]]:
+    """Per (arch, subset_size, casefolded species): the twin-collapsed NN and
+    PBE density RMSE (means over the case twins, the same reduction as the
+    cell means), their ratio, and the rows behind them. Rows without a
+    finite NN leg or a positive PBE leg produce nothing. The one rule the
+    held-out tail table and the recurring-tail variant share."""
+    groups: Dict[Tuple[str, int, str], List[Dict[str, Any]]] = {}
+    for r in hd_rows:
+        arch, ss = r.get("arch"), r.get("subset_size")
+        if (arch is None or ss is None or not r.get("molecule")
+                or not _is_num(r.get("density_rmse"))):
+            continue
+        groups.setdefault((arch, ss, _mol_cf(r.get("molecule"))), []).append(r)
+    out: Dict[Tuple[str, int, str], Dict[str, Any]] = {}
+    for key, rs in groups.items():
+        nn = float(np.mean([float(r["density_rmse"]) for r in rs]))
+        pbe_vals = [float(r["density_rmse_pbe"]) for r in rs
+                    if _is_num(r.get("density_rmse_pbe"))]
+        if not pbe_vals:
+            continue
+        pbe = float(np.mean(pbe_vals))
+        if pbe <= 0.0:
+            continue
+        out[key] = {"nn": nn, "pbe": pbe, "ratio": nn / pbe, "rows": rs}
+    return out
+
+
+def recurring_tail_species(hd_rows: List[Dict[str, Any]], *,
+                           ratio_threshold: float = 1.5,
+                           cell_fraction: float = 0.5) -> Tuple[set, int]:
+    """The run's recurring held-out tail: the casefolded species whose NN/PBE
+    density-RMSE ratio exceeds ``ratio_threshold`` in at least
+    ``cell_fraction`` of the cells that carry the species (ceil of the
+    fraction times that count) and in at least two of them, so a single
+    observation is never called recurring (a species above in two cells is
+    carried by at least two, so the one condition covers both); the second value is the number
+    of cells the rows describe under the builder's own rule (a finite NN
+    leg). A diagnostic selection: the species are chosen by the trained
+    functionals' own errors, unlike the T1 list."""
+    cells = cell_species_density_ratios(hd_rows)
+    n_cells = len({(r.get("arch"), r.get("subset_size")) for r in hd_rows
+                   if r.get("arch") is not None and r.get("subset_size") is not None
+                   and _is_num(r.get("density_rmse"))})
+    present: Dict[str, int] = {}
+    above: Dict[str, int] = {}
+    for (_a, _s, cf), c in cells.items():
+        present[cf] = present.get(cf, 0) + 1
+        if c["ratio"] > ratio_threshold:
+            above[cf] = above.get(cf, 0) + 1
+    tail = {cf for cf, k in above.items()
+            if k >= 2 and k >= int(np.ceil(cell_fraction * present[cf]))}
+    return tail, n_cells
+
+
 def write_holdout_density_tail_csv(hd_rows: List[Dict[str, Any]],
                                    out_path: Path, *,
                                    ratio_threshold: float = 1.5,
@@ -4277,25 +4332,11 @@ def write_holdout_density_tail_csv(hd_rows: List[Dict[str, Any]],
     the display name is ``min`` of the spellings. ``t1`` (casefolded species
     -> T1 diagnostic) fills the last column, blank when absent. Rows without
     a finite NN leg or a positive PBE leg produce nothing."""
-    groups: Dict[Tuple[str, int, str], List[Dict[str, Any]]] = {}
-    for r in hd_rows:
-        arch, ss = r.get("arch"), r.get("subset_size")
-        if (arch is None or ss is None or not r.get("molecule")
-                or not _is_num(r.get("density_rmse"))):
-            continue
-        groups.setdefault((arch, ss, _mol_cf(r.get("molecule"))), []).append(r)
+    cells = cell_species_density_ratios(hd_rows)
     order = {a: i for i, a in enumerate(ARCH_ORDER)}
     out_rows: List[Dict[str, Any]] = []
-    for (arch, ss, cf), rs in groups.items():
-        nn = float(np.mean([float(r["density_rmse"]) for r in rs]))
-        pbe_vals = [float(r["density_rmse_pbe"]) for r in rs
-                    if _is_num(r.get("density_rmse_pbe"))]
-        if not pbe_vals:
-            continue
-        pbe = float(np.mean(pbe_vals))
-        if pbe <= 0.0:
-            continue
-        ratio = nn / pbe
+    for (arch, ss, cf), c in cells.items():
+        rs, nn, pbe, ratio = c["rows"], c["nn"], c["pbe"], c["ratio"]
         if ratio <= ratio_threshold:
             continue
         resid = [float(r["scf_energy_residual_0"]) for r in rs
@@ -8896,6 +8937,11 @@ def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
     * ``<fdir>_excl_unconverged`` for converged-SCF channels
       (``eval_holdout_converged*``): the species whose NN SCF did not
       converge in any cell are dropped.
+    * ``<fdir>_excl_tail`` whenever the run has a recurring held-out tail
+      (:func:`recurring_tail_species`): the species above 1.5 x PBE in at
+      least half of the cells that carry them, and in at least two, are
+      dropped in every cell. A diagnostic
+      view: the species are selected by the trained functionals' own errors.
 
     A list is intersected with the species actually present in the held-out
     rows; an empty intersection renders nothing and says so. The architecture
@@ -8922,6 +8968,18 @@ def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
                   if r.get("scf_converged") is False}
         variants.append(("_excl_unconverged", unconv,
                          "NN SCF unconverged in at least one cell"))
+    tail, n_cells = recurring_tail_species(present_rows)
+    if tail:
+        variants.append(("_excl_tail", tail,
+                         "recurring held-out tail, NN/PBE density RMSE above 1.5 in "
+                         "at least half (and at least two) of the cells carrying the species; "
+                         f"the run renders {n_cells} cells; selected by the trained "
+                         "functionals' own errors, a diagnostic view, not a model-free list"))
+    elif not present_rows:
+        print("   (excl_tail: nothing to exclude -- no held-out density rows)")
+    else:
+        print("   (excl_tail: nothing to exclude -- no species above 1.5 in at "
+              "least half (and at least two) of its cells)")
     for suffix, candidates, rule in variants:
         excl = candidates & present
         if not excl:
@@ -8929,8 +8987,8 @@ def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
                   "among the held-out density rows)")
             continue
         names = sorted(display[m] for m in excl)
-        vnote = (f"{len(excl)} species excluded in every cell ({rule}): "
-                 f"{names}")
+        vnote = (f"{len(excl)} of {len(present)} held-out species excluded in every "
+                 f"cell ({rule}): {names}")
         vdir = fdir.with_name(fdir.name + suffix)
         print(f"   ({suffix[1:]}: {vnote})")
         written += build_density_energy_figures(

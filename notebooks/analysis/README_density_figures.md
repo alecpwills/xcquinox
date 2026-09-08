@@ -33,7 +33,7 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 | `holdout_density_tail.csv` | The held-out density TAIL: every (arch, subset_size, species) whose NN/PBE density-RMSE ratio exceeds 1.5, with the first-cycle SCF residual, the convergence flag, the cycle count and the CCSD T1 diagnostic when the run carries `t1_diagnostics.json`; case twins collapsed to one row (means of the errors, max residual, AND of the flags, max cycles) |
 
 Outlier-free variants. Beside a figure directory the suite renders sibling directories holding
-the density and energy figure set of `build_density_energy_figures` (26 files: the table above
+the density and energy figure set of `build_density_energy_figures` (up to 27 files: the table above
 minus the ablation, parity-variant and per-run diagnostic figures, which are written to the
 standard directory only) from filtered inputs, so the held-out density story can be read with and
 without the species that do not generalize:
@@ -42,6 +42,7 @@ without the species that do not generalize:
 |---|---|
 | `figures_<alias>_excl_t1/` | Species whose CCSD T1 diagnostic exceeds the threshold of the run's `t1_diagnostics.json` (0.02, Lee and Taylor 1989) are dropped in every cell; rendered only when that file exists and lists a species present in the held-out rows |
 | `figures_<alias>_excl_unconverged/` | For converged-SCF channels (`eval_holdout_converged*`): species whose NN SCF did not converge in at least one cell are dropped in every cell |
+| `figures_<alias>_excl_tail/` | The run's recurring held-out tail dropped in every cell: species whose NN/PBE density RMSE exceeds 1.5 in at least half of the cells carrying them and in at least two of those cells (`recurring_tail_species`; the per-cell 1.5 floor is the tail table's, the majority rule is the variant's). A diagnostic view, not a model-free list: the species are selected by the trained functionals' own errors, which the footer states; the T1 and unconverged siblings are the model-free ones |
 
 Converged-SCF views (2026-09-07). `figures_<alias>_converged/` and
 `figures_<alias>_converged_val_best/` are the full figure sets scored from the

@@ -19,6 +19,13 @@ differ), one species (``CH2O``) present only in the run-level PBE table, and
 some species. ``NO`` is the constructed outlier: its NN/PBE ratio is 7 in
 every cell, so it is the species the T1/tail machinery must surface and the
 one the variant excludes.
+
+The closing section covers the recurring-tail variant. Neither
+``cell_species_density_ratios`` (the per-cell NN/PBE reduction the tail table
+and the variant share) nor ``recurring_tail_species`` (the majority rule over
+the cells that carry a species) exists yet, and no ``<fdir>_excl_tail``
+directory is written, so those tests are RED as the rest of the file was
+before its commits landed.
 """
 from __future__ import annotations
 
@@ -43,6 +50,10 @@ _GOLDEN = _HERE / "golden" / "density_variants"
 _GOLDEN_CSVS = ("ablation_combined_energy_density.csv",
                 "ablation_density_energy_3x3.csv",
                 "ablation_density_energy_3x3_dfs_units.csv")
+# the tail table joins the byte-identity set (2026-09-08: its per-cell rule is shared
+# with the recurring-tail variant, so the refactor is pinned here); the commit-B column
+# test keeps the three ED tables it was written for
+_GOLDEN_BYTE_CSVS = _GOLDEN_CSVS + ("holdout_density_tail.csv",)
 _README = _HERE / "README_density_figures.md"
 
 # ---------------------------------------------------------------------------
@@ -537,10 +548,10 @@ def test_standard_dir_csvs_byte_identical_to_golden(builds):
     builds.require()
     if os.environ.get("DENSITY_VARIANTS_REGOLD"):
         _GOLDEN.mkdir(parents=True, exist_ok=True)
-        for name in _GOLDEN_CSVS:
+        for name in _GOLDEN_BYTE_CSVS:
             (_GOLDEN / name).write_bytes((builds.std / name).read_bytes())
         pytest.fail("goldens rewritten; re-run without DENSITY_VARIANTS_REGOLD")
-    for name in _GOLDEN_CSVS:
+    for name in _GOLDEN_BYTE_CSVS:
         got = (builds.std / name).read_bytes()
         want = (_GOLDEN / name).read_bytes()
         assert got == want, name
@@ -828,6 +839,13 @@ def test_builder_fills_insample_columns_in_the_combined_csv_only(builds):
         for r in _read_csv(builds.std / name):
             assert r["D_insample_rmse"] == "", name
             assert r["n_insample_species"] == "", name
+    # the variant directory carries the SAME in-sample columns: the exclusion
+    # filters the held-out rows only, never the trained species
+    var = _read_csv(builds.var / "ablation_combined_energy_density.csv")
+    key = lambda r: (r["leg"], r["arch"], r["subset_size"])
+    std_ins = {key(r): (r["D_insample_rmse"], r["n_insample_species"]) for r in combined}
+    var_ins = {key(r): (r["D_insample_rmse"], r["n_insample_species"]) for r in var}
+    assert var_ins == std_ins
 
 
 def test_insample_density_ccsd_gains_a_ratio_panel(tmp_path, monkeypatch):
@@ -1018,8 +1036,11 @@ def test_rf_unconverged_variant_directory(tmp_path):
                 r["scf_converged"] = True
             pm.write_text(json.dumps(payload))
     fdir2 = tmp_path / "figs_conv2"
-    assert fig._build_outlier_free_variants(
-        run, fdir2, eval_subdir="eval_holdout_converged") == []
+    written2 = fig._build_outlier_free_variants(
+        run, fdir2, eval_subdir="eval_holdout_converged")
+    # the tail variant of this fixture (NO above in every cell) still renders;
+    # the unconverged one must not
+    assert not [p for p in written2 if "figs_conv2_excl_unconverged" in str(p)]
     assert not (tmp_path / "figs_conv2_excl_unconverged").exists()
 
 
@@ -1073,3 +1094,245 @@ def test_insample_panel_helpers_take_channel_keywords():
         assert ax.get_title() == "eps over 2 species"
     finally:
         plt.close(mfig)
+
+
+# ---------------------------------------------------------------------------
+# The recurring held-out tail variant (2026-09-08): the per-cell ratio
+# reduction the tail table and the variant share, the majority rule over the
+# cells that carry a species, and the `<fdir>_excl_tail` directory
+# ---------------------------------------------------------------------------
+
+def _ratio_rows():
+    """Held-out rows for the per-cell reduction: a case-twin pair whose NN
+    legs differ (so a sum and a mean are distinguishable), a species below
+    the tail floor, and five rows the reduction must drop."""
+    return [
+        {"arch": "deep", "subset_size": 1, "molecule": "H2",
+         "density_rmse": 1.0e-3, "density_rmse_pbe": 4.0e-4},
+        {"arch": "deep", "subset_size": 1, "molecule": "h2",
+         "density_rmse": 3.0e-3, "density_rmse_pbe": 4.0e-4},
+        {"arch": "deep", "subset_size": 1, "molecule": "CO",
+         "density_rmse": 1.0e-3, "density_rmse_pbe": 8.0e-4},   # ratio 1.25
+        {"arch": "deep", "subset_size": 1, "molecule": "N2",
+         "density_rmse": None, "density_rmse_pbe": 2.0e-3},     # no NN leg
+        {"arch": "deep", "subset_size": 1, "molecule": "O2",
+         "density_rmse": float("nan"), "density_rmse_pbe": 2.0e-3},
+        {"arch": "deep", "subset_size": 1, "molecule": "F2",
+         "density_rmse": 5.0e-3, "density_rmse_pbe": 0.0},      # PBE leg 0
+        {"arch": "deep", "subset_size": 1, "molecule": "Cl2",
+         "density_rmse": 5.0e-3, "density_rmse_pbe": None},     # no PBE leg
+        {"arch": "deep", "subset_size": 1, "molecule": None,
+         "density_rmse": 9.0e-3, "density_rmse_pbe": 1.0e-3},   # nameless
+        {"arch": None, "subset_size": 1, "molecule": "NO",
+         "density_rmse": 9.0e-3, "density_rmse_pbe": 1.0e-3},   # no cell
+        {"arch": "deep", "subset_size": 3, "molecule": "NO",
+         "density_rmse": 4.0e-3, "density_rmse_pbe": 1.0e-3},   # ratio 4.0
+    ]
+
+
+def test_cell_species_density_ratios_collapses_twins_and_drops_broken_legs(
+        tmp_path):
+    """The per-cell NN/PBE density-RMSE reduction, keyed on (arch,
+    subset_size, casefolded species): the case twins collapse to ONE key
+    whose NN and PBE legs are the twin MEANS -- a sum on both legs leaves the
+    ratio right and both legs wrong -- and a row with no finite NN leg, no
+    PBE leg, a non-positive PBE leg, no name or no cell contributes nothing.
+    The reduction carries no ratio floor of its own (the below-floor species
+    is present); the floor belongs to its callers. The tail table is the same
+    reduction read through that floor: the rows it writes are exactly the
+    keys above 1.5, each carrying this helper's ratio."""
+    got = fig.cell_species_density_ratios(_ratio_rows())
+    assert set(got) == {("deep", 1, "h2"), ("deep", 1, "co"),
+                        ("deep", 3, "no")}
+    twin = got[("deep", 1, "h2")]
+    assert twin["nn"] == pytest.approx(2.0e-3)      # the mean, not the 4e-3 sum
+    assert twin["pbe"] == pytest.approx(4.0e-4)     # the mean, not the 8e-4 sum
+    assert twin["ratio"] == pytest.approx(5.0)
+    assert got[("deep", 1, "co")]["ratio"] == pytest.approx(1.25)
+    assert got[("deep", 3, "no")]["ratio"] == pytest.approx(4.0)
+    out = tmp_path / "tail.csv"
+    fig.write_holdout_density_tail_csv(_ratio_rows(), out)
+    written = {(r["arch"], int(r["subset_size"]), r["molecule"].casefold()):
+               float(r["ratio"]) for r in _read_csv(out)}
+    above = {k: v["ratio"] for k, v in got.items() if v["ratio"] > 1.5}
+    assert set(written) == set(above), (sorted(written), sorted(above))
+    for key, ratio in written.items():
+        assert ratio == pytest.approx(above[key], rel=1e-12), key
+
+
+def _tail_rule_rows(cells, above, present=None):
+    """One row per (cell, species): the NN leg sits at 5x the PBE leg in the
+    cell indices listed in ``above[species]`` and at 1x elsewhere.
+    ``present`` restricts a species to the cell indices it names."""
+    rows = []
+    for ci, (arch, ss) in enumerate(cells):
+        for sp, hot in above.items():
+            if present is not None and ci not in present.get(
+                    sp, range(len(cells))):
+                continue
+            rows.append({"arch": arch, "subset_size": ss, "molecule": sp,
+                         "density_rmse": 5.0e-3 if ci in hot else 1.0e-3,
+                         "density_rmse_pbe": 1.0e-3})
+    return rows
+
+
+_RULE_CELLS_3 = (("deep", 1), ("deep", 3), ("deep_notransform", 1))
+
+
+def test_recurring_tail_species_needs_a_majority_of_the_cells_carrying_it():
+    """The rule the variant is selected by: a species joins the recurring
+    tail when its per-cell ratio exceeds the floor in at least
+    ``cell_fraction`` of the cells that CARRY it (ceil(fraction x n_cells)),
+    and the second return value is the number of cells the rows describe.
+    NO is above in two of three cells and N2 in three of three (both
+    recurring); CO is above in one of three (a one-off, kept); BN is carried
+    by one cell and above there, a single observation, kept, and CO2 is carried
+    by two cells and above in one (half of them, one observation), kept too: a
+    recurring species is above in at least two cells. The H2/h2 pair is above the floor on one
+    spelling in every cell and below it once the twins are collapsed, so a
+    rule keyed on raw names reports the pair as recurring."""
+    rows = _tail_rule_rows(_RULE_CELLS_3,
+                           {"NO": (0, 1), "CO": (0,), "N2": (0, 1, 2),
+                            "BN": (0,), "CO2": (0,)},
+                           present={"BN": (0,), "CO2": (0, 1)})
+    for ci, (arch, ss) in enumerate(_RULE_CELLS_3):
+        rows += [
+            {"arch": arch, "subset_size": ss, "molecule": "H2",
+             "density_rmse": 2.0e-4, "density_rmse_pbe": 4.0e-4},
+            {"arch": arch, "subset_size": ss, "molecule": "h2",
+             "density_rmse": 8.0e-4, "density_rmse_pbe": 4.0e-4},
+        ]
+    assert fig.recurring_tail_species(rows) == ({"no", "n2"}, 3)
+    # both keywords are parameters of the rule, not constants inside it
+    assert fig.recurring_tail_species(rows, cell_fraction=1.0) == (
+        {"n2"}, 3)
+    assert fig.recurring_tail_species(rows, ratio_threshold=6.0) == (set(), 3)
+
+
+def test_recurring_tail_species_rounds_the_fraction_up_not_to_even():
+    """ceil, not round: at five carrying cells half is 2.5, which ceil takes to 3
+    and half-to-even rounding to 2, so a species above in two of five is kept
+    by the rule and would be excluded by a rounded one."""
+    cells = tuple(("deep", ss) for ss in (1, 2, 3, 4, 5))
+    rows = _tail_rule_rows(cells, {"NO": (0, 1)}, present={"NO": (0, 1, 2, 3, 4)})
+    assert fig.recurring_tail_species(rows) == (set(), 5)
+    rows = _tail_rule_rows(cells, {"NO": (0, 1, 2)}, present={"NO": (0, 1, 2, 3, 4)})
+    assert fig.recurring_tail_species(rows) == ({"no"}, 5)
+
+
+def test_recurring_tail_species_counts_cells_by_the_finite_nn_leg():
+    """The cell count is the builder's: a cell whose only species carries a
+    finite NN leg and no PBE leg draws a cell in the figures and counts here,
+    while it produces no ratio."""
+    rows = _tail_rule_rows(_RULE_CELLS_3, {"NO": (0, 1)})
+    rows.append({"arch": "deep", "subset_size": 9, "molecule": "CO",
+                 "density_rmse": 1.0e-3, "density_rmse_pbe": None})
+    assert fig.recurring_tail_species(rows) == ({"no"}, 4)
+
+
+def test_recurring_tail_species_includes_a_species_above_in_exactly_half():
+    """Kills the mutation `cell_fraction compared with > instead of >=`: a
+    species above the floor in two of the four cells that carry it sits at
+    exactly the default fraction, and the rule reads `at least half`. Raising
+    the fraction to three quarters drops it again."""
+    cells = (("deep", 1), ("deep", 3), ("deep_notransform", 1),
+             ("deep_notransform", 3))
+    rows = _tail_rule_rows(cells, {"NO": (0, 1)})
+    assert fig.recurring_tail_species(rows) == ({"no"}, 4)
+    assert fig.recurring_tail_species(rows, cell_fraction=0.75) == (set(), 4)
+
+
+def _tail_variant_run_dir(root: Path, above=(0, 1, 2, 3)) -> Path:
+    """The rich run with NO -- the constructed outlier, 7x the PBE leg -- held
+    above the tail floor in the cell indices named by ``above`` and pushed to
+    half the PBE leg in the others. The PBE columns are untouched, so the
+    cross-spec consistency guard keeps every species."""
+    run = _rich_run_dir(root)
+    for sd in sorted((run / "checkpoints").glob("spec_*")):
+        idx = int(sd.name.split("_")[1])
+        pm = sd / "eval_holdout" / "per_molecule.json"
+        if not pm.is_file() or idx in above:
+            continue
+        payload = json.loads(pm.read_text())
+        for r in payload:
+            if str(r.get("molecule")).casefold() == "no":
+                r["density_rmse"] = 5.0e-4 * _cell_factor(idx)
+        pm.write_text(json.dumps(payload))
+    return run
+
+
+def test_tail_variant_directory_drops_the_recurring_species(tmp_path,
+                                                            monkeypatch,
+                                                            capsys):
+    """The third variant: NO sits above 1.5x PBE in all four cells of the
+    rich fixture, so `<fdir>_excl_tail` renders with NO dropped from every
+    cell. Kills the mutation `variant suffix misspelled` (the directory is
+    named, and it is the only variant directory written) and the mutation
+    `exclusion applied to the PBE table only` (the NN cell means move too,
+    each to the twin-then-species mean over the surviving species). The
+    footer note names the rule, the count and the species, and the variant's
+    own tail table is empty once its cause is gone."""
+    run = _tail_variant_run_dir(tmp_path)
+    stamped = []
+    real_stamp = fig._stamp_parity_footer
+
+    def _spy(mpl_fig, **kw):
+        stamped.append(kw)
+        return real_stamp(mpl_fig, **kw)
+
+    monkeypatch.setattr(fig, "_stamp_parity_footer", _spy)
+    fdir = tmp_path / "figs"
+    written = fig._build_outlier_free_variants(run, fdir)
+    vdir = tmp_path / "figs_excl_tail"
+    assert vdir.is_dir(), sorted(p.name for p in tmp_path.iterdir())
+    assert [p.name for p in tmp_path.iterdir() if "_excl_" in p.name] == [
+        "figs_excl_tail"]
+    assert written and all(vdir in Path(p).parents for p in written)
+    assert (vdir / "ablation_holdout_density_ccsd.png").is_file()
+
+    var = _by_leg_cell(_read_csv(vdir / "ablation_combined_energy_density.csv"))
+    for (arch, ss), idx in _RICH_CELLS.items():
+        row = var[("wtmad2", arch, ss)]
+        want_nn = _expected_d_rmse(idx, _KEPT_CF)
+        assert want_nn != pytest.approx(_expected_d_rmse(idx)), \
+            "oracle must discriminate"
+        assert float(row["D_rmse"]) == pytest.approx(want_nn, rel=1e-9)
+        want_pbe = _expected_d_pbe("density_rmse_pbe", _KEPT_CF)
+        assert want_pbe != pytest.approx(_expected_d_pbe("density_rmse_pbe")), \
+            "oracle must discriminate"
+        assert float(row["D_pbe_rmse"]) == pytest.approx(want_pbe, rel=1e-9)
+    assert _read_csv(vdir / "holdout_density_tail.csv") == []
+
+    notes = [kw.get("note") or "" for kw in stamped]
+    carrying = [n for n in notes if "excluded in every cell" in n]
+    assert carrying, notes[:3]
+    note = carrying[0]
+    assert "recurring held-out tail" in note, note
+    assert "1.5" in note and "at least half" in note, note
+    assert re.search(r"at least half [(]and at least two[)] of the cells carrying the species; "
+                     r"the run renders 4 cells", note), note
+    assert "diagnostic view" in note, note
+    assert "1 of 4 held-out species" in note and "NO" in note, note
+    out = capsys.readouterr().out
+    assert "excl_tail" in out, out
+
+
+def test_tail_variant_skipped_when_no_species_recurs(tmp_path, capsys):
+    """A one-off outlier is not a tail: NO is above 1.5x PBE in one of the
+    four cells, below it in the other three, so the rule selects nothing, no
+    directory is written and the skip line names the variant. Without the
+    printed line this test would pass on a build that never considered the
+    variant at all."""
+    run = _tail_variant_run_dir(tmp_path, above=(0,))
+    pre = tmp_path / "precheck.csv"
+    fig.write_holdout_density_tail_csv(
+        fig.collect_holdout_density_rows(run), pre)
+    assert [r["molecule"].casefold() for r in _read_csv(pre)] == ["no"], \
+        "the fixture must carry a one-off outlier, above the floor once"
+    capsys.readouterr()                       # drop the precheck's own output
+    written = fig._build_outlier_free_variants(run, tmp_path / "figs")
+    out = capsys.readouterr().out
+    assert written == []
+    assert not [p.name for p in tmp_path.iterdir() if "_excl_" in p.name]
+    assert "excl_tail" in out, out
+    assert "nothing to exclude" in out, out

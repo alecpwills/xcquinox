@@ -172,6 +172,10 @@ in the footer note of every held-out density figure; `README_density_figures.md`
   file's threshold are dropped in every cell
 - `figures_dfs_step7_<alias>_excl_unconverged/` -- converged-SCF channels only: species whose NN
   SCF did not converge in at least one cell are dropped
+- `figures_dfs_step7_<alias>_excl_tail/`        -- whenever the run has a recurring held-out tail:
+  species above 1.5 x PBE in at least half of their cells, and in at least two, are dropped in
+  every cell (a
+  diagnostic view selected by the trained functionals' own errors, stated in the footer)
 Every per-basis dir (and every sibling) also carries `holdout_density_tail.csv`: the species
 above 1.5 x PBE in each cell with their SCF diagnostics and T1 when known. The siblings render
 only when the list names a species present in the held-out rows; a console line says so
