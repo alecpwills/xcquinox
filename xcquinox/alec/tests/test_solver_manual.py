@@ -178,3 +178,100 @@ def test_pyscfad_backend_rejects_non_pbe_seed():
                        max_cycles=3, seed_source="minao")
     with pytest.raises(NotImplementedError):
         run_scf(cfg, _seed_model(), md)
+
+
+
+# --------------------------------------------------------------------------- #
+# freeze_on_convergence (spec C4): whether the truncated SCF stops advancing
+# once the criterion has fired, or runs every configured cycle as dpyscf's
+# loop does.
+# --------------------------------------------------------------------------- #
+def _freeze_cfg(tol, **kw):
+    """A four-cycle manual solver at the linear mixer, parametrized by the
+    convergence tolerance."""
+    return SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                        max_cycles=4, conv_tol=tol,
+                        mixer_kwargs=(("alpha", 0.5),), **kw)
+
+
+def _assert_freeze_semantics(md, max_cycles=4):
+    """The two flag settings on a toy seeded at its own fixed point.
+
+    These sto-3g toys sit on the fixed point of the untrained network from the
+    PBE seed to about 1e-11 (H2) and 1e-9 (O) Hartree per cycle, so an energy
+    criterion at any looser tolerance fires at the FIRST cycle: ``conv_tol``
+    1e3 makes the firing independent of that residue, and 1e-12 is the control
+    whose criterion never fires inside four cycles.
+
+    With the freeze the scan stops advancing there (one cycle counted, the
+    energy trace held at its first entry). Without it the run is bit-identical
+    to the control -- same cycle count, same trace, same density, so the
+    density, the energy, the counter and the mixer state all advanced
+    unconditionally -- while the ``converged`` flag keeps its latched meaning
+    and still reports the convergence the control never reached.
+    """
+    model = _seed_model()
+    frozen = run_scf(_freeze_cfg(1e3, freeze_on_convergence=True), model, md)
+    running = run_scf(_freeze_cfg(1e3, freeze_on_convergence=False), model, md)
+    never = run_scf(_freeze_cfg(1e-12), model, md)
+
+    assert bool(frozen.converged) and bool(running.converged)
+    assert not bool(never.converged)          # the control's criterion never fires
+    assert int(frozen.cycles_run) == 1, int(frozen.cycles_run)
+    assert int(running.cycles_run) == max_cycles, int(running.cycles_run)
+    assert int(never.cycles_run) == max_cycles, int(never.cycles_run)
+
+    tf = np.asarray(frozen.energy_trace)
+    tr = np.asarray(running.energy_trace)
+    tn = np.asarray(never.energy_trace)
+    assert tf.shape == tr.shape == tn.shape == (max_cycles,)
+    assert np.ptp(tf) == 0.0, tf              # held at the converged cycle
+    assert np.ptp(tn) > 0.0, tn               # the control keeps moving
+    np.testing.assert_array_equal(tr, tn)     # the unfrozen run IS the control
+
+    d_frozen = np.asarray(frozen.density_matrix)
+    d_running = np.asarray(running.density_matrix)
+    d_never = np.asarray(never.density_matrix)
+    np.testing.assert_allclose(d_running, d_never, rtol=0, atol=1e-12)
+    # the frozen density stopped three cycles earlier, which the residue of
+    # those cycles separates from the control's by far more than the identity
+    # tolerance above.
+    assert np.linalg.norm(d_frozen - d_never) > 1e-9, (
+        np.linalg.norm(d_frozen - d_never))
+
+
+def test_freeze_on_convergence_governs_the_rks_cycle_count():
+    """RKS: with the flag set (the default, every campaign through v7) the scan
+    stops advancing at the cycle the criterion fires on; with it clear the
+    truncated SCF runs all ``max_cycles``, which is what the reference protocol
+    does and what the tail-weighted loss is defined over."""
+    from xcquinox.alec.data import clear_precompute_cache
+    clear_precompute_cache()
+    md = precompute_fixed_density_data(_seed_spec(), required_keys=("eri",))
+    _assert_freeze_semantics(md)
+
+
+def test_freeze_on_convergence_governs_the_uks_cycle_count():
+    """UKS: the same, on the spin-resolved body -- the two SCF bodies carry
+    separate copies of the freeze, so a flag honored in one of them leaves
+    every open-shell species (every atom anchor of the pool) on the old
+    trajectory while the record says otherwise."""
+    from xcquinox.alec.data import clear_precompute_cache
+    clear_precompute_cache()
+    o_spec = MoleculeSpec(name="O", atom="O 0 0 0", basis="sto-3g",
+                          charge=0, spin=2, atom_composition=(("O", 1),),
+                          grid_level=1)
+    md = precompute_fixed_density_data(o_spec, required_keys=("eri",))
+    _assert_freeze_semantics(md)
+
+
+def test_solver_config_describe_reports_freeze_on_convergence():
+    """``describe()`` is what ``train_metadata.json`` records the solver by, so
+    the flag has to appear there: two runs differing only in it would otherwise
+    be indistinguishable in their artifacts. Default True keeps every existing
+    run's trajectory."""
+    assert SolverConfig().describe()["freeze_on_convergence"] is True
+    cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                       max_cycles=3, freeze_on_convergence=False)
+    assert cfg.freeze_on_convergence is False
+    assert cfg.describe()["freeze_on_convergence"] is False

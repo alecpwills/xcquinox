@@ -117,10 +117,16 @@ def build_optimizer(
     lr_decay_start: float,
     grad_clip: float,
     weight_decay: float = 0.0,
+    optimizer: str = "adamw_linear",
 ) -> optax.GradientTransformation:
     """Build canonical optimizer chain for training.
 
-    Chain order: clip_by_global_norm -> adamw(lr_schedule, weight_decay).
+    Chain order: clip_by_global_norm -> adamw(lr_schedule, weight_decay) for
+    ``optimizer="adamw_linear"``; for ``"adam_plateau"`` (dpyscf's, 2026-09-08)
+    clip_by_global_norm -> add_decayed_weights(weight_decay) -> adam at a
+    constant injected rate, so the SAME ``weight_decay`` key is DECOUPLED under
+    the first and COUPLED (torch Adam(weight_decay=...)) under the second, and
+    the decay term sits outside the clip in the second.
     ``weight_decay`` is DECOUPLED L2 (adamw); the default 0.0 makes adamw
     byte-identical to the former adam, so existing (decay-free) runs are
     unchanged. A positive value regularizes the (over-capacity) nets -- the
@@ -154,6 +160,20 @@ def build_optimizer(
     grad_clip : float
         Global norm clipping threshold.
     """
+    if optimizer == "adam_plateau":
+        # dpyscf's optimizer (scripts/train.py: torch.optim.Adam(lr, weight_decay=l2)
+        # under ReduceLROnPlateau): COUPLED L2, the decay entering the gradient
+        # before Adam's moments (add_decayed_weights ahead of adam), at a rate the
+        # plateau controller rewrites through inject_hyperparams; the linear
+        # schedule and lr_decay_start are inert here (2026-09-08).
+        return optax.chain(
+            optax.clip_by_global_norm(grad_clip),
+            optax.add_decayed_weights(weight_decay),
+            optax.inject_hyperparams(optax.adam)(learning_rate=lr_start),
+        )
+    if optimizer != "adamw_linear":
+        raise ValueError(
+            f"optimizer must be 'adamw_linear' or 'adam_plateau', got {optimizer!r}")
     decay_start_step = int(lr_decay_start * n_steps)
     decay_steps = n_steps - decay_start_step
 
@@ -180,6 +200,69 @@ def build_optimizer(
         optax.clip_by_global_norm(grad_clip),
         optax.adamw(learning_rate=lr_schedule, weight_decay=weight_decay),
     )
+
+
+class _PlateauController:
+    """torch.optim.lr_scheduler.ReduceLROnPlateau in ``min`` mode as dpyscf steps
+    it once per epoch (scripts/train.py: ReduceLROnPlateau(optimizer, 'min',
+    patience=10, factor=0.1, min_lr=1e-7); scheduler.step(total_loss)): an epoch
+    improves the best when loss < best * (1 - threshold), torch's default
+    relative threshold 1e-4; the rate is multiplied by ``factor`` once the count
+    of non-improving epochs EXCEEDS ``patience`` (the eleventh in a row at 10),
+    floored at ``min_lr`` and applied only when the change exceeds ``eps``
+    (torch's 1e-8), and the count then resets. ``state()`` / ``from_state()``
+    carry it through the resume checkpoint."""
+
+    def __init__(self, *, patience, factor, min_lr, lr, threshold=1e-4, eps=1e-8,
+                 best=float("inf"), bad_epochs=0):
+        self.patience = int(patience)
+        self.factor = float(factor)
+        self.min_lr = float(min_lr)
+        self.lr = float(lr)
+        self.threshold = float(threshold)
+        self.eps = float(eps)
+        self.best = float(best)
+        self.bad_epochs = int(bad_epochs)
+
+    def update(self, loss) -> float:
+        loss = float(loss)
+        if loss < self.best * (1.0 - self.threshold):
+            self.best = loss
+            self.bad_epochs = 0
+        else:
+            self.bad_epochs += 1
+        if self.bad_epochs > self.patience:
+            new_lr = max(self.lr * self.factor, self.min_lr)
+            if self.lr - new_lr > self.eps:
+                self.lr = new_lr
+            self.bad_epochs = 0
+        return self.lr
+
+    def state(self) -> dict:
+        return {"best": self.best, "bad_epochs": self.bad_epochs, "lr": self.lr}
+
+    def from_state(self, state):
+        """Restore best, bad_epochs and lr from a checkpointed state() dict."""
+        self.best = float(state["best"])
+        self.bad_epochs = int(state["bad_epochs"])
+        self.lr = float(state["lr"])
+        return self
+
+
+def _set_learning_rate(opt_state, lr: float):
+    """The chain state with the injected Adam rate replaced (the plateau
+    controller's write): the member carrying ``hyperparams`` is found wherever
+    it sits in the chain and rebuilt with the new rate in its own dtype."""
+    for i, s in enumerate(opt_state):
+        hp = getattr(s, "hyperparams", None)
+        if isinstance(hp, dict) and "learning_rate" in hp:
+            new_hp = dict(hp)
+            new_hp["learning_rate"] = jnp.asarray(
+                lr, dtype=jnp.asarray(hp["learning_rate"]).dtype)
+            new_s = s._replace(hyperparams=new_hp)
+            return tuple(opt_state[:i]) + (new_s,) + tuple(opt_state[i + 1:])
+    raise ValueError("no injected learning_rate in the optimizer state "
+                     "(not an adam_plateau chain)")
 
 
 def _trainable_params(model):
@@ -1000,6 +1083,7 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
         # the DFS seed mixture, so a checkpoint states its seeding as it
         # states its mixer schedule (solver_config.mixer_kwargs)
         "seed_mix_atomic": bool(getattr(spec, "seed_mix_atomic", False)),
+        "optimizer": getattr(spec, "optimizer", "adamw_linear"),
         "balancing_active": (
             getattr(spec, "update_scheme", "batched") != "per_molecule"
             and spec.balancing is not None
@@ -1110,7 +1194,8 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
                              order, train_best_loss, train_recent, train_window,
                              train_best_model, val_present, val_best_mae,
                              val_finite_metrics, val_best_model, epoch, update,
-                             losses, aux_log, early_stopped, arch=None) -> None:
+                             losses, aux_log, early_stopped, arch=None,
+                             plateau_state=None) -> None:
     """Write one resume checkpoint ATOMICALLY from PRE-CAPTURED state (WS5).
 
     Persists everything needed to continue the per_molecule loop exactly where
@@ -1172,6 +1257,8 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
         # np.random.RandomState uses get_state()/set_state() (NOT the stdlib
         # random getstate/setstate); the loop's rng is a RandomState.
         "rng_state": rng_state,
+        # the plateau controller (adam_plateau): best, bad_epochs, lr; None otherwise
+        "plateau_state": plateau_state,
         # _BestModelTracker (train-loss best) scalars.
         "best_loss": float(train_best_loss),
         "_recent": list(train_recent),
@@ -1297,6 +1384,7 @@ def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
         "losses": list(state["losses"]),
         "aux_log": list(state["aux_log"]),
         "early_stopped": bool(state["early_stopped"]),
+        "plateau_state": state.get("plateau_state"),
     }
 
 
@@ -1936,8 +2024,14 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         n_steps=total_updates, lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
         weight_decay=spec.weight_decay,
+        optimizer=getattr(spec, "optimizer", "adamw_linear"),
     )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    plateau = None
+    if getattr(spec, "optimizer", "adamw_linear") == "adam_plateau":
+        plateau = _PlateauController(
+            patience=spec.plateau_patience, factor=spec.plateau_factor,
+            min_lr=spec.lr_end, lr=spec.lr_start)
     progress_hook = _adapt_progress_callback(
         progress_callback, arch=spec.arch.name, phase="train")
 
@@ -2025,6 +2119,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         else:
             model = restored["model"]
             opt_state = restored["opt_state"]
+            if plateau is not None and restored.get("plateau_state") is not None:
+                plateau.from_state(restored["plateau_state"])
             rng.set_state(restored["rng_state"])
             order[:] = restored["order"]     # continue the killed run's perm
             tracker = restored["train_tracker"]
@@ -2062,6 +2158,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         _live["losses"] = list(losses_list)
         _live["aux_log"] = list(aux_log)
         _live["early_stopped"] = early_stopped
+        _live["plateau_state"] = plateau.state() if plateau is not None else None
         _live["train_best_loss"] = tracker.best_loss
         _live["train_recent"] = list(tracker._recent)
         _live["train_window"] = tracker.window
@@ -2089,7 +2186,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             val_best_model=_live["val_best_model"],
             epoch=_live["epoch"], update=_live["update"],
             losses=_live["losses"], aux_log=_live["aux_log"],
-            early_stopped=_live["early_stopped"], arch=spec.arch)
+            early_stopped=_live["early_stopped"], arch=spec.arch,
+            plateau_state=_live["plateau_state"])
 
     if resume_enabled:
         _capture_live()                  # seed with the resume/initial boundary
@@ -2140,6 +2238,24 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             epochs_run = epoch + 1
             if progress_hook is not None:
                 progress_hook(epoch + 1, n_epochs, loss_py)
+            if plateau is not None:
+                # torch semantics, once per epoch on this epoch's mean group loss
+                epoch_loss = float(np.mean(losses_list[-n_groups:]))
+                # dpyscf steps its scheduler on sqrt(mean loss) * 1000
+                # (scripts/train.py 528, 582); under torch's RELATIVE threshold
+                # the transform decides when an epoch counts as improving, so
+                # the controller sees the same quantity, not the mean itself
+                plateau_metric = float(np.sqrt(max(0.0, epoch_loss)) * 1000.0)
+                old_lr = plateau.lr
+                new_lr = plateau.update(plateau_metric)
+                if new_lr != old_lr:
+                    opt_state = _set_learning_rate(opt_state, new_lr)
+                aux_log.append({
+                    "step": update, "epoch": epoch, "group": "__plateau__",
+                    "epoch_loss": epoch_loss, "plateau_metric": plateau_metric,
+                    "lr": new_lr,
+                    "update_scheme": "per_molecule",
+                })
             # Validation check every `validate_every` epochs.
             if val_enabled and (epoch + 1) % val_every == 0:
                 # RSS bracketing the validation eval: a boundary memory burst

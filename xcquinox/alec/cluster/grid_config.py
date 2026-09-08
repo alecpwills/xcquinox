@@ -112,6 +112,10 @@ class SolverNamed:
     scf_loss_use_tail: bool = False
     scf_loss_tail: int = 10
     scf_loss_weight_power: float = 2.0
+    # 2026-09-08: the SCF convergence freeze switch (SolverConfig
+    # .freeze_on_convergence). True keeps every existing solver byte-identical;
+    # false runs every cycle, as dpyscf's loop does (DEFERRED_WORK 13).
+    freeze_on_convergence: bool = True
     # 2026-07-02: orientation lock. Coefficient on the traceless
     # anisotropic-quadrupole h_core bias (orientation_lock.py) that makes a
     # degenerate radical's density reproducible. 0.0 -> off -> byte-identical, so
@@ -181,6 +185,13 @@ class HyperParams:
     # {"loss_rho": 20.0, "loss_AE": 1.0}); empty -> train._DEFAULT_CHANNEL_WEIGHTS
     # (density-dominant, dpyscf-style). Stored sorted for determinism.
     channel_weights: tuple = ()
+    # 2026-09-08, the dpyscf-parity arm: the optimizer ("adamw_linear" or
+    # "adam_plateau"), the plateau controller's patience and factor, and the
+    # per-update seed mixture; every default leaves existing sweeps unchanged.
+    optimizer: str = "adamw_linear"
+    plateau_patience: int = 10
+    plateau_factor: float = 0.1
+    seed_mix_atomic: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1008,6 +1019,7 @@ def _build_solvers(d: dict) -> dict[str, SolverNamed]:
             scf_loss_use_tail=bool(sd.get("scf_loss_use_tail", False)),
             scf_loss_tail=int(sd.get("scf_loss_tail", 10)),
             scf_loss_weight_power=float(sd.get("scf_loss_weight_power", 2.0)),
+            freeze_on_convergence=bool(sd.get("freeze_on_convergence", True)),
             orientation_lock_strength=float(
                 sd.get("orientation_lock_strength", 0.0)),
         )
@@ -1039,6 +1051,10 @@ def _build_hyperparams(d: dict) -> HyperParams:
         update_scheme=d.get("update_scheme", "per_molecule"),
         pad_group_to_common_shape=bool(d.get("pad_group_to_common_shape", False)),
         channel_weights=_parse_channel_weights(d.get("channel_weights")),
+        optimizer=str(d.get("optimizer", "adamw_linear")),
+        plateau_patience=int(d.get("plateau_patience", 10)),
+        plateau_factor=float(d.get("plateau_factor", 0.1)),
+        seed_mix_atomic=bool(d.get("seed_mix_atomic", False)),
     )
 
 
@@ -2096,6 +2112,24 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         raise ValueError(
             f"hyperparams.validate_every must be >= 0, got {hp.validate_every}"
         )
+    if hp.optimizer not in ("adamw_linear", "adam_plateau"):
+        raise ValueError(
+            f"hyperparams.optimizer must be 'adamw_linear' or 'adam_plateau', got "
+            f"{hp.optimizer!r}")
+    if hp.optimizer == "adam_plateau" and hp.update_scheme != "per_molecule":
+        raise ValueError(
+            "hyperparams.optimizer=adam_plateau is stepped by the per-molecule loop (update_scheme per_molecule) "
+            f"only; got update_scheme={hp.update_scheme!r}")
+    if hp.seed_mix_atomic and hp.update_scheme != "per_molecule":
+        raise ValueError(
+            "hyperparams.seed_mix_atomic is applied by the per-molecule loop (update_scheme per_molecule) only; "
+            f"got update_scheme={hp.update_scheme!r}")
+    if hp.plateau_patience < 0:
+        raise ValueError(
+            f"hyperparams.plateau_patience must be >= 0, got {hp.plateau_patience}")
+    if not (0.0 < hp.plateau_factor <= 1.0):
+        raise ValueError(
+            f"hyperparams.plateau_factor must be in (0, 1], got {hp.plateau_factor}")
     if hp.patience < 0:
         raise ValueError(
             f"hyperparams.patience must be >= 0, got {hp.patience}"

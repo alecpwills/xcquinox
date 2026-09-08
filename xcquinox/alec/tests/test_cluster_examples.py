@@ -763,8 +763,12 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
     # all five load at their defaults on every pre-change file, identical on
     # the two sides, so none joins the difference list. 143 since the
     # 2026-09-07 converged-SCF channel flag (``eval_converged``), False at
-    # its default on both sides for the same reason.
-    assert len(keys) == 143, len(keys)
+    # its default on both sides for the same reason. 149 since the 2026-09-08
+    # parity-arm fields: ``freeze_on_convergence`` on each of the two named
+    # solvers and ``hyperparams.optimizer`` / ``plateau_patience`` /
+    # ``plateau_factor`` / ``seed_mix_atomic``, all at their defaults on both
+    # sides.
+    assert len(keys) == 149, len(keys)
     assert differing == [
         "bh76_mode",
         "cluster.datagen_time",
@@ -1542,8 +1546,11 @@ def test_v6_group_differs_from_the_reference_in_exactly_what_it_claims(name):
     # ``tol_AE_max_backstop``) and cloning-protocol completion
     # (``pretrain.lr_decay_end``, ``points_per_system``, ``sampling_seed``),
     # all equal at their defaults on every v6 file for the same reason; 143
-    # since the 2026-09-07 converged-SCF channel flag (``eval_converged``).
-    assert len(keys) == 143, len(keys)
+    # since the 2026-09-07 converged-SCF channel flag (``eval_converged``);
+    # 149 since the 2026-09-08 parity-arm fields (the freeze switch on each
+    # of the two named solvers, the optimizer, its two plateau knobs and the
+    # seed mixture), all at their defaults on every file here.
+    assert len(keys) == 149, len(keys)
     assert differing == sorted(expected), (path, ref_path, differing)
     # The header makes the same claim in prose, and that is where an operator
     # reads it. What is asserted is the EXCEPT clause -- the list of fields
@@ -1810,8 +1817,15 @@ _V7_RXN_SOURCE = "dfs_step7.dfs6311_grid3_v7g1_size.yaml"
 #: An arm is pinned by its own mirror test rather than by ``_V7_FILES``: that
 #: list also pins the completed pretraining protocol and a pretraining root of
 #: its own, neither of which a run training from another run's clones carries.
+#: The dpyscf-parity arm (2026-09-08) is the 25-cycle arm with every other
+#: setting the 2026-09-07 parity table lists as a deviation moved to the
+#: reference protocol's value: the first mix index, the seed mixture, the
+#: convergence freeze, the tail window, the optimizer and its rates, the
+#: coupled L2 and the channel weights. It clones the 25-cycle file, so the
+#: two arms differ in the parity keys alone and the cycle count is shared.
 _V7_C25_ARM = "dfs_step7.dfs6311_grid3_v7g1_c25.yaml"
-_V7_ARMS = (_V7_C25_ARM,)
+_V7_DFSPARITY_ARM = "dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml"
+_V7_ARMS = (_V7_C25_ARM, _V7_DFSPARITY_ARM)
 
 
 def test_v7g1_rxn_control_arm_mirrors_g1_except_the_bh76_objective():
@@ -2001,6 +2015,125 @@ def test_v7g1_c25_arm_mirrors_g1_except_the_25_cycle_keys():
     assert named.scf_grad_checkpoint is True
     # The submit-time rules the loader does not apply, on both files: the
     # early-stop geometry the cadence was chosen for is one of them.
+    validate_grid_semantics(cfg_s, get_domain_profile(cfg_s.domain_profile))
+    validate_grid_semantics(cfg_a, get_domain_profile(cfg_a.domain_profile))
+
+
+def test_v7g1_dfsparity_arm_mirrors_c25_except_the_parity_keys():
+    """The dpyscf-parity arm differs from the 25-cycle arm in the settings the
+    2026-09-07 parity table lists as deviations from the executed reference
+    protocol, and in nothing else: the same pool, subsets, architecture,
+    production identity, model class, gate, cluster block and pretraining
+    source, so the two arms are one comparison and the cycle count is not a
+    second variable inside it.
+
+    The parity keys are the SCF's first mix index and its convergence freeze,
+    the tail window that goes with 25 cycles, the optimizer and its rates, the
+    coupled L2, the seed mixture and the channel weights. Each is asserted on
+    the arm's side AND shown to differ from the 25-cycle file's, so a key that
+    quietly reverted to the control's value is a failure rather than a silent
+    re-run of arm A.
+    """
+    cdir = _campaign_configs_dir()
+    if cdir is None:
+        pytest.skip("no hpcjobs/configs deployment tree in this checkout")
+    arm_path = os.path.join(cdir, _V7_DFSPARITY_ARM)
+    src_path = os.path.join(cdir, _V7_C25_ARM)
+    assert os.path.isfile(arm_path), f"missing parity-arm file {_V7_DFSPARITY_ARM}"
+    arm = _raw_yaml(arm_path)
+    src = _raw_yaml(src_path)
+    # Every top-level key present in either file is present in both, and every
+    # one outside the three sections below carries the 25-cycle file's value --
+    # the sweep, the cluster block, the model class and the gate included.
+    assert set(arm) == set(src), (set(arm) ^ set(src))
+    for k in sorted(set(src) - {"inputs", "solvers", "hyperparams"}):
+        assert arm[k] == src[k], f"top-level {k!r} differs from the c25 file"
+    assert arm["bh76_mode"] == "barrier_height"
+
+    # inputs: identical except the run root, which must be its own and must not
+    # collide with either sibling arm's (two runs sharing a root interleave
+    # their artifacts).
+    for k in src["inputs"]:
+        if k == "output_root":
+            assert arm["inputs"][k] != src["inputs"][k]
+            assert arm["inputs"][k].endswith("dfs6311_grid3_v7g1_dfsparity")
+            assert (os.path.dirname(arm["inputs"][k])
+                    == os.path.dirname(src["inputs"][k])), (
+                "the arm's run root sits beside the other arms', under the "
+                "same campaign tree")
+        else:
+            assert arm["inputs"][k] == src["inputs"][k], f"inputs.{k}"
+    assert set(arm["inputs"]) == set(src["inputs"])
+    for sibling in (_V7_RXN_CONTROL, _V7_RXN_SOURCE):
+        sib_path = os.path.join(cdir, sibling)
+        if os.path.isfile(sib_path):
+            assert (arm["inputs"]["output_root"]
+                    != _raw_yaml(sib_path)["inputs"]["output_root"])
+
+    # solvers: the unswept block untouched; the swept one runs every cycle,
+    # mixes from the reference's first index and scores the reference's tail.
+    assert set(arm["solvers"]) == set(src["solvers"])
+    assert arm["solvers"]["full_3"] == src["solvers"]["full_3"]
+    a25, s25 = arm["solvers"]["full_25"], src["solvers"]["full_25"]
+    assert a25["freeze_on_convergence"] is False
+    assert a25["mixer_kwargs"] == {"base": 0.3, "floor": 0.3, "step_offset": 1}
+    assert s25["mixer_kwargs"] == {"base": 0.3, "floor": 0.3}
+    # the energy window is NOT a parity key: tail 10 at 25 cycles is the
+    # executed dpyscf window already (skip 15, keep 10)
+    assert a25["scf_loss_tail"] == s25["scf_loss_tail"] == 10
+    for k in s25:
+        if k in ("mixer_kwargs",):
+            continue
+        assert a25[k] == s25[k], f"solvers.full_25.{k} differs from the c25 file"
+    assert set(a25) - set(s25) == {"freeze_on_convergence"}
+
+    # hyperparams: the optimizer block, the rates it runs at, the coupled L2,
+    # the seed mixture and the channel weights; the epoch count, the cadence,
+    # the seed and every other hyperparameter the 25-cycle file's.
+    hp_a, hp_s = arm["hyperparams"], src["hyperparams"]
+    assert hp_a["optimizer"] == "adam_plateau"
+    assert hp_a["lr_start"] == 1.0e-4
+    assert hp_a["lr_end"] == 1.0e-7
+    assert hp_a["weight_decay"] == 1.0e-6
+    assert hp_a["plateau_patience"] == 10
+    assert hp_a["plateau_factor"] == 0.1
+    assert hp_a["seed_mix_atomic"] is True
+    assert hp_a["channel_weights"] == {"loss_vxc": 0.0, "loss_BH76": 0.01,
+                                       "loss_IP13": 0.01}
+    changed = {"lr_start", "lr_end", "weight_decay"}
+    for k in hp_s:
+        if k in changed:
+            assert hp_a[k] != hp_s[k], f"hyperparams.{k} kept the c25 value"
+        else:
+            assert hp_a[k] == hp_s[k], f"hyperparams.{k} differs from the c25 file"
+    assert set(hp_a) - set(hp_s) == {"optimizer", "plateau_patience",
+                                     "plateau_factor", "seed_mix_atomic",
+                                     "channel_weights"}
+    assert set(hp_s) - set(hp_a) == set()
+
+    # Through the real loader: the identity the copied clones were certified at
+    # (the g1 run's, shared with both other arms), the resolved solver, the
+    # optimizer block, and the submit-time rules the loader does not apply.
+    from xcquinox.alec.cluster.fidelity import run_identity
+    cfg_a = load_grid_config(arm_path)
+    cfg_s = load_grid_config(src_path)
+    assert run_identity(cfg_a) == run_identity(cfg_s)
+    g1_path = os.path.join(cdir, _V7_RXN_SOURCE)
+    if os.path.isfile(g1_path):
+        assert run_identity(cfg_a) == run_identity(load_grid_config(g1_path))
+    assert cfg_a.sweep.solver == ("full_25",)
+    named = cfg_a.solvers[cfg_a.sweep.solver[0]]
+    assert named.max_cycles == 25
+    assert named.freeze_on_convergence is False
+    assert dict(named.mixer_kwargs)["step_offset"] == 1.0
+    assert named.scf_loss_tail == 10
+    assert cfg_a.solvers["full_3"].freeze_on_convergence is True
+    assert cfg_a.hyperparams.optimizer == "adam_plateau"
+    assert cfg_a.hyperparams.plateau_patience == 10
+    assert cfg_a.hyperparams.plateau_factor == 0.1
+    assert cfg_a.hyperparams.seed_mix_atomic is True
+    assert cfg_a.hyperparams.update_scheme == "per_molecule"
+    assert cfg_a.cluster.time == "96:00:00"
     validate_grid_semantics(cfg_s, get_domain_profile(cfg_s.domain_profile))
     validate_grid_semantics(cfg_a, get_domain_profile(cfg_a.domain_profile))
 

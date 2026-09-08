@@ -262,6 +262,13 @@ branch -- never only under /tmp.
 
 ## 13. SCF convergence freeze: a theta-dependent branch with no DFS counterpart
 
+**2026-09-08:** switchable. `SolverConfig.freeze_on_convergence` (named solver key
+`freeze_on_convergence`, default true) keeps the branch for every existing solver block;
+the dpyscf-parity arm (`dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml`, `full_25` with
+`freeze_on_convergence: false`) runs every cycle as dpyscf's loop does, the converged
+flag still latching for the record. Closed for that arm; open as stated below for the
+running arms until their re-baselining.
+
 **What:** `solver_manual.py` freezes the SCF state (`jnp.where(already, ...)`)
 once the per-cycle |dE| < `conv_tol` = 1e-6 Ha. dpyscf runs all 25 cycles
 unconditionally, so the branch is a deviation, and it makes the loss a

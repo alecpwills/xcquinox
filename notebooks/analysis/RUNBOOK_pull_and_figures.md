@@ -583,6 +583,52 @@ against the g1 arm is cell by cell on the same held-out slices and, once
 `cluster/channel_retro.py --channel converged` has run over both runs, on the
 converged channel.
 
+### The dpyscf-parity arm (2026-09-08): submit on the 96-core queue, copy the g1 clones, release
+
+`hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml` is the 25-cycle
+arm's file with the reference protocol's remaining settings: every cycle run
+(no convergence freeze; the energy window, the last 10 of 25 cycles, is the
+executed dpyscf window already and stays), the executed
+mixer schedule (first mix 0.6), the per-update seed mixture with the minao
+guess, dpyscf's Adam at 1e-4 with coupled L2 1e-6 under the plateau controller
+(patience 10, factor 0.1, floor 1e-7), no potential term and the DFS weight
+0.01 on the barrier and IP groups (pin
+`test_v7g1_dfsparity_arm_mirrors_c25_except_the_parity_keys`). Its cells start
+from the g1 run's certified clones, copied in before the pretrain array can
+start, exactly as the two other arms. On the cluster, from the repo root after
+`git pull`:
+
+```bash
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox
+git pull
+python -m xcquinox.alec.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml --partition extended-96core --max-nodes 1 --train-time "96:00:00" --submit
+```
+
+Then, before the pretrain array can start (it waits on datagen, but hold it
+anyway):
+
+```bash
+R=/gpfs/scratch/awills/xcquinox_runs/dfs_step7
+NEW=$(ls -d $R/dfs6311_grid3_v7g1_dfsparity/runs/run_* | tail -1)
+PRE=$(python -c "import json,sys; print([j['array_job_id'] for j in json.load(open('$NEW/jobs.json')) if j['kind']=='pretrain'][0])")
+scontrol hold $PRE
+mkdir -p $NEW/pretrain
+cp -a $R/dfs6311_grid3_v7g1_size/runs/run_20260902T145245Z/pretrain/. $NEW/pretrain/
+ls $NEW/pretrain/*/fidelity_certificate.json
+scontrol release $PRE
+```
+
+The reading is the ladder g1 (3 cycles) -> arm A (25 cycles) -> this arm (25
+cycles under the reference protocol), cell by cell on the same held-out slices;
+the warm and cold-start channels evaluate each arm under its own trained SCF
+protocol (this arm without the freeze), so the protocol-identical comparison
+across the three runs is the converged channel once `cluster/channel_retro.py
+--channel converged` has run over them; the pull category is
+`dfs_step7/dfs6311_grid3_v7g1_dfsparity/runs`. Each run's `aux_log.pkl` carries
+one `__plateau__` row per epoch with the learning rate the controller set, and
+`train_metadata.json` states `optimizer`, `seed_mix_atomic` and the solver's
+`freeze_on_convergence` and `mixer_kwargs.step_offset`.
+
 ### Certificate gate changes on a LIVE run (2026-09-03 flow)
 
 A gate-policy change (e.g. the two-tier `tol_AE_aggregate: mae` +

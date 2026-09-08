@@ -3362,3 +3362,123 @@ def test_default_max_gate_survives_the_resolved_round_trip(tmp_path):
         _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
     assert cfg2.fidelity.tol_AE_aggregate == "max"
     assert cfg2.fidelity == cfg.fidelity
+
+
+# ---------------------------------------------------------------------------
+# Arm B knobs (spec C4/C7): the solver's convergence freeze and the plateau
+# optimizer block -- parse, default, resolved round trip, and the threading
+# onto the runtime SolverConfig / TrainingSpec.
+# ---------------------------------------------------------------------------
+
+def _arm_b_config_dict():
+    """The base config with the arm's solver and optimizer block: the swept
+    solver runs every cycle and the run trains under the reduce-on-plateau
+    optimizer with the dpyscf seed mixture."""
+    d = _base_config_dict()
+    d["solvers"]["robust"]["freeze_on_convergence"] = False
+    d["hyperparams"].update({
+        "optimizer": "adam_plateau",
+        "plateau_patience": 4,
+        "plateau_factor": 0.5,
+        "seed_mix_atomic": True,
+    })
+    return d
+
+
+def test_arm_b_knobs_default_to_the_current_behavior(tmp_path):
+    """A config that names none of them parses to the settings every running
+    arm has: the SCF freezes at convergence and the linear-schedule adamw
+    trains without the seed mixture."""
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert cfg.solvers["robust"].freeze_on_convergence is True
+    assert cfg.hyperparams.optimizer == "adamw_linear"
+    assert cfg.hyperparams.plateau_patience == 10
+    assert cfg.hyperparams.plateau_factor == 0.1
+    assert cfg.hyperparams.seed_mix_atomic is False
+
+
+def test_arm_b_knobs_parse_and_survive_the_resolved_round_trip(tmp_path):
+    """The five keys parse off the user-authored YAML and survive
+    ``dataclasses.asdict`` + ``yaml.safe_dump`` + reload -- the resolved_config
+    path every downstream stage (datagen, pretrain, preflight, eval) re-reads,
+    and the one a boolean or a numeric knob silently changes value on."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    pytest.importorskip("yaml")
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _arm_b_config_dict()))
+    assert cfg.solvers["robust"].freeze_on_convergence is False
+    assert cfg.solvers["fast"].freeze_on_convergence is True
+    assert cfg.hyperparams.optimizer == "adam_plateau"
+    assert cfg.hyperparams.plateau_patience == 4
+    assert cfg.hyperparams.plateau_factor == 0.5
+    assert cfg.hyperparams.seed_mix_atomic is True
+
+    resolved = _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg))
+    cfg2 = load_grid_config(resolved)
+    assert cfg2.solvers["robust"].freeze_on_convergence is False
+    assert cfg2.solvers["fast"].freeze_on_convergence is True
+    assert cfg2.hyperparams.optimizer == "adam_plateau"
+    assert cfg2.hyperparams.plateau_patience == 4
+    assert cfg2.hyperparams.plateau_factor == 0.5
+    assert cfg2.hyperparams.seed_mix_atomic is True
+
+
+def test_arm_b_knobs_reach_the_runtime_configs(tmp_path):
+    """The knobs are inert unless the builders thread them: the freeze onto the
+    ``SolverConfig`` the SCF is run with, and the four hyperparameters onto
+    every ``TrainingSpec`` the run materializes. A knob parsed and not threaded
+    is the silent failure this pins -- the file states the arm, the run trains
+    the control."""
+    import dataclasses
+    from xcquinox.alec.cluster.domain import get_domain_profile
+    from xcquinox.alec.cluster.spec_builder import (
+        build_training_specs, _solver_config_from_named)
+    from xcquinox.alec.tests.test_cluster_spec_builder import (
+        _make_cfg, _make_ledger, _make_pool)
+
+    named = SolverNamed(mode="oneshot", max_cycles=0,
+                        freeze_on_convergence=False)
+    assert _solver_config_from_named(named).freeze_on_convergence is False
+    assert _solver_config_from_named(
+        SolverNamed(mode="oneshot", max_cycles=0)).freeze_on_convergence is True
+
+    cfg = _make_cfg(tmp_path)
+    cfg = dataclasses.replace(
+        cfg,
+        solvers={k: dataclasses.replace(v, freeze_on_convergence=False)
+                 for k, v in cfg.solvers.items()},
+        hyperparams=dataclasses.replace(
+            cfg.hyperparams, optimizer="adam_plateau", plateau_patience=4,
+            plateau_factor=0.5, seed_mix_atomic=True))
+    built = build_training_specs(_make_pool(), _make_ledger(), cfg,
+                                 get_domain_profile("dfs_step7"),
+                                 str(tmp_path / "run"))
+    assert built, "no specs built"
+    for _cell, spec in built:
+        assert spec.optimizer == "adam_plateau"
+        assert spec.plateau_patience == 4
+        assert spec.plateau_factor == 0.5
+        assert spec.seed_mix_atomic is True
+        assert spec.solver_config.freeze_on_convergence is False
+
+
+def test_validate_refuses_the_per_molecule_knobs_under_the_batched_scheme():
+    """The controller and the seed mixture live in ``_run_per_molecule_loop``
+    alone. Under ``update_scheme: batched`` a config naming either would load,
+    submit and train the control arm's protocol under the arm's name, so both
+    are refused at submit time (``TrainingSpec.validate`` refuses the mixture
+    on the same grounds, one stage later)."""
+    with pytest.raises(ValueError, match="per_molecule"):
+        validate_grid_semantics(
+            _cfg_with(hp_kwargs=dict(optimizer="adam_plateau",
+                                     update_scheme="batched")),
+            _StubDomain(pool_size=40))
+    with pytest.raises(ValueError, match="per_molecule"):
+        validate_grid_semantics(
+            _cfg_with(hp_kwargs=dict(seed_mix_atomic=True,
+                                     update_scheme="batched")),
+            _StubDomain(pool_size=40))
+    # both are accepted under the scheme that implements them.
+    validate_grid_semantics(
+        _cfg_with(hp_kwargs=dict(optimizer="adam_plateau", seed_mix_atomic=True,
+                                 update_scheme="per_molecule")),
+        _StubDomain(pool_size=40))

@@ -673,7 +673,10 @@ def test_per_molecule_loop_early_stops_and_writes_val_best(
 # early_stopped/epochs_run/val_* keys) plus the runtime-weighting truth keys
 # (update_scheme / balancing_active / effective_channel_weights -- added so
 # the artifact reports the weights the loop ACTUALLY applied, not only the
-# nominal loss_kwargs/balancing config; see notebooks/analysis/LOSS_PRIMER.md).
+# nominal loss_kwargs/balancing config; see notebooks/analysis/LOSS_PRIMER.md)
+# and the optimizer the run was fit under (adamw_linear on the linear schedule
+# or adam_plateau on the reduce-on-plateau controller), which is method and is
+# recorded for every run, not only for the arm that changes it.
 _BASE_METADATA_KEYS = frozenset({
     "arch_name", "use_polarized_correlation", "loss_name", "loss_kwargs",
     "solver_config", "n_steps", "lr_start", "lr_end", "lr_decay_start",
@@ -681,7 +684,7 @@ _BASE_METADATA_KEYS = frozenset({
     "atom_energies", "loss_metric", "balancing", "final_loss", "min_loss",
     "has_best_checkpoint", "timestamp", "duration_seconds",
     "update_scheme", "balancing_active", "effective_channel_weights",
-    "seed_mix_atomic",
+    "seed_mix_atomic", "optimizer",
 })
 
 
@@ -3386,3 +3389,485 @@ def test_validation_precompute_never_carries_the_seed_mixture(tmp_path, monkeypa
     assert set(val_mol_data) == {"H2O"}
     assert len(seen) == 1
     assert not seen[0].get("with_minao_seed", False), seen[0]
+
+
+# ---------------------------------------------------------------------------
+# The plateau optimizer (spec C7): torch's ReduceLROnPlateau in `min` mode as
+# dpyscf configures it (patience 10, factor 0.1, min_lr 1e-7), stepping once
+# per epoch on the epoch's MEAN group loss, with the coupled L2 of torch's
+# ``Adam(weight_decay=...)`` -- ``add_decayed_weights`` BEFORE adam -- in place
+# of adamw's decoupled decay.
+# ---------------------------------------------------------------------------
+
+def _ctrl(**kw):
+    """A controller at the scripted-sequence settings; every argument by
+    keyword so the test states the semantics, not the parameter order."""
+    from xcquinox.alec.train import _PlateauController
+    kwargs = dict(patience=2, factor=0.1, min_lr=1e-7, lr=1e-4)
+    kwargs.update(kw)
+    return _PlateauController(**kwargs)
+
+
+def test_plateau_controller_fires_one_epoch_past_the_patience_and_resets():
+    """torch semantics: the reduction fires on the epoch whose non-improving
+    count EXCEEDS the patience, not on the one that reaches it.
+
+    With patience 2 the sequence [1.0, 0.9, 0.9, 0.9, 0.9] sets the best at the
+    first call, improves at the second, and then runs three non-improving
+    epochs: the counter reads 1, 2, 3 and only the third (bad > patience)
+    reduces. Firing at ``bad >= patience`` would cut the rate a whole epoch
+    early -- over 200 epochs of the arm that is one decade of learning rate
+    lost -- so the epoch of the reduction is asserted, not merely that one
+    happened. The counter resets with the reduction: the next reduction is
+    again three non-improving epochs away.
+    """
+    ctrl = _ctrl()
+    got = [ctrl.update(x) for x in (1.0, 0.9, 0.9, 0.9, 0.9)]
+    assert got == pytest.approx([1e-4, 1e-4, 1e-4, 1e-4, 1e-5], rel=1e-12), got
+    # counter reset: two more non-improving epochs do NOT fire, the third does.
+    assert [ctrl.update(0.9) for _ in range(3)] == pytest.approx([1e-5, 1e-5, 1e-6], rel=1e-12)
+
+
+def test_plateau_controller_improvement_threshold_is_relative():
+    """An epoch improves when ``loss < best * (1 - 1e-4)`` (torch's default
+    relative threshold in `rel` mode), so a loss lower than the best by less
+    than a part in 1e4 is NOT an improvement and still advances the counter.
+
+    Absolute-threshold or bare ``<`` comparisons make the counter reset on
+    numerical noise, and the reduction then never fires on a flat loss curve --
+    the exact curve the arm's schedule exists for.
+    """
+    # At best = 50 the relative threshold is 5e-3 while an absolute 1e-4 would
+    # be 50 times tighter, so the two readings disagree on every step below.
+    best = 50.0
+    ctrl = _ctrl()
+    ctrl.update(best)                      # best = 50, counter 0
+    # 5e-5 below the best: inside the threshold -> non-improving (counter 1, 2)
+    ctrl.update(best * (1 - 5e-5))
+    ctrl.update(best * (1 - 5e-5))
+    assert ctrl.update(best * (1 - 5e-5)) == 1e-5   # third one fires
+    # 2e-4 below the best: outside the threshold -> an improvement, so the
+    # counter restarts and two further flat epochs do not fire.
+    ctrl2 = _ctrl()
+    ctrl2.update(best)
+    assert ctrl2.update(best * (1 - 2e-4)) == 1e-4
+    assert [ctrl2.update(best) for _ in range(2)] == [1e-4, 1e-4]
+
+
+def test_plateau_controller_floors_at_min_lr_and_holds_within_torch_eps():
+    """The reduced rate is ``max(lr * factor, min_lr)`` and is written only
+    when it differs from the old rate by more than torch's ``eps`` (1e-8).
+
+    From 5e-7 with factor 0.1 the floor -- not the factor -- sets the new rate
+    (1e-7, dpyscf's MIN_RATE, and not 5e-8); at a rate whose reduction would
+    move it by less than eps the rate is left where it is, so a run that has
+    reached the floor stops rewriting the optimizer's hyperparameter every
+    epoch.
+    """
+    ctrl = _ctrl(lr=5e-7)
+    ctrl.update(1.0)
+    assert [ctrl.update(1.0) for _ in range(3)] == [5e-7, 5e-7, 1e-7]
+    # eps: a reduction smaller than 1e-8 in absolute terms is not applied even
+    # though the floor is far below (min_lr 1e-12, 1e-9 -> 1e-10 is a 9e-10 move).
+    slow = _ctrl(lr=1e-9, min_lr=1e-12)
+    slow.update(1.0)
+    assert [slow.update(1.0) for _ in range(3)] == [1e-9, 1e-9, 1e-9]
+
+
+def test_plateau_controller_state_round_trips():
+    """``state()`` is the three-scalar payload the resume checkpoint stores
+    (best, bad_epochs, lr) and ``from_state`` restores it: a controller
+    rehydrated mid-streak fires on the same epoch as the one that was killed.
+    """
+    ctrl = _ctrl()
+    for x in (1.0, 0.9, 0.9):              # best 0.9, one non-improving epoch
+        ctrl.update(x)
+    state = ctrl.state()
+    assert state == {"best": pytest.approx(0.9), "bad_epochs": 1, "lr": 1e-4}
+    fresh = _ctrl()
+    fresh.from_state(state)
+    assert fresh.state() == state
+    # the restored controller continues the streak (two more epochs to the
+    # reduction), where a fresh one would need three.
+    assert [fresh.update(0.9) for _ in range(2)] == [1e-4, 1e-5]
+
+
+def test_build_optimizer_refuses_an_unknown_optimizer_name():
+    """An unrecognized ``optimizer`` is a configuration error, not a silent
+    fallback to the linear schedule: a typo in the arm's YAML would otherwise
+    train the control arm's optimizer under the arm's name."""
+    from xcquinox.alec.train import build_optimizer
+    with pytest.raises(ValueError, match="optimizer"):
+        build_optimizer(lr_start=1e-4, lr_end=1e-7, n_steps=10,
+                        lr_decay_start=0.0, grad_clip=1.0,
+                        optimizer="adam_on_plateau")
+
+
+def test_set_learning_rate_replaces_the_injected_rate_in_the_chain():
+    """``_set_learning_rate`` writes the controller's rate into the injected
+    hyperparameter of the ``adam_plateau`` chain, and the next update moves the
+    parameter at exactly that rate.
+
+    The rate is a leaf of the optimizer STATE under ``inject_hyperparams``, not
+    a schedule read from the step count, so the write is the only way the
+    controller reaches the update. Adam's step is linear in the learning rate
+    at fixed moments, so two updates from the same state and gradient stand in
+    the ratio of the two rates; the other injected hyperparameters (b1, b2,
+    eps) must survive the write untouched.
+    """
+    import jax.numpy as jnp
+    from xcquinox.alec.train import build_optimizer, _set_learning_rate
+
+    params = {"w": jnp.asarray([0.7])}
+    grads = {"w": jnp.asarray([0.3])}
+    opt = build_optimizer(lr_start=1e-4, lr_end=1e-7, n_steps=10,
+                          lr_decay_start=0.0, grad_clip=1.0,
+                          optimizer="adam_plateau")
+    state = opt.init(params)
+    assert float(state[2].hyperparams["learning_rate"]) == 1e-4
+    lowered = _set_learning_rate(state, 1e-5)
+    assert float(lowered[2].hyperparams["learning_rate"]) == 1e-5
+    # b1/b2/eps ride in the same dict; replacing the dict wholesale would drop
+    # them and change the update.
+    for key in ("b1", "b2", "eps"):
+        assert float(lowered[2].hyperparams[key]) == float(
+            state[2].hyperparams[key]), key
+    u_old, _ = opt.update(grads, state, params)
+    u_new, _ = opt.update(grads, lowered, params)
+    ratio = float(u_old["w"][0]) / float(u_new["w"][0])
+    assert ratio == pytest.approx(10.0, rel=1e-9), ratio
+
+
+def _adam_moments(opt_state):
+    """The ``ScaleByAdamState`` leaves of an optimizer state, wherever the
+    chain nests them (``adam_plateau`` puts one inside the injected state,
+    ``adamw_linear`` one inside adamw's own chain)."""
+    import optax
+    found = []
+
+    def walk(node):
+        if isinstance(node, tuple) and hasattr(node, "_fields"):
+            if isinstance(node, optax.ScaleByAdamState):
+                found.append(node)
+            for f in node._fields:
+                walk(getattr(node, f))
+        elif isinstance(node, (tuple, list)):
+            for x in node:
+                walk(x)
+    walk(opt_state)
+    assert len(found) == 1, f"expected one adam state, got {len(found)}"
+    return found[0]
+
+
+def test_adam_plateau_couples_the_l2_into_the_adam_moment():
+    """``adam_plateau`` regularizes as torch's ``Adam(weight_decay=...)``:
+    ``add_decayed_weights`` runs BEFORE adam, so the decay enters the gradient
+    and is carried by the moments (COUPLED L2, DFS's 1e-6). ``adamw_linear``
+    keeps the decoupled decay, which never touches the moments.
+
+    Measured on the first moment after one update from a zero state:
+    ``mu = (1 - b1)(g + wd * w)`` coupled against ``(1 - b1) g`` decoupled.
+    Placing ``add_decayed_weights`` after adam would reproduce adamw and leave
+    the moment at the decoupled value.
+    """
+    import jax.numpy as jnp
+    from xcquinox.alec.train import build_optimizer
+
+    w, g, wd, b1 = 0.7, 0.3, 1e-2, 0.9
+    params = {"w": jnp.asarray([w])}
+    grads = {"w": jnp.asarray([g])}
+    kw = dict(lr_start=1e-4, lr_end=1e-7, n_steps=10, lr_decay_start=0.0,
+              grad_clip=1e9, weight_decay=wd)
+
+    coupled = build_optimizer(optimizer="adam_plateau", **kw)
+    _u, st = coupled.update(grads, coupled.init(params), params)
+    assert float(np.asarray(_adam_moments(st).mu["w"])[0]) == pytest.approx(
+        (1 - b1) * (g + wd * w), rel=1e-12)
+
+    decoupled = build_optimizer(optimizer="adamw_linear", **kw)
+    _u2, st2 = decoupled.update(grads, decoupled.init(params), params)
+    assert float(np.asarray(_adam_moments(st2).mu["w"])[0]) == pytest.approx(
+        (1 - b1) * g, rel=1e-12)
+
+
+def test_validate_rejects_bad_optimizer_and_plateau_knobs():
+    """The spec refuses an optimizer name no builder implements and plateau
+    knobs outside their domain, at build time rather than at the first epoch
+    end of a 96 h task: the factor must lie in (0, 1] (a factor of 0 collapses
+    the rate to the floor on the first reduction, one above 1 raises it) and
+    the patience must be non-negative."""
+    with pytest.raises(ValueError, match="optimizer"):
+        _make_training_spec(optimizer="sgd").validate()
+    for factor in (0.0, 1.5):
+        with pytest.raises(ValueError, match="plateau_factor"):
+            _make_training_spec(optimizer="adam_plateau",
+                                plateau_factor=factor,
+                                update_scheme="per_molecule").validate()
+    with pytest.raises(ValueError, match="plateau_patience"):
+        _make_training_spec(optimizer="adam_plateau", plateau_patience=-1,
+                            update_scheme="per_molecule").validate()
+    # the defaults, and the arm's own settings, validate.
+    _make_training_spec().validate()
+    _make_training_spec(optimizer="adam_plateau", plateau_patience=10,
+                        plateau_factor=0.1,
+                        update_scheme="per_molecule").validate()
+
+
+def test_resume_checkpoint_round_trips_the_plateau_state(tmp_path):
+    """The controller's three scalars persist with the optimizer state: a run
+    killed mid-streak must not restart its patience count (nor its rate) at the
+    resume, which would hand the arm a fresh decade of learning rate every time
+    the wall clock cut a task. Absent from the state pickle (every checkpoint
+    written before this change, and every ``adamw_linear`` run) the loader
+    returns None."""
+    import equinox as eqx
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.train import (
+        _write_resume_checkpoint, _load_resume_checkpoint, _BestModelTracker,
+    )
+
+    model, opt_state, optimizer = _tiny_model_and_opt(seed=8, n_advance=1)
+    tt = _BestModelTracker(window=1)
+    plateau = {"best": 0.9, "bad_epochs": 3, "lr": 1e-5}
+
+    def _write(d, **extra):
+        _write_resume_checkpoint(
+            d, model=model, opt_state=opt_state,
+            rng_state=np.random.RandomState(5).get_state(), order=[0],
+            train_best_loss=tt.best_loss, train_recent=list(tt._recent),
+            train_window=tt.window, train_best_model=tt.best_model,
+            val_present=False, val_best_mae=None, val_finite_metrics=None,
+            val_best_model=None, epoch=12, update=36,
+            losses=[1.0], aux_log=[], early_stopped=False, **extra)
+
+    def _load(d):
+        skel = AlecGGAModel.from_arch(_make_arch(), seed=9)
+        return _load_resume_checkpoint(
+            d, model_skeleton=skel,
+            opt_state_skeleton=optimizer.init(eqx.filter(skel, eqx.is_array)))
+
+    with_state = str(tmp_path / "with")
+    os.makedirs(with_state)
+    _write(with_state, plateau_state=plateau)
+    assert _load(with_state)["plateau_state"] == plateau
+
+    without = str(tmp_path / "without")
+    os.makedirs(without)
+    _write(without)                    # the keyword defaults to None
+    assert _load(without)["plateau_state"] is None
+
+
+def _plateau_spec(training_batch_info, tmpdir, **extra):
+    """The seed-mixture helper's H/O/H2O per-molecule spec (three groups) at
+    the arm's rates: lr_start 1e-4 and lr_end 1e-7, dpyscf's MIN_RATE, which
+    is the controller's floor under ``adam_plateau``."""
+    import dataclasses
+    spec = _make_live_spec(
+        training_batch_info, loss_name="L5_gradnorm_vxc_step7", tmpdir=tmpdir,
+        loss_kwargs={"regularize_atom_syms": ("H", "O")},
+        update_scheme="per_molecule", require_atom_anchors=False, **extra)
+    return dataclasses.replace(spec, lr_start=1e-4, lr_end=1e-7)
+
+
+def _make_scripted_loss(n_groups, *, start_call=0, stop_after=None, seen=None):
+    """A drop-in for ``defused_value_and_grad`` returning a scripted loss and a
+    zero gradient, so the loop, the optimizer and the controller run with no
+    SCF behind them.
+
+    The script separates the epoch MEAN from the epoch's LAST group loss and
+    from the running mean over the whole history. In epoch e the group losses
+    are ``[b + d, ..., b + d, b - (n - 1) d]`` with ``b = 1 / min(e, 3)`` and
+    ``d = 0.01 e`` (0 in epoch 1): the epoch mean is 1, 1/2, then 1/3 for ever,
+    so the best is set at epoch 3; from epoch 4 the mean sits 1.5e-4 below it,
+    an improvement to a controller stepped on the mean (torch's relative
+    threshold 1e-4) and NOT to one stepped on the script's sqrt(mean) x 1000
+    (0.75e-4), so only the latter fires at epoch 14; the
+    last loss of each epoch falls monotonically and the cumulative mean keeps
+    falling for the whole run. A controller stepping on the epoch mean
+    therefore fires at epoch 14 (patience 10); one stepping on the last
+    group's loss -- the value left in the loop's ``loss_py`` at the epoch
+    boundary -- or on the cumulative mean never does.
+    ``start_call`` continues the script across a resume; ``stop_after`` kills
+    the run once that many updates have been served.
+    """
+    import equinox as eqx
+    import jax
+    import jax.numpy as jnp
+
+    state = {"call": start_call}
+
+    def stub(loss, model, batch, channel_weights, relative=False,
+             pad_target=None):
+        i = state["call"]
+        epoch = i // n_groups + 1
+        base = 1.0 / min(epoch, 3)
+        if epoch >= 4:
+            base *= 1.0 - 1.5e-4
+        d = 0.0 if epoch == 1 else 0.01 * epoch
+        value = (base - (n_groups - 1) * d if i % n_groups == n_groups - 1
+                 else base + d)
+        state["call"] = i + 1
+        if seen is not None:
+            seen.append((epoch, value))
+        if stop_after is not None and state["call"] - start_call >= stop_after:
+            raise _StopRecording()
+        grads = jax.tree_util.tree_map(
+            jnp.zeros_like, eqx.filter(model, eqx.is_inexact_array))
+        return (jnp.asarray(value), {"loss_e": jnp.asarray(value)}), grads
+
+    return stub
+
+
+def _plateau_entries(checkpoint_dir):
+    """The ``__plateau__`` rows of the run's aux log, in order, paired with the
+    group row that precedes each of them."""
+    with open(os.path.join(checkpoint_dir, "aux_log.pkl"), "rb") as f:
+        aux = pickle.load(f)  # noqa: S301 -- written by this test's own run
+    out = []
+    for i, e in enumerate(aux):
+        if e.get("group") == "__plateau__":
+            prev = next(a for a in reversed(aux[:i]) if a.get("group"))
+            out.append((e, prev))
+    return out
+
+
+def test_per_molecule_loop_steps_the_plateau_on_the_epoch_mean(
+        training_batch_info, monkeypatch):
+    """Under ``adam_plateau`` the loop steps the controller once per epoch, on
+    that epoch's MEAN group loss, and records the rate it is training at.
+
+    With patience 10 the first epoch sets the best and epochs 2-12 are
+    non-improving, so the twelfth is the first whose count exceeds the patience
+    and the rate falls to a tenth there and not before. The scripted losses hold
+    the epoch mean flat while the last group's loss of each epoch falls, so a
+    controller stepping on the last loss the loop happens to be holding would
+    never fire at all. The optimizer name reaches ``train_metadata.json``, and
+    the default ``adamw_linear`` run writes no ``__plateau__`` row.
+    """
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.train import run_training, _training_groups
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _plateau_spec(training_batch_info, tmpdir, n_steps=14,
+                             optimizer="adam_plateau", plateau_patience=10,
+                             plateau_factor=0.1)
+        n_groups = len(_training_groups(spec))
+        assert n_groups >= 2, n_groups     # else mean == last group loss
+        seen = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_scripted_loss(n_groups, seen=seen))
+        # the reduced rate must be WRITTEN to the optimizer state, not only
+        # logged: every write is recorded here and the state itself checked
+        writes = []
+        real_set = train_mod._set_learning_rate
+
+        def _recording_set(opt_state, lr):
+            writes.append(float(lr))
+            new_state = real_set(opt_state, lr)
+            written = [s.hyperparams["learning_rate"] for s in new_state
+                       if getattr(s, "hyperparams", None) is not None]
+            assert float(written[0]) == pytest.approx(lr, rel=1e-12)
+            return new_state
+
+        monkeypatch.setattr(train_mod, "_set_learning_rate", _recording_set)
+        meta = run_training(spec)
+        rows = _plateau_entries(spec.checkpoint_dir)
+        with open(os.path.join(spec.checkpoint_dir, "train_metadata.json")) as f:
+            on_disk_optimizer = json.load(f)["optimizer"]
+
+    # the script did what the reading of it above claims.
+    per_epoch: dict = {}
+    for epoch, value in seen:
+        per_epoch.setdefault(epoch, []).append(value)
+    means = [np.mean(v) for v in per_epoch.values()]
+    assert means == pytest.approx(
+        [1.0, 0.5, 1 / 3] + [(1 / 3) * (1 - 1.5e-4)] * 11, abs=1e-12)
+    lasts = [v[-1] for v in per_epoch.values()]
+    assert all(b < a for a, b in zip(lasts[1:], lasts[2:])), lasts
+
+    assert len(rows) == 14, [e for e, _ in rows]
+    for i, (entry, prev) in enumerate(rows):
+        assert entry["epoch"] == prev["epoch"], (i, entry, prev)
+        # each row carries ITS epoch's mean (a cumulative mean would read
+        # 0.75, 0.61, ... here) and the quantity the controller was stepped on
+        assert entry["epoch_loss"] == pytest.approx(means[i], abs=1e-12), i
+        assert entry["plateau_metric"] == pytest.approx(
+            np.sqrt(means[i]) * 1000.0, rel=1e-12), i
+        assert "step" in entry
+    assert [e["lr"] for e, _ in rows] == [1e-4] * 13 + [1e-5]
+    assert writes == pytest.approx([1e-5], rel=1e-12), writes
+    assert meta["optimizer"] == "adam_plateau"
+    assert on_disk_optimizer == "adam_plateau"
+
+    # Control: the default optimizer runs no controller at all.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec_off = _plateau_spec(training_batch_info, tmpdir, n_steps=2)
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_scripted_loss(n_groups))
+        meta_off = run_training(spec_off)
+        assert _plateau_entries(spec_off.checkpoint_dir) == []
+    assert meta_off["optimizer"] == "adamw_linear"
+
+
+def test_plateau_state_survives_a_resume(training_batch_info, monkeypatch):
+    """A run killed after the reduction and resumed continues at the REDUCED
+    rate with its counter intact, rather than restarting the controller at
+    ``lr_start``.
+
+    The rate is what the arm's 96 h tasks are re-queued under, so a controller
+    rebuilt from the spec at every resume would return the run to 1e-4 however
+    long it had been training. The killed run is stopped one update into epoch
+    13, past the epoch-12 reduction and its checkpoint.
+    """
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.train import run_training, _training_groups
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _plateau_spec(training_batch_info, tmpdir, n_steps=16,
+                             optimizer="adam_plateau", plateau_patience=10,
+                             plateau_factor=0.1, checkpoint_every=1)
+        n_groups = len(_training_groups(spec))
+        monkeypatch.setattr(
+            train_mod, "defused_value_and_grad",
+            _make_scripted_loss(n_groups, stop_after=14 * n_groups + 1))
+        with pytest.raises(_StopRecording):
+            run_training(spec)
+        assert os.path.isfile(os.path.join(spec.checkpoint_dir,
+                                           "resume_state.pkl"))
+
+        monkeypatch.setattr(
+            train_mod, "defused_value_and_grad",
+            _make_scripted_loss(n_groups, start_call=14 * n_groups))
+        run_training(spec)
+        rows = _plateau_entries(spec.checkpoint_dir)
+
+    # epochs 15 and 16 continue at the reduced rate (a fresh controller would
+    # report lr_start, 1e-4, for both).
+    assert [e["lr"] for e, _ in rows] == [1e-4] * 13 + [1e-5] * 3
+
+
+def test_plateau_floor_is_the_spec_lr_end(training_batch_info, monkeypatch):
+    """The controller's floor is ``lr_end`` (dpyscf's MIN_RATE in the arm's
+    file), not a literal: a spec at lr_end 1e-6 builds its controller with that
+    floor, its start rate and its patience and factor."""
+    import dataclasses
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.train import run_training, _training_groups
+    seen = {}
+    real = train_mod._PlateauController
+
+    class _Recording(real):
+        def __init__(self, **kw):
+            seen.update(kw)
+            super().__init__(**kw)
+
+    monkeypatch.setattr(train_mod, "_PlateauController", _Recording)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _plateau_spec(training_batch_info, tmpdir, n_steps=1,
+                             optimizer="adam_plateau", plateau_patience=7,
+                             plateau_factor=0.5)
+        spec = dataclasses.replace(spec, lr_end=1e-6)
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_scripted_loss(len(_training_groups(spec))))
+        run_training(spec)
+    assert seen == {"patience": 7, "factor": 0.5, "min_lr": 1e-6, "lr": 1e-4}

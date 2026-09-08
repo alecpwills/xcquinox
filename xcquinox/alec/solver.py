@@ -70,6 +70,11 @@ class SolverConfig:
     scf_loss_use_tail: bool = False
     scf_loss_tail: int = 10
     scf_loss_weight_power: float = 2.0
+    # SCF convergence freeze (solver_manual.py): True, the protocol of every
+    # campaign through v7 (DEFERRED_WORK 13), stops the state once the energy
+    # step falls under conv_tol; False runs every cycle of max_cycles as
+    # dpyscf's loop does, only the converged flag latching (2026-09-08).
+    freeze_on_convergence: bool = True
     # Orientation lock (orientation_lock.py): coefficient on a small, fixed,
     # traceless anisotropic-quadrupole bias added to h_core so an orbitally
     # degenerate open-shell radical (OH/NO, X-2-Pi) always relaxes to the SAME
@@ -179,6 +184,7 @@ class SolverConfig:
             "scf_loss_use_tail": self.scf_loss_use_tail,
             "scf_loss_tail": self.scf_loss_tail,
             "scf_loss_weight_power": self.scf_loss_weight_power,
+            "freeze_on_convergence": self.freeze_on_convergence,
             "orientation_lock_strength": self.orientation_lock_strength,
             "seed_source": self.seed_source,
             "seed_cache_dir": self.seed_cache_dir,

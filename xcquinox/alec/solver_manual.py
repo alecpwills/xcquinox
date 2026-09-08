@@ -420,7 +420,11 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
             grid_weights, h_core, J_mix, e_nuc,
         )
         is_conv = criterion.is_converged_from_energies(state.energy, E_new)
-        already = state.converged
+        latched = state.converged
+        # The convergence freeze: with freeze_on_convergence the state stops
+        # advancing once converged (every campaign through v7); without it every
+        # cycle runs, as dpyscf's loop does, and only the flag below latches.
+        already = latched if config.freeze_on_convergence else jnp.bool_(False)
         D_out = jnp.where(already, state.density_matrix, D_mixed)
         E_out = jnp.where(already, state.energy, E_new)
         cycles_inc = jnp.where(already, state.cycles_run, state.cycles_run + jnp.int32(1))
@@ -437,7 +441,7 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
             density_matrix=D_out,
             energy=E_out,
             mixer_state=frozen_mixer_state,
-            converged=already | is_conv,
+            converged=latched | is_conv,
             cycles_run=cycles_inc,
         )
         return next_state, E_out
@@ -778,7 +782,11 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
             grid_weights, h_core, j_total_m, e_nuc,
         )
         is_conv = criterion.is_converged_from_energies(state.energy, E_new)
-        already = state.converged
+        latched = state.converged
+        # The convergence freeze: with freeze_on_convergence the state stops
+        # advancing once converged (every campaign through v7); without it every
+        # cycle runs, as dpyscf's loop does, and only the flag below latches.
+        already = latched if config.freeze_on_convergence else jnp.bool_(False)
         D_out = jnp.where(already, state.density_matrix, D_mixed)
         E_out = jnp.where(already, state.energy, E_new)
         cycles_inc = jnp.where(already, state.cycles_run, state.cycles_run + jnp.int32(1))
@@ -792,7 +800,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
             density_matrix=D_out,
             energy=E_out,
             mixer_state=frozen_mixer_state,
-            converged=already | is_conv,
+            converged=latched | is_conv,
             cycles_run=cycles_inc,
         )
         return next_state, E_out

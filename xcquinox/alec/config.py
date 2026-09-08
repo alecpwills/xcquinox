@@ -1061,6 +1061,14 @@ class TrainingSpec:
     # protocol of every campaign through v7. Per-molecule scheme only
     # (validate refuses it elsewhere) (2026-09-08).
     seed_mix_atomic: bool = False
+    # Optimizer: "adamw_linear" (clip -> adamw on the constant-then-linear
+    # schedule, every campaign through v7) or "adam_plateau" (dpyscf's: clip ->
+    # coupled L2 -> Adam at lr_start, multiplied by plateau_factor after
+    # plateau_patience non-improving epochs, floored at lr_end; per-molecule
+    # scheme only, since the loop steps the controller) (2026-09-08).
+    optimizer: str = "adamw_linear"
+    plateau_patience: int = 10
+    plateau_factor: float = 0.1
     # Optimizer update scheme:
     #   "batched": one full-batch optimizer step per training step over
     #                    ALL species at once, with the configured `balancing`
@@ -1235,6 +1243,20 @@ class TrainingSpec:
             raise ValueError(
                 "seed_mix_atomic is applied by the per-molecule loop only; got "
                 f"update_scheme={self.update_scheme!r}")
+        if self.optimizer not in ("adamw_linear", "adam_plateau"):
+            raise ValueError(
+                f"optimizer must be 'adamw_linear' or 'adam_plateau', got "
+                f"{self.optimizer!r}")
+        if self.optimizer == "adam_plateau" and self.update_scheme != "per_molecule":
+            raise ValueError(
+                "adam_plateau is stepped by the per-molecule loop only; got "
+                f"update_scheme={self.update_scheme!r}")
+        if self.plateau_patience < 0:
+            raise ValueError(
+                f"plateau_patience must be >= 0, got {self.plateau_patience}")
+        if not (0.0 < self.plateau_factor <= 1.0):
+            raise ValueError(
+                f"plateau_factor must be in (0, 1], got {self.plateau_factor}")
         import math
         for field_name in ("lr_start", "lr_end", "lr_decay_start", "grad_clip"):
             value = getattr(self, field_name)
