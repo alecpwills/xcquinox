@@ -13,6 +13,7 @@ import csv
 import importlib.util
 import json
 import math
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -257,10 +258,10 @@ def test_build_all_writes_seven_figures(tmp_path):
     written = fig.build_all(run, tmp_path / "out")
     assert len(written) == 7
     assert all(_png_ok(p) for p in written)
-    assert (tmp_path / "out" / "ablation_ae_parity.png").is_file()
-    assert (tmp_path / "out" / "ablation_parity_by_class.png").is_file()
+    assert (tmp_path / "out" / "holdout_w411_ae_parity.png").is_file()
+    assert (tmp_path / "out" / "holdout_energy_parity_by_class.png").is_file()
     # the NN/PBE ratio heatmap rides along with the raw-MAE grid
-    assert (tmp_path / "out" / "ablation_arch_subset_heatmap_vs_pbe.png").is_file()
+    assert (tmp_path / "out" / "holdout_energy_ratio_vs_pbe_grid.png").is_file()
 
 
 def test_mae_vs_subset_panel_draws_reference_lines():
@@ -417,8 +418,8 @@ def test_headline_ed_receives_scan_legs(tmp_path, monkeypatch):
     """EVERY combined_ed_by_cell AND combined_ed_fixed_gamma call in the
     suite must carry the SCAN legs when the caches resolve -- the headline
     (wt + mae) calls omitted them first, then the DFS-units fixed-gamma
-    calls did the same, so ablation_combined_energy_density* (and the
-    _dfs_units twin CSV) drew/recorded no ed_scan."""
+    calls did the same, so holdout_ed_combined* (and the
+    _eps twin CSV) drew/recorded no ed_scan."""
     run = _make_run_dir(tmp_path)
     _add_holdout_density(run)
     rows = fig.collect_holdout_reaction_rows(run)
@@ -590,7 +591,9 @@ def test_overview_footer_matches_scan_state(tmp_path, monkeypatch):
 
     def _cap(*a, **kw):
         out_path = a[2] if len(a) > 2 else kw.get("out_path")
-        if "_dfs_units" not in str(out_path):
+        # the suffix lives in the FILE name: the enclosing directory (pytest's
+        # tmp_path carries the test's own name) must never decide this.
+        if "_eps" not in Path(out_path).name:
             got["prov"] = kw.get("provenance")
         return real(*a, **kw)
 
@@ -654,10 +657,10 @@ def test_channel_summaries_carry_scan_suffix(tmp_path, monkeypatch):
     assert checked, "no channel resolved a SCAN ED comparator"
 
 
-def test_dfs_units_ed_scan_consistent_across_csvs(tmp_path, monkeypatch):
+def test_eps_ed_scan_consistent_across_csvs(tmp_path, monkeypatch):
     # Decisive consistency check for the half-threaded fix: the same
     # combined-channel cell must carry the SAME ED_scan in the headline
-    # DFS-units leg (ablation_combined_energy_density.csv) and the 3x3
+    # DFS-units leg (holdout_ed_combined.csv) and the 3x3
     # DFS-units CSV -- previously blank in one and populated in the other.
     import csv as _csv
     run = _make_run_dir(tmp_path)
@@ -669,12 +672,12 @@ def test_dfs_units_ed_scan_consistent_across_csvs(tmp_path, monkeypatch):
                         lambda *a, **k: dict(_SCAN_FIXTURE_RECORDS))
     outdir = tmp_path / "out"
     fig.build_density_energy_figures(run, outdir)
-    with (outdir / "ablation_combined_energy_density.csv").open() as f:
+    with (outdir / "holdout_ed_combined.csv").open() as f:
         main = [r for r in _csv.DictReader(f)
                 if r["leg"] == "wtmad2_eps_gamma_dfs"]
     assert main, "headline DFS-units leg missing from the CSV"
     assert all(r["ED_scan_kcalmol"] != "" for r in main), main
-    with (outdir / "ablation_density_energy_3x3_dfs_units.csv").open() as f:
+    with (outdir / "holdout_by_pool_3x3_eps.csv").open() as f:
         chan = {(r["arch"], r["subset_size"]): r for r in _csv.DictReader(f)
                 if r["leg"] == "combined_wtmad2_eps_gamma_dfs"}
     assert chan, "3x3 DFS-units combined leg missing from the CSV"
@@ -1720,7 +1723,7 @@ def test_plot_parity_by_class_grid(tmp_path, monkeypatch):
     assert cap["n_legends"] >= 1
 
 
-def test_dfs_units_figures_carry_glyph_note(tmp_path, monkeypatch):
+def test_eps_figures_carry_glyph_note(tmp_path, monkeypatch):
     # Every figure drawing the cell-rows glyphs must explain them -- the
     # DFS-units overview/3x3 twins included (they carried no glyph key).
     run = _make_run_dir(tmp_path)
@@ -1752,8 +1755,10 @@ def test_dfs_units_figures_carry_glyph_note(tmp_path, monkeypatch):
 
         monkeypatch.setattr(fig, name, _capf)
     fig.build_density_energy_figures(run, tmp_path / "out")
-    dfs_units = {k: v for k, v in provs.items() if "_dfs_units" in k[1]}
-    assert dfs_units, "DFS-units figures did not render on the fixture"
+    # keyed on the FILE name: this test's own tmp_path carries "_eps" in its
+    # directory name, so a full-path test would match every figure.
+    eps_figs = {k: v for k, v in provs.items() if "_eps" in Path(k[1]).name}
+    assert eps_figs, "eps-unit figures did not render on the fixture"
     for key, prov in provs.items():
         assert prov and "capped" in prov.lower(), (key, prov)
     assert flat_provs, "ED line figures did not render on the fixture"
@@ -2152,11 +2157,11 @@ def test_build_parity_variants_writes_five(tmp_path):
     assert len(written) == 5
     assert all(_png_ok(p) for p in written)
     names = {p.name for p in written}
-    assert names == {"ablation_parity_arch_cols.png",
-                     "ablation_parity_marginal_2x2.png",
-                     "ablation_parity_facet_subset.png",
-                     "ablation_parity_errbars_by_subset.png",
-                     "ablation_parity_grid_by_subset.png"}
+    assert names == {"holdout_energy_parity_by_arch.png",
+                     "holdout_energy_parity_marginals.png",
+                     "holdout_energy_parity_by_subset.png",
+                     "holdout_energy_errorbars_by_subset.png",
+                     "holdout_energy_parity_grid.png"}
 
 
 # ---------------------------------------------------------------------------
@@ -2363,8 +2368,8 @@ def test_failure_caption_drops_generalization_gap(tmp_path):
 def test_build_per_run_diagnostics_writes_two(tmp_path):
     run = _make_run_dir(tmp_path)
     written = fig.build_per_run_diagnostics(run, tmp_path / "out", "def2-svp")
-    assert {p.name for p in written} == {"diagnostic_size_consistency.png",
-                                         "diagnostic_training_losses.png"}
+    assert {p.name for p in written} == {"holdout_size_consistency.png",
+                                         "training_loss_total.png"}
     assert all(_png_ok(p) for p in written)
 
 
@@ -2398,9 +2403,9 @@ def test_build_diagnostic_figures_renders_all(tmp_path):
     (r1 / "resolved_config.yaml").write_text("basis: def2-svp\n")
     (r2 / "resolved_config.yaml").write_text("basis: def2-tzvpd\ndensity_fit: true\n")
     out = fig.build_diagnostic_figures([r1, r2], tmp_path / "diag")
-    assert {p.name for p in out} == {"diagnostic_training_losses.png",
-                                     "diagnostic_failure_mechanisms.png",
-                                     "diagnostic_capacity_trends.png"}
+    assert {p.name for p in out} == {"training_loss_total.png",
+                                     "holdout_failure_mechanisms.png",
+                                     "holdout_capacity_trends.png"}
     assert all(_png_ok(p) for p in out)
 
 
@@ -3087,11 +3092,11 @@ def test_build_bh76w411_suite_writes_all_families(tmp_path):
     assert "figures_basis_comparison" in parents
     names = {p.name for p in written}
     assert "basis_comparison.png" in names and "basis_comparison_no_refs.png" in names
-    assert "ablation_arch_subset_heatmap.png" in names   # per-basis ablation set
+    assert "holdout_energy_mae_grid.png" in names   # per-basis ablation set
     # newly-wired per-basis families (previously generated by hand -> went stale)
-    assert "ablation_parity_arch_cols.png" in names      # parity-layout variants
-    assert "diagnostic_size_consistency.png" in names    # per-run diagnostics
-    assert "diagnostic_training_losses.png" in names
+    assert "holdout_energy_parity_by_arch.png" in names      # parity-layout variants
+    assert "holdout_size_consistency.png" in names    # per-run diagnostics
+    assert "training_loss_total.png" in names
     # no eval_holdout_val_best/ in this fixture -> NO val-best figure set
     assert not any(p.parent.name.endswith("_val_best") for p in written)
 
@@ -3223,8 +3228,8 @@ def test_build_suite_single_basis_dfs_domain(tmp_path):
     parents = {p.parent.name for p in written}
     assert parents == {"figures_dfs_step7_svp"}
     names = {p.name for p in written}
-    assert "ablation_arch_subset_heatmap.png" in names   # ss=26 column renders
-    assert "diagnostic_training_losses.png" in names
+    assert "holdout_energy_mae_grid.png" in names   # ss=26 column renders
+    assert "training_loss_total.png" in names
     assert "basis_comparison.png" not in names           # needs >= 2 bases
 
 
@@ -3320,50 +3325,50 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     names1 = {p.name for p in fig.build_density_energy_figures(run, out1)}
     # refs-free run: only the unconditional figures (the energy panel is
     # rendered twice -- linear + its log-y sibling)
-    assert names1 == {"ablation_rung_summary.png",
-                      "ablation_energy_wtmad_mae.png",
-                      "ablation_energy_wtmad_mae_logy.png",
-                      "ablation_insample_density_ccsd.png",
-                      "ablation_insample_overview.png",
-                      "ablation_insample_overview_logy.png"}
-    assert "ablation_holdout_density_ccsd.png" not in names1
+    assert names1 == {"holdout_energy_by_rung.png",
+                      "holdout_energy_mae_wtmad2.png",
+                      "holdout_energy_mae_wtmad2_logy.png",
+                      "insample_density_vs_ccsd.png",
+                      "insample_overview.png",
+                      "insample_overview_logy.png"}
+    assert "holdout_density_vs_ccsd.png" not in names1
     # the combined-ED family is gated on the same holdout density columns,
     # and so is the held-out overview composite
-    assert "ablation_combined_energy_density.png" not in names1
-    assert "ablation_density_energy_overview.png" not in names1
-    assert not (out1 / "ablation_combined_energy_density.csv").exists()
+    assert "holdout_ed_combined.png" not in names1
+    assert "holdout_overview.png" not in names1
+    assert not (out1 / "holdout_ed_combined.csv").exists()
     _add_holdout_density(run)
     out2 = tmp_path / "f2"
     names2 = {p.name for p in fig.build_density_energy_figures(run, out2)}
-    assert "ablation_holdout_density_ccsd.png" in names2
-    assert "ablation_holdout_density_per_arch.png" in names2
-    assert "ablation_combined_energy_density.png" in names2
-    assert "ablation_density_energy_overview.png" in names2
-    assert "ablation_density_energy_3x3.png" in names2
-    assert "ablation_ed_decomposition.png" in names2
+    assert "holdout_density_vs_ccsd.png" in names2
+    assert "holdout_density_by_arch.png" in names2
+    assert "holdout_ed_combined.png" in names2
+    assert "holdout_overview.png" in names2
+    assert "holdout_by_pool_3x3.png" in names2
+    assert "holdout_ed_decomposition.png" in names2
     # DFS-units twins ride along whenever the eps columns are present
     # (the fixture writes them)
-    assert "ablation_combined_energy_density_dfs_units.png" in names2
-    assert "ablation_ed_decomposition_dfs_units.png" in names2
-    assert "ablation_density_energy_overview_dfs_units.png" in names2
-    assert "ablation_density_energy_3x3_dfs_units.png" in names2
+    assert "holdout_ed_combined_eps.png" in names2
+    assert "holdout_ed_decomposition_eps.png" in names2
+    assert "holdout_overview_eps.png" in names2
+    assert "holdout_by_pool_3x3_eps.png" in names2
     # the 3x3s' former parity rows as standalone per-channel figures
-    assert "ablation_density_parity_by_channel.png" in names2
-    assert "ablation_density_parity_by_channel_dfs_units.png" in names2
+    assert "holdout_density_parity_by_pool.png" in names2
+    assert "holdout_density_parity_by_pool_eps.png" in names2
     # the six figures drawn by the shared per-(arch, subset_size) bar
     # helper each ship a log-y sibling carrying the same data
-    for logy in ("ablation_energy_wtmad_mae_logy.png",
-                 "ablation_insample_overview_logy.png",
-                 "ablation_density_energy_overview_logy.png",
-                 "ablation_density_energy_overview_dfs_units_logy.png",
-                 "ablation_density_energy_3x3_logy.png",
-                 "ablation_density_energy_3x3_dfs_units_logy.png"):
+    for logy in ("holdout_energy_mae_wtmad2_logy.png",
+                 "insample_overview_logy.png",
+                 "holdout_overview_logy.png",
+                 "holdout_overview_eps_logy.png",
+                 "holdout_by_pool_3x3_logy.png",
+                 "holdout_by_pool_3x3_eps_logy.png"):
         assert logy in names2, logy
     assert len(names2) == 22
-    assert (out2 / "ablation_density_energy_3x3_dfs_units.csv").is_file()
+    assert (out2 / "holdout_by_pool_3x3_eps.csv").is_file()
     # the CSVs are written alongside but NEVER returned (return stays PNG-only)
-    assert (out2 / "ablation_combined_energy_density.csv").is_file()
-    assert (out2 / "ablation_density_energy_3x3.csv").is_file()
+    assert (out2 / "holdout_ed_combined.csv").is_file()
+    assert (out2 / "holdout_by_pool_3x3.csv").is_file()
 
 
 def test_insample_density_plot_with_pbe_baseline_renders(tmp_path):
@@ -3401,12 +3406,12 @@ def test_build_density_energy_figures_writes_six(tmp_path):
     assert len(written) == 6
     assert all(_png_ok(p) for p in written)
     assert {p.name for p in written} == {
-        "ablation_rung_summary.png",
-        "ablation_energy_wtmad_mae.png",
-        "ablation_energy_wtmad_mae_logy.png",
-        "ablation_insample_density_ccsd.png",
-        "ablation_insample_overview.png",
-        "ablation_insample_overview_logy.png"}
+        "holdout_energy_by_rung.png",
+        "holdout_energy_mae_wtmad2.png",
+        "holdout_energy_mae_wtmad2_logy.png",
+        "insample_density_vs_ccsd.png",
+        "insample_overview.png",
+        "insample_overview_logy.png"}
 
 
 def test_build_threads_log_scale_to_every_logy_write(tmp_path, monkeypatch):
@@ -3433,23 +3438,23 @@ def test_build_threads_log_scale_to_every_logy_write(tmp_path, monkeypatch):
     fig.build_density_energy_figures(run, tmp_path / "out")
     # (linear name, _logy name, the plotter that must produce BOTH of them)
     pairs = [
-        ("ablation_energy_wtmad_mae.png",
-         "ablation_energy_wtmad_mae_logy.png",
+        ("holdout_energy_mae_wtmad2.png",
+         "holdout_energy_mae_wtmad2_logy.png",
          "plot_energy_wtmad_mae"),
-        ("ablation_insample_overview.png",
-         "ablation_insample_overview_logy.png",
+        ("insample_overview.png",
+         "insample_overview_logy.png",
          "plot_insample_overview"),
-        ("ablation_density_energy_overview.png",
-         "ablation_density_energy_overview_logy.png",
+        ("holdout_overview.png",
+         "holdout_overview_logy.png",
          "plot_density_energy_overview"),
-        ("ablation_density_energy_overview_dfs_units.png",
-         "ablation_density_energy_overview_dfs_units_logy.png",
+        ("holdout_overview_eps.png",
+         "holdout_overview_eps_logy.png",
          "plot_density_energy_overview"),
-        ("ablation_density_energy_3x3.png",
-         "ablation_density_energy_3x3_logy.png",
+        ("holdout_by_pool_3x3.png",
+         "holdout_by_pool_3x3_logy.png",
          "plot_density_energy_3x3"),
-        ("ablation_density_energy_3x3_dfs_units.png",
-         "ablation_density_energy_3x3_dfs_units_logy.png",
+        ("holdout_by_pool_3x3_eps.png",
+         "holdout_by_pool_3x3_eps_logy.png",
          "plot_density_energy_3x3"),
     ]
     for lin, logy, plotter in pairs:
@@ -3948,12 +3953,12 @@ def test_collectors_carry_eps_columns(tmp_path):
                           for r in finite)
 
 
-def test_build_emits_dfs_units_ed_legs_when_eps_present(tmp_path):
+def test_build_emits_eps_ed_legs_when_eps_present(tmp_path):
     run = _make_run_dir(tmp_path)
     _add_holdout_density(run)
     out = tmp_path / "f"
     fig.build_density_energy_figures(run, out)
-    with (out / "ablation_combined_energy_density.csv").open() as fh:
+    with (out / "holdout_ed_combined.csv").open() as fh:
         legs = {r["leg"] for r in csv.DictReader(fh)}
     # the DFS-units leg (Letter's gamma transplanted to Eq. 20 units) rides
     # along whenever the eps columns are present in the pulled data
@@ -4047,7 +4052,7 @@ def test_build_discloses_partial_eps_backfill(tmp_path, capsys):
     fig.build_density_energy_figures(run, out)
     printed = capsys.readouterr().out
     assert "eps columns cover" in printed and "partial backfill" in printed
-    with (out / "ablation_combined_energy_density.csv").open() as fh:
+    with (out / "holdout_ed_combined.csv").open() as fh:
         rows_csv = list(csv.DictReader(fh))
     n_wt = sum(1 for r in rows_csv if r["leg"] == "wtmad2")
     n_eps = sum(1 for r in rows_csv if r["leg"] == "wtmad2_eps_gamma_dfs")
@@ -4107,7 +4112,7 @@ def test_build_discloses_eps_anchor_only_species(tmp_path, capsys):
     assert "DFS-units ED eps cells:" not in printed
 
 
-def test_build_dfs_units_png_notes_missing_cells(tmp_path, monkeypatch):
+def test_build_eps_png_notes_missing_cells(tmp_path, monkeypatch):
     """Partial eps coverage: the DFS-units parity figure renders from the
     FIXED-gamma summaries with the missing cells named in its note band (the
     on-figure twin of the stdout disclosure), no fit panel without a pool
@@ -4136,7 +4141,7 @@ def test_build_dfs_units_png_notes_missing_cells(tmp_path, monkeypatch):
     monkeypatch.setattr(fig, "plot_ed_decomposition", dec_spy)
     fig.build_density_energy_figures(run, tmp_path / "f")
     dfs = [c for c in ed_calls if c[2].name
-           == "ablation_combined_energy_density_dfs_units.png"]
+           == "holdout_ed_combined_eps.png"]
     assert len(dfs) == 1
     wt_s, fit_s, _, kw = dfs[0]
     assert wt_s["gamma_mode"] == "fixed"
@@ -4148,7 +4153,7 @@ def test_build_dfs_units_png_notes_missing_cells(tmp_path, monkeypatch):
     assert "ED_PBE == E_PBE" not in kw["caveat"]
     assert "published" in kw["panel_titles"][0]
     dfs_dec = [c for c in dec_calls if c[1].name
-               == "ablation_ed_decomposition_dfs_units.png"]
+               == "holdout_ed_decomposition_eps.png"]
     assert len(dfs_dec) == 1
     assert dfs_dec[0][0]["gamma_mode"] == "fixed"
     # the twin's title identifies the DFS-units variant by the paper's
@@ -4157,7 +4162,7 @@ def test_build_dfs_units_png_notes_missing_cells(tmp_path, monkeypatch):
     assert "eps columns cover" in dfs_dec[0][2]["note"]
 
 
-def test_build_dfs_units_png_absent_without_eps(tmp_path, capsys):
+def test_build_eps_png_absent_without_eps(tmp_path, capsys):
     """Old-schema pulls (no eps columns anywhere) must NOT gain the DFS-units
     figures -- the RMSE-channel ED family renders unchanged, and the skip is
     disclosed with the stale-file warning (the suite's convention for every
@@ -4175,33 +4180,33 @@ def test_build_dfs_units_png_absent_without_eps(tmp_path, capsys):
         pm.write_text(json.dumps(rows))
     out = tmp_path / "f"
     names = {p.name for p in fig.build_density_energy_figures(run, out)}
-    assert "ablation_combined_energy_density.png" in names
-    assert "ablation_combined_energy_density_dfs_units.png" not in names
+    assert "holdout_ed_combined.png" in names
+    assert "holdout_ed_combined_eps.png" not in names
     assert not (out
-                / "ablation_combined_energy_density_dfs_units.png").exists()
-    assert not (out / "ablation_ed_decomposition_dfs_units.png").exists()
+                / "holdout_ed_combined_eps.png").exists()
+    assert not (out / "holdout_ed_decomposition_eps.png").exists()
     assert not (out
-                / "ablation_density_energy_overview_dfs_units.png").exists()
-    assert not (out / "ablation_density_energy_3x3_dfs_units.png").exists()
-    assert not (out / "ablation_density_energy_3x3_dfs_units.csv").exists()
+                / "holdout_overview_eps.png").exists()
+    assert not (out / "holdout_by_pool_3x3_eps.png").exists()
+    assert not (out / "holdout_by_pool_3x3_eps.csv").exists()
     # the log-y siblings ride inside the same gate -- absent eps columns,
     # neither the linear twin nor its _logy version is written
-    assert not (out / "ablation_density_energy_overview_dfs_units_logy.png"
+    assert not (out / "holdout_overview_eps_logy.png"
                 ).exists()
-    assert not (out / "ablation_density_energy_3x3_dfs_units_logy.png"
+    assert not (out / "holdout_by_pool_3x3_eps_logy.png"
                 ).exists()
     assert not (out
-                / "ablation_density_parity_by_channel_dfs_units.png"
+                / "holdout_density_parity_by_pool_eps.png"
                 ).exists()
     # the RMSE-channel standalone parity still renders (its gate is the
     # RMSE density data, present here)
-    assert (out / "ablation_density_parity_by_channel.png").exists()
+    assert (out / "holdout_density_parity_by_pool.png").exists()
     printed = capsys.readouterr().out
     assert "skipping the DFS-units ED legs" in printed
     assert "a stale file from a prior render persists" in printed
 
 
-def test_build_dfs_units_fit_panel_with_cache(tmp_path, monkeypatch):
+def test_build_eps_fit_panel_with_cache(tmp_path, monkeypatch):
     """A resolving nonempirical pool cache puts the own-axes-fit leg in panel
     C of the DFS-units figure, its provenance line in the note band, and --
     the fit being the calibration on THIS data's axes -- makes it the
@@ -4243,7 +4248,7 @@ def test_build_dfs_units_fit_panel_with_cache(tmp_path, monkeypatch):
     out = tmp_path / "f"
     fig.build_density_energy_figures(run, out)
     dfs = [c for c in calls if c[2].name
-           == "ablation_combined_energy_density_dfs_units.png"]
+           == "holdout_ed_combined_eps.png"]
     assert len(dfs) == 1
     dfs_s, fit_s, _, kw = dfs[0]
     assert fit_s is not None and fit_s["gamma_mode"] == "fixed"
@@ -4254,23 +4259,23 @@ def test_build_dfs_units_fit_panel_with_cache(tmp_path, monkeypatch):
     assert "1 species dropped for unequal support" in kw["note"]
     # operative gamma on every single-gamma twin = the fit, not 1084.87
     dec_twin = [c for c in dec_calls if c[1].name
-                == "ablation_ed_decomposition_dfs_units.png"]
+                == "holdout_ed_decomposition_eps.png"]
     assert len(dec_twin) == 1
     assert dec_twin[0][0]["gamma"] == pytest.approx(900.0)
     assert dec_twin[0][0]["gamma_source"] == "own-axes fit"
     ov_twin = [kw2 for p, kw2 in ov_calls if p.name
-               == "ablation_density_energy_overview_dfs_units.png"]
+               == "holdout_overview_eps.png"]
     assert len(ov_twin) == 1
     assert ov_twin[0]["ed_summary"]["gamma"] == pytest.approx(900.0)
     assert ov_twin[0]["ed_summary"]["gamma_source"] == "own-axes fit"
     x3_twin = [kw2 for p, kw2 in x3_calls if p.name
-               == "ablation_density_energy_3x3_dfs_units.png"]
+               == "holdout_by_pool_3x3_eps.png"]
     assert len(x3_twin) == 1
     assert all(s["gamma"] == pytest.approx(900.0)
                and s["gamma_source"] == "own-axes fit"
                for s in x3_twin[0]["ch_summaries"].values())
     # the twin CSV carries BOTH leg families, each at its own gamma
-    with (out / "ablation_density_energy_3x3_dfs_units.csv").open() as fh:
+    with (out / "holdout_by_pool_3x3_eps.csv").open() as fh:
         rows_csv = list(csv.DictReader(fh))
     legs = {r["leg"] for r in rows_csv}
     assert legs == {f"{ch}_wtmad2_eps_gamma_{tag}"
@@ -4281,7 +4286,7 @@ def test_build_dfs_units_fit_panel_with_cache(tmp_path, monkeypatch):
         assert float(r["gamma"]) == pytest.approx(want)
 
 
-def test_plot_combined_energy_density_dfs_units_renders(tmp_path):
+def test_plot_combined_energy_density_eps_renders(tmp_path):
     """Real render of the DFS-units variant: fixed-gamma summaries with the
     panel/placeholder/title overrides, both with and without the fit leg,
     plus the decomposition twin's title override."""
@@ -4336,7 +4341,7 @@ def test_channel_ed_summaries_fixed_gamma_eps(tmp_path):
     assert ch_default["bh76"]["gamma"] != ch_default["w411"]["gamma"]
 
 
-def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
+def test_build_eps_composite_twins(tmp_path, monkeypatch):
     """The build site renders DFS-units twins of the held-out overview and
     the per-channel 3x3: fixed-gamma summaries, eps parity keys, disclosure
     note, DFS-units caveats -- while the originals keep their defaults. The
@@ -4360,9 +4365,9 @@ def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
     out = tmp_path / "f"
     fig.build_density_energy_figures(run, out)
     ov_twin = [kw for p, kw in ov_calls if p.name
-               == "ablation_density_energy_overview_dfs_units.png"]
+               == "holdout_overview_eps.png"]
     x3_twin = [kw for p, kw in x3_calls if p.name
-               == "ablation_density_energy_3x3_dfs_units.png"]
+               == "holdout_by_pool_3x3_eps.png"]
     assert len(ov_twin) == 1 and len(x3_twin) == 1
     assert ov_twin[0]["ed_summary"]["gamma_mode"] == "fixed"
     assert ov_twin[0]["parity_nn_key"] == "density_eps_l1"
@@ -4389,16 +4394,16 @@ def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
     assert x3_twin[0]["ed_gamma_label"] == ""
     # the ORIGINAL calls keep their defaults (no parity/gamma overrides)
     ov_orig = [kw for p, kw in ov_calls if p.name
-               == "ablation_density_energy_overview.png"]
+               == "holdout_overview.png"]
     x3_orig = [kw for p, kw in x3_calls if p.name
-               == "ablation_density_energy_3x3.png"]
+               == "holdout_by_pool_3x3.png"]
     assert len(ov_orig) == 1 and "parity_nn_key" not in ov_orig[0]
     # the ORIGINAL 3x3 runs on its RMSE defaults -- no density-key override
     assert len(x3_orig) == 1 and "density_nn_key" not in x3_orig[0]
     assert x3_orig[0]["ch_summaries"]["combined"]["gamma_mode"] == \
         "self_calibrated"
     # the twin CSV carries the per-channel eps legs at the shared gamma
-    with (out / "ablation_density_energy_3x3_dfs_units.csv").open() as fh:
+    with (out / "holdout_by_pool_3x3_eps.csv").open() as fh:
         rows_csv = list(csv.DictReader(fh))
     legs = {r["leg"] for r in rows_csv}
     # no cache -> only the published-gamma legs
@@ -4411,7 +4416,7 @@ def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
                for r in rows_csv)
 
 
-def test_plot_composite_dfs_units_twins_render(tmp_path):
+def test_plot_composite_eps_twins_render(tmp_path):
     """Real renders of the two composite twins with the override kwargs."""
     run = _make_run_dir(tmp_path)
     _add_holdout_density(run)
@@ -4723,21 +4728,21 @@ def test_3x3_caveats_define_reduction_and_gamma():
     """Both 3x3 caveats spell out the one-bucket reduction formula on the
     figure; the DFS-units caveat states the published gamma value and its
     source. Two-line form keeps the canvas width bounded."""
-    for cav in (fig._3X3_CAVEAT, fig._3X3_DFS_UNITS_CAVEAT):
+    for cav in (fig._3X3_CAVEAT, fig._3X3_EPS_CAVEAT):
         assert "56.84*MAD_pool/mean|dE_ref|_pool" in cav
         assert "scaled relative error" in cav
         assert "\n" in cav
     # the twin's caveat defers the plotted value to the in-panel stamp and
     # names both possible sources (fit operative, published fallback)
-    assert "own-axes" in fig._3X3_DFS_UNITS_CAVEAT
-    assert "1084.87" in fig._3X3_DFS_UNITS_CAVEAT
-    assert "published" in fig._3X3_DFS_UNITS_CAVEAT
+    assert "own-axes" in fig._3X3_EPS_CAVEAT
+    assert "1084.87" in fig._3X3_EPS_CAVEAT
+    assert "published" in fig._3X3_EPS_CAVEAT
     assert "1084.87" not in fig._3X3_CAVEAT   # original stays self-calibrated
     # both caveats point at the standalone parity figure that replaced the
     # parity row
-    assert "ablation_density_parity_by_channel.png" in fig._3X3_CAVEAT
-    assert ("ablation_density_parity_by_channel_dfs_units.png"
-            in fig._3X3_DFS_UNITS_CAVEAT)
+    assert "holdout_density_parity_by_pool.png" in fig._3X3_CAVEAT
+    assert ("holdout_density_parity_by_pool_eps.png"
+            in fig._3X3_EPS_CAVEAT)
 
 
 def test_dfs_paper_notation_symbols():
@@ -4752,8 +4757,8 @@ def test_dfs_paper_notation_symbols():
     assert r"\int|n - n_{ref}|" in fig._EPS_N_EQ
     # the eps caveats define the density error by its equation and use the
     # paper's combined-metric symbol
-    for cav in (fig._ED_DFS_UNITS_CAVEAT, fig._3X3_DFS_UNITS_CAVEAT,
-                fig._HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT):
+    for cav in (fig._ED_EPS_CAVEAT, fig._3X3_EPS_CAVEAT,
+                fig._HOLDOUT_OVERVIEW_EPS_CAVEAT):
         assert fig._EPS_N_SYM in cav
         assert fig._ED_N_SYM in cav
         assert "Eq. 20 eps" not in cav      # the number is not the label
@@ -6879,3 +6884,125 @@ def test_eval_writer_to_figure_reader_seam(tmp_path):
     # The CSV serializes to 6 decimals; agreement is to that precision.
     assert mae_map[("deep", 1)] == pytest.approx(
         float(csv_rows["test_set_bh76"]["mae_nn_kcalmol"]), abs=5e-7)
+
+
+# ---------------------------------------------------------------------------
+# Output names (2026-09-08 renaming): descriptive, no holdover stems
+# ---------------------------------------------------------------------------
+
+# The design page's table: old stem -> new stem, the record of the renaming
+# for readers of the figure directories written before it. The suffix row is
+# carried as its own key ("_dfs_units" -> "_eps") so both halves of a twin's
+# name resolve from one table.
+_RENAMED_OUTPUTS = {
+    "ablation_parity": "holdout_energy_parity",
+    "ablation_arch_subset_heatmap": "holdout_energy_mae_grid",
+    "ablation_arch_subset_heatmap_vs_pbe": "holdout_energy_ratio_vs_pbe_grid",
+    "ablation_mae_by_arch": "holdout_energy_mae_by_arch",
+    "ablation_mae_vs_subset": "holdout_energy_mae_vs_subset",
+    "ablation_ae_parity": "holdout_w411_ae_parity",
+    "ablation_parity_by_class": "holdout_energy_parity_by_class",
+    "ablation_parity_arch_cols": "holdout_energy_parity_by_arch",
+    "ablation_parity_marginal_2x2": "holdout_energy_parity_marginals",
+    "ablation_parity_facet_subset": "holdout_energy_parity_by_subset",
+    "ablation_parity_errbars_by_subset": "holdout_energy_errorbars_by_subset",
+    "ablation_parity_grid_by_subset": "holdout_energy_parity_grid",
+    "ablation_rung_summary": "holdout_energy_by_rung",
+    "ablation_energy_wtmad_mae": "holdout_energy_mae_wtmad2",
+    "ablation_insample_density_ccsd": "insample_density_vs_ccsd",
+    "ablation_insample_overview": "insample_overview",
+    "ablation_holdout_density_ccsd": "holdout_density_vs_ccsd",
+    "ablation_holdout_density_per_arch": "holdout_density_by_arch",
+    "ablation_combined_energy_density": "holdout_ed_combined",
+    "ablation_ed_decomposition": "holdout_ed_decomposition",
+    "ablation_density_energy_overview": "holdout_overview",
+    "ablation_density_energy_3x3": "holdout_by_pool_3x3",
+    "ablation_density_parity_by_channel": "holdout_density_parity_by_pool",
+    "diagnostic_training_losses": "training_loss_total",
+    "diagnostic_size_consistency": "holdout_size_consistency",
+    "diagnostic_failure_mechanisms": "holdout_failure_mechanisms",
+    "diagnostic_capacity_trends": "holdout_capacity_trends",
+    "_dfs_units": "_eps",
+}
+
+# A file literal under either holdover prefix. The run alias
+# ``ablation_notransform`` carries no extension and is deliberately outside
+# the pattern: it names a sweep directory, not an output.
+_HOLDOVER_FILE_RE = re.compile(
+    r"(ablation_[a-z0-9_]+|diagnostic_[a-z_]+)\.(png|csv)")
+
+
+def test_output_names_carry_no_holdover_stems():
+    """No output of the suite carries the 2026-05 sweep's ``ablation_``
+    prefix, the bare ``diagnostic_`` prefix or the ``_dfs_units`` suffix; the
+    module records the renaming in ``OUTPUT_NAMES`` and every new name it
+    records is actually written somewhere in the module."""
+    src = Path(fig.__file__).read_text()
+    stale = sorted({m.group(0) for m in _HOLDOVER_FILE_RE.finditer(src)})
+    assert not stale, stale
+    # The holdover suffix survives in exactly ONE place: the key of the
+    # OUTPUT_NAMES row that records the renaming. Every other quoted literal
+    # carrying it -- a writer name, a docstring file name, EPS_SUFFIX itself --
+    # is a leftover. (A blanket "not in src" cannot be met while the table
+    # records the suffix row the design asks for.)
+    holdover = [h.strip("'\"") for h in
+                re.findall(r"""['"][^'"]*_dfs_units[^'"]*['"]""", src)]
+    assert holdover == ["_dfs_units"], holdover
+    assert fig.EPS_SUFFIX == "_eps"
+
+    names = fig.OUTPUT_NAMES
+    assert isinstance(names, dict), type(names)
+    # 27 stems of the suite's own outputs plus the suffix row; the three
+    # outputs of enhancement_factors.py / subset_descriptor_coverage.py are
+    # renamed in their own writers and are not part of this table.
+    assert len(_RENAMED_OUTPUTS) == 28
+    assert set(names) == set(_RENAMED_OUTPUTS), (
+        sorted(set(names) ^ set(_RENAMED_OUTPUTS)))
+    assert names == _RENAMED_OUTPUTS
+    assert names["_dfs_units"] == "_eps"
+
+    # every recorded new stem is a literal the module writes; the suffix is
+    # generated (stem + EPS_SUFFIX) and so has no standalone literal
+    missing = []
+    for old, new in names.items():
+        if new == "_eps":
+            continue
+        pat = re.compile(r"['\"]" + re.escape(new)
+                         + r"(_logy|_eps|_eps_logy)?\.(png|csv)['\"]")
+        if not pat.search(src):
+            missing.append((old, new))
+    assert not missing, missing
+
+    # The converse: every file literal the module carries is a table value
+    # with at most the ``_logy`` / ``_eps`` / ``_eps_logy`` suffixes, the tail
+    # table, or the basis-comparison family (never renamed). A sibling
+    # renamed away from its twin (``_log`` for ``_logy``) or a second writer
+    # site drifting to a near-miss (``training_losses_total``) is a leftover
+    # the prefix scan above cannot see; the review's two surviving mutations.
+    new_stems = {v for v in names.values() if v != "_eps"}
+    allowed = {"holdout_density_tail.csv", "basis_comparison{sfx}.png",
+               "basis_comparison{sfx}_clean.png",
+               "basis_comparison{sfx}_no_refs.png"}
+    stray = []
+    for lit in set(re.findall(r"""['"]([A-Za-z0-9_{}]+\.(?:png|csv))['"]""",
+                              src)):
+        if lit in allowed:
+            continue
+        stem = re.sub(r"(_logy|_eps|_eps_logy)?\.(png|csv)$", "", lit)
+        if stem not in new_stems:
+            stray.append(lit)
+    assert not stray, sorted(stray)
+
+
+def test_other_scripts_carry_no_holdover_stems():
+    """The two analysis scripts beside the suite carry the same renaming:
+    their three outputs state what they show, not which sweep produced
+    them."""
+    ef_src = (_HERE / "enhancement_factors.py").read_text()
+    cov_src = (_HERE / "subset_descriptor_coverage.py").read_text()
+    old_png = re.compile(r"ablation_[a-z0-9_]+\.png")
+    assert not old_png.findall(ef_src), old_png.findall(ef_src)
+    assert not old_png.findall(cov_src), old_png.findall(cov_src)
+    assert "trained_enhancement_factors.png" in ef_src
+    assert "subset_descriptor_completeness_vs_mae.png" in cov_src
+    assert "subset_descriptor_histograms.png" in cov_src

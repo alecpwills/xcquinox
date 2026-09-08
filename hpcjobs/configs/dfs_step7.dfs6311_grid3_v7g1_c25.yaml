@@ -16,7 +16,7 @@
 # means of density_eps_l1 over density_eps_l1_pbe in each cell's in-sample
 # per_molecule.json; HISTORY 405451c7d) -- and not transferring: the
 # held-out ratio of the same cells is 1.02-1.11 at validation-best
-# (D_rmse / D_pbe_rmse in ablation_combined_energy_density.csv; 0.96-1.18
+# (D_rmse / D_pbe_rmse in holdout_ed_combined.csv; 0.96-1.18
 # over the whole medium column, 1 to 26 molecules), with
 # a recurring tail (BN, RKT17, the multireference set) where the trained
 # functional's first SCF step is largest. Three cycles from the PBE seed

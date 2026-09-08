@@ -157,6 +157,13 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite \
 
 ### What it writes (under `--outroot`, i.e. `notebooks/analysis/`)
 
+File names (2026-09-08): the prefix states which evaluation set a figure reads -- `holdout_`
+(the held-out benchmark reactions and species), `insample_` (the training molecules),
+`training_` (the training log) -- and the suffix `_eps` marks the DFS Eq. 20 per-electron
+density units. Directories rendered before 2026-09-08 carry the older `ablation_` /
+`diagnostic_` stems and the `_dfs_units` suffix; the old-to-new table is `OUTPUT_NAMES` in
+`make_ablation_arch_figure.py`.
+
 Per basis (two parallel sets -- final-checkpoint and val-best):
 - `figures_dfs_step7_<alias>/`           -- final-step eval (`eval_holdout/`)
 - `figures_dfs_step7_<alias>_val_best/`  -- val-best eval (`eval_holdout_val_best/`, the held-out-validation-best checkpoint), only if that data was pulled
@@ -185,7 +192,7 @@ Each per-basis dir contains: the arch-aware ablation set (parity, MAE-by-arch,
 arch×subset heatmap, MAE-vs-subset), held-out energy/density figures, the five
 parity-layout variants, per-run size-consistency / training-loss diagnostics,
 and the DFS Eq. 21 combined energy-density figure + per-cell CSV
-(`ablation_combined_energy_density.png` / `.csv`; held-out only, rendered when
+(`holdout_ed_combined.png` / `.csv`; held-out only, rendered when
 the pulled `eval_holdout*/per_molecule.json` carries the NN + PBE density
 columns -- skipped with a console note otherwise, in which case a stale file
 from an earlier render may persist).
@@ -194,44 +201,44 @@ The six figures whose bars come from the shared per-(arch, subset_size) panel
 helper land twice: the linear file and a `_logy` sibling carrying the SAME data
 on a logarithmic y axis, for reading panels in which one architecture's bars run
 hundreds of kcal/mol and squash the rest. The linear files and every CSV are
-unchanged. The six siblings are `ablation_energy_wtmad_mae_logy.png`,
-`ablation_insample_overview_logy.png`,
-`ablation_density_energy_overview[_dfs_units]_logy.png`, and
-`ablation_density_energy_3x3[_dfs_units]_logy.png`. Among the single-file bar
-figures, `ablation_rung_summary.png` (two per-rung series, not per-cell bars)
-keeps its linear file and `ablation_mae_by_arch.png` keeps its log file. On the
+unchanged. The six siblings are `holdout_energy_mae_wtmad2_logy.png`,
+`insample_overview_logy.png`,
+`holdout_overview[_eps]_logy.png`, and
+`holdout_by_pool_3x3[_eps]_logy.png`. Among the single-file bar
+figures, `holdout_energy_by_rung.png` (two per-rung series, not per-cell bars)
+keeps its linear file and `holdout_energy_mae_by_arch.png` keeps its log file. On the
 log panels only the top edge of a bar carries its value -- a logarithmic axis
 has no zero, so the bars stand on the frame floor rather than on zero and their
 areas mean nothing.
 
 Each per-basis dir also gets two overview composites plus a standalone density
-trend: `ablation_density_energy_overview.png` (per-pool + 2-subset WTMAD-2
+trend: `holdout_overview.png` (per-pool + 2-subset WTMAD-2
 bars over the NN-vs-PBE density parity, the iso-ED decomposition, and the ED
 headline; rendered whenever the held-out density figure renders, with
 placeholder panels when the ED anchors are missing, and its log-y sibling
-`ablation_density_energy_overview_logy.png` alongside),
-`ablation_holdout_density_per_arch.png` (the per-arch held-out density trend
+`holdout_overview_logy.png` alongside),
+`holdout_density_by_arch.png` (the per-arch held-out density trend
 vs subset_size as its own figure; same gate), and
-`ablation_insample_overview.png` (in-sample AE + density; always rendered,
-with its log-y sibling `ablation_insample_overview_logy.png`;
+`insample_overview.png` (in-sample AE + density; always rendered,
+with its log-y sibling `insample_overview_logy.png`;
 final-checkpoint data, so its panels are identical in the final and val-best
-dirs). The per-channel 3x3 `ablation_density_energy_3x3.png` rides the same
+dirs). The per-channel 3x3 `holdout_by_pool_3x3.png` rides the same
 held-out-density gate (WTMAD-2 / density parity / ED as columns
 BH76 | W4-11 | combined, each channel's ED gamma self-calibrated from its own
-PBE anchors, with `ablation_density_energy_3x3.csv` and the log-y sibling
-`ablation_density_energy_3x3_logy.png` alongside), and the
-enriched combined-channel standalone `ablation_ed_decomposition.png` (iso-ED
+PBE anchors, with `holdout_by_pool_3x3.csv` and the log-y sibling
+`holdout_by_pool_3x3_logy.png` alongside), and the
+enriched combined-channel standalone `holdout_ed_decomposition.png` (iso-ED
 contour family, beats-PBE shading, per-arch subset trajectories) rides the
 stricter ED-anchor gate of the ED figure; the standalone per-channel parity
-`ablation_density_parity_by_channel.png` (the 3x3's former parity row,
+`holdout_density_parity_by_pool.png` (the 3x3's former parity row,
 three channel panels in one shared frame) rides the same gate. When the
 pull additionally carries the Eq. 20 eps columns (Sec. 4), both dirs gain
-the DFS-units twins -- `ablation_combined_energy_density_dfs_units.png`,
-`ablation_ed_decomposition_dfs_units.png`,
-`ablation_density_energy_overview_dfs_units.png` (+ `_logy`),
-`ablation_density_energy_3x3_dfs_units.png` + `.csv` (+ `_logy`; ALL BARS: eps
+the DFS-units twins -- `holdout_ed_combined_eps.png`,
+`holdout_ed_decomposition_eps.png`,
+`holdout_overview_eps.png` (+ `_logy`),
+`holdout_by_pool_3x3_eps.png` + `.csv` (+ `_logy`; ALL BARS: eps
 density-error row + combined-metric row under one shared gamma, stamped
-in-panel), and `ablation_density_parity_by_channel_dfs_units.png`;
+in-panel), and `holdout_density_parity_by_pool_eps.png`;
 coverage disclosures stamped in the note bands; the 3x3 twin's shared
 gamma makes its combined metric comparable across channels. The held-out figures carry
 a dataset footer line stating what the held-out eval is (live name-dedup
@@ -303,24 +310,24 @@ a changed eval setting):
 The eval emits the DFS Letter Eq. 20 per-electron L1 density error
 (`density_eps_l1`, `density_eps_l1_pbe`, with `n_electrons` /
 `grid_weight_sum` bookkeeping) alongside the grid-weighted RMSE. When those
-columns are present in a pull, `ablation_combined_energy_density.csv` gains a
+columns are present in a pull, `holdout_ed_combined.csv` gains a
 `wtmad2_eps_gamma_dfs` leg (ED with the Letter's published gamma = 1084.87
 kcal/mol, dimensionally valid on eps units) -- and a `wtmad2_eps_gamma_fit`
 leg when the nonempirical calibration cache (below) sits in the pulled run
 dir -- plus DFS-units twins of every ED surface:
-`ablation_combined_energy_density_dfs_units.png` (published-gamma panel +
+`holdout_ed_combined_eps.png` (published-gamma panel +
 own-axes-fit panel when the cache resolves, placeholder otherwise),
-`ablation_ed_decomposition_dfs_units.png`,
-`ablation_density_energy_overview_dfs_units.png`, and
-`ablation_density_energy_3x3_dfs_units.png` + `.csv` (all bars; per-channel
+`holdout_ed_decomposition_eps.png`,
+`holdout_overview_eps.png`, and
+`holdout_by_pool_3x3_eps.png` + `.csv` (all bars; per-channel
 eps legs under one shared gamma -- the own-axes fit when the calibration
 cache resolves, the published slope otherwise, stamped in-panel; the CSV
 carries both; both bar figures also in their `_logy` form), and
-`ablation_density_parity_by_channel_dfs_units.png`
+`holdout_density_parity_by_pool_eps.png`
 (per-species eps parity, shared frame) -- each with the eps coverage
 disclosures stamped in its note band (partially-covered pulls name the
 missing cells on the figure). Pulls without the columns produce
-byte-identical artifacts; the skipped `_dfs_units` twins are announced with
+byte-identical artifacts; the skipped `_eps` twins are announced with
 the standard stale-file warning.
 
 **DEPLOYMENT GATE:** `xcquinox/alec/evaluation.py` and

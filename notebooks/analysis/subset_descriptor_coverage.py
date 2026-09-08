@@ -27,10 +27,10 @@ histogram-intersection coverage of the held-out descriptor distribution by the
 training subset, averaged over THAT arch's dimensions (1 = fully spans them).
 
 Figures:
-  * ``ablation_descriptor_completeness_vs_mae.png`` -- C (x) vs held-out NN MAE
+  * ``subset_descriptor_completeness_vs_mae.png`` -- C (x) vs held-out NN MAE
     (y), one point per spec, colored by arch, Spearman rho. "Does coverage
     predict accuracy?"
-  * ``ablation_descriptor_histograms.png`` -- one panel per descriptor dimension;
+  * ``subset_descriptor_histograms.png`` -- one panel per descriptor dimension;
     per-subset training distributions overlaid on the shaded held-out reference.
 
 Heavy step (PBE density precompute on ~200 unique molecules; cached, no SCF)
@@ -410,10 +410,10 @@ def build(run_dir: Path, outdir: Path) -> List[Path]:
 
     written = [
         plot_completeness_vs_mae(
-            rows, outdir / "ablation_descriptor_completeness_vs_mae.png", run_id),
+            rows, outdir / "subset_descriptor_completeness_vs_mae.png", run_id),
         plot_descriptor_histograms(
             subset_hists, held_hists, edges_by_dim,
-            outdir / "ablation_descriptor_histograms.png", run_id),
+            outdir / "subset_descriptor_histograms.png", run_id),
     ]
     return written
 

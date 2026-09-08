@@ -26,14 +26,14 @@ Scientific provenance carried on every figure:
     reactions) -- incomplete grid cells are drawn hatched, never dropped.
 
 Figures written (PNG):
-  A. ``ablation_parity.png``       -- Fig-5 analog, 2 panels (NN-vs-PBE and
+  A. ``holdout_energy_parity.png``       -- Fig-5 analog, 2 panels (NN-vs-PBE and
      NN&PBE-vs-benchmark), points colored by arch, per-arch MAE inset bars.
-  B. ``ablation_arch_subset_heatmap.png`` -- arch × subset_size MAE heatmap
+  B. ``holdout_energy_mae_grid.png`` -- arch × subset_size MAE heatmap
      (held-out reaction MAE + in-sample atomization-energy MAE).
-  C. ``ablation_mae_by_arch.png``  -- per-arch MAE bars (log-y), held-out
+  C. ``holdout_energy_mae_by_arch.png``  -- per-arch MAE bars (log-y), held-out
      reaction + in-sample AE, with the PBE-vs-benchmark baseline line.
-  D. ``ablation_mae_vs_subset.png``-- MAE vs subset_size, one line per arch.
-  E. ``ablation_ae_parity.png``    -- HELD-OUT atomization-energy parity (W4-11,
+  D. ``holdout_energy_mae_vs_subset.png``-- MAE vs subset_size, one line per arch.
+  E. ``holdout_w411_ae_parity.png``    -- HELD-OUT atomization-energy parity (W4-11,
      the held-out set's atomization-energy pool): predicted vs reference AE with
      PBE drawn as the baseline (grey × + dashed). Panel (a) by architecture,
      panel (b) colored by training-subset size with an NN-MAE-vs-subset inset.
@@ -97,6 +97,47 @@ ARCH_ORDER: Tuple[str, ...] = arch_style.ARCH_ORDER
 ARCH_COLOR: Dict[str, str] = arch_style.ARCH_COLOR
 SUBSET_SIZES: Tuple[int, ...] = arch_style.SUBSET_SIZES
 POOL_MARKER: Dict[str, str] = {"bh76": "o", "w411": "^"}
+
+# Output file names (2026-09-08). The prefix states which evaluation set a
+# figure reads -- ``holdout_`` (the held-out benchmark reactions and species),
+# ``insample_`` (the training molecules), ``training_`` (the training log) --
+# and the suffix ``_eps`` marks the DFS Eq. 20 per-electron density units.
+# Directories rendered before 2026-09-08 carry the stems of the 2026-05-31
+# architecture-ablation sweep this module was written for; OUTPUT_NAMES maps
+# each old stem to the current one so those directories can still be read.
+# The three outputs of enhancement_factors.py and
+# subset_descriptor_coverage.py were renamed in their own writers.
+EPS_SUFFIX = "_eps"
+OUTPUT_NAMES: Dict[str, str] = {
+    "ablation_parity": "holdout_energy_parity",
+    "ablation_arch_subset_heatmap": "holdout_energy_mae_grid",
+    "ablation_arch_subset_heatmap_vs_pbe": "holdout_energy_ratio_vs_pbe_grid",
+    "ablation_mae_by_arch": "holdout_energy_mae_by_arch",
+    "ablation_mae_vs_subset": "holdout_energy_mae_vs_subset",
+    "ablation_ae_parity": "holdout_w411_ae_parity",
+    "ablation_parity_by_class": "holdout_energy_parity_by_class",
+    "ablation_parity_arch_cols": "holdout_energy_parity_by_arch",
+    "ablation_parity_marginal_2x2": "holdout_energy_parity_marginals",
+    "ablation_parity_facet_subset": "holdout_energy_parity_by_subset",
+    "ablation_parity_errbars_by_subset": "holdout_energy_errorbars_by_subset",
+    "ablation_parity_grid_by_subset": "holdout_energy_parity_grid",
+    "ablation_rung_summary": "holdout_energy_by_rung",
+    "ablation_energy_wtmad_mae": "holdout_energy_mae_wtmad2",
+    "ablation_insample_density_ccsd": "insample_density_vs_ccsd",
+    "ablation_insample_overview": "insample_overview",
+    "ablation_holdout_density_ccsd": "holdout_density_vs_ccsd",
+    "ablation_holdout_density_per_arch": "holdout_density_by_arch",
+    "ablation_combined_energy_density": "holdout_ed_combined",
+    "ablation_ed_decomposition": "holdout_ed_decomposition",
+    "ablation_density_energy_overview": "holdout_overview",
+    "ablation_density_energy_3x3": "holdout_by_pool_3x3",
+    "ablation_density_parity_by_channel": "holdout_density_parity_by_pool",
+    "diagnostic_training_losses": "training_loss_total",
+    "diagnostic_size_consistency": "holdout_size_consistency",
+    "diagnostic_failure_mechanisms": "holdout_failure_mechanisms",
+    "diagnostic_capacity_trends": "holdout_capacity_trends",
+    "_dfs_units": EPS_SUFFIX,
+}
 
 # Compact rung tags for tight gutters/labels (the full RUNG_ORDER names are too
 # long for a heatmap gutter or a 1-arch-tall rung span).
@@ -3644,11 +3685,11 @@ def build_parity_variants(run_dir: Path, outdir: Path,
     caveat = nn_vs_pbe_caveat(rows, baseline)
     ds_e = _holdout_eval_note(rows, [])
     variants = [
-        (plot_parity_arch_cols, "ablation_parity_arch_cols.png"),
-        (plot_parity_marginal, "ablation_parity_marginal_2x2.png"),
-        (plot_parity_facet_subset, "ablation_parity_facet_subset.png"),
-        (plot_parity_errbars_by_subset, "ablation_parity_errbars_by_subset.png"),
-        (plot_parity_grid_by_subset, "ablation_parity_grid_by_subset.png"),
+        (plot_parity_arch_cols, "holdout_energy_parity_by_arch.png"),
+        (plot_parity_marginal, "holdout_energy_parity_marginals.png"),
+        (plot_parity_facet_subset, "holdout_energy_parity_by_subset.png"),
+        (plot_parity_errbars_by_subset, "holdout_energy_errorbars_by_subset.png"),
+        (plot_parity_grid_by_subset, "holdout_energy_parity_grid.png"),
     ]
     written: List[Path] = []
     for fn, name in variants:
@@ -5891,7 +5932,7 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
     panel empty. When every needed row carries the DFS Eq. 20 eps columns
     (``density_eps_l1`` and ``density_eps_l1_pbe``, any row), the same
     three panels are written again on that channel as
-    ``<stem>_dfs_units.png`` beside the figure (written, not returned: the
+    ``<stem>_eps.png`` beside the figure (written, not returned: the
     return stays this one path). Panel bodies live in
     ``_insample_density_lines_panel`` / ``_insample_density_strip_panel`` /
     ``_insample_ratio_panel`` (the first two shared with the in-sample
@@ -5938,7 +5979,7 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
             title="In-sample density error vs CCSD (Dick-style diagnostic)")
     if any(_is_num(r.get("density_eps_l1")) and _is_num(r.get("density_eps_l1_pbe"))
            for r in density_rows):
-        _render(out_path.with_name(out_path.stem + "_dfs_units" + out_path.suffix),
+        _render(out_path.with_name(out_path.stem + EPS_SUFFIX + out_path.suffix),
                 key="density_eps_l1", pbe_key="density_eps_l1_pbe",
                 unit=_EPS_N_SYM, caveat_text=insample_eps,
                 title="In-sample density error vs CCSD (DFS units, Eq. 20 "
@@ -6170,7 +6211,7 @@ _ED_CAVEAT = (_ED_SYM + " = 2/(1/E + 1/(gamma*D)) (Dick & Fernandez-Serra, "
 
 # kept near _ED_CAVEAT's length: the caveat renders as ONE figtext line and
 # savefig.bbox="tight" widens the canvas to the longest line
-_ED_DFS_UNITS_CAVEAT = (
+_ED_EPS_CAVEAT = (
     _ED_N_SYM + " = 2/(1/E + 1/(gamma " + _EPS_N_SYM + ")) (Dick & "
     "Fernandez-Serra, PRB 104, L161109 (2021), Eq. 21); " + _EPS_N_EQ
     + " (Eq. 20 per species; quadrature sum_i(w_i|rho-rho_ref|_i)/N_e); "
@@ -6530,7 +6571,7 @@ def _overview_provenance(ed_summary: Optional[Dict[str, Any]]) -> str:
             "D/E: grid-weight-averaged density RMSE vs CCSD (not CCSD(T)) "
             "refs at matching basis/grid, PBE model-free on the same grid. "
             "F: ED -- full diagnostics on "
-            "ablation_combined_energy_density.png.")
+            "holdout_ed_combined.png.")
 
 
 def plot_density_energy_overview(rows: List[Dict[str, Any]],
@@ -6662,9 +6703,9 @@ _3X3_CAVEAT = (
     + _ED_SYM + " of PBE == E_PBE per channel and " + _ED_SYM + " never "
     "compares across channels. Overlap species appear in both density "
     "channels; per-species parity in "
-    "ablation_density_parity_by_channel.png.")
+    "holdout_density_parity_by_pool.png.")
 
-_3X3_DFS_UNITS_CAVEAT = (
+_3X3_EPS_CAVEAT = (
     "Columns are channels: BH76 | W4-11 | combined. A/B and the G/H ED "
     "energy legs use the SINGLE-POOL 'WTMAD-2', which collapses to "
     "56.84*MAD_pool/mean|dE_ref|_pool -- the pool's mean abs deviation "
@@ -6678,9 +6719,9 @@ _3X3_DFS_UNITS_CAVEAT = (
     "resolves, the Letter's published 1084.87 otherwise) -- "
     + _ED_N_SYM + " compares across columns; " + _ED_N_SYM + " of PBE != "
     "E_PBE. Density row = cell-mean " + _EPS_N_SYM + "; per-species parity "
-    "in ablation_density_parity_by_channel_dfs_units.png.")
+    "in holdout_density_parity_by_pool_eps.png.")
 
-_HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT = (
+_HOLDOUT_OVERVIEW_EPS_CAVEAT = (
     "Single-pool 'WTMAD-2' (A, B) reduces to 56.84*MAD_pool/mean|ref|_pool "
     "-- a scaled relative error, not a reweighting; only (C) reweights (NOT "
     "full GMTKN55). E/F: " + _ED_N_SYM + " = 2/(1/E + 1/(gamma "
@@ -6885,7 +6926,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
     return out_path
 
 
-_PARITY_BY_CHANNEL_DFS_UNITS_CAVEAT = (
+_PARITY_BY_CHANNEL_EPS_CAVEAT = (
     "Per-species " + _EPS_N_SYM + " vs CCSD (DFS Eq. 20: "
     + _EPS_N_EQ + " per species; quadrature "
     "sum_i(w_i|rho-rho_ref|_i)/N_e), NN vs the "
@@ -8227,11 +8268,11 @@ def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
     rid = " + ".join(labels) + f" [{_ckpt_label(eval_subdir)}]"
     loss_rows = collect_training_losses_multi(runs)
     return [
-        plot_training_losses(loss_rows, outdir / "diagnostic_training_losses.png",
+        plot_training_losses(loss_rows, outdir / "training_loss_total.png",
                              rid, highlight=[("deep_attn", 6)]),
-        plot_failure_diagnostic(runs, outdir / "diagnostic_failure_mechanisms.png",
+        plot_failure_diagnostic(runs, outdir / "holdout_failure_mechanisms.png",
                                 rid, eval_subdir=eval_subdir),
-        plot_capacity_trends(runs, outdir / "diagnostic_capacity_trends.png", rid,
+        plot_capacity_trends(runs, outdir / "holdout_capacity_trends.png", rid,
                              eval_subdir=eval_subdir),
     ]
 
@@ -8247,17 +8288,17 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     held-out energy panels follow ``eval_subdir``. When the held-out
     per-molecule files carry the density columns, the held-out density figure
     AND the DFS Eq. 21 combined energy-density figure
-    (``ablation_combined_energy_density.png``) are rendered too; the ED
+    (``holdout_ed_combined.png``) are rendered too; the ED
     per-cell CSV is written alongside but its path is NOT in the returned
     list (the return contract stays PNG-only). Two overview composites ride
-    along: ``ablation_insample_overview.png`` is ALWAYS rendered (in-sample
+    along: ``insample_overview.png`` is ALWAYS rendered (in-sample
     AE + density; final-checkpoint data, so its panels are identical in the
-    final and val-best output dirs), and ``ablation_density_energy_overview.png``
-    + the standalone ``ablation_holdout_density_per_arch.png`` + the
-    per-channel ``ablation_density_energy_3x3.png`` (with its own per-channel
+    final and val-best output dirs), and ``holdout_overview.png``
+    + the standalone ``holdout_density_by_arch.png`` + the
+    per-channel ``holdout_by_pool_3x3.png`` (with its own per-channel
     ED CSV, path printed, never returned) render whenever the held-out
     density figure does, with placeholder panels where a channel's ED anchors
-    are missing; the enriched ``ablation_ed_decomposition.png`` renders with
+    are missing; the enriched ``holdout_ed_decomposition.png`` renders with
     the ED figure. The held-out figures carry a ``dataset`` footer line
     stating what the held-out eval is (live reaction/species counts from
     ``_holdout_eval_note``). Every figure whose bars come from the shared
@@ -8266,9 +8307,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     the same data on a logarithmic y axis -- so a cell hundreds of kcal/mol
     above the rest cannot flatten the remaining bars. Six such pairs: the
     energy figure, the in-sample overview (panel (A)), and the four
-    density/energy composites. ``ablation_rung_summary.png`` is NOT one of
+    density/energy composites. ``holdout_energy_by_rung.png`` is NOT one of
     them: its bars are two per-rung series, not per-cell, and it keeps its
-    single linear file (as ``ablation_mae_by_arch.png``, written by
+    single linear file (as ``holdout_energy_mae_by_arch.png``, written by
     :func:`build_all`, keeps its single log file). The CSVs are unaffected.
 
     ``archs`` restricts every figure and CSV of this builder to the named
@@ -8378,24 +8419,24 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                                  "N_e-normalized; AE vs benchmark reference "
                                  "atomization energies."))
     written = [
-        plot_rung_summary(rows, outdir / "ablation_rung_summary.png", run_id,
+        plot_rung_summary(rows, outdir / "holdout_energy_by_rung.png", run_id,
                           pbe_baseline=baseline, scan_baseline=scan_baseline,
                           note=note, provenance=prov, caveat=caveat,
                           dataset=ds_e),
-        plot_energy_wtmad_mae(rows, outdir / "ablation_energy_wtmad_mae.png",
+        plot_energy_wtmad_mae(rows, outdir / "holdout_energy_mae_wtmad2.png",
                               run_id, **wtmad_kw),
         plot_energy_wtmad_mae(rows,
-                              outdir / "ablation_energy_wtmad_mae_logy.png",
+                              outdir / "holdout_energy_mae_wtmad2_logy.png",
                               run_id, yscale="log", **wtmad_kw),
         plot_insample_density_ccsd(drows,
-                                   outdir / "ablation_insample_density_ccsd.png",
+                                   outdir / "insample_density_vs_ccsd.png",
                                    run_id, note=note, provenance=dens_prov),
         plot_insample_overview(
-            ae_rows, drows, outdir / "ablation_insample_overview.png", run_id,
+            ae_rows, drows, outdir / "insample_overview.png", run_id,
             **ins_ov_kw),
         plot_insample_overview(
             ae_rows, drows,
-            outdir / "ablation_insample_overview_logy.png", run_id,
+            outdir / "insample_overview_logy.png", run_id,
             yscale="log", **ins_ov_kw),
     ]
     # Held-out density family: only renderable once benchmark CCSD reference
@@ -8423,11 +8464,11 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             t1=(load_t1_table(run_dir).get("t1") or None))
         print(f"  (held-out density tail: wrote {tail_csv})")
         written.append(plot_holdout_density_ccsd(
-            hd_rows, outdir / "ablation_holdout_density_ccsd.png", run_id,
+            hd_rows, outdir / "holdout_density_vs_ccsd.png", run_id,
             pbe_table=pbe_table, note=note, provenance=hd_prov, dataset=ds,
             scan_density_records=scan_dens_recs))
         written.append(plot_holdout_density_per_arch(
-            hd_rows, outdir / "ablation_holdout_density_per_arch.png", run_id,
+            hd_rows, outdir / "holdout_density_by_arch.png", run_id,
             pbe_table=pbe_table, note=note, provenance=hd_prov, dataset=ds,
             scan_density_records=scan_dens_recs))
         # DFS Eq. 21 combined ED: needs the NN held-out density (finite
@@ -8534,10 +8575,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                                  f"over {len(shared)} shared cells.")
             written.append(plot_combined_energy_density(
                 wt_summary, mae_summary,
-                outdir / "ablation_combined_energy_density.png", run_id,
+                outdir / "holdout_ed_combined.png", run_id,
                 note="  ".join(extra), provenance=ed_prov, dataset=ds))
             written.append(plot_ed_decomposition(
-                wt_summary, outdir / "ablation_ed_decomposition.png",
+                wt_summary, outdir / "holdout_ed_decomposition.png",
                 run_id, note="  ".join(extra), provenance=ed_prov,
                 dataset=ds))
             legs_main: Dict[str, Optional[Dict[str, Any]]] = {
@@ -8589,7 +8630,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 # headline, and the density leg re-anchored on the Eq. 20
                 # eps channel -- previously omitted here, so the same cell
                 # carried ED_scan in the 3x3 DFS-units CSV but a blank in
-                # ablation_combined_energy_density.csv.
+                # holdout_ed_combined.csv.
                 d_scan_eps, deps_u, deps_r = scan_density_line_counts(
                     scan_dens_recs,
                     _pbe_density_map(hd_rows, pbe_table,
@@ -8682,9 +8723,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                                  "the dotted line is the pooled SCAN.")
                 written.append(plot_combined_energy_density(
                     dfs_summary, fit_summary,
-                    outdir / "ablation_combined_energy_density_dfs_units.png",
+                    outdir / "holdout_ed_combined_eps.png",
                     run_id, note="  ".join(eps_extra), provenance=eps_prov,
-                    caveat=_ED_DFS_UNITS_CAVEAT, dataset=ds,
+                    caveat=_ED_EPS_CAVEAT, dataset=ds,
                     panel_titles=(
                         _ED_N_SYM + ", $\\gamma$ = "
                         f"{_DFS_GAMMA_KCAL:g} (published)",
@@ -8697,9 +8738,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                           f"{_EPS_N_SYM}) -- held-out, NN vs PBE"))
                 written.append(plot_ed_decomposition(
                     op_summary,
-                    outdir / "ablation_ed_decomposition_dfs_units.png",
+                    outdir / "holdout_ed_decomposition_eps.png",
                     run_id, note="  ".join(eps_extra), provenance=eps_prov,
-                    caveat=_ED_DFS_UNITS_CAVEAT, dataset=ds,
+                    caveat=_ED_EPS_CAVEAT, dataset=ds,
                     title=f"{_ED_N_SYM} decomposition (DFS Eq. 21 on "
                           f"{_EPS_N_SYM}) -- held-out, NN vs PBE"))
                 # DFS-units twins of the composite ED surfaces: the held-out
@@ -8718,9 +8759,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                         "parity vs CCSD refs, PBE model-free. E/F: "
                         + _ED_N_SYM + " with the gamma stamped in-panel -- "
                         "full diagnostics on "
-                        "ablation_combined_energy_density_dfs_units.png. "
+                        "holdout_ed_combined_eps.png. "
                         + _CELL_ROWS_GLYPH_NOTE),
-                    caveat=_HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT, dataset=ds,
+                    caveat=_HOLDOUT_OVERVIEW_EPS_CAVEAT, dataset=ds,
                     parity_nn_key="density_eps_l1",
                     parity_pbe_key="density_eps_l1_pbe",
                     parity_unit_label=_EPS_N_SYM,
@@ -8728,12 +8769,12 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                           f"+ {_EPS_N_SYM} vs CCSD + {_ED_N_SYM}")
                 written.append(plot_density_energy_overview(
                     rows, hd_rows,
-                    outdir / "ablation_density_energy_overview_dfs_units.png",
+                    outdir / "holdout_overview_eps.png",
                     run_id, **ov_dfs_kw))
                 written.append(plot_density_energy_overview(
                     rows, hd_rows,
                     outdir
-                    / "ablation_density_energy_overview_dfs_units_logy.png",
+                    / "holdout_overview_eps_logy.png",
                     run_id, yscale="log", **ov_dfs_kw))
                 ch_eps_dfs = channel_ed_summaries(
                     rows, hd_rows, pbe_table, fixed_gamma=_DFS_GAMMA_KCAL,
@@ -8761,7 +8802,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                         + _EPS_N_SYM + " (DFS Eq. 20) vs CCSD; ONE gamma "
                         "shared by all channels, stamped in each panel. "
                         + _CELL_ROWS_GLYPH_NOTE),
-                    caveat=_3X3_DFS_UNITS_CAVEAT, dataset=ds,
+                    caveat=_3X3_EPS_CAVEAT, dataset=ds,
                     density_nn_key="density_eps_l1",
                     density_pbe_key="density_eps_l1_pbe",
                     density_unit_label=_EPS_N_SYM,
@@ -8774,16 +8815,16 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                           "(BH76, W4-11, combined)")
                 written.append(plot_density_energy_3x3(
                     rows, hd_rows,
-                    outdir / "ablation_density_energy_3x3_dfs_units.png",
+                    outdir / "holdout_by_pool_3x3_eps.png",
                     run_id, **x3_dfs_kw))
                 written.append(plot_density_energy_3x3(
                     rows, hd_rows,
-                    outdir / "ablation_density_energy_3x3_dfs_units_logy.png",
+                    outdir / "holdout_by_pool_3x3_eps_logy.png",
                     run_id, yscale="log", **x3_dfs_kw))
                 written.append(plot_density_parity_by_channel(
                     rows, hd_rows,
                     outdir
-                    / "ablation_density_parity_by_channel_dfs_units.png",
+                    / "holdout_density_parity_by_pool_eps.png",
                     run_id, pbe_table=pbe_table,
                     nn_key="density_eps_l1", pbe_key="density_eps_l1_pbe",
                     unit_label=_EPS_N_SYM, note="  ".join(eps_extra),
@@ -8792,7 +8833,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                         "CCSD references at matching basis/grid; PBE "
                         "model-free on the same grid. Channel membership "
                         "from the reactions' reactants+products."),
-                    caveat=_PARITY_BY_CHANNEL_DFS_UNITS_CAVEAT, dataset=ds,
+                    caveat=_PARITY_BY_CHANNEL_EPS_CAVEAT, dataset=ds,
                     title="Per-species " + _EPS_N_SYM + " parity by "
                           "channel (DFS units) -- held-out, NN vs PBE"))
                 pools_of_eps = _species_pools(rows)
@@ -8816,19 +8857,19 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                         counts3_eps[f"{ch}_wtmad2_eps_gamma_fit"] = ch_counts
                 csv3_eps = write_combined_ed_csv(
                     legs3_eps,
-                    outdir / "ablation_density_energy_3x3_dfs_units.csv",
+                    outdir / "holdout_by_pool_3x3_eps.csv",
                     n_reactions={}, n_density={}, counts_by_leg=counts3_eps)
                 print(f"  (per-channel DFS-units ED: wrote {csv3_eps})")
             else:
                 print("  (no Eq. 20 eps columns / positive eps PBE anchor in "
                       "this pull -- skipping the DFS-units ED legs and the "
-                      "_dfs_units figure twins (combined ED, decomposition, "
+                      "_eps figure twins (combined ED, decomposition, "
                       "overview, 3x3 + CSV, parity-by-channel); a stale "
                       "file from a prior render persists, as with the "
                       "holdout density figure)")
             csv_path = write_combined_ed_csv(
                 legs_main,
-                outdir / "ablation_combined_energy_density.csv",
+                outdir / "holdout_ed_combined.csv",
                 n_reactions=_cell_counts(rows, "abs_error_nn_kcalmol"),
                 n_density=_cell_counts(hd_rows, "density_rmse"),
                 n_reactions_slice=_cell_counts(rows,
@@ -8846,8 +8887,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             print(f"  (combined ED: {gtxt}; wrote {csv_path})")
         else:
             print("  (no NN held-out density and/or positive PBE anchors -- "
-                  "skipping ablation_combined_energy_density.png/.csv, "
-                  "ablation_ed_decomposition.png, and their _dfs_units "
+                  "skipping holdout_ed_combined.png/.csv, "
+                  "holdout_ed_decomposition.png, and their _eps "
                   "twins; a stale file from a prior render persists, as "
                   "with the holdout density figure)")
         # Held-out overview composite: same gate as the holdout density figure
@@ -8861,11 +8902,11 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                      provenance=ov_prov, dataset=ds)
         written.append(plot_density_energy_overview(
             rows, hd_rows,
-            outdir / "ablation_density_energy_overview.png", run_id,
+            outdir / "holdout_overview.png", run_id,
             **ov_kw))
         written.append(plot_density_energy_overview(
             rows, hd_rows,
-            outdir / "ablation_density_energy_overview_logy.png", run_id,
+            outdir / "holdout_overview_logy.png", run_id,
             yscale="log", **ov_kw))
         # Per-channel 3x3 + its CSV: renders whenever held-out density
         # exists; channels degrade individually inside the figure.
@@ -8886,10 +8927,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                      scan_density_records=scan_dens_recs,
                      scan_errors=scan_errs)
         written.append(plot_density_energy_3x3(
-            rows, hd_rows, outdir / "ablation_density_energy_3x3.png",
+            rows, hd_rows, outdir / "holdout_by_pool_3x3.png",
             run_id, **x3_kw))
         written.append(plot_density_energy_3x3(
-            rows, hd_rows, outdir / "ablation_density_energy_3x3_logy.png",
+            rows, hd_rows, outdir / "holdout_by_pool_3x3_logy.png",
             run_id, yscale="log", **x3_kw))
         pools_of = _species_pools(rows)
         legs3: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -8906,13 +8947,13 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                             _cell_counts(ch_hd, "density_rmse"),
                             _cell_counts(ch_rows, "abs_error_pbe_kcalmol"))
         csv3 = write_combined_ed_csv(
-            legs3, outdir / "ablation_density_energy_3x3.csv",
+            legs3, outdir / "holdout_by_pool_3x3.csv",
             n_reactions={}, n_density={}, counts_by_leg=counts3)
         print(f"  (per-channel ED: wrote {csv3})")
         # the 3x3's former parity row as its own figure (RMSE channel)
         written.append(plot_density_parity_by_channel(
             rows, hd_rows,
-            outdir / "ablation_density_parity_by_channel.png", run_id,
+            outdir / "holdout_density_parity_by_pool.png", run_id,
             pbe_table=pbe_table, note=note,
             provenance=("Per-species grid-weighted density RMSE vs CCSD "
                         "references at matching basis/grid; PBE model-free "
@@ -8921,7 +8962,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             dataset=ds))
     else:
         print("  (no held-out density data -- skipping "
-              "ablation_holdout_density_ccsd.png; needs benchmark CCSD refs)")
+              "holdout_density_vs_ccsd.png; needs benchmark CCSD refs)")
     return written
 
 
@@ -9029,12 +9070,12 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
         sc_cells = sorted((cell for cell in present if cell[1] == ss0),
                           key=lambda c: (order.get(c[0], len(ARCH_ORDER)), c[0]))
         written.append(plot_size_consistency_diagnostic(
-            rows, outdir / "diagnostic_size_consistency.png", run_id, sc_cells,
+            rows, outdir / "holdout_size_consistency.png", run_id, sc_cells,
             note=note, dataset=_holdout_eval_note(rows, [])))
     loss_rows = filter_rows_by_arch(collect_training_losses(
         run_dir, basis_label=basis_label or run_basis_label(run_dir)), archs)
     written.append(plot_training_losses(
-        loss_rows, outdir / "diagnostic_training_losses.png", run_id, note=note,
+        loss_rows, outdir / "training_loss_total.png", run_id, note=note,
         highlight=[("deep_attn", 6)]))
     return written
 
@@ -9145,28 +9186,28 @@ def build_all(run_dir: Path, outdir: Path,
 
     written: List[Path] = []
     written.append(plot_parity(
-        reaction_rows, outdir / "ablation_parity.png", run_id, note=note,
+        reaction_rows, outdir / "holdout_energy_parity.png", run_id, note=note,
         provenance=prov, caveat=caveat))
     written.append(plot_arch_subset_heatmap(
-        reaction_rows, insample_rows, outdir / "ablation_arch_subset_heatmap.png",
+        reaction_rows, insample_rows, outdir / "holdout_energy_mae_grid.png",
         run_id, n_trained=n_trained, n_total=n_total, n_holdout=n_holdout,
         note=note, provenance=prov))
     written.append(plot_arch_subset_heatmap_vs_pbe(
-        reaction_rows, outdir / "ablation_arch_subset_heatmap_vs_pbe.png",
+        reaction_rows, outdir / "holdout_energy_ratio_vs_pbe_grid.png",
         run_id, note=note, provenance=prov))
     written.append(plot_mae_by_arch(
-        reaction_rows, insample_rows, outdir / "ablation_mae_by_arch.png", run_id,
+        reaction_rows, insample_rows, outdir / "holdout_energy_mae_by_arch.png", run_id,
         note=note, provenance=prov, scan_baseline=scan_baseline,
         scan_errors=scan_errs))
     written.append(plot_mae_vs_subset(
-        reaction_rows, insample_rows, outdir / "ablation_mae_vs_subset.png", run_id,
+        reaction_rows, insample_rows, outdir / "holdout_energy_mae_vs_subset.png", run_id,
         note=note, provenance=prov, pbe_baseline=baseline,
         scan_baseline=scan_baseline))
     written.append(plot_ae_parity(
-        reaction_rows, outdir / "ablation_ae_parity.png", run_id, note=note,
+        reaction_rows, outdir / "holdout_w411_ae_parity.png", run_id, note=note,
         provenance=prov))
     written.append(plot_parity_by_class(
-        reaction_rows, outdir / "ablation_parity_by_class.png", run_id,
+        reaction_rows, outdir / "holdout_energy_parity_by_class.png", run_id,
         note=note, provenance=prov, caveat=caveat))
     return written
 

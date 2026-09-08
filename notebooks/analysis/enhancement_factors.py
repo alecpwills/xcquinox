@@ -516,7 +516,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     outdir = Path(args.outdir).expanduser().resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     print(f"run_dir: {run_dir}")
-    out = plot_enhancement_factors(run_dir, outdir / "ablation_enhancement_factors.png")
+    out = plot_enhancement_factors(run_dir, outdir / "trained_enhancement_factors.png")
     print(f"  wrote {out}")
     return 0
 

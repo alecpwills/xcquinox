@@ -47,9 +47,9 @@ from test_make_ablation_arch_figure import (
 
 _HERE = Path(__file__).resolve().parent
 _GOLDEN = _HERE / "golden" / "density_variants"
-_GOLDEN_CSVS = ("ablation_combined_energy_density.csv",
-                "ablation_density_energy_3x3.csv",
-                "ablation_density_energy_3x3_dfs_units.csv")
+_GOLDEN_CSVS = ("holdout_ed_combined.csv",
+                "holdout_by_pool_3x3.csv",
+                "holdout_by_pool_3x3_eps.csv")
 # the tail table joins the byte-identity set (2026-09-08: its per-cell rule is shared
 # with the recurring-tail variant, so the refactor is pinned here); the commit-B column
 # test keeps the three ED tables it was written for
@@ -465,9 +465,9 @@ def test_variant_csv_d_rmse_is_species_mean_without_excluded(builds):
     row moves D_rmse away from the oracle."""
     builds.require()
     std = _by_leg_cell(_read_csv(builds.std
-                                 / "ablation_combined_energy_density.csv"))
+                                 / "holdout_ed_combined.csv"))
     var = _by_leg_cell(_read_csv(builds.var
-                                 / "ablation_combined_energy_density.csv"))
+                                 / "holdout_ed_combined.csv"))
     for (arch, ss), idx in _RICH_CELLS.items():
         s = std[("wtmad2", arch, ss)]
         v = var[("wtmad2", arch, ss)]
@@ -491,9 +491,9 @@ def test_variant_csv_d_pbe_rmse_filtered_on_both_legs(builds):
     DFS-units anchor at its unfiltered value."""
     builds.require()
     std = _by_leg_cell(_read_csv(builds.std
-                                 / "ablation_combined_energy_density.csv"))
+                                 / "holdout_ed_combined.csv"))
     var = _by_leg_cell(_read_csv(builds.var
-                                 / "ablation_combined_energy_density.csv"))
+                                 / "holdout_ed_combined.csv"))
     exp = {
         ("wtmad2", "density_rmse_pbe"): (_expected_d_pbe("density_rmse_pbe"),
                                          _expected_d_pbe("density_rmse_pbe",
@@ -592,9 +592,9 @@ def test_suite_loop_renders_the_t1_variant_directory(tmp_path):
                              archs=("deep",))
     variant = outroot / "figures_dfs_step7_svp_excl_t1"
     assert variant.is_dir(), sorted(p.name for p in outroot.iterdir())
-    assert (variant / "ablation_holdout_density_ccsd.png").is_file()
+    assert (variant / "holdout_density_vs_ccsd.png").is_file()
     csv_rows = [r for r in _read_csv(
-        variant / "ablation_combined_energy_density.csv")
+        variant / "holdout_ed_combined.csv")
         if r["leg"] == "wtmad2"]
     assert csv_rows
     assert {r["arch"] for r in csv_rows} == {"deep"}
@@ -822,7 +822,7 @@ def test_builder_fills_insample_columns_in_the_combined_csv_only(builds):
     """The combined CSV carries the in-sample leg; the per-channel 3x3 CSVs
     leave both columns blank."""
     builds.require()
-    combined = _read_csv(builds.std / "ablation_combined_energy_density.csv")
+    combined = _read_csv(builds.std / "holdout_ed_combined.csv")
     # in-sample species: HO, CH4 and the H2/h2 pair -> (3e-3 + 1e-3 + 3e-3)/3
     want = (3e-3 + 1e-3 + (1.0e-3 + 5.0e-3) / 2) / 3
     assert {r["leg"] for r in combined} >= {"wtmad2", "wtmad2_eps_gamma_dfs"}
@@ -834,14 +834,14 @@ def test_builder_fills_insample_columns_in_the_combined_csv_only(builds):
         else:
             assert float(r["D_insample_rmse"]) == pytest.approx(want, rel=1e-9)
         assert r["n_insample_species"] == "3"
-    for name in ("ablation_density_energy_3x3.csv",
-                 "ablation_density_energy_3x3_dfs_units.csv"):
+    for name in ("holdout_by_pool_3x3.csv",
+                 "holdout_by_pool_3x3_eps.csv"):
         for r in _read_csv(builds.std / name):
             assert r["D_insample_rmse"] == "", name
             assert r["n_insample_species"] == "", name
     # the variant directory carries the SAME in-sample columns: the exclusion
     # filters the held-out rows only, never the trained species
-    var = _read_csv(builds.var / "ablation_combined_energy_density.csv")
+    var = _read_csv(builds.var / "holdout_ed_combined.csv")
     key = lambda r: (r["leg"], r["arch"], r["subset_size"])
     std_ins = {key(r): (r["D_insample_rmse"], r["n_insample_species"]) for r in combined}
     var_ins = {key(r): (r["D_insample_rmse"], r["n_insample_species"]) for r in var}
@@ -867,7 +867,7 @@ def test_insample_density_ccsd_gains_a_ratio_panel(tmp_path, monkeypatch):
             for s in (1, 3)
             for m, v in (("HO", 3e-3), ("CH4", 1e-3))]
     fig.plot_insample_density_ccsd(
-        rows, tmp_path / "ablation_insample_density_ccsd.png", "run_x")
+        rows, tmp_path / "insample_density_vs_ccsd.png", "run_x")
     assert made, "the plotter no longer builds its figure through plt.subplots"
     axes = made[0].axes
     assert len(axes) >= 3, len(axes)
@@ -883,7 +883,7 @@ def test_insample_density_ccsd_gains_a_ratio_panel(tmp_path, monkeypatch):
     assert ys == [0.5, 1.0], ys
 
 
-def test_insample_density_ccsd_dfs_units_twin_iff_eps_columns(tmp_path):
+def test_insample_density_ccsd_eps_twin_iff_eps_columns(tmp_path):
     """The DFS-units twin is written when (and only when) the rows carry both
     Eq. 20 eps columns -- the production in-sample rows all do, the module's
     own fixture rows carry none, so its exact-set assertions survive."""
@@ -894,18 +894,44 @@ def test_insample_density_ccsd_dfs_units_twin_iff_eps_columns(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
     fig.plot_insample_density_ccsd(
-        rows, plain / "ablation_insample_density_ccsd.png", "run_x")
+        rows, plain / "insample_density_vs_ccsd.png", "run_x")
     assert not (plain
-                / "ablation_insample_density_ccsd_dfs_units.png").exists()
+                / "insample_density_vs_ccsd_eps.png").exists()
     eps_rows = [dict(r, density_eps_l1=r["density_rmse"] * 1.5,
                      density_eps_l1_pbe=r["density_rmse_pbe"] * 1.5)
                 for r in rows]
     withe = tmp_path / "with_eps"
     withe.mkdir()
     fig.plot_insample_density_ccsd(
-        eps_rows, withe / "ablation_insample_density_ccsd.png", "run_x")
-    twin = withe / "ablation_insample_density_ccsd_dfs_units.png"
+        eps_rows, withe / "insample_density_vs_ccsd.png", "run_x")
+    twin = withe / "insample_density_vs_ccsd_eps.png"
     assert _png_ok(twin)
+
+
+def test_eps_twin_uses_eps_suffix(tmp_path):
+    """The per-electron-units twin is suffixed ``_eps``, not the holdover
+    ``_dfs_units``: the suffix is appended to whatever stem the caller gives,
+    and nothing else is written beside the base figure."""
+    rows = [{"arch": "deep", "subset_size": s, "molecule": m,
+             "density_rmse": v, "density_rmse_pbe": 2.0 * v,
+             "density_eps_l1": v * 1.5, "density_eps_l1_pbe": 3.0 * v}
+            for s in (1, 3)
+            for m, v in (("HO", 3e-3), ("CH4", 1e-3))]
+    out = tmp_path / "eps_suffix"
+    out.mkdir()
+    base = out / "insample_density_vs_ccsd.png"
+    fig.plot_insample_density_ccsd(rows, base, "run_x")
+    assert _png_ok(out / "insample_density_vs_ccsd_eps.png")
+    assert not (out / "insample_density_vs_ccsd_dfs_units.png").exists()
+    assert {p.name for p in out.iterdir()} == {
+        "insample_density_vs_ccsd.png", "insample_density_vs_ccsd_eps.png"}
+
+    # the suffix is generic: a different stem takes the same twin name
+    other = tmp_path / "other_stem"
+    other.mkdir()
+    fig.plot_insample_density_ccsd(rows, other / "stem_x.png", "run_x")
+    assert _png_ok(other / "stem_x_eps.png")
+    assert not (other / "stem_x_dfs_units.png").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1022,7 +1048,7 @@ def test_rf_unconverged_variant_directory(tmp_path):
                                                eval_subdir="eval_holdout_converged")
     vdir = tmp_path / "figs_conv_excl_unconverged"
     assert vdir.is_dir() and written
-    rows = [r for r in _read_csv(vdir / "ablation_combined_energy_density.csv")
+    rows = [r for r in _read_csv(vdir / "holdout_ed_combined.csv")
             if r["leg"] == "wtmad2"]
     assert rows
     for r in rows:
@@ -1288,9 +1314,9 @@ def test_tail_variant_directory_drops_the_recurring_species(tmp_path,
     assert [p.name for p in tmp_path.iterdir() if "_excl_" in p.name] == [
         "figs_excl_tail"]
     assert written and all(vdir in Path(p).parents for p in written)
-    assert (vdir / "ablation_holdout_density_ccsd.png").is_file()
+    assert (vdir / "holdout_density_vs_ccsd.png").is_file()
 
-    var = _by_leg_cell(_read_csv(vdir / "ablation_combined_energy_density.csv"))
+    var = _by_leg_cell(_read_csv(vdir / "holdout_ed_combined.csv"))
     for (arch, ss), idx in _RICH_CELLS.items():
         row = var[("wtmad2", arch, ss)]
         want_nn = _expected_d_rmse(idx, _KEPT_CF)
