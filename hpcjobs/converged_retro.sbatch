@@ -86,10 +86,20 @@ if [ -z "${XCQUINOX_BENCH_REFS_DIR:-}" ] || [ ! -d "${XCQUINOX_BENCH_REFS_DIR}" 
 fi
 
 # --- preflight: three species of spec 0 under the converged override --------
-# basis and grid level as the held-out eval resolves them (the run's own).
-PF_BASIS="$(sed -n 's/^[[:space:]]*basis:[[:space:]]*//p' "${FIRST_RUN}/resolved_config.yaml" | head -1 | tr -d "'\"")"
-PF_GRID="$(sed -n 's/^[[:space:]]*grid_level:[[:space:]]*//p' "${FIRST_RUN}/resolved_config.yaml" | head -1 | tr -d "'\"")"
-PF_DIR="${FIRST_RUN}/checkpoints/spec_0000/eval_holdout_converged_preflight"
+# basis and grid level as the held-out eval resolves them (the run's own
+# inputs block, read through a YAML parser rather than a line match).
+read -r PF_BASIS PF_GRID < <(python - "${FIRST_RUN}/resolved_config.yaml" <<'PYEOF'
+import sys, yaml
+inp = (yaml.safe_load(open(sys.argv[1])) or {}).get("inputs") or {}
+print(inp.get("basis") or "", inp.get("grid_level", ""))
+PYEOF
+)
+if [ -z "${PF_BASIS}" ] || [ -z "${PF_GRID}" ]; then
+    echo "FATAL: basis/grid_level unresolved from ${FIRST_RUN}/resolved_config.yaml"
+    exit 1
+fi
+# scratch OUTSIDE the checkpoint directories: nothing in a channel namespace
+PF_DIR="${FIRST_RUN}/_preflight_converged"
 mkdir -p "${PF_DIR}"
 printf '%s\n' '["h2o", "bn", "RKT17"]' > "${PF_DIR}/names.json"
 echo "[converged] preflight: basis=${PF_BASIS} grid=${PF_GRID} species h2o bn RKT17"

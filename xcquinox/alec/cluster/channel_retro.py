@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import os
-import sys
 from typing import List, Optional, Sequence, Tuple
 
 # channel name -> (final-checkpoint subdir, val-best subdir or None)

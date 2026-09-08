@@ -77,9 +77,10 @@ def test_uccsd_t1_diagnostic_matches_the_hand_value():
 
 
 def test_rccsd_t1_diagnostic_returns_the_library_value():
-    """The closed-shell path is pyscf's own diagnostic (ccsd.py get_t1_diagnostic),
-    not a re-derivation: a spatial-orbital amplitude array goes through the
-    RCCSD accessor."""
+    """The closed-shell value equals pyscf's own diagnostic (ccsd.py
+    get_t1_diagnostic) to the last bit: the seam evaluates the same
+    Lee-Taylor formula on the spatial-orbital amplitude array, so it does
+    not depend on which coupled-cluster class produced t1."""
     from pyscf.cc import ccsd
     t1 = np.array([[0.1, 0.2, 0.05], [0.3, 0.4, 0.02]])
     assert er._t1_diagnostic(_FakeCC(t1)) == pytest.approx(
@@ -276,6 +277,50 @@ def test_t1_backfill_adds_only_the_key_to_a_complete_npz(tmp_path,
     for k, v in before.items():
         assert after[k].dtype == v.dtype, k
         assert after[k].tobytes() == v.tobytes(), k
+
+
+def test_t1_backfill_refuses_a_mismatched_reference(tmp_path, monkeypatch):
+    """Review finding: a backfill invoked with the wrong orientation-lock
+    strength (or basis, grid, DF setting) must not take the regeneration
+    path and overwrite a locked reference with an unlocked density. A file
+    that exists but does not match is refused, untouched, and the stages are
+    never called."""
+    final = tmp_path / "h2.npz"
+    before = _write_final_npz(final, orientation_lock_strength=np.array(3e-5))
+    called = []
+    monkeypatch.setattr(br, "_mol_spec_to_atoms", lambda ms: _FakeAtoms())
+    monkeypatch.setattr(br, "run_scf_with_cache",
+                        lambda *a, **k: called.append("scf") or {"dm": np.eye(2)})
+    monkeypatch.setattr(br, "run_ccsd_with_cache",
+                        lambda *a, **k: called.append("cc") or {})
+    with pytest.raises(RuntimeError, match="refuses"):
+        br.generate_one(_mol_spec(), out_dir=tmp_path, basis="sto-3g",
+                        grid_level=1, orientation_lock_strength=0.0,
+                        t1_backfill=True)
+    assert called == []
+    with np.load(final, allow_pickle=False) as z:
+        after = {k: np.array(z[k]) for k in z.files}
+    assert set(after) == set(before)
+    for k, v in before.items():
+        assert after[k].tobytes() == v.tobytes(), k
+
+
+def test_t1_backfill_skips_a_file_that_has_the_key_without_the_stages(
+        tmp_path, monkeypatch):
+    """Resumability: a reference that already carries the diagnostic is
+    skipped without any stage running (a re-submission must not rewrite every
+    file)."""
+    final = tmp_path / "h2.npz"
+    _write_final_npz(final, t1_diagnostic=np.array(0.0173))
+    called = []
+    monkeypatch.setattr(br, "_mol_spec_to_atoms", lambda ms: _FakeAtoms())
+    monkeypatch.setattr(br, "run_scf_with_cache",
+                        lambda *a, **k: called.append("scf") or {"dm": np.eye(2)})
+    monkeypatch.setattr(br, "run_ccsd_with_cache",
+                        lambda *a, **k: called.append("cc") or {})
+    assert br.generate_one(_mol_spec(), out_dir=tmp_path, basis="sto-3g",
+                           grid_level=1, t1_backfill=True) == "SKIP"
+    assert called == []
 
 
 def test_write_t1_diagnostics_collects_casefolded_keys_and_the_threshold(

@@ -245,6 +245,16 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
         arrays["t1_diagnostic"] = np.array(float(t1))
         _atomic_savez(final, **arrays)
         return "T1"
+    if t1_backfill and final.is_file():
+        # A backfill adds a key to complete files; a file that exists but
+        # does not match the requested basis, grid, lock strength or DF
+        # setting is a flag mismatch, not work: regenerating it here would
+        # overwrite a (locked, DF) reference with an unlocked one silently.
+        raise RuntimeError(
+            f"t1 backfill refuses to regenerate {final.name}: the file exists "
+            f"but is not complete for basis={basis!r}, grid_level={grid_level}, "
+            f"orientation_lock_strength={orientation_lock_strength}, "
+            f"density_fit={density_fit}; pass the run's own parameters")
     atoms = _mol_spec_to_atoms(ms)
     scf = run_scf_with_cache(
         spec, atoms, cache_dir=out_dir, basis=basis, grid_level=grid_level,

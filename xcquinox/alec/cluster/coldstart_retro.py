@@ -3,9 +3,11 @@
 The cold-start entry point of the generalized channel tool
 (:mod:`xcquinox.alec.cluster.channel_retro`), kept so the deployed job
 script (``hpcjobs/coldstart_holdout.sbatch``) and its tests keep working:
-every function here is the generalized one with the channel fixed to
-``coldstart``. See ``channel_retro`` for the semantics (resumable, additive,
-the deployed eval code).
+``spec_status`` and ``coldstart_one_spec`` are the generalized functions with
+the channel fixed to ``coldstart``; ``main`` is the generalized entry point
+with ``coldstart`` as its default channel (an explicit ``--channel`` on the
+command line is honoured). See ``channel_retro`` for the semantics
+(resumable, additive, the deployed eval code).
 
 Usage::
 

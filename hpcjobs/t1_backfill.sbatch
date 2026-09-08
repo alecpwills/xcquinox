@@ -6,7 +6,8 @@
 # basis and grid, ~200 species -- and then writes the run-level
 # t1_diagnostics.json the figure layer's outlier-free variant reads. The
 # reference files are rewritten atomically with the key added and every
-# other array unchanged; a wall-kill leaves complete files complete.
+# other array unchanged; a wall-kill leaves complete files complete, and a
+# file that already carries the key is skipped without any stage running.
 #SBATCH --partition=long-40core
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
@@ -16,9 +17,13 @@
 #SBATCH --mail-user=alec.wills@stonybrook.edu
 #SBATCH --mail-type=BEGIN,END,FAIL
 
-# The reference dir, basis, grid level, density fitting and auxiliary basis
-# are the run's own, read from the first target run's resolved_config.yaml,
-# so the backfilled references are the ones the held-out eval consumes.
+# The reference dir, basis, grid level, density fitting, auxiliary basis and
+# ORIENTATION-LOCK STRENGTH are the run's own, read from the first target
+# run's resolved_config.yaml through a YAML parser (the inputs block, never a
+# line match), so the backfill addresses exactly the files the held-out eval
+# consumes. The strength matters: the production references are stamped with
+# it, and a backfill invoked without it would judge every file incomplete;
+# the generator refuses that case rather than regenerating an unlocked set.
 # Submit from a shell whose python resolves the xcquinox parity environment.
 
 set -uo pipefail
@@ -52,27 +57,38 @@ export OPENBLAS_NUM_THREADS="${CORES}"
 python -c "import xcquinox.alec.benchmark_refs" \
     || { echo "FATAL: repo import failed (env/activation)"; exit 1; }
 
-_cfg() { sed -n "s/^[[:space:]]*$1:[[:space:]]*//p" "${CFG}" | head -1 | tr -d "'\""; }
-REFS_DIR="${XCQUINOX_BENCH_REFS_DIR:-$(_cfg benchmark_refs_dir)}"
-BASIS="$(_cfg basis)"
-GRID="$(_cfg grid_level)"
-DF="$(_cfg density_fit)"
-AUX="$(_cfg auxbasis)"
+# the run's own reference parameters, from the inputs block
+read -r REFS_DIR BASIS GRID DF AUX OL < <(python - "${CFG}" <<'PYEOF'
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1]))
+inp = cfg.get("inputs") or {}
+vals = [inp.get("benchmark_refs_dir") or "", inp.get("basis") or "",
+        inp.get("grid_level", ""), str(bool(inp.get("density_fit", False))).lower(),
+        inp.get("auxbasis") or "-", inp.get("orientation_lock_strength", 0.0)]
+print(" ".join(str(v) for v in vals))
+PYEOF
+)
+REFS_DIR="${XCQUINOX_BENCH_REFS_DIR:-${REFS_DIR}}"
 if [ -z "${REFS_DIR}" ] || [ ! -d "${REFS_DIR}" ]; then
     echo "FATAL: benchmark refs dir unresolved (${REFS_DIR:-unset})"
     exit 1
 fi
-DF_ARGS=""
-if [ "${DF}" = "true" ] || [ "${DF}" = "True" ]; then
-    DF_ARGS="--density-fit"
-    [ -n "${AUX}" ] && [ "${AUX}" != "null" ] && DF_ARGS="${DF_ARGS} --auxbasis ${AUX}"
+if [ -z "${BASIS}" ] || [ -z "${GRID}" ]; then
+    echo "FATAL: basis/grid_level unresolved from ${CFG}"
+    exit 1
 fi
-echo "[t1] refs=${REFS_DIR} basis=${BASIS} grid=${GRID} df='${DF_ARGS}' runs:${RUN_DIRS}"
+DF_ARGS=""
+if [ "${DF}" = "true" ]; then
+    DF_ARGS="--density-fit"
+    [ "${AUX}" != "-" ] && DF_ARGS="${DF_ARGS} --auxbasis ${AUX}"
+fi
+echo "[t1] refs=${REFS_DIR} basis=${BASIS} grid=${GRID} df='${DF_ARGS}' lock=${OL} runs:${RUN_DIRS}"
 
 rc=0
 # shellcheck disable=SC2086
 python -m xcquinox.alec.benchmark_refs --out-dir "${REFS_DIR}" --pool all \
-    --basis "${BASIS}" --grid-level "${GRID}" ${DF_ARGS} --t1-backfill || rc=$?
+    --basis "${BASIS}" --grid-level "${GRID}" ${DF_ARGS} \
+    --orientation-lock-strength "${OL}" --t1-backfill || rc=$?
 if [ "${rc}" -ne 0 ]; then
     echo "[t1] backfill FAILED rc=${rc} (see the _runlogs ledger); JSON not written"
     exit "${rc}"
@@ -80,7 +96,8 @@ fi
 for rd in ${RUN_DIRS}; do
     # shellcheck disable=SC2086
     python -m xcquinox.alec.benchmark_refs --out-dir "${REFS_DIR}" --pool all \
-        --basis "${BASIS}" --grid-level "${GRID}" ${DF_ARGS} --write-t1-json "${rd}" || rc=$?
+        --basis "${BASIS}" --grid-level "${GRID}" ${DF_ARGS} \
+        --orientation-lock-strength "${OL}" --write-t1-json "${rd}" || rc=$?
 done
 echo "[t1] DONE rc=${rc}"
 exit "${rc}"

@@ -813,17 +813,41 @@ def test_collect_density_rows_keeps_unconverged_and_reports_the_count(
     assert any(re.search(r"\b1\b", ln) for ln in unconv_lines), unconv_lines
 
 
+def test_collector_prints_no_unconverged_line_for_the_warm_channel(
+        figmod, tmp_path, capsys):
+    """The unconverged disclosure belongs to the converged channels only: the
+    warm channel's rows carry the same flag column, and a line there would
+    read as a converged-channel statement."""
+    root, run = figmod._make_dfs_results(tmp_path)
+    _add_converged_channel(run)
+    for sd in sorted((run / "checkpoints").glob("spec_*")):
+        conv = sd / "eval_holdout_converged" / "per_molecule.json"
+        if conv.is_file():
+            shutil.copy(conv, sd / "eval_holdout" / "per_molecule.json")
+    capsys.readouterr()
+    figmod.fig.collect_holdout_density_rows(run, eval_subdir="eval_holdout")
+    out = capsys.readouterr().out
+    assert not [ln for ln in out.splitlines()
+                if re.search(r"unconverged", ln, re.IGNORECASE)], out
+
+
 def test_suite_renders_the_converged_views_only_when_cells_exist(figmod,
-                                                                 tmp_path):
+                                                                 tmp_path,
+                                                                 capsys):
     """The converged channel joins the view loop and is gated like the
     val-best view: a run with no converged cells renders no converged
-    directory."""
+    directory, and the skip line names the channel that had no cells."""
     root, run = figmod._make_dfs_results(tmp_path)
     plain = tmp_path / "figs_plain"
+    capsys.readouterr()
     figmod.fig.build_bh76w411_suite(results_root=root, outroot=plain,
                                     bases=("svp_grid2",), domain="dfs_step7")
+    out = capsys.readouterr().out
     assert (plain / "figures_dfs_step7_svp").is_dir()
     assert not list(plain.glob("*_converged"))
+    skip = [ln for ln in out.splitlines() if "eval_holdout_converged/" in ln]
+    assert skip, out
+    assert not [ln for ln in skip if "eval_holdout_val_best" in ln], skip
 
     _add_converged_channel(run)
     outroot = tmp_path / "figs_conv"
@@ -855,3 +879,23 @@ def test_converged_retro_job_script_shape():
         assert species in text
     # the preflight must precede the retro line it gates
     assert text.index("eval_holdout_worker") < text.index("channel_retro")
+
+
+def test_t1_backfill_job_script_shape():
+    """Review finding: the backfill job must pass the run's orientation-lock
+    strength (the production references are stamped with it; without the
+    flag every reference is judged incomplete and regenerated unlocked), read
+    from the run's resolved_config.yaml with a YAML parser rather than an
+    unanchored line match, and carry the standing mail directives and the
+    house shell idiom."""
+    path = _REPO_ROOT / "hpcjobs" / ("t1_backfill." + "sbatch")
+    text = path.read_text()
+    assert "--mail-user=alec.wills@stonybrook.edu" in text
+    assert "--mail-type=BEGIN,END,FAIL" in text
+    assert "set -uo pipefail" in text
+    assert "--t1-backfill" in text
+    assert "--write-t1-json" in text
+    assert "--orientation-lock-strength" in text
+    assert "yaml.safe_load" in text
+    assert "dfs6311_grid3_v7g1_size" in text
+    assert "dfs6311_grid3_v7g2a_families_core" in text

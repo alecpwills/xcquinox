@@ -9221,14 +9221,16 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                                 ("eval_holdout_converged", "_converged"),
                                 ("eval_holdout_converged_val_best",
                                  "_converged_val_best")):
-        is_val_best = eval_subdir != "eval_holdout"
+        # every view but the final-step one is gated on having cells (val-best
+        # and the two converged views alike)
+        is_secondary = eval_subdir != "eval_holdout"
         ordered_runs: List[Path] = []
         for basis in bases:
             run = runs[basis]
             cov = figure_cell_coverage(run, eval_subdir=eval_subdir,
                                        archs=archs)
-            if is_val_best and cov["n_cells"] == 0:
-                continue  # no val-best eval pulled for this basis yet
+            if is_secondary and cov["n_cells"] == 0:
+                continue  # no eval of this channel pulled for this basis yet
             ordered_runs.append(run)
             print(f"[{basis} | {eval_subdir}] {cov['run']}: {cov['n_cells']} "
                   f"cells  archs={cov['archs']}  subsets={cov['subsets']}")
@@ -9276,9 +9278,9 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                                                  eval_subdir=eval_subdir,
                                                  archs=archs)
         if not ordered_runs:
-            if is_val_best:
-                print("   (no eval_holdout_val_best/ data found -- skipping the "
-                      "val-best figure set)")
+            if is_secondary:
+                print(f"   (no {eval_subdir}/ data found -- skipping the "
+                      f"{suffix.strip('_').replace('_', '-')} figure set)")
             continue
         if len(ordered_runs) < 2:
             print(f"   (only one basis with {eval_subdir}/ coverage -- "
