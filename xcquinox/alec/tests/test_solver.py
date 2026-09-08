@@ -515,3 +515,78 @@ def test_solver_config_describe_includes_seed_fields():
     assert d["seed_cache_dir"] is None
     d0 = SolverConfig().describe()
     assert d0["seed_source"] == "pbe"
+
+
+# ---------------------------------------------------------------------------
+# DecayingLinearMixer step_offset: the SI equation (offset 0) against the
+# schedule dpyscf's loop actually executes (offset 1). og_dpyscf places the mix
+# at the top of its SCF loop, where dm == dm_old on step 0, so its first
+# EFFECTIVE mix uses alpha = 0.3**1 + 0.3 = 0.6, then 0.39, then 0.327 -- the
+# equation's schedule shifted by one step.
+# ---------------------------------------------------------------------------
+
+def _alpha_trace(mixer, n_steps):
+    """The mixer's alpha at steps 0..n_steps-1, isolated by D_in = 0, D_out = I
+    (D_mixed = alpha * I), the construction of
+    test_decaying_linear_mixer_alpha_schedule."""
+    state = mixer.init_state(nao=3)
+    D_in = jnp.zeros((3, 3))
+    D_out = jnp.eye(3)
+    alphas = []
+    for _ in range(n_steps):
+        state, D_mixed = mixer.step(state, D_in, D_out)
+        alphas.append(D_mixed[0, 0])
+    return alphas
+
+
+def test_decaying_linear_mixer_step_offset_reproduces_the_executed_dpyscf_schedule():
+    """``alpha = base ** (step_index + step_offset) + floor``. Offset 1 is the
+    schedule og_dpyscf's loop executes (0.6, 0.39, 0.327); offset 0 is the SI
+    equation and must leave the current schedule (1.3, 0.6, 0.39) bit-identical
+    to the no-offset mixer. The YAML mixer-kwarg parser coerces every value to
+    float, so an integral float (1.0) is accepted and stored as an int; a
+    non-integral value and a negative one are refused by name."""
+    offset1 = _alpha_trace(DecayingLinearMixer(base=0.3, floor=0.3, step_offset=1), 3)
+    for got, exp in zip(offset1, [0.6, 0.39, 0.327]):
+        assert jnp.allclose(got, exp), (float(got), exp)
+    # offset 0 == the pre-offset mixer, bit for bit (no schedule change for
+    # every existing solver, whose mixer_kwargs carry base and floor only).
+    old = _alpha_trace(DecayingLinearMixer(base=0.3, floor=0.3), 3)
+    new = _alpha_trace(DecayingLinearMixer(base=0.3, floor=0.3, step_offset=0), 3)
+    for a, b in zip(old, new):
+        assert jnp.array_equal(a, b), (float(a), float(b))
+    assert jnp.allclose(jnp.asarray(old), jnp.asarray([1.3, 0.6, 0.39]))
+    # A float from _parse_mixer_kwargs is accepted when integral, and stored as
+    # an int so the schedule exponent stays exact.
+    m = DecayingLinearMixer(base=0.3, floor=0.3, step_offset=1.0)
+    assert isinstance(m.step_offset, int) and m.step_offset == 1
+    assert jnp.allclose(_alpha_trace(m, 1)[0], 0.6)
+    with pytest.raises(ValueError, match="step_offset") as half:
+        DecayingLinearMixer(step_offset=0.5)
+    assert "0.5" in str(half.value)
+    with pytest.raises(ValueError, match="step_offset") as neg:
+        DecayingLinearMixer(step_offset=-1)
+    assert "-1" in str(neg.value)
+
+
+def test_build_mixer_threads_step_offset_from_the_solver_config():
+    """``_build_mixer`` passes ``config.mixer_kwargs`` straight through as
+    kwargs, and the YAML parser hands it floats: a solver carrying
+    ``step_offset: 1`` must therefore build a DecayingLinearMixer whose FIRST
+    alpha is 0.6, not the equation's 1.3."""
+    from xcquinox.alec.solver import SolverConfig
+    from xcquinox.alec.solver_manual import _build_mixer
+    cfg = SolverConfig(
+        mode=SolverMode.FULL, max_cycles=3, mixer_name="decaying_linear",
+        mixer_kwargs=(("base", 0.3), ("floor", 0.3), ("step_offset", 1.0)),
+    )
+    mixer = _build_mixer(cfg)
+    assert isinstance(mixer, DecayingLinearMixer)
+    assert mixer.step_offset == 1
+    assert jnp.allclose(_alpha_trace(mixer, 1)[0], 0.6)
+    # The unchanged solvers (base + floor only) still build the SI schedule.
+    plain = _build_mixer(SolverConfig(
+        mode=SolverMode.FULL, max_cycles=3, mixer_name="decaying_linear",
+        mixer_kwargs=(("base", 0.3), ("floor", 0.3)),
+    ))
+    assert jnp.allclose(_alpha_trace(plain, 1)[0], 1.3)

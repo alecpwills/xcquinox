@@ -1053,6 +1053,14 @@ class TrainingSpec:
     # specs can carry C/N/O/F/... compounds without forcing single-atom
     # MoleculeSpecs for those elements.
     require_atom_anchors: bool = True
+    # DFS seeding as dpyscf's script executes it (train.py 385-393): when True
+    # the per-molecule loop rebuilds each group's SCF seed at EVERY update as
+    # (1 - beta) D_PBE + beta D_minao with beta = (r + 1) / 2, r ~ U(0, 1) from
+    # the loop's own rng (beta weights the ATOMIC guess), and the precompute
+    # supplies dm_minao. False keeps the exact PBE seed at every update, the
+    # protocol of every campaign through v7. Per-molecule scheme only
+    # (validate refuses it elsewhere) (2026-09-08).
+    seed_mix_atomic: bool = False
     # Optimizer update scheme:
     #   "batched": one full-batch optimizer step per training step over
     #                    ALL species at once, with the configured `balancing`
@@ -1223,6 +1231,10 @@ class TrainingSpec:
                 f"update_scheme must be 'batched' or 'per_molecule', got "
                 f"{self.update_scheme!r}"
             )
+        if self.seed_mix_atomic and self.update_scheme != "per_molecule":
+            raise ValueError(
+                "seed_mix_atomic is applied by the per-molecule loop only; got "
+                f"update_scheme={self.update_scheme!r}")
         import math
         for field_name in ("lr_start", "lr_end", "lr_decay_start", "grad_clip"):
             value = getattr(self, field_name)

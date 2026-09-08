@@ -601,7 +601,7 @@ def test_run_training_per_molecule_completes(training_batch_info):
         # has_val_best_checkpoint, no early_stopped/val_* keys, no model_val_best.eqx.
         with open(os.path.join(spec.checkpoint_dir, "train_metadata.json")) as f:
             on_disk = json.load(f)
-        assert set(on_disk) == set(_PRE_WS3_METADATA_KEYS)
+        assert set(on_disk) == set(_BASE_METADATA_KEYS)
         assert not os.path.isfile(
             os.path.join(spec.checkpoint_dir, "model_val_best.eqx"))
 
@@ -681,6 +681,7 @@ _BASE_METADATA_KEYS = frozenset({
     "atom_energies", "loss_metric", "balancing", "final_loss", "min_loss",
     "has_best_checkpoint", "timestamp", "duration_seconds",
     "update_scheme", "balancing_active", "effective_channel_weights",
+    "seed_mix_atomic",
 })
 
 
@@ -3100,3 +3101,288 @@ def test_run_level_empty_allowlist_regularizes_nothing():
              "atom_energies": spec.atom_energies_dict}
     gloss, _ = _build_group_loss_and_batch(spec, g, batch)
     assert gloss.regularize_atom_syms == ()
+
+
+# ---------------------------------------------------------------------------
+# seed_mix_atomic: the per-update SCF-seed mixture of DFS SI Sec. III A,
+#   rho_init = (1 - beta) rho_atomic + beta rho_DFT,  beta = (r + 1) / 2,
+#   r ~ U(0, 1), resampled at EVERY optimization step.
+# The loop's own RandomState draws r, so the resume checkpoint's rng_state
+# carries the mixture sequence along with the epoch shuffle.
+# ---------------------------------------------------------------------------
+
+class _StopRecording(Exception):
+    """Sentinel raised by the recording stub to kill a run mid-epoch, standing
+    in for the SIGTERM/wall-clock death the resume path exists for."""
+
+
+def _make_seed_recorder(records, stop_after=None):
+    """A drop-in for ``defused_value_and_grad`` that records the seed each
+    molecule enters the update with and returns a zero gradient.
+
+    The point of the stub is to leave the loop, the mixture and the optimizer
+    step exactly as they are while removing the SCF: what is under test is which
+    density matrix reaches the group's sub-batch at each update, not the energy
+    it would produce. ``stop_after`` kills the run once that many updates have
+    been recorded.
+    """
+    import equinox as eqx
+    import jax
+    import jax.numpy as jnp
+
+    def stub(loss, model, batch, channel_weights, relative=False,
+             pad_target=None):
+        records.append(tuple(
+            {
+                "name": md["name"],
+                "dm_seed": np.asarray(md["dm_seed"]),
+                "dm_pbe": np.asarray(md["dm_pbe"]),
+                "dm_minao": (None if md.get("dm_minao") is None
+                             else np.asarray(md["dm_minao"])),
+                "s": np.asarray(md["s_matrix"]),
+                # object identity: the default path must hand the solver the
+                # PBE array itself, not a copy of it.
+                "seed_is_pbe": md["dm_seed"] is md["dm_pbe"],
+            }
+            for md in batch["mol_data"]))
+        if stop_after is not None and len(records) >= stop_after:
+            raise _StopRecording()
+        grads = jax.tree_util.tree_map(
+            jnp.zeros_like, eqx.filter(model, eqx.is_inexact_array))
+        return (jnp.asarray(1.0), {"loss_e": jnp.asarray(1.0)}), grads
+
+    return stub
+
+
+def test_mix_seed_batch_draws_beta_per_molecule_and_leaves_the_record_alone():
+    """One draw per molecule per update, as dpyscf draws inside its per-datapoint
+    loop: two molecules of one group get two betas. The mixture is formed on a
+    new dict: the group's records (the process-wide precompute memo entries,
+    shared by every group that holds the species) keep their PBE seed, and
+    every other array of the rebuilt dict is the record's own object."""
+    from xcquinox.alec.train import _mix_seed_batch
+    eye = np.eye(3)
+    recs = []
+    for name in ("A", "B"):
+        dm_pbe = 2.0 * eye
+        recs.append({"name": name, "dm_pbe": dm_pbe, "dm_seed": dm_pbe,
+                     "dm_minao": eye.copy(), "s_matrix": eye, "other": eye})
+    gbatch = {"mol_data": tuple(recs), "targets": {}, "atom_energies": {}}
+    out = _mix_seed_batch(gbatch, np.random.RandomState(0))
+    betas = []
+    for md, new in zip(recs, out["mol_data"]):
+        assert new is not md
+        assert md["dm_seed"] is md["dm_pbe"]            # the record is untouched
+        assert new["dm_pbe"] is md["dm_pbe"] and new["other"] is md["other"]
+        beta = float(np.trace(new["dm_seed"] - md["dm_pbe"])
+                     / np.trace(md["dm_minao"] - md["dm_pbe"]))
+        assert 0.5 <= beta < 1.0, beta
+        np.testing.assert_allclose(new["dm_seed"],
+                                   (1 - beta) * md["dm_pbe"] + beta * md["dm_minao"],
+                                   rtol=0, atol=1e-12)
+        betas.append(beta)
+    assert betas[0] != betas[1]
+    assert out["targets"] is gbatch["targets"]
+
+
+def test_seed_mix_atomic_requires_the_per_molecule_scheme(training_batch_info, tmp_path):
+    """The mixture is applied by the per-molecule loop alone; a batched spec
+    carrying the flag would pay for the minao guess and train on the PBE seed
+    without a word, so validate refuses it."""
+    import dataclasses
+    spec = _seed_mix_spec(training_batch_info, str(tmp_path), seed_mix_atomic=True)
+    spec.validate()
+    with pytest.raises(ValueError, match="per-molecule loop only"):
+        dataclasses.replace(spec, update_scheme="batched").validate()
+
+
+def _recover_beta(rec):
+    """The mixing coefficient the recorded seed implies, from the S-weighted
+    trace of the mixture against its two endpoints (beta weights the atomic
+    guess, as dpyscf's script does). The atomic guess and the converged
+    density do NOT carry the same electron count (sto-3g H2O: 9.8612 against
+    10.0000), so tr((D_minao - D_pbe) S) is a well-conditioned denominator
+    (0.139 for H2O, 0.137 for O, 0.0137 for H)."""
+    def tr(a):
+        return float(np.sum(a * rec["s"]))
+    den = tr(rec["dm_minao"] - rec["dm_pbe"])
+    assert abs(den) > 1e-3, (rec["name"], den)
+    return tr(rec["dm_seed"] - rec["dm_pbe"]) / den
+
+
+def _seed_mix_spec(training_batch_info, tmpdir, **extra):
+    """H/O/H2O under the per-molecule scheme with the H and O anchors, so the
+    run carries three groups (ae:H2O, anchor:H, anchor:O) and every molecule is
+    seeded once per epoch."""
+    return _make_live_spec(
+        training_batch_info, loss_name="L5_gradnorm_vxc_step7", tmpdir=tmpdir,
+        loss_kwargs={"regularize_atom_syms": ("H", "O")},
+        update_scheme="per_molecule", require_atom_anchors=False, **extra)
+
+
+def test_seed_mix_atomic_resamples_the_seed_per_update(training_batch_info,
+                                                       monkeypatch):
+    """Under ``seed_mix_atomic`` every group's sub-batch is rebuilt before each
+    optimizer step with a freshly drawn seed
+    ``(1 - beta) dm_pbe + beta dm_minao``, beta = (r + 1) / 2 -- so beta lies in
+    [0.5, 1) and changes from update to update; with the flag off the solver
+    still receives the PBE array itself.
+    """
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.data import clear_precompute_cache
+    from xcquinox.alec.train import run_training, _training_groups
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clear_precompute_cache()
+        spec = _seed_mix_spec(training_batch_info, tmpdir, n_steps=3,
+                              seed_mix_atomic=True)
+        n_groups = len(_training_groups(spec))
+        records = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(records))
+        run_training(spec)
+
+    assert len(records) == 3 * n_groups >= 5
+    per_molecule: dict = {}
+    for update in records:
+        for rec in update:
+            assert rec["dm_minao"] is not None, rec["name"]
+            beta = _recover_beta(rec)
+            assert 0.5 <= beta < 1.0, (rec["name"], beta)
+            # the recovered scalar reproduces the WHOLE matrix: the seed is
+            # that affine combination and nothing else.
+            mixed = ((1.0 - beta) * rec["dm_pbe"] + beta * rec["dm_minao"])
+            np.testing.assert_allclose(rec["dm_seed"], mixed,
+                                       rtol=0, atol=1e-12)
+            # beta < 1 strictly, so the seed is never the PBE density itself.
+            assert not rec["seed_is_pbe"]
+            assert not np.allclose(rec["dm_seed"], rec["dm_pbe"])
+            per_molecule.setdefault(rec["name"], []).append(beta)
+    # resampled at EVERY step, not drawn once at loop start.
+    for name, betas in per_molecule.items():
+        assert len(set(betas)) > 1, (name, betas)
+
+    # Control: the flag off leaves the seed supply exactly as it was.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clear_precompute_cache()
+        spec_off = _seed_mix_spec(training_batch_info, tmpdir, n_steps=2)
+        off_records = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(off_records))
+        run_training(spec_off)
+    assert len(off_records) == 2 * n_groups
+    for update in off_records:
+        for rec in update:
+            assert rec["seed_is_pbe"], rec["name"]
+            assert rec["dm_minao"] is None
+
+
+def test_seed_mix_atomic_refuses_a_molecule_without_the_minao_seed(
+        training_batch_info, monkeypatch):
+    """The mixture needs both endpoints. A prepared sub-batch whose molecule
+    carries no ``dm_minao`` is refused at loop start -- by name, and BEFORE the
+    first update -- rather than silently falling back to the PBE seed for that
+    molecule (which would make the arm's seeding depend on which records
+    happened to be built with the flag).
+    """
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.data import clear_precompute_cache
+    from xcquinox.alec.train import run_training
+
+    real_build_batch = train_mod._build_batch
+
+    def _strip_o(spec, loss):
+        batch = real_build_batch(spec, loss)
+        batch["mol_data"] = tuple(
+            (dict(md, dm_minao=None) if md["name"] == "O" else md)
+            for md in batch["mol_data"])
+        return batch
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clear_precompute_cache()
+        spec = _seed_mix_spec(training_batch_info, tmpdir, n_steps=2,
+                              seed_mix_atomic=True)
+        records = []
+        monkeypatch.setattr(train_mod, "_build_batch", _strip_o)
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(records))
+        with pytest.raises(ValueError, match="O"):
+            run_training(spec)
+    assert records == [], "the refusal must precede the first update"
+
+
+def test_seed_mix_atomic_beta_sequence_survives_a_resume(training_batch_info,
+                                                         monkeypatch):
+    """The mixture draws from the LOOP's RandomState, the one whose state the
+    resume checkpoint persists. A run killed mid-epoch and restarted from its
+    checkpoint therefore replays the uninterrupted run's beta sequence exactly,
+    the way it already replays the epoch shuffle (a mixture drawn from a fresh
+    generator would diverge at the resume boundary).
+    """
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.data import clear_precompute_cache
+    from xcquinox.alec.train import run_training, _training_groups
+
+    def _betas(records):
+        return [round(_recover_beta(rec), 12)
+                for update in records for rec in update]
+
+    # (a) the uninterrupted run.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clear_precompute_cache()
+        spec = _seed_mix_spec(training_batch_info, tmpdir, n_steps=3,
+                              seed_mix_atomic=True, checkpoint_every=1)
+        n_groups = len(_training_groups(spec))
+        whole = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(whole))
+        run_training(spec)
+    assert len(whole) == 3 * n_groups
+
+    # (b) the same run killed one update into epoch 1, then resumed from the
+    # checkpoint the completed epoch 0 wrote.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clear_precompute_cache()
+        spec2 = _seed_mix_spec(training_batch_info, tmpdir, n_steps=3,
+                               seed_mix_atomic=True, checkpoint_every=1)
+        killed = []
+        monkeypatch.setattr(
+            train_mod, "defused_value_and_grad",
+            _make_seed_recorder(killed, stop_after=n_groups + 1))
+        with pytest.raises(_StopRecording):
+            run_training(spec2)
+        assert len(killed) == n_groups + 1
+        assert os.path.isfile(os.path.join(spec2.checkpoint_dir,
+                                           "resume_state.pkl"))
+        resumed = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(resumed))
+        run_training(spec2)
+
+    assert len(resumed) == 2 * n_groups
+    assert _betas(killed[:n_groups]) + _betas(resumed) == _betas(whole)
+
+
+def test_validation_precompute_never_carries_the_seed_mixture(tmp_path, monkeypatch):
+    """The DFS protocol validates under converged PySCF from the PBE seed; the
+    in-loop validation slice therefore precomputes without the minao seed even
+    when the training batch mixes it (spec C5), so a spec with seed_mix_atomic
+    must reach the validation precompute with the flag unset."""
+    from xcquinox.alec import train as train_mod
+    rxn_path = tmp_path / "val_reactions.json"
+    rxn_path.write_text("[]")
+    seen = []
+
+    def _recorder(mol_spec, **kwargs):
+        seen.append(dict(kwargs))
+        return {"name": mol_spec.name, "dm_minao": None}
+
+    monkeypatch.setattr(train_mod, "precompute_fixed_density_data", _recorder)
+    spec = _make_training_spec(
+        validate_every=1, validation_molecules=(h2o_molecule(),),
+        validation_reactions_path=str(rxn_path), seed_mix_atomic=True)
+    val_mol_data, val_reactions = train_mod._build_validation_data(spec)
+    assert val_reactions == []
+    assert set(val_mol_data) == {"H2O"}
+    assert len(seen) == 1
+    assert not seen[0].get("with_minao_seed", False), seen[0]

@@ -302,12 +302,15 @@ class DecayingLinearMixer(Mixer):
     ``torch_routines.py:174-178``) damps the SCF with a per-step
     ``alpha = (0.3)**step + 0.3``: aggressive early (step 0 -> 1.3, a mild
     over-relaxation), settling toward ``floor`` (0.3) as the iteration
-    proceeds. INDEX NOTE: this implements the SI equation verbatim. The
-    paper's own code places the mix at the top of its loop where
-    ``dm == dm_old`` at step 0, so THEIR first effective mix uses
-    ``alpha_1 = 0.6`` -- a one-step schedule offset against the equation both
-    implement. At 25 cycles the difference is immaterial; at 3 cycles it is
-    not, and this repo deliberately follows the equation. This damps the period-2 density oscillations a
+    proceeds. INDEX NOTE: ``step_offset`` selects which reading of the
+    schedule is executed. At offset 0 (the default) the SI equation is
+    implemented verbatim: the first update mixes at 1.3. The paper's own
+    code places the mix at the top of its loop where ``dm == dm_old`` at
+    step 0, so THEIR first effective mix uses ``alpha_1 = 0.6``, then 0.39,
+    0.327: offset 1 reproduces that executed schedule, ``alpha = base **
+    (step + offset) + floor``. At 25 cycles the difference is immaterial; at
+    3 cycles it is not, and the production solvers keep offset 0 while the
+    dpyscf-parity arm states offset 1 (2026-09-08). This damps the period-2 density oscillations a
     constant linear mixer cannot, which is what lets a forced multi-cycle SCF
     converge for hard species (transition states, radicals). Unlike
     ``LinearMixer`` the alpha is intentionally NOT clamped to ``[0, 1]`` -- the
@@ -319,20 +322,29 @@ class DecayingLinearMixer(Mixer):
     """
     registry_name = "decaying_linear"
 
-    def __init__(self, base: float = 0.3, floor: float = 0.3):
+    def __init__(self, base: float = 0.3, floor: float = 0.3,
+                 step_offset: float = 0):
         if not (0.0 < base < 1.0):
             raise ValueError(f"base must be in (0, 1), got {base}")
         if not (0.0 <= floor < 1.0):
             raise ValueError(f"floor must be in [0, 1), got {floor}")
+        # The YAML parser hands every mixer kwarg over as a float; an
+        # integral value is the offset, anything else is refused.
+        off = float(step_offset)
+        if not (off.is_integer() and off >= 0.0):
+            raise ValueError(
+                f"step_offset must be a non-negative integer value, got {step_offset!r}")
         self.base = base
         self.floor = floor
+        self.step_offset = int(off)
 
     def init_state(self, nao: int) -> MixerState:
         return MixerState(step_index=jnp.int32(0))
 
     def step(self, state, D_in, D_out):
         alpha = (
-            jnp.power(self.base, state.step_index.astype(jnp.float64))
+            jnp.power(self.base, (state.step_index
+                                  + jnp.int32(self.step_offset)).astype(jnp.float64))
             + self.floor
         )
         D_mixed = alpha * D_out + (1.0 - alpha) * D_in

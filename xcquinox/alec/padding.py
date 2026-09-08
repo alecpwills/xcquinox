@@ -112,7 +112,7 @@ def _pad_ao_on_grid(x, n_grid_t, n_ao_t, grid_axis, ao_axis):
 
 
 # (spin?, n_ao, n_ao) matrices padded with a zero block
-_PAD_AO_ZERO_BLOCK = ("dm_pbe", "dm_seed", "j_matrix", "vxc_pbe", "dm_target",
+_PAD_AO_ZERO_BLOCK = ("dm_pbe", "dm_seed", "dm_minao", "j_matrix", "vxc_pbe", "dm_target",
                       "vxc_ref")
 # grid-only fields holding FINITE per-point data (edge-padded, weight-0 rows)
 _PAD_GRID_EDGE = ("rho_grid", "sigma_grid", "nabla_rho_grid", "rho_ref_grid",
@@ -137,7 +137,10 @@ _PAD_AO_ON_GRID = ("ao_grid", "rung35_proj_ao")
 # ``reference_xc`` joins them as run-level provenance: the energy kernel never
 # reads it, and a string leaf in the padded pytree would key the compile for
 # nothing.
-_STRIP_KEYS = ("_pyscfad_mol", "name", "atom_composition", "reference_xc")
+# dm_minao is mixed into dm_seed BEFORE padding and never read by the kernel,
+# so it is stripped with the identifying leaves rather than compiled in.
+_STRIP_KEYS = ("_pyscfad_mol", "name", "atom_composition", "reference_xc",
+               "dm_minao")
 # Precomputed scalar PBE energies stored as Python floats -> distinct static
 # leaves; traced so their values stop keying the compile.
 _TRACE_SCALARS = ("E_pbe", "E_xc_pbe", "E_non_xc", "e_nuc")

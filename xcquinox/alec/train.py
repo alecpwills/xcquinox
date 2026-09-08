@@ -556,6 +556,7 @@ def _build_batch(spec: TrainingSpec, loss) -> dict:
             # training-side identities may generate a missing SCAN seed on
             # the cluster (double-gated with XCQUINOX_SEED_ALLOW_GENERATE)
             seed_allow_generate=True,
+            with_minao_seed=bool(getattr(spec, "seed_mix_atomic", False)),
         )
         for m in spec.molecules
     ]
@@ -996,6 +997,9 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
         # the fixed effective_channel_weights (pre-scales forced to 1.0). See
         # notebooks/analysis/LOSS_PRIMER.md.
         "update_scheme": getattr(spec, "update_scheme", "batched"),
+        # the DFS seed mixture, so a checkpoint states its seeding as it
+        # states its mixer schedule (solver_config.mixer_kwargs)
+        "seed_mix_atomic": bool(getattr(spec, "seed_mix_atomic", False)),
         "balancing_active": (
             getattr(spec, "update_scheme", "batched") != "per_molecule"
             and spec.balancing is not None
@@ -1873,6 +1877,39 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     return sub_loss, sub_batch
 
 
+def _require_minao_seed(prepared) -> None:
+    """seed_mix_atomic needs dm_minao on every molecule of every group; a missing
+    one is refused before the first update, by name."""
+    for label, _gloss, gbatch in prepared:
+        for md in gbatch["mol_data"]:
+            if md.get("dm_minao") is None:
+                raise ValueError(
+                    "seed_mix_atomic requires dm_minao for every molecule (precompute "
+                    f"with with_minao_seed=True); missing for {md.get('name')!r} in "
+                    f"group {label!r}")
+
+
+def _mix_seed_batch(gbatch: dict, rng) -> dict:
+    """The DFS seed mixture as the executed dpyscf script forms it
+    (scripts/train.py 385-393 with utils.py 296-337: dm_in = dm_init * (1 -
+    mixing) + dm_realinit * mixing, dm_init the CONVERGED density, dm_realinit
+    the minao guess, mixing = rand / 2 + 1 / 2): for each molecule of the
+    group, D0 = (1 - beta) D_PBE + beta D_minao with beta = (r + 1) / 2, r ~
+    U(0, 1), so the seed is at least half the atomic guess and never the PBE
+    density itself; beta is drawn from the loop's rng at every update so the resume checkpoint's
+    rng_state covers the sequence. Only dm_seed is replaced; every other array
+    of the molecule dict is shared, and the mixture is formed before padding."""
+    mixed = []
+    for md in gbatch["mol_data"]:
+        beta = (float(rng.uniform()) + 1.0) / 2.0
+        new = dict(md)
+        new["dm_seed"] = (1.0 - beta) * md["dm_pbe"] + beta * md["dm_minao"]
+        mixed.append(new)
+    out = dict(gbatch)
+    out["mol_data"] = tuple(mixed)
+    return out
+
+
 def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     """DFS/dpyscf-style stochastic loop: each epoch shuffles the per-target
     groups and takes ONE optimizer step per group with fixed channel weights.
@@ -1929,6 +1966,9 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         for g in groups
     ]
 
+    mix_seed = bool(getattr(spec, "seed_mix_atomic", False))
+    if mix_seed:
+        _require_minao_seed(prepared)
     rng = np.random.RandomState(spec.seed)
     order = np.arange(n_groups)
     losses_list: list = []
@@ -2065,6 +2105,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             rng.shuffle(order)
             for gi in order:
                 label, gloss, gbatch = prepared[gi]
+                if mix_seed:
+                    gbatch = _mix_seed_batch(gbatch, rng)
                 model, opt_state, loss_val, comps, grads = _step(
                     model, opt_state, gbatch, gloss)
                 loss_py = float(loss_val)

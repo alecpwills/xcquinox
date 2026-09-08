@@ -243,6 +243,11 @@ class MoleculeData(TypedDict, total=True):
     # functional-free superposition guess. The solver consumes this key
     # unconditionally; only the supply here dispatches on seed_source.
     dm_seed: jnp.ndarray
+    # The functional-free superposition (minao) guess beside the seed, for
+    # the per-update seed mixture of the DFS protocol (SI III A:
+    # rho_init = (1 - beta) rho_atomic + beta rho_DFT); None unless the
+    # precompute was asked for it (with_minao_seed).
+    dm_minao: jnp.ndarray | None
     s_matrix: jnp.ndarray
     h_core: jnp.ndarray
     j_matrix: jnp.ndarray
@@ -760,6 +765,7 @@ def _precompute_cache_key(
     seed_cache_dir: str | None = None,
     seed_density_fit: bool = False,
     reference_xc: str = "pbe",
+    with_minao_seed: bool = False,
 ) -> tuple:
     # MoleculeSpec is a frozen dataclass and hashes by structural identity.
     # required_keys are sorted to canonicalize set-equivalence.
@@ -804,7 +810,8 @@ def _precompute_cache_key(
     # "SCAN", " scan" and "scan,scan" are one entry and one SCF, not three.
     return (mol_spec, tuple(sorted(required_keys)), desc_key, ext_key, auxbasis,
             float(orientation_lock_strength),
-            (str(seed_source), seed_cache_dir, bool(seed_density_fit)),
+            (str(seed_source), seed_cache_dir, bool(seed_density_fit),
+             bool(with_minao_seed)),
             canonical_reference_xc(reference_xc))
 
 
@@ -976,6 +983,7 @@ def precompute_fixed_density_data(
     seed_density_fit: bool = False,
     seed_allow_generate: bool = False,
     reference_xc: str = "pbe",
+    with_minao_seed: bool = False,
 ) -> MoleculeData:
     """Run the reference SCF, extract grid data, return a MoleculeData dict.
 
@@ -1040,7 +1048,7 @@ def precompute_fixed_density_data(
             cache_key = _precompute_cache_key(
                 mol_spec, required_keys, descriptors, auxbasis,
                 orientation_lock_strength, seed_source, seed_cache_dir,
-                seed_density_fit, reference_xc)
+                seed_density_fit, reference_xc, with_minao_seed)
         except TypeError:
             cache_key = None  # mol_spec or descriptors not hashable
         if cache_key is not None and cache_key in _PRECOMPUTE_CACHE:
@@ -1524,6 +1532,9 @@ def precompute_fixed_density_data(
             allow_generate=seed_allow_generate))
     else:
         dm_seed_arr = dm_pbe_arr
+    # The minao guess beside the seed (the same call the minao seed uses, the
+    # same spin layout as dm_seed), only when the training loop will mix it.
+    dm_minao_arr = jnp.array(mf.get_init_guess()) if with_minao_seed else None
 
     result = MoleculeData(
         name=mol_spec.name,
@@ -1533,6 +1544,7 @@ def precompute_fixed_density_data(
         nocc_b=nocc_b,
         dm_pbe=dm_pbe_arr,
         dm_seed=dm_seed_arr,
+        dm_minao=dm_minao_arr,
         s_matrix=jnp.array(s_matrix),
         h_core=jnp.array(h_core),
         j_matrix=jnp.array(j_matrix),

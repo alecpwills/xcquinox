@@ -2593,3 +2593,79 @@ def test_load_external_data_returns_stored_pbe_density(tmp_path):
     rho_pbe_ref = out[5]
     assert rho_pbe_ref is not None
     np.testing.assert_allclose(np.asarray(rho_pbe_ref), rho_pbe)
+
+
+# --------------------------------------------------------------------------- #
+# dm_minao: the atomic (superposition-of-atomic-densities) seed carried BESIDE
+# the PBE seed, for the per-update seed mixture of DFS SI Sec. III A.
+# --------------------------------------------------------------------------- #
+
+def _s_weighted_trace(md, key):
+    """Electron count of a density matrix, tr(D S), summed over spin channels
+    for an unrestricted (2, nao, nao) block. S is symmetric, so the einsum
+    reduces to the elementwise product."""
+    return float(np.sum(np.asarray(md[key]) * np.asarray(md["s_matrix"])))
+
+
+def test_precompute_minao_seed_beside_the_pbe_seed():
+    """``with_minao_seed`` adds the minao superposition-of-atomic-densities
+    guess as ``dm_minao`` WITHOUT disturbing the seed the solver consumes.
+
+    The default call leaves the key present and None (the MoleculeData rule).
+    When requested, ``dm_minao`` is the SAME array the ``seed_source="minao"``
+    supply builds -- ``mf.get_init_guess()`` -- so it carries dm_seed's shape,
+    dtype and spin layout, and it is NOT the converged PBE density: at sto-3g
+    the two are 1.78 apart in Frobenius norm for H2O, and the guess integrates
+    to 9.8612 electrons against the converged density's 10.0000 (a 1.4 percent
+    deficit -- the projection of atomic minao densities into the molecular AO
+    basis does not conserve the electron count, so this is a bounded-deficit
+    check, not an equality). ``dm_seed`` itself stays the PBE alias.
+    """
+    from xcquinox.alec.tests.fixtures.molecules import h2o_molecule, o_atom
+    for mol_spec in (h2o_molecule(), o_atom()):
+        clear_precompute_cache()
+        base = precompute_fixed_density_data(mol_spec)
+        assert "dm_minao" in base
+        assert base["dm_minao"] is None
+
+        clear_precompute_cache()
+        md = precompute_fixed_density_data(mol_spec, with_minao_seed=True)
+        assert md["dm_minao"] is not None
+        assert md["dm_minao"].shape == md["dm_seed"].shape
+        assert md["dm_minao"].dtype == md["dm_seed"].dtype
+        # The seed supply is untouched: pbe still aliases dm_pbe.
+        assert md["dm_seed"] is md["dm_pbe"]
+        # It is the atomic guess, not a second copy of the converged density.
+        assert not np.allclose(np.asarray(md["dm_minao"]),
+                               np.asarray(md["dm_pbe"]))
+        # ... and it is the SAME construction the minao seed source uses.
+        clear_precompute_cache()
+        cold = precompute_fixed_density_data(mol_spec, seed_source="minao")
+        np.testing.assert_allclose(np.asarray(md["dm_minao"]),
+                                   np.asarray(cold["dm_seed"]),
+                                   rtol=0, atol=1e-12)
+        # The guess carries very nearly the molecule's electron count.
+        n_pbe = _s_weighted_trace(md, "dm_pbe")
+        n_minao = _s_weighted_trace(md, "dm_minao")
+        assert abs(n_minao - n_pbe) < 0.25, (mol_spec.name, n_minao, n_pbe)
+
+
+def test_precompute_memo_keys_on_the_minao_flag():
+    """The process-global memo hands the identical record back for an equal key
+    (a repeat default call returns the same object), so the minao flag must be
+    part of the key: a request for the minao seed that follows a default call on
+    the same molecule must not be served the earlier record with dm_minao None."""
+    from xcquinox.alec.data import clear_precompute_cache
+    from xcquinox.alec.tests.fixtures.molecules import h_atom
+    clear_precompute_cache()
+    plain = precompute_fixed_density_data(h_atom())
+    assert plain["dm_minao"] is None
+    again = precompute_fixed_density_data(h_atom())
+    assert again is plain
+    with_seed = precompute_fixed_density_data(h_atom(), with_minao_seed=True)
+    assert with_seed is not plain
+    assert with_seed["dm_minao"] is not None
+    assert with_seed["dm_minao"].shape == with_seed["dm_seed"].shape
+    plain_again = precompute_fixed_density_data(h_atom())
+    assert plain_again is plain
+    clear_precompute_cache()
