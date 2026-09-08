@@ -1785,15 +1785,16 @@ def test_v6_and_v7_files_train_barrier_heights_and_the_rest_state_the_substituti
     wrong = []
     for name, path in paths.items():
         mode = _raw_yaml(path).get("bh76_mode")
-        want = ("barrier_height" if name in _V6_FILES + _V7_FILES
+        want = ("barrier_height" if name in _V6_FILES + _V7_FILES + _V7_ARMS
                 else "reaction_energy")
         if mode != want:
             wrong.append((name, mode, want))
     assert not wrong, (
         "bh76_mode mismatches (name, stated, expected): "
-        f"{wrong} -- the seven v6 files and the three v7 files train the "
-        "staged-TS barrier objective; every other DFS-domain file records "
-        "the substitution it actually trained.")
+        f"{wrong} -- the seven v6 files, the three v7 group files and the "
+        "v7 arms that keep the barrier objective train the staged-TS "
+        "objective; every other DFS-domain file records the substitution it "
+        "actually trained.")
 
 
 #: The v7 reaction-energy CONTROL ARM (2026-09-04): the g1 size group
@@ -1801,6 +1802,16 @@ def test_v6_and_v7_files_train_barrier_heights_and_the_rest_state_the_substituti
 #: the g1 file's, the certified g1 clones reused by directory copy.
 _V7_RXN_CONTROL = "dfs_step7.dfs6311_grid3_v7g1_rxn.yaml"
 _V7_RXN_SOURCE = "dfs_step7.dfs6311_grid3_v7g1_size.yaml"
+
+#: The v7 arms that KEEP the barrier objective, so the substitution pin above
+#: expects barrier_height for them as it does for the group files. The
+#: 25-cycle arm (2026-09-07) is the g1 size group's medium column on the
+#: ``full_25`` solver, training from the g1 run's certified clones copied in.
+#: An arm is pinned by its own mirror test rather than by ``_V7_FILES``: that
+#: list also pins the completed pretraining protocol and a pretraining root of
+#: its own, neither of which a run training from another run's clones carries.
+_V7_C25_ARM = "dfs_step7.dfs6311_grid3_v7g1_c25.yaml"
+_V7_ARMS = (_V7_C25_ARM,)
 
 
 def test_v7g1_rxn_control_arm_mirrors_g1_except_the_bh76_objective():
@@ -1859,6 +1870,139 @@ def test_v7g1_rxn_control_arm_mirrors_g1_except_the_bh76_objective():
     assert cfg_c.pretrain.loss_weighting == "integration"
     assert cfg_c.pretrain.lr_decay_end == 1.0
     assert cfg_c.bh76_mode == "reaction_energy"
+
+
+def test_v7g1_c25_arm_mirrors_g1_except_the_25_cycle_keys():
+    """The 25-cycle arm differs from the running g1 arm in the number of SCF
+    cycles its losses see, in the schedule and wall that count is paid for
+    with, and in nothing else: the same barrier objective, solver
+    definitions, loss and metric axes, production identity, model class,
+    fidelity gate, retry keys and job mail; the medium column alone, on
+    ``full_25``, at the five subset sizes whose g1 cells are read; its own
+    output root; the SAME pretraining-data root (the clones are the g1 run's,
+    copied in before the arm's pretrain array is released); and the pretrain
+    block those clones were in fact fit under rather than the completed
+    protocol the g1 FILE carries for future submissions.
+
+    The training schedule moves with the solver because it must. Twenty-five
+    cycles per step against the g1 arm's step count does not fit a wall this
+    queue admits, so the arm runs 100 epochs on a 96 h wall; and 100 epochs
+    at the g1 file's validation cadence of 25 is four checks against a
+    patience of 5, which ``validate_grid_semantics`` refuses as an early-stop
+    that could only fire degenerately. The cadence is therefore 10. That
+    refusal is a submit-time rule the loader does not apply, so both files are
+    driven through it here and not through ``load_grid_config`` alone.
+    """
+    cdir = _campaign_configs_dir()
+    if cdir is None:
+        pytest.skip("no hpcjobs/configs deployment tree in this checkout")
+    arm_path = os.path.join(cdir, _V7_C25_ARM)
+    src_path = os.path.join(cdir, _V7_RXN_SOURCE)
+    assert os.path.isfile(arm_path), f"missing 25-cycle arm file {_V7_C25_ARM}"
+    arm = _raw_yaml(arm_path)
+    src = _raw_yaml(src_path)
+    assert arm["bh76_mode"] == "barrier_height"
+    assert src["bh76_mode"] == "barrier_height"
+    # Every top-level key present in either file is present in both, and every
+    # one outside the five sections below carries the g1 file's value --
+    # ``solvers`` included, so the swept full_25 block is the one g1 defines.
+    assert set(arm) == set(src), (set(arm) ^ set(src))
+    same = {k for k in src if k not in ("inputs", "sweep", "hyperparams",
+                                        "cluster", "pretrain")}
+    for k in sorted(same):
+        assert arm[k] == src[k], f"top-level {k!r} differs from the g1 file"
+    # inputs: identical except the run root, which must be its own -- and not
+    # the reaction-energy arm's either.
+    for k in src["inputs"]:
+        if k == "output_root":
+            assert arm["inputs"][k] != src["inputs"][k]
+            assert arm["inputs"][k].endswith("dfs6311_grid3_v7g1_c25")
+            assert (os.path.dirname(arm["inputs"][k])
+                    == os.path.dirname(src["inputs"][k])), (
+                "the arm's run root sits beside g1's, under the same campaign tree")
+        else:
+            assert arm["inputs"][k] == src["inputs"][k], f"inputs.{k}"
+    assert set(arm["inputs"]) == set(src["inputs"])
+    # The roots pin is parametrized on the group files, so the arms are held
+    # apart here: two runs sharing a root interleave their artifacts.
+    rxn_path = os.path.join(cdir, _V7_RXN_CONTROL)
+    if os.path.isfile(rxn_path):
+        assert (arm["inputs"]["output_root"]
+                != _raw_yaml(rxn_path)["inputs"]["output_root"])
+    # sweep: the medium column on full_25 at the five read subset sizes; the
+    # loss and metric axes stay the g1 file's.
+    sw_a, sw_s = arm["sweep"], src["sweep"]
+    assert sw_a["arch"] == ["medium"]
+    assert sw_a["subset_size"] == [7, 12, 15, 18, 26]
+    assert sw_a["solver"] == ["full_25"]
+    assert sw_a["solver"][0] in src["solvers"]
+    for k in sw_s:
+        if k in ("arch", "subset_size", "solver"):
+            continue
+        assert sw_a[k] == sw_s[k], f"sweep.{k} differs from the g1 file"
+    assert set(sw_a) == set(sw_s)
+    # hyperparams: 100 epochs at a cadence of 10 (see the docstring); every
+    # other hyperparameter, the seed and the LR schedule included, the g1
+    # file's, so the two arms differ in the cycle count and its cost alone.
+    hp_a, hp_s = arm["hyperparams"], src["hyperparams"]
+    assert hp_a["n_steps"] == 100
+    assert hp_a["validate_every"] == 10
+    for k in hp_s:
+        if k in ("n_steps", "validate_every"):
+            continue
+        assert hp_a[k] == hp_s[k], f"hyperparams.{k} differs from the g1 file"
+    assert set(hp_a) == set(hp_s)
+    # cluster: the 96 h train wall the 25-cycle steps are bought with. The
+    # partition stays unset -- the queue is chosen on the submit line -- and
+    # every other resource, retry key and mail directive is the g1 file's.
+    cl_a, cl_s = arm["cluster"], src["cluster"]
+    assert cl_a["time"] == "96:00:00"
+    assert cl_a["partition"] == ""
+    # The timeout escalation must carry a LONGER wall than the one that killed
+    # the cell (g1's 96 h equals this arm's base wall): the target queue's cap.
+    assert cl_a["timeout_retry_time"] == "168:00:00"
+    assert _wall_hours(cl_a["timeout_retry_time"]) > _wall_hours(cl_a["time"])
+    assert (_wall_hours(cl_a["timeout_retry_time"])
+            <= _QOS_MAX_WALL_HOURS[cl_a["timeout_retry_partition"]])
+    assert _wall_hours(cl_a["time"]) <= _QOS_MAX_WALL_HOURS[cl_a["oom_retry_partition"]]
+    for k in cl_s:
+        if k in ("time", "timeout_retry_time"):
+            continue
+        assert cl_a[k] == cl_s[k], f"cluster.{k} differs from the g1 file"
+    assert set(cl_a) == set(cl_s)
+    # pretrain: the g1 clones' executed protocol, on the g1 data root.
+    pt_a, pt_s = arm["pretrain"], src["pretrain"]
+    assert pt_a["data_dir"] == pt_s["data_dir"]
+    assert pt_a["loss_weighting"] == "integration"
+    assert pt_a["lr_decay_end"] == 1.0
+    assert "points_per_system" not in pt_a and "sampling_seed" not in pt_a
+    for k in pt_s:
+        if k in ("loss_weighting", "lr_decay_end", "points_per_system",
+                 "sampling_seed"):
+            continue
+        assert pt_a[k] == pt_s[k], f"pretrain.{k} differs from the g1 file"
+    assert set(pt_a) | {"points_per_system", "sampling_seed"} == set(pt_s)
+    # Through the real loader: the identity the copied clones were certified
+    # at, the walls and mail the arm submits under, and the resolved solver.
+    from xcquinox.alec.cluster.fidelity import run_identity
+    cfg_a = load_grid_config(arm_path)
+    cfg_s = load_grid_config(src_path)
+    assert run_identity(cfg_a) == run_identity(cfg_s)
+    assert cfg_a.bh76_mode == "barrier_height"
+    assert cfg_a.hyperparams.n_steps == 100
+    assert cfg_a.hyperparams.validate_every == 10
+    assert cfg_a.cluster.time == "96:00:00"
+    assert cfg_a.cluster.pretrain_time == "48:00:00"
+    assert cfg_a.cluster.mail_user == "alec.wills@stonybrook.edu"
+    assert cfg_a.cluster.mail_type == "BEGIN,END,FAIL"
+    assert cfg_a.sweep.solver == ("full_25",)
+    named = cfg_a.solvers[cfg_a.sweep.solver[0]]
+    assert named.max_cycles == 25
+    assert named.scf_grad_checkpoint is True
+    # The submit-time rules the loader does not apply, on both files: the
+    # early-stop geometry the cadence was chosen for is one of them.
+    validate_grid_semantics(cfg_s, get_domain_profile(cfg_s.domain_profile))
+    validate_grid_semantics(cfg_a, get_domain_profile(cfg_a.domain_profile))
 
 
 def test_v7_files_are_the_unanchored_cloning_protocol():

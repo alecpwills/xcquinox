@@ -541,6 +541,48 @@ figures follow the v7 lines above with the category
 `dfs_step7/dfs6311_grid3_v7g1_rxn/runs`; the comparison against the g1 arm
 is cell by cell on the same held-out slice.
 
+### The 25-cycle arm (2026-09-07): submit on the 96-core queue, copy the g1 clones, release
+
+`hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_c25.yaml` is the g1 medium column at
+subset sizes 7, 12, 15, 18 and 26 trained on `solvers.full_25` (25 SCF cycles per
+update) for 100 epochs with validation every 10 epochs, on a 96 h wall; every
+other value is the g1 file's (pin
+`test_v7g1_c25_arm_mirrors_g1_except_the_25_cycle_keys`). Its cells start from
+the g1 run's certified clones, copied in before the pretrain array can start,
+exactly as the control arm's do. The queue is the 96-core extended partition
+(7-day QOS cap; the config carries no partition, as for every v7 file), and the
+train wall goes on the submit line with `--max-nodes 1` (one node at a time,
+as the control arm; a larger N lets up to the config's throttle of 4 cells
+run at once). On the cluster, from the repo root after `git pull`:
+
+```bash
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox
+git pull
+python -m xcquinox.alec.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_c25.yaml --partition extended-96core --max-nodes 1 --train-time "96:00:00" --submit
+```
+
+Then, before the pretrain array can start (it waits on datagen, but hold it
+anyway):
+
+```bash
+R=/gpfs/scratch/awills/xcquinox_runs/dfs_step7
+NEW=$(ls -d $R/dfs6311_grid3_v7g1_c25/runs/run_* | tail -1)
+PRE=$(python -c "import json,sys; print([j['array_job_id'] for j in json.load(open('$NEW/jobs.json')) if j['kind']=='pretrain'][0])")
+scontrol hold $PRE
+mkdir -p $NEW/pretrain
+cp -a $R/dfs6311_grid3_v7g1_size/runs/run_20260902T145245Z/pretrain/. $NEW/pretrain/
+ls $NEW/pretrain/*/fidelity_certificate.json
+scontrol release $PRE
+```
+
+Each pretrain task's log then reads `pretrain KEPT: ...`; a task that instead
+reads `pretraining from scratch` means the copy was not in place, and the run's
+clones are then its own refits (record it). Pull and figures follow the v7 lines
+above with the category `dfs_step7/dfs6311_grid3_v7g1_c25/runs`; the comparison
+against the g1 arm is cell by cell on the same held-out slices and, once
+`cluster/channel_retro.py --channel converged` has run over both runs, on the
+converged channel.
+
 ### Certificate gate changes on a LIVE run (2026-09-03 flow)
 
 A gate-policy change (e.g. the two-tier `tol_AE_aggregate: mae` +
