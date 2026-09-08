@@ -75,6 +75,52 @@ def coldstart_solver_config(sc):
         conv_tol=COLDSTART_CONV_TOL, seed_cache_dir=None)
 
 
+# Converged-SCF evaluation channel (eval_holdout_converged, 2026-09-07): the
+# checkpoint's density and energies under a CONVERGED SCF on the pyscfad
+# backend (DIIS, the Letter's evaluation tolerance of 1e-8 Ha, p. 4) from the
+# PBE seed, so the held-out density is judged against the converged CCSD
+# reference on the same footing as the converged PBE baseline, which the
+# three-cycle warm channels are not (density audit, 2026-09-07).
+CONVERGED_MAX_CYCLES = 100
+CONVERGED_CONV_TOL = 1e-8
+
+
+def converged_solver_config(sc):
+    """The converged-evaluation override of a trained FULL-mode solver config.
+
+    Backend PYSCFAD, mode FULL, the PBE seed (the backend's supported seed),
+    :data:`CONVERGED_MAX_CYCLES` cycles at :data:`CONVERGED_CONV_TOL`, and the
+    tail mean off so the reported energy is the converged final energy (the
+    Letter's evaluation quantity). Every other trained knob (density fitting
+    and its auxbasis, orientation lock, feature policy, mixer settings) is
+    preserved, so a cell is evaluated on its own Coulomb footing. Applied in
+    one place by the orchestrator and by the shard workers through
+    ``--channel converged`` (:data:`CHANNEL_OVERRIDES`). Raises ``ValueError``
+    for a non-FULL solver: a one-shot protocol has no self-consistent
+    trajectory to converge."""
+    import dataclasses
+
+    from xcquinox.alec.solver import SolverBackend, SolverMode
+
+    if getattr(sc, "mode", None) != SolverMode.FULL:
+        raise ValueError(
+            "converged_solver_config requires a FULL-mode solver config "
+            f"(got mode={getattr(sc, 'mode', None)!r})")
+    return dataclasses.replace(
+        sc, backend=SolverBackend.PYSCFAD, mode=SolverMode.FULL,
+        seed_source="pbe", seed_cache_dir=None,
+        max_cycles=CONVERGED_MAX_CYCLES, conv_tol=CONVERGED_CONV_TOL,
+        scf_loss_use_tail=False)
+
+
+# One table from a channel name to its solver override, shared by the
+# orchestrator, the shard workers and the retroactive tool.
+CHANNEL_OVERRIDES = {
+    "coldstart": coldstart_solver_config,
+    "converged": converged_solver_config,
+}
+
+
 def load_training_spec(spec_path: Path):
     """Read the harness's serialized ``spec_<NNNN>.spec`` file.
 

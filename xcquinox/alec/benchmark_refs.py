@@ -38,6 +38,7 @@ The tzvpd variant adds ``--basis def2-tzvpd --density-fit
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -193,7 +194,8 @@ def resolve_slice(n: int, *, shard: Optional[str] = None,
 def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
                  density_fit: bool = False,
                  auxbasis: Optional[str] = None,
-                 orientation_lock_strength: float = 0.0) -> str:
+                 orientation_lock_strength: float = 0.0,
+                 t1_backfill: bool = False) -> str:
     """Generate (or skip) one species' density-only reference npz.
 
     Returns ``"SKIP"`` when the final npz is already complete for this
@@ -206,14 +208,43 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
     Hamiltonians with the shared anisotropic-quadrupole operator so a degenerate
     radical's reference density locks the SAME component as the eval/training
     seed; it tags the intermediate caches + the final npz so switching it on (or
-    changing it) regenerates rather than silently reusing an unlocked file."""
+    changing it) regenerates rather than silently reusing an unlocked file.
+
+    The final npz carries the CCSD T1 diagnostic (``t1_diagnostic``, optional:
+    files written before it existed stay complete). ``t1_backfill`` treats a
+    complete file that lacks the key as work: the SCF stage is served from its
+    cache, the CCSD stage recomputed under ``require_t1`` (its cache rewritten
+    with the key), and the final npz rewritten with the key added and every
+    other array unchanged; returns ``"T1"``."""
     final = Path(out_dir) / f"{ms.name}.npz"
+    spec = SpeciesEntry(name=ms.name, charge=int(ms.charge),
+                        spin=int(ms.spin), source="benchmark")
     if _benchmark_npz_is_complete(final, basis=basis, grid_level=grid_level,
                                   orientation_lock_strength=orientation_lock_strength,
                                   density_fit=density_fit):
-        return "SKIP"
-    spec = SpeciesEntry(name=ms.name, charge=int(ms.charge),
-                        spin=int(ms.spin), source="benchmark")
+        if not t1_backfill:
+            return "SKIP"
+        with np.load(final, allow_pickle=False) as z:
+            if "t1_diagnostic" in z.files:
+                return "SKIP"
+            arrays = {k: np.array(z[k]) for k in z.files}
+        atoms = _mol_spec_to_atoms(ms)
+        scf = run_scf_with_cache(
+            spec, atoms, cache_dir=out_dir, basis=basis, grid_level=grid_level,
+            density_fit=density_fit, auxbasis=auxbasis,
+            orientation_lock_strength=orientation_lock_strength)
+        cc = run_ccsd_with_cache(
+            spec, atoms, scf_payload=scf, cache_dir=out_dir, basis=basis,
+            grid_level=grid_level, density_fit=density_fit, auxbasis=auxbasis,
+            orientation_lock_strength=orientation_lock_strength,
+            require_t1=True)
+        t1 = cc.get("t1_diagnostic")
+        if t1 is None:
+            raise RuntimeError(f"{ms.name}: the CCSD stage returned no T1 "
+                               "diagnostic under require_t1")
+        arrays["t1_diagnostic"] = np.array(float(t1))
+        _atomic_savez(final, **arrays)
+        return "T1"
     atoms = _mol_spec_to_atoms(ms)
     scf = run_scf_with_cache(
         spec, atoms, cache_dir=out_dir, basis=basis, grid_level=grid_level,
@@ -245,8 +276,40 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
         # CCSD refuses in external_refs._require_ccsd_converged). NOT in
         # _DENSITY_NPZ_KEYS: files written before the check stay valid.
         ccsd_converged=np.array(True),
+        # Optional: the CCSD T1 diagnostic (None from a cache that predates
+        # it; the --t1-backfill mode fills such files).
+        **({"t1_diagnostic": np.array(float(cc["t1_diagnostic"]))}
+           if cc.get("t1_diagnostic") is not None else {}),
     )
     return "OK"
+
+
+def write_t1_diagnostics(refs_dir, run_dir, *, threshold: float = 0.02) -> str:
+    """Collect every species' ``t1_diagnostic`` from the reference dir's
+    final npz files into one run-level ``t1_diagnostics.json``: ``{"t1":
+    {casefolded name: value}, "threshold": threshold, "source": refs_dir}``,
+    the single table the figure layer's outlier-free variant reads
+    (``load_t1_table``). Species whose file lacks the key are omitted (the
+    backfill fills them); the threshold is Lee and Taylor's 0.02. Returns
+    the path written."""
+    refs = Path(refs_dir)
+    t1: Dict[str, float] = {}
+    for p in sorted(refs.glob("*.npz")):
+        try:
+            with np.load(p, allow_pickle=False) as z:
+                if "t1_diagnostic" in z.files:
+                    t1[p.stem.casefold()] = float(z["t1_diagnostic"])
+        except Exception as exc:  # noqa: BLE001 -- a broken file is skipped, named
+            print(f"write_t1_diagnostics: skipping {p.name} ({exc})", flush=True)
+    out = Path(run_dir) / "t1_diagnostics.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"t1": t1, "threshold": float(threshold),
+               "source": str(refs), "n_species": len(t1)}
+    tmp = out.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=1, sort_keys=True))
+    os.replace(tmp, out)
+    print(f"write_t1_diagnostics: {len(t1)} species -> {out}", flush=True)
+    return str(out)
 
 
 def _fmt_hms(seconds: float) -> str:
@@ -260,7 +323,7 @@ def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
               out_dir, basis: str, grid_level: int, density_fit: bool = False,
               auxbasis: Optional[str] = None,
               orientation_lock_strength: float = 0.0, shard_label: str = "1/1",
-              progress: bool = True) -> int:
+              progress: bool = True, t1_backfill: bool = False) -> int:
     """Generate every species in ``names``; returns the FAIL count.
 
     Per-species outcomes go to an atomic RunLog ledger under
@@ -283,7 +346,8 @@ def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
             status = generate_one(ms, out_dir=out_dir, basis=basis,
                                   grid_level=grid_level,
                                   density_fit=density_fit, auxbasis=auxbasis,
-                                  orientation_lock_strength=orientation_lock_strength)
+                                  orientation_lock_strength=orientation_lock_strength,
+                                  t1_backfill=t1_backfill)
         except Exception as exc:  # log + continue: one hard species must not
             status = "FAIL"      # sink the whole shard's remaining work
             err = f"{type(exc).__name__}: {exc}"
@@ -331,6 +395,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="A:B explicit python slice over the sorted species "
                         "list (mutually exclusive with --shard)")
     p.add_argument("--no-progress", action="store_true")
+    p.add_argument("--t1-backfill", action="store_true",
+                   help="also rewrite complete reference files that lack the "
+                        "CCSD T1 diagnostic: the SCF stage from its cache, "
+                        "the CCSD stage recomputed, the npz rewritten with "
+                        "the key added and nothing else changed")
+    p.add_argument("--write-t1-json", default=None, metavar="RUN_DIR",
+                   help="after the shard, collect every species' "
+                        "t1_diagnostic from --out-dir into "
+                        "<RUN_DIR>/t1_diagnostics.json (the figure layer's "
+                        "outlier-free variant reads it)")
     args = p.parse_args(argv)
 
     if args.auxbasis and not args.density_fit:
@@ -356,13 +430,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                        density_fit=args.density_fit, auxbasis=args.auxbasis,
                        orientation_lock_strength=args.orientation_lock_strength,
                        shard_label=shard_label,
-                       progress=not args.no_progress)
+                       progress=not args.no_progress,
+                       t1_backfill=args.t1_backfill)
     if n_fail:
         print(f"benchmark_refs: {n_fail}/{len(names)} species FAILED "
               "(see _runlogs ledger); rerun after triage -- complete species "
               "are skipped", flush=True)
         return 1
     print(f"benchmark_refs: all {len(names)} species complete", flush=True)
+    if args.write_t1_json:
+        write_t1_diagnostics(args.out_dir, args.write_t1_json)
     return 0
 
 

@@ -71,8 +71,8 @@ def test_coldstart_one_spec_runs_ready_with_override(tmp_path, monkeypatch):
     calls = {}
 
     def _fake_eval(rd, idx, cfg, ck, mp, ts, holdout_subdir=None,
-                   coldstart=False):
-        calls.update(subdir=holdout_subdir, coldstart=coldstart,
+                   channel=None):
+        calls.update(subdir=holdout_subdir, channel=channel,
                      sc=ts.solver_config, model=os.path.basename(mp))
 
     monkeypatch.setattr(
@@ -83,7 +83,7 @@ def test_coldstart_one_spec_runs_ready_with_override(tmp_path, monkeypatch):
         lambda path: object())
     assert cr.coldstart_one_spec(str(run), 0) == "ran"
     assert calls["subdir"] == "eval_holdout_coldstart"
-    assert calls["coldstart"] is True
+    assert calls["channel"] == "coldstart"
     assert calls["model"] == "model.eqx"
     assert calls["sc"].seed_source == "minao"
     assert calls["sc"].max_cycles == 25

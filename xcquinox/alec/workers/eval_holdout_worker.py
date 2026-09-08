@@ -20,7 +20,7 @@ import traceback
 
 def compute_shard(run_dir, spec_idx, names, basis, grid_level,
                   model_name="model.eqx",
-                  coldstart=False):
+                  channel=None):
     """Evaluate ``names`` (a held-out molecule subset) for spec ``spec_idx`` of
     ``run_dir``. Returns ``{energies, pbe_energies, mol_records}``.
 
@@ -29,7 +29,10 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
     worker loads exactly what the serial eval task loads. ``model_name`` selects
     which checkpoint in the spec dir to load (``model.eqx`` for the final-step
     eval, ``model_best.eqx`` for the best-loss eval); the orchestrator threads it
-    so a best-checkpoint pass shards the BEST weights, not the final ones."""
+    so a best-checkpoint pass shards the BEST weights, not the final ones.
+    ``channel`` (``"coldstart"`` / ``"converged"`` / None) applies the named
+    solver override from ``eval_holdout.CHANNEL_OVERRIDES`` to the reloaded
+    spec, the same helper the orchestrator applied before dispatch."""
     from pathlib import Path
 
     from xcquinox.alec.cluster._eval_one_spec import (
@@ -46,15 +49,16 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
     model_path = os.path.join(checkpoint_dir, model_name)
 
     training_spec = _load_spec(spec_path)
-    if coldstart:
+    if channel:
         # Shard subprocesses reload the spec themselves, so the orchestrator's
         # in-memory override cannot reach them; apply the SAME shared helper.
         import dataclasses
 
-        from xcquinox.alec.eval_holdout import coldstart_solver_config
+        from xcquinox.alec.eval_holdout import CHANNEL_OVERRIDES
+        override = CHANNEL_OVERRIDES[channel]
         training_spec = dataclasses.replace(
             training_spec,
-            solver_config=coldstart_solver_config(training_spec.solver_config))
+            solver_config=override(training_spec.solver_config))
     model = load_trained_model(training_spec, Path(model_path))
 
     full_specs, _full_rxns = load_full_held_out_pools(
@@ -83,11 +87,18 @@ def main(args=None):
     parser.add_argument("--model-name", default="model.eqx",
                         help="checkpoint filename in the spec dir to evaluate "
                              "(model.eqx final / model_best.eqx best)")
+    parser.add_argument("--channel", choices=("coldstart", "converged"),
+                        default=None,
+                        help="apply the named solver override "
+                             "(eval_holdout.CHANNEL_OVERRIDES) to the reloaded "
+                             "spec's solver: coldstart (minao seed, 25 cycles) "
+                             "or converged (pyscfad, PBE seed, 100 cycles at "
+                             "1e-8)")
     parser.add_argument("--coldstart", action="store_true",
-                        help="apply the cold-start override (minao seed, 25 "
-                             "cycles) to the reloaded spec's solver -- the "
-                             "eval_holdout_coldstart channel")
+                        help="alias of --channel coldstart (the historical "
+                             "flag of the eval_holdout_coldstart channel)")
     parsed = parser.parse_args(args)
+    channel = parsed.channel or ("coldstart" if parsed.coldstart else None)
 
     # Pin thread env BEFORE any JAX import (one BLAS thread per worker by
     # default so N workers saturate N cores without oversubscription). Respect
@@ -143,7 +154,7 @@ def main(args=None):
         shard = compute_shard(parsed.run_dir, parsed.spec_idx, names,
                               parsed.basis, parsed.grid_level,
                               model_name=parsed.model_name,
-                              coldstart=parsed.coldstart)
+                              channel=channel)
         with open(parsed.out_shard, "w") as f:
             json.dump(shard, f)
 

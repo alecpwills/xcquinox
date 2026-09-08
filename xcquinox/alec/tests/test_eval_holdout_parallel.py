@@ -151,7 +151,7 @@ def test_worker_main_writes_shard_and_prints_success(tmp_path, monkeypatch, caps
     monkeypatch.setattr(
         ehw, "compute_shard",
         lambda rd, idx, names, basis, gl, model_name="model.eqx",
-        coldstart=False: {
+        channel=None: {
             "energies": {"h2": -1.17}, "pbe_energies": {"h2": -1.16},
             "mol_records": [{"molecule": "h2"}]})
 
@@ -173,7 +173,7 @@ def test_worker_main_forwards_model_name(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ehw, "compute_shard",
         lambda rd, idx, names, basis, gl, model_name="model.eqx",
-        coldstart=False: (
+        channel=None: (
             seen.append(model_name)
             or {"energies": {}, "pbe_energies": {}, "mol_records": []}))
 
@@ -793,17 +793,19 @@ def test_orchestrator_persists_worker_logs_and_forwards_failed_lines(
 
 
 def test_worker_main_forwards_coldstart_flag(tmp_path, monkeypatch):
-    """--coldstart reaches compute_shard so the worker applies the shared
-    override to its OWN spec reload (the orchestrator's in-memory replace
-    cannot reach shard subprocesses)."""
+    """--coldstart reaches compute_shard as the channel name, so the worker
+    applies the shared override to its OWN spec reload (the orchestrator's
+    in-memory replace cannot reach shard subprocesses). The flag is kept as
+    an alias of ``--channel coldstart`` so a deployed launch line keeps
+    working."""
     names_file = tmp_path / "names.json"
     names_file.write_text(json.dumps(["h2"]))
     seen = []
     monkeypatch.setattr(
         ehw, "compute_shard",
         lambda rd, idx, names, basis, gl, model_name="model.eqx",
-        coldstart=False: (
-            seen.append(coldstart)
+        channel=None: (
+            seen.append(channel)
             or {"energies": {}, "pbe_energies": {}, "mol_records": []}))
     base = ["--run-dir", "/run", "--spec-idx", "0",
             "--names-file", str(names_file),
@@ -811,11 +813,11 @@ def test_worker_main_forwards_coldstart_flag(tmp_path, monkeypatch):
             "--basis", "def2-svp", "--grid-level", "1", "--threads", "1"]
     assert ehw.main(base) == 0
     assert ehw.main(base + ["--coldstart"]) == 0
-    assert seen == [False, True]
+    assert seen == [None, "coldstart"]
 
 
 def test_compute_shard_coldstart_applies_shared_override(monkeypatch):
-    """Under --coldstart the shard evaluates with the SAME override the
+    """Under the cold-start channel the shard evaluates with the SAME override the
     orchestrator applies (single source of truth): minao seed, 25 cycles,
     conv_tol 1e-12, FULL mode."""
     import dataclasses as _dc
@@ -850,7 +852,7 @@ def test_compute_shard_coldstart_applies_shared_override(monkeypatch):
         fbp, "load_full_held_out_pools",
         lambda basis=None, grid_level=None:
             ({"h2": SimpleNamespace(name="h2")}, []))
-    ehw.compute_shard("/run", 0, ["h2"], "def2-svp", 1, coldstart=True)
+    ehw.compute_shard("/run", 0, ["h2"], "def2-svp", 1, channel="coldstart")
     sc = captured["sc"]
     assert sc.seed_source == "minao"
     assert sc.max_cycles == 25

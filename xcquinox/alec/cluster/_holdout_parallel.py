@@ -60,7 +60,7 @@ def _round_robin(names, k):
 def run_holdout_with_escalation(
     run_dir, spec_idx, training_spec, model, reactions, full_specs, out_dir, *,
     basis, grid_level, n_workers_top, total_cpus, strict=None,
-    model_name="model.eqx", coldstart=False,
+    model_name="model.eqx", channel=None,
 ):
     """Run the held-out eval in parallel with adaptive degradation.
 
@@ -71,8 +71,10 @@ def run_holdout_with_escalation(
     in-process serial leftover tier (workers reload their own). ``model_name``
     selects which checkpoint the shard workers reload (``model.eqx`` final /
     ``model_best.eqx`` best); the caller MUST pass the same checkpoint it loaded
-    into ``model`` so the serial leftover tier and the workers agree. Returns the
-    same summary dict as ``run_full_holdout_eval``.
+    into ``model`` so the serial leftover tier and the workers agree. ``channel``
+    (``"coldstart"`` / ``"converged"`` / None) is the solver override the pass
+    runs under; the workers reload the spec themselves and apply it from the
+    name. Returns the same summary dict as ``run_full_holdout_eval``.
     """
     from xcquinox.alec import eval_holdout
 
@@ -106,7 +108,7 @@ def run_holdout_with_escalation(
                 "--names-file", str(names_file), "--out-shard", str(out_shard),
                 "--basis", str(basis), "--grid-level", str(grid_level),
                 "--threads", str(threads), "--model-name", str(model_name),
-            ] + (["--coldstart"] if coldstart else [])
+            ] + (["--channel", str(channel)] if channel else [])
             jobs.append(parallel.WorkerJob(
                 name=f"eval_t{tier_no}_s{si}", cmd=cmd,
                 # The shard worker writes no progress file, so the watchdog

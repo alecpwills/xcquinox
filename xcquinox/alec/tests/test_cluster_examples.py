@@ -761,8 +761,10 @@ def test_v6_differs_from_v5_in_exactly_the_fields_it_claims():
     # the published-protocol completion of the same day added
     # ``pretrain.lr_decay_end`` / ``points_per_system`` / ``sampling_seed``;
     # all five load at their defaults on every pre-change file, identical on
-    # the two sides, so none joins the difference list.
-    assert len(keys) == 142, len(keys)
+    # the two sides, so none joins the difference list. 143 since the
+    # 2026-09-07 converged-SCF channel flag (``eval_converged``), False at
+    # its default on both sides for the same reason.
+    assert len(keys) == 143, len(keys)
     assert differing == [
         "bh76_mode",
         "cluster.datagen_time",
@@ -1539,8 +1541,9 @@ def test_v6_group_differs_from_the_reference_in_exactly_what_it_claims(name):
     # two-tier certificate gate (``fidelity.tol_AE_aggregate``,
     # ``tol_AE_max_backstop``) and cloning-protocol completion
     # (``pretrain.lr_decay_end``, ``points_per_system``, ``sampling_seed``),
-    # all equal at their defaults on every v6 file for the same reason.
-    assert len(keys) == 142, len(keys)
+    # all equal at their defaults on every v6 file for the same reason; 143
+    # since the 2026-09-07 converged-SCF channel flag (``eval_converged``).
+    assert len(keys) == 143, len(keys)
     assert differing == sorted(expected), (path, ref_path, differing)
     # The header makes the same claim in prose, and that is where an operator
     # reads it. What is asserted is the EXCEPT clause -- the list of fields

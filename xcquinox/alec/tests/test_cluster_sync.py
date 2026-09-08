@@ -723,6 +723,22 @@ def _materialize_fake_run(root: Path) -> Path:
     (spec / "eval_holdout_coldstart" / "per_molecule.json").write_text("[]\n")
     (spec / "eval_holdout_coldstart" / "eval_metadata.json").write_text(
         '{"channel": "eval_holdout_coldstart", "coldstart": true}\n')
+    # Converged-SCF channel (the 5th and 6th passes): the final and the
+    # validation-best checkpoints re-evaluated under a converged pyscfad SCF.
+    # Same small CSV/JSON artifacts plus the provenance stamp naming the
+    # override, no *.eqx.
+    for _conv in ("eval_holdout_converged", "eval_holdout_converged_val_best"):
+        (spec / _conv).mkdir()
+        (spec / _conv / "test_set.csv").write_text(
+            "set,mae_nn_kcalmol,mae_pbe_kcalmol,delta_nn_minus_pbe\n"
+            "test_set_held_out_combined,7.9,11.8,-3.900000\n")
+        (spec / _conv / "per_reaction.json").write_text("[]\n")
+        (spec / _conv / "per_molecule.json").write_text("[]\n")
+        (spec / _conv / "eval_metadata.json").write_text(
+            '{"channel": "' + _conv + '", "channel_override": "converged"}\n')
+    (spec / "eval_holdout_converged" / "_shards").mkdir()
+    (spec / "eval_holdout_converged" / "_shards" / "shard_t1_s0.json").write_text(
+        '{"energies": {}}\n' * 200)
     # The parallel eval's shard scratch: worker names/payload JSON, the bulk
     # of an eval_holdout*/ tree by bytes (~60 percent of a pull), of no
     # analysis use once merged into per_molecule/per_reaction. Must NOT be
@@ -741,6 +757,10 @@ def _materialize_fake_run(root: Path) -> Path:
         '{"reactions": []}\n')
     # The run-level representative-subset ledger.
     (run / "subset_ledger.json").write_text('{"jsd": {}}\n')
+    # The run-level CCSD T1 diagnostic table (benchmark_refs --write-t1-json):
+    # the model-free multireference list the outlier-free figure variant reads.
+    (run / "t1_diagnostics.json").write_text(
+        '{"t1": {"NO": 0.05}, "threshold": 0.02, "source": "/refs"}\n')
     # Pretrain
     pre = run / "pretrain" / "deep_combined_attn"
     pre.mkdir(parents=True)
@@ -831,6 +851,14 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "checkpoints/spec_0000/eval_holdout_coldstart/per_reaction.json",
         "checkpoints/spec_0000/eval_holdout_coldstart/per_molecule.json",
         "checkpoints/spec_0000/eval_holdout_coldstart/eval_metadata.json",
+        "checkpoints/spec_0000/eval_holdout_converged/test_set.csv",
+        "checkpoints/spec_0000/eval_holdout_converged/per_reaction.json",
+        "checkpoints/spec_0000/eval_holdout_converged/per_molecule.json",
+        "checkpoints/spec_0000/eval_holdout_converged/eval_metadata.json",
+        "checkpoints/spec_0000/eval_holdout_converged_val_best/test_set.csv",
+        "checkpoints/spec_0000/eval_holdout_converged_val_best/per_reaction.json",
+        "checkpoints/spec_0000/eval_holdout_converged_val_best/per_molecule.json",
+        "checkpoints/spec_0000/eval_holdout_converged_val_best/eval_metadata.json",
         "pretrain/deep_combined_attn/pretrain_metadata.json",
         "pretrain/deep_combined_attn/losses_x.npy",
         "pretrain/deep_combined_attn/losses_c.npy",
@@ -851,6 +879,7 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         # the ledger names every cell's selected points.
         "validation/val_reactions.json",
         "subset_ledger.json",
+        "t1_diagnostics.json",
     ]
     for rel in must_have:
         assert (dest / rel).is_file(), (
@@ -882,6 +911,8 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "checkpoints/spec_0000/eval_holdout/_shards",
         "checkpoints/spec_0000/eval_holdout/_shards/shard_t1_s0.json",
         "checkpoints/spec_0000/eval_holdout_val_best/_shards",
+        "checkpoints/spec_0000/eval_holdout_converged/_shards",
+        "checkpoints/spec_0000/eval_holdout_converged/_shards/shard_t1_s0.json",
     ]
     for rel in must_not_have:
         assert not (dest / rel).exists(), (

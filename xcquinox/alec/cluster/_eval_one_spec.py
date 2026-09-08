@@ -356,7 +356,7 @@ def _test_slice_reactions(reactions, training_spec):
 
 def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                        training_spec, holdout_subdir="eval_holdout",
-                       coldstart=False) -> None:
+                       channel=None) -> None:
     """Full-pool held-out eval (BH76 + W4-11) for one trained spec.
 
     Parallelizes across molecule shards BY DEFAULT (adaptive degradation via
@@ -375,6 +375,12 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
     ``model_name`` (derived from ``model_path``'s basename), and each pass has its
     own ``_shards`` scratch (derived from ``holdout_subdir``), so the two passes
     are fully isolated -- no shard collision, no mixed-checkpoint energies.
+
+    ``channel`` names the solver override a channel pass runs under
+    (``"coldstart"`` / ``"converged"``, :data:`eval_holdout.CHANNEL_OVERRIDES`;
+    None for the warm passes): the caller has already replaced the spec's
+    solver, and the name travels to the shard workers, which reload the spec
+    themselves, and into the channel's ``eval_metadata.json`` stamp.
     """
     try:
         from pathlib import Path as _Path
@@ -455,7 +461,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                     holdout_dir, basis=_hb, grid_level=_hg,
                     n_workers_top=n_top, total_cpus=detect_available_cpus(),
                     strict=bool(getattr(cfg, "held_out_strict", False)),
-                    model_name=model_name, coldstart=coldstart)
+                    model_name=model_name, channel=channel)
             except Exception as pexc:  # noqa: BLE001
                 _log(idx, f"held-out parallel path failed "
                           f"({type(pexc).__name__}: {pexc}); serial fallback")
@@ -476,7 +482,9 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                 json.dump({
                     "channel": holdout_subdir,
                     "model": model_name,
-                    "coldstart": bool(coldstart),
+                    # the historical boolean, derived from the override name
+                    "coldstart": channel == "coldstart",
+                    "channel_override": channel,
                     "solver_config": (_sc.describe()
                                       if _sc is not None else None),
                     # None for the full pool. A list names the species the
@@ -670,10 +678,43 @@ def main(argv=None) -> int:
             _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                                cold_spec,
                                holdout_subdir="eval_holdout_coldstart",
-                               coldstart=True)
+                               channel="coldstart")
         else:
             _log(idx, "eval_coldstart requested but the spec has no FULL-mode "
                       "solver_config -- skipping the cold-start channel")
+
+    # --- 2026-09-07: OPTIONAL converged-SCF channel (eval_converged: true) --
+    # A fifth pass under a CONVERGED SCF (pyscfad backend, PBE seed, DIIS,
+    # 100 cycles at 1e-8 Ha) on the FINAL checkpoint and, when the val-best
+    # checkpoint exists, a sixth on it: the figures' headline is the
+    # validation-best channel. The spec's solver is replaced HERE, before
+    # dispatch, exactly as for the cold-start channel; the shard workers apply
+    # the same shared override via --channel converged.
+    if bool(getattr(cfg, "eval_converged", False)):
+        _sc = getattr(training_spec, "solver_config", None)
+        if _sc is not None and getattr(getattr(_sc, "mode", None),
+                                       "value", None) == "full":
+            import dataclasses as _dc
+
+            from xcquinox.alec.eval_holdout import converged_solver_config
+            conv_spec = _dc.replace(
+                training_spec, solver_config=converged_solver_config(_sc))
+            _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
+                               conv_spec,
+                               holdout_subdir="eval_holdout_converged",
+                               channel="converged")
+            if os.path.isfile(val_best_path):
+                _run_held_out_eval(
+                    run_dir, idx, cfg, checkpoint_dir, val_best_path,
+                    conv_spec,
+                    holdout_subdir="eval_holdout_converged_val_best",
+                    channel="converged")
+            else:
+                _log(idx, "no model_val_best.eqx -- converged channel on the "
+                          "final checkpoint only")
+        else:
+            _log(idx, "eval_converged requested but the spec has no FULL-mode "
+                      "solver_config -- skipping the converged channel")
 
     return 0
 

@@ -43,6 +43,16 @@ without the species that do not generalize:
 | `figures_<alias>_excl_t1/` | Species whose CCSD T1 diagnostic exceeds the threshold of the run's `t1_diagnostics.json` (0.02, Lee and Taylor 1989) are dropped in every cell; rendered only when that file exists and lists a species present in the held-out rows |
 | `figures_<alias>_excl_unconverged/` | For converged-SCF channels (`eval_holdout_converged*`): species whose NN SCF did not converge in at least one cell are dropped in every cell |
 
+Converged-SCF views (2026-09-07). `figures_<alias>_converged/` and
+`figures_<alias>_converged_val_best/` are the full figure sets scored from the
+`eval_holdout_converged` and `eval_holdout_converged_val_best` channels: each checkpoint
+re-evaluated under a converged SCF on the pyscfad backend (PBE seed, DIIS, up to 100 cycles at
+1e-8 Ha, the trained density fitting kept), so the NN density is compared with the CCSD
+reference on the same footing as the converged PBE baseline. The checkpoint stamp in every
+title reads `converged` / `converged-val-best`. Every species stays in the standard converged
+view with its `scf_converged` flag (the collector prints the unconverged count per spec); the
+`_excl_unconverged` sibling above is where they are removed.
+
 A variant drops the species from both held-out density reads (the collector call behind the
 SCAN comparator and the one behind the figures) AND from the run-level PBE table, so the PBE
 anchors of both channels (RMSE and eps) span exactly the surviving species; the in-sample

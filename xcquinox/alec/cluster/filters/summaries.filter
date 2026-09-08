@@ -34,6 +34,9 @@
 # The run-level representative-subset ledger: names every cell's selected
 # training points; the figures and the exclusion layer both key on it.
 + /subset_ledger.json
+# The run-level CCSD T1 table (benchmark_refs --write-t1-json, 2026-09-07):
+# the model-free multireference list the outlier-free figure variant reads.
++ /t1_diagnostics.json
 # The staged validation slice (cluster/inputs._stage_validation_slice): the
 # identity record of the 47-name validation set. The figures' validation
 # column hard-requires it -- a pull without it silently rendered a DIFFERENT
@@ -96,6 +99,14 @@
 # provenance stamp live here. Same small CSV/JSON artifacts, no *.eqx.
 + /checkpoints/spec_*/eval_holdout_coldstart/
 + /checkpoints/spec_*/eval_holdout_coldstart/***
+# Converged-SCF channel (2026-09-07): a FIFTH pass on the FINAL checkpoint and
+# a SIXTH on the val-best one under a converged pyscfad SCF (PBE seed, DIIS,
+# 100 cycles at 1e-8) -- the density comparison on the same footing as the
+# converged PBE baseline. Same small CSV/JSON artifacts, no *.eqx.
++ /checkpoints/spec_*/eval_holdout_converged/
++ /checkpoints/spec_*/eval_holdout_converged/***
++ /checkpoints/spec_*/eval_holdout_converged_val_best/
++ /checkpoints/spec_*/eval_holdout_converged_val_best/***
 
 # --- trained network weights (2026-08-30) ----------------------------------
 # The final-step and validation-best checkpoints, each with the model-class

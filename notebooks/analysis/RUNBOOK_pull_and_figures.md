@@ -404,6 +404,50 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite \
 
 (`pull auto --category dfs_step7` also discovers the v7 runs by activity.)
 Outputs land at `figures_dfs_step7_dfs6311_grid3_v7*` (+ `_val_best`).
+
+### The converged-SCF channel and the T1 backfill (2026-09-07)
+
+The density audit found the held-out density metric comparing an unconverged NN density
+(three fixed cycles) with the converged PBE density. The `eval_holdout_converged` channel (and
+its `_val_best` twin) evaluates each checkpoint under a converged SCF on the pyscfad backend
+(PBE seed, DIIS, up to 100 cycles at 1e-8 Ha, the trained density fitting kept); the T1
+diagnostic stored with the CCSD references gives the model-free multireference list. Both are
+retroactive over the 25 completed v7 cells. Command sheet, run in this order from the local
+repo root and then on the cluster:
+
+```bash
+rsync -av xcquinox/alec/eval_holdout.py xcquinox/alec/solver_pyscfad.py xcquinox/alec/external_refs.py xcquinox/alec/benchmark_refs.py xcquinox/alec/refinalize_verbatim.py "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/alec/
+rsync -av xcquinox/alec/cluster/grid_config.py xcquinox/alec/cluster/__main__.py xcquinox/alec/cluster/_eval_one_spec.py xcquinox/alec/cluster/_holdout_parallel.py xcquinox/alec/cluster/channel_retro.py xcquinox/alec/cluster/coldstart_retro.py "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/alec/cluster/
+rsync -av xcquinox/alec/cluster/filters/summaries.filter "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/alec/cluster/filters/
+rsync -av xcquinox/alec/workers/eval_holdout_worker.py "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/alec/workers/
+rsync -av hpcjobs/converged_retro.sbatch hpcjobs/t1_backfill.sbatch "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/hpcjobs/
+```
+
+On the cluster, from the repo root with the parity environment active:
+
+```bash
+sbatch hpcjobs/converged_retro.sbatch
+sbatch hpcjobs/t1_backfill.sbatch
+```
+
+`converged_retro.sbatch` first runs a preflight (the shard worker on h2o, bn and RKT17 of spec
+0 under the converged override; h2o must converge, all three must record their cycle counts)
+and refuses to start the retro line otherwise; the retro line covers both v7 arms' newest
+runs, final and val-best checkpoints, and is resumable (a spec whose val-best pass was killed
+reads as ready and runs that pass alone). `t1_backfill.sbatch` rewrites every reference file
+lacking the diagnostic and writes `t1_diagnostics.json` into each run dir. When both jobs have
+mailed END, pull and regenerate:
+
+```bash
+python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_size/runs
+python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g2a_families_core/runs
+python notebooks/analysis/make_ablation_arch_figure.py --suite --domain dfs_step7 --bases dfs6311_grid3_v7g1_size,dfs6311_grid3_v7g2a_families_core --outroot notebooks/analysis
+```
+
+The suite then renders `figures_<alias>_converged` and `figures_<alias>_converged_val_best`
+beside the warm sets, the `_excl_t1` siblings from the pulled T1 table, and the
+`_excl_unconverged` siblings of the converged views. A converged channel keeps every species
+with its `scf_converged` flag; the collector prints the unconverged count per spec.
 At partial coverage the suite runs on whatever cells have landed and
 skips the basis comparison until two bases carry cells. The optimized
 enhancement factors are a separate script, one call per checkpoint channel

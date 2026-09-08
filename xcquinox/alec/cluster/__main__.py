@@ -196,6 +196,8 @@ def _config_to_raw_dict(cfg) -> dict:
         # re-reads resolved_config.yaml, and a dropped flag would silently
         # skip the coldstart channel on every spec of the run.
         "eval_coldstart": cfg.eval_coldstart,
+        # eval_converged MUST round-trip for the same reason.
+        "eval_converged": cfg.eval_converged,
     }
     return raw
 

@@ -601,6 +601,13 @@ class GridConfig:
     # (seed_source="minao", max_cycles=25, conv_tol=1e-12; mode stays FULL).
     # Default False -> byte-identical (three channels as before).
     eval_coldstart: bool = False
+    # ``eval_converged`` (2026-09-07): when True, each spec's held-out eval
+    # additionally writes the ``eval_holdout_converged`` channel (and its
+    # ``_val_best`` twin when the val-best checkpoint exists): the checkpoint
+    # re-evaluated under a converged SCF on the pyscfad backend (PBE seed,
+    # DIIS, max_cycles=100, conv_tol=1e-8; mode stays FULL). Default False ->
+    # byte-identical (the channel set as before).
+    eval_converged: bool = False
     # Pretraining-fidelity certificate tolerances. Optional in the YAML: a
     # config written before the certificate existed loads at the binding
     # 1.0 kcal/mol / 1.0 mHa defaults rather than at no tolerance.
@@ -1847,6 +1854,7 @@ def load_grid_config(path: str) -> GridConfig:
         defer_eval=bool(raw.get("defer_eval", False)),
         inline_eval=bool(raw.get("inline_eval", False)),
         eval_coldstart=bool(raw.get("eval_coldstart", False)),
+        eval_converged=bool(raw.get("eval_converged", False)),
         fidelity=_build_fidelity(raw.get("fidelity")),
         model=_build_model_block(raw.get("model")),
     )

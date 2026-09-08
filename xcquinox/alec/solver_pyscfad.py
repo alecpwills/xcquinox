@@ -707,6 +707,13 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         )
         mol = _rebuild_mol_from_mol_data(mol_data)
     mf = _build_pyscfad_mf(mol, mol_data)
+    if bool(getattr(config, "density_fit", False)):
+        # pyscfad's own density fitting (a _DFHF wrapper that copies the
+        # mean-field's attributes), applied before the grid, the functional
+        # and the get_veff wrap below, so the Coulomb term of this SCF sits
+        # on the DF footing training and the CCSD references used. A non-DF
+        # config keeps the full-integral Coulomb.
+        mf = mf.density_fit(auxbasis=getattr(config, "auxbasis", None))
 
     # When descriptors are present, pyscfad's grid may differ from the
     # precompute grid (pyscfad applies its own small_rho_cutoff pruning),

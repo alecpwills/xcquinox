@@ -78,8 +78,11 @@ def test_generate_one_writes_density_only_npz(tmp_path, monkeypatch):
     assert status == "OK"
     with np.load(tmp_path / "H2O.npz", allow_pickle=False) as z:
         # exactly the density-only contract: NO vxc_ref/dm_target (the OEP
-        # stage is skipped for benchmark refs)
-        assert set(z.files) == set(br._DENSITY_NPZ_KEYS)
+        # stage is skipped for benchmark refs); the optional provenance keys
+        # (the convergence stamp, the T1 diagnostic when the CCSD stage
+        # supplies it) are not part of the contract and may be present
+        assert (set(z.files) - {"ccsd_converged", "t1_diagnostic"}
+                == set(br._DENSITY_NPZ_KEYS))
         assert z["rho_ref_grid"] == pytest.approx([1.0, 2.0, 3.0, 4.0])
         # generator-side PBE density + weights stored for the SCF-free
         # PBE-vs-CCSD baseline (fake dm=I, ao=0 -> rho_pbe = 0)

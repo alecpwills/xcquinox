@@ -662,6 +662,40 @@ def _require_ccsd_converged(mycc, name: str) -> None:
         )
 
 
+def _t1_diagnostic(mycc) -> float:
+    """The CCSD T1 diagnostic of a converged coupled-cluster object.
+
+    Restricted (spatial amplitudes, ``mycc.t1`` an array): pyscf's own
+    ``get_t1_diagnostic``, the Lee-Taylor closed-shell definition (Int. J.
+    Quantum Chem. Symp. 23, 199, 1989) -- the spatial-orbital amplitude norm
+    over the square root of the number of correlated electrons, ``2 nocc``.
+
+    Unrestricted (``mycc.t1`` the pair ``(t1a, t1b)``): the spin-orbital
+    amplitude norm normalized so that a closed shell reproduces the restricted
+    value exactly, ``sqrt((|t1a|^2 + |t1b|^2) / (2 (nocc_a + nocc_b)))`` --
+    for t1a = t1b = t and nocc_a = nocc_b = nocc this is ``sqrt(|t|^2 / (2
+    nocc))``, the restricted formula. One 0.02 threshold (Lee and Taylor)
+    therefore reads both legs of a mixed reference set on one scale; the
+    spin-orbital form without the factor 2 (Jayatilaka and Lee, J. Chem.
+    Phys. 98, 9734, 1993, as usually quoted) sits a factor sqrt(2) above
+    the restricted value on a closed shell. The occupied counts are the
+    amplitude row counts, so a frozen core is excluded as the calculation
+    excluded it."""
+    import numpy as np
+
+    t1 = mycc.t1
+    if isinstance(t1, (tuple, list)) and len(t1) == 2:
+        t1a, t1b = (np.asarray(x, dtype=float) for x in t1)
+        n_el = int(t1a.shape[0]) + int(t1b.shape[0])
+        return float(np.sqrt((np.sum(t1a ** 2) + np.sum(t1b ** 2))
+                             / (2.0 * n_el)))
+    # the closed-shell formula itself (pyscf's get_t1_diagnostic: the norm
+    # over sqrt(2 nocc)); evaluated here rather than through the library so
+    # the value does not depend on which coupled-cluster class produced t1
+    t1 = np.asarray(t1, dtype=float)
+    return float(np.sqrt(np.sum(t1 ** 2) / (2.0 * t1.shape[0])))
+
+
 def run_ccsd_with_cache(
     spec: SpeciesEntry,
     atoms,
@@ -673,6 +707,7 @@ def run_ccsd_with_cache(
     density_fit: bool = False,
     auxbasis: str | None = None,
     orientation_lock_strength: float = 0.0,
+    require_t1: bool = False,
 ) -> dict:
     """Stage 2: CCSD on a converged HF reference + spin-summed grid
     density, with on-disk cache.
@@ -688,7 +723,11 @@ def run_ccsd_with_cache(
     Returns dict with keys: dm_ao (AO-basis CCSD 1-RDM, shape
     ``(n_ao, n_ao)`` for RKS or ``(2, n_ao, n_ao)`` for UKS -- both spin
     channels kept for the V_xc shape contract), rho_ref_grid (1D spin-summed),
-    grid_weights, ao_grid.
+    grid_weights, ao_grid, and ``t1_diagnostic`` (:func:`_t1_diagnostic`,
+    computed here where the amplitudes exist and cached with the density;
+    None when served from a cache written before the diagnostic existed).
+    ``require_t1`` recomputes such a cache and rewrites it with the key added
+    and every other array unchanged (the benchmark-refs backfill).
 
     The rho_ref_grid spin-summing is REQUIRED for UKS species, the
     data.py loader expects shape (N_grid,), NOT (2, N_grid). See
@@ -715,12 +754,18 @@ def run_ccsd_with_cache(
 
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
-            return {
-                "dm_ao": np.asarray(z["dm_ao"]),
-                "rho_ref_grid": np.asarray(z["rho_ref_grid"]),
-                "grid_weights": np.asarray(z["grid_weights"]),
-                "ao_grid": np.asarray(z["ao_grid"]),
-            }
+            has_t1 = "t1_diagnostic" in z.files
+            if has_t1 or not require_t1:
+                return {
+                    "dm_ao": np.asarray(z["dm_ao"]),
+                    "rho_ref_grid": np.asarray(z["rho_ref_grid"]),
+                    "grid_weights": np.asarray(z["grid_weights"]),
+                    "ao_grid": np.asarray(z["ao_grid"]),
+                    "t1_diagnostic": (float(z["t1_diagnostic"]) if has_t1
+                                      else None),
+                }
+        # require_t1 and a cache from before the diagnostic: recompute below
+        # and rewrite the cache with the key added
 
     # Build mol for AO evaluation; grid coords/weights are taken directly
     # from the SCF payload so the CCSD grid is identical to the SCF grid
@@ -759,6 +804,9 @@ def run_ccsd_with_cache(
         mycc = ccsd.RCCSD(mf_hf)
     mycc.kernel()
     _require_ccsd_converged(mycc, spec.name)
+    # the multireference diagnostic, taken here where the amplitudes exist
+    # (the cache and the final npz carry no amplitudes)
+    t1_val = _t1_diagnostic(mycc)
     dm_cc = np.asarray(mycc.make_rdm1(ao_repr=True))
 
     # Spin-sum the AO-basis DM for grid evaluation.  The unrestricted DM
@@ -784,6 +832,7 @@ def run_ccsd_with_cache(
         # Provenance stamp: True by construction (unconverged CCSD refuses
         # above). Caches without the key predate the convergence check.
         "ccsd_converged": np.array(True),
+        "t1_diagnostic": np.array(float(t1_val)),
     }
     # Atomic write: temp file + os.replace.
     import os

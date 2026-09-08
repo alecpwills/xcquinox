@@ -4168,6 +4168,17 @@ def collect_holdout_density_rows(run_dir: Path,
                 "cycles_run": r.get("cycles_run"),
                 "n_electrons": r.get("n_electrons"),
             })
+        if str(eval_subdir).startswith("eval_holdout_converged"):
+            # the converged channel keeps every row with its flag; the
+            # species whose NN SCF did not converge are disclosed here and
+            # removed only by the _excl_unconverged variant
+            unconv = sorted({str(r.get("molecule")) for r in payload
+                             if r.get("scf_converged") is False
+                             and (_is_num(r.get("density_rmse"))
+                                  or _is_num(r.get("density_rmse_pbe")))})
+            if unconv:
+                print(f"  (converged channel {eval_subdir}: {len(unconv)} "
+                      f"unconverged species in spec_{idx:04d}: {unconv})")
     if n_supervised:
         print(f"  (strict-holdout repair: dropped {n_supervised} density rows "
               f"flagged from_training_subset "
@@ -7945,6 +7956,8 @@ def _ckpt_label(eval_subdir: str) -> str:
         "eval_holdout_val_best": "val-best",
         "eval_holdout_best": "train-best",
         "eval_holdout_coldstart": "cold-start",
+        "eval_holdout_converged": "converged",
+        "eval_holdout_converged_val_best": "converged-val-best",
     }.get(eval_subdir, "final-step")
 
 
@@ -9201,8 +9214,13 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     prefix = "" if domain == "bh76w411_repr" else f"{domain}_"
     runs = _newest_run_per_basis(results_root, bases, domain=domain)
     written: List[Path] = []
+    # the converged-SCF views (2026-09-07) join the loop and are gated like the
+    # val-best view: a run with no converged cells renders no such directory
     for eval_subdir, suffix in (("eval_holdout", ""),
-                                ("eval_holdout_val_best", "_val_best")):
+                                ("eval_holdout_val_best", "_val_best"),
+                                ("eval_holdout_converged", "_converged"),
+                                ("eval_holdout_converged_val_best",
+                                 "_converged_val_best")):
         is_val_best = eval_subdir != "eval_holdout"
         ordered_runs: List[Path] = []
         for basis in bases:
