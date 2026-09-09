@@ -422,6 +422,25 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite \
 (`pull auto --category dfs_step7` also discovers the v7 runs by activity.)
 Outputs land at `figures_dfs_step7_dfs6311_grid3_v7*` (+ `_val_best`).
 
+### Building the report PDFs from their markdown (2026-09-09)
+
+`REPORT_v7_<date>.md` (the full report) and `SUMMARY_v7_<date>.md` (the short
+form) are the tracked sources; their `.tex` and `.pdf` are built by the
+repository's translator, which needs xelatex (DejaVu fonts) and Pillow:
+
+```bash
+python notebooks/analysis/md_to_tex.py notebooks/analysis/REPORT_v7_2026-09-09.md --date 2026-09-09 --pdf
+python notebooks/analysis/md_to_tex.py notebooks/analysis/SUMMARY_v7_2026-09-09.md --date 2026-09-09 --pdf
+```
+
+The title defaults to the markdown's `#` heading (`--title` overrides it); the
+`.tex` is written beside the markdown, the figure paths in the markdown are
+relative to that directory, and `--pdf` runs xelatex twice there and removes
+the auxiliary files. Headings keep the markdown's own section numbers, tables
+that do not fit the portrait line go on landscape pages with their caption, and
+figures at least twice as wide as tall go on landscape pages at the full line
+width (the module docstring states the rules and their calibration).
+
 ### The training-subset selection record (2026-09-09)
 
 The subsets every v7 cell trains on were chosen in 2026-06 by exhaustive
