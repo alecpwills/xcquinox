@@ -13,6 +13,7 @@ parents through one dispatch path.
 import csv
 import dataclasses
 import os
+import re
 import sys
 
 import numpy as np
@@ -83,7 +84,8 @@ def test_render_and_csv_seam(tmp_path):
         assert out.is_file() and out.stat().st_size > 0, out
     with open(out3) as fh:
         rows = list(csv.DictReader(fh))
-    assert rows[0].keys() == {"arch", "channel", "rs", "s", "f_model",
+    assert rows[0].keys() == {"arch", "arch_stored", "channel", "rs", "s",
+                              "f_model",
                               "f_parent"}
     n_expected = len(P.S_GRID) * (1 + len(P.RS_VALUES))
     assert len(rows) == n_expected
@@ -228,17 +230,129 @@ def test_render_and_csv_seam_scan(tmp_path):
         assert out.is_file() and out.stat().st_size > 0, out
     with open(out3) as fh:
         rows = list(csv.DictReader(fh))
-    assert rows[0].keys() == {"arch", "channel", "rs", "alpha", "s",
-                              "f_model", "f_parent"}
+    assert rows[0].keys() == {"arch", "arch_stored", "channel", "rs", "alpha",
+                              "s", "f_model", "f_parent"}
     n_gga = len(P.S_GRID) * (1 + len(P.RS_VALUES))
     n_scan = len(P.S_GRID) * len(P.ALPHA_VALUES) * (1 + len(P.RS_VALUES))
     assert len(rows) == n_gga + n_scan
-    gga_rows = [r for r in rows if r["arch"] == "deep_3x16"]
+    # the CSV shows the derived names; the directories are the stored keys
+    gga_rows = [r for r in rows if r["arch"] == "deep0_3x16"]
     assert len(gga_rows) == n_gga
+    assert {r["arch_stored"] for r in gga_rows} == {"deep_3x16"}
     assert all(r["alpha"] == "" for r in gga_rows)
     scan_fx_rows = [r for r in rows
-                    if r["arch"] == "deep_mgga_3x16" and r["channel"] == "fx"]
+                    if r["arch"] == "deep0_mgga_3x16" and r["channel"] == "fx"]
     assert sorted({r["alpha"] for r in scan_fx_rows}) == ["0", "1"]
     worst = max(abs(float(r["f_model"]) - float(r["f_parent"]))
                 for r in scan_fx_rows)
     assert worst < 1e-10, worst
+
+
+# ---------------------------------------------------------------------------
+# T5: architecture display names on the figures (2026-09-09)
+#
+# The pretrain DIRECTORY and the checkpoints are still found by the stored key
+# (``pretrain/medium``); every label, title and output file name states what
+# the network is (``deep_3x16``), with the expanded key in the footer.
+# The curves here are synthetic: nothing about the naming depends on the
+# numbers, and a model build per test would pay a network construction for a
+# string assertion.
+# ---------------------------------------------------------------------------
+
+def _fig_texts(f):
+    """Every string a reader sees on ``f``: suptitle, figure texts, axis
+    titles and legend entries."""
+    out = []
+    sup = getattr(f, "_suptitle", None)
+    if sup is not None:
+        out.append(sup.get_text())
+    out += [t.get_text() for t in f.texts]
+    for ax in f.axes:
+        out.append(ax.get_title())
+        out += [t.get_text() for t in ax.texts]
+        legend = ax.get_legend()
+        if legend is not None:
+            out += [t.get_text() for t in legend.get_texts()]
+    return out
+
+
+def _synthetic_gga_curves():
+    n = P.S_GRID.size
+    model = np.linspace(1.0, 1.2, n)
+    parent = np.ones(n)
+    return {"fx_model": model, "fx_parent": parent,
+            "fc": {rs: {"model": model, "parent": parent}
+                   for rs in P.RS_VALUES}}
+
+
+def _capture_figures(monkeypatch):
+    import matplotlib.figure as mfig
+    captured = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        captured.append(self)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    return captured
+
+
+def test_per_arch_figure_file_and_title_use_the_display_name(tmp_path,
+                                                             monkeypatch):
+    """A ``medium`` pre-training directory draws the figure of ``deep_3x16``.
+
+    Kills m6 (the output file named by the stored key): the file would be
+    ``pretrain_fx_fc_medium.png``, and the figure set would carry both a
+    ``medium`` and a ``deep_3x16`` file for two networks whose shown names
+    are ``deep_3x16`` and ``deep0_3x16``.
+    """
+    captured = _capture_figures(monkeypatch)
+    out = P.render_arch_figure("medium", _synthetic_gga_curves(), tmp_path,
+                               "footer")
+    assert out.name == "pretrain_fx_fc_deep_3x16.png"
+    assert out.is_file() and out.stat().st_size > 0
+    texts = _fig_texts(captured[-1])
+    blob = " ".join(texts)
+    assert "deep_3x16" in blob
+    assert not re.search(r"\bmedium\b", blob), blob
+    assert any(t.startswith("deep_3x16:") for t in texts), texts
+
+
+def test_delta_all_title_states_differences(tmp_path, monkeypatch):
+    """The cross-arch panel draws each network's difference from its parent,
+    and its title says so.
+
+    Kills m7 (the title left as "Pretrained corrections to the PBE parent"),
+    which named a quantity the panels do not draw.
+    """
+    captured = _capture_figures(monkeypatch)
+    out = P.render_delta_figure({"medium": _synthetic_gga_curves()}, tmp_path,
+                                "footer")
+    assert out.name == "pretrain_fx_fc_delta_all.png"
+    texts = _fig_texts(captured[-1])
+    assert ("Pre-trained networks against the PBE parent: differences, "
+            "all architectures") in texts, texts
+    assert not any("Pretrained corrections" in t for t in texts), texts
+    blob = " ".join(texts)
+    assert "deep_3x16" in blob
+    assert not re.search(r"\bmedium\b", blob), blob
+
+
+def test_delta_figure_footer_carries_the_key_line(tmp_path, monkeypatch):
+    """The expanded key of every architecture drawn rides in the footer, so
+    the shown name never has to be looked up elsewhere.
+
+    The footer is an ARGUMENT of the render functions, so the key line is the
+    renderer's own addition: a caller passing a footer with no key line still
+    gets one.
+    """
+    captured = _capture_figures(monkeypatch)
+    P.render_delta_figure({"medium": _synthetic_gga_curves(),
+                           "deep_3x16": _synthetic_gga_curves()},
+                          tmp_path, "run run_x; parent curves: libxc")
+    blob = " ".join(_fig_texts(captured[-1]))
+    assert "deep_3x16: 3 x 16, Glorot initialization" in blob, blob
+    assert ("deep0_3x16: 3 x 16, last layer zeroed "
+            "(pre-training starts at the LDA)") in blob, blob
+    assert "run run_x" in blob, blob

@@ -70,7 +70,15 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from arch_style import ARCH_COLOR, arch_color  # noqa: E402
+from arch_style import arch_color, display_name, key_line, stored_key  # noqa: E402
+
+
+def _footer_with_key(footer: str, shown_names) -> str:
+    """``footer`` with the expanded key of every shown name drawn appended on
+    its own line, so the names (deep_3x16 / deep0_3x16 ...) read without the
+    map. The renderer's own addition: a caller's footer never carries it."""
+    keys = key_line(shown_names)
+    return f"{footer}\n{keys}" if keys else footer
 from enhancement_factors import (  # noqa: E402
     alpha_column_value,
     model_fc_curve,
@@ -300,14 +308,17 @@ def render_arch_figure(arch_name: str, curves: dict, outdir: Path,
     2x3 SCAN layout with the two alpha slices for a meta-GGA arch."""
     if "fx_alpha" in curves:
         return _render_arch_figure_scan(arch_name, curves, outdir, footer)
-    color = ARCH_COLOR.get(arch_name, arch_color(arch_name))
+    # ``arch_name`` is the pre-training DIRECTORY (the stored key); the figure
+    # shows the derived name and is filed under it
+    shown = display_name(arch_name)
+    color = arch_color(shown)
     fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.6))
     (ax_fx, ax_dfx), (ax_fc, ax_dfc) = axes
 
     ax_fx.plot(S_GRID, curves["fx_parent"], label="PBE parent",
                **_PARENT_STYLE)
     ax_fx.plot(S_GRID, curves["fx_model"], color=color, linewidth=2.0,
-               label=f"{arch_name} (pretrained)", zorder=2)
+               label=f"{shown} (pre-trained)", zorder=2)
     ax_fx.set_ylabel(r"$F_x(s)$")
     ax_fx.legend(frameon=False, fontsize=8)
 
@@ -339,12 +350,12 @@ def render_arch_figure(arch_name: str, curves: dict, outdir: Path,
         ax.set_xlabel(r"reduced gradient $s$")
         ax.grid(True, color="0.92", linewidth=0.8)
         ax.set_axisbelow(True)
-    fig.suptitle(f"{arch_name}: pretrained network against the PBE parent",
+    fig.suptitle(f"{shown}: pre-trained network against the PBE parent",
                  fontsize=12)
-    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
-             color="0.35", wrap=True)
+    fig.text(0.5, 0.005, _footer_with_key(footer, [shown]), ha="center",
+             va="bottom", fontsize=7, color="0.35", wrap=True)
     fig.tight_layout(rect=(0.0, 0.035, 1.0, 0.97))
-    out = outdir / f"pretrain_fx_fc_{arch_name}.png"
+    out = outdir / f"pretrain_fx_fc_{shown}.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return out
@@ -355,7 +366,8 @@ def _render_arch_figure_scan(arch_name: str, curves: dict, outdir: Path,
     """Per-arch 2x3 against the SCAN parent. Columns: F_x (both alpha slices,
     separated by linestyle) | F_c at alpha=0 | F_c at alpha=1; overlays on the
     top row, differences below each overlay."""
-    color = ARCH_COLOR.get(arch_name, arch_color(arch_name))
+    shown = display_name(arch_name)
+    color = arch_color(shown)
     fig, axes = plt.subplots(2, 3, figsize=(15.0, 7.6))
     (ax_fx, ax_fc0, ax_fc1), (ax_dfx, ax_dfc0, ax_dfc1) = axes
 
@@ -404,12 +416,12 @@ def _render_arch_figure_scan(arch_name: str, curves: dict, outdir: Path,
         ax.set_xlabel(r"reduced gradient $s$")
         ax.grid(True, color="0.92", linewidth=0.8)
         ax.set_axisbelow(True)
-    fig.suptitle(f"{arch_name}: pretrained network against the SCAN parent",
+    fig.suptitle(f"{shown}: pre-trained network against the SCAN parent",
                  fontsize=12)
-    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
-             color="0.35", wrap=True)
+    fig.text(0.5, 0.005, _footer_with_key(footer, [shown]), ha="center",
+             va="bottom", fontsize=7, color="0.35", wrap=True)
     fig.tight_layout(rect=(0.0, 0.035, 1.0, 0.97))
-    out = outdir / f"pretrain_fx_fc_{arch_name}.png"
+    out = outdir / f"pretrain_fx_fc_{shown}.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return out
@@ -425,14 +437,16 @@ def render_delta_figure(all_curves: dict[str, dict], outdir: Path,
         return _render_delta_figure_with_scan(all_curves, outdir, footer,
                                               rs_for_fc)
     fig, (ax_dfx, ax_dfc) = plt.subplots(1, 2, figsize=(11.0, 4.4))
+    shown_names = [display_name(a) for a in all_curves]
     for arch_name, curves in all_curves.items():
-        color = ARCH_COLOR.get(arch_name, arch_color(arch_name))
+        shown = display_name(arch_name)
+        color = arch_color(shown)
         ax_dfx.plot(S_GRID, curves["fx_model"] - curves["fx_parent"],
-                    color=color, linewidth=2.0, label=arch_name)
+                    color=color, linewidth=2.0, label=shown)
         pair = curves["fc"][rs_for_fc]
         if pair["parent"] is not None:
             ax_dfc.plot(S_GRID, pair["model"] - pair["parent"], color=color,
-                        linewidth=2.0, label=arch_name)
+                        linewidth=2.0, label=shown)
     for ax, label in ((ax_dfx, r"$F_x^{\mathrm{NN}} - F_x^{\mathrm{PBE}}$"),
                       (ax_dfc,
                        rf"$F_c^{{\mathrm{{NN}}}} - F_c^{{\mathrm{{PBE}}}}$"
@@ -443,10 +457,10 @@ def render_delta_figure(all_curves: dict[str, dict], outdir: Path,
         ax.grid(True, color="0.92", linewidth=0.8)
         ax.set_axisbelow(True)
         ax.legend(frameon=False, fontsize=8)
-    fig.suptitle("Pretrained corrections to the PBE parent, all architectures",
-                 fontsize=12)
-    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
-             color="0.35", wrap=True)
+    fig.suptitle("Pre-trained networks against the PBE parent: differences, "
+                 "all architectures", fontsize=12)
+    fig.text(0.5, 0.005, _footer_with_key(footer, shown_names), ha="center",
+             va="bottom", fontsize=7, color="0.35", wrap=True)
     fig.tight_layout(rect=(0.0, 0.05, 1.0, 0.95))
     out = outdir / "pretrain_fx_fc_delta_all.png"
     fig.savefig(out, dpi=150)
@@ -463,29 +477,31 @@ def _render_delta_figure_with_scan(all_curves: dict[str, dict], outdir: Path,
     has_pbe = any("fx_model" in c for c in all_curves.values())
     parent_tag = r"\mathrm{parent}" if has_pbe else r"\mathrm{SCAN}"
     fig, (ax_dfx, ax_dfc) = plt.subplots(1, 2, figsize=(11.0, 4.4))
+    shown_names = [display_name(a) for a in all_curves]
     for arch_name, curves in all_curves.items():
-        color = ARCH_COLOR.get(arch_name, arch_color(arch_name))
+        shown = display_name(arch_name)
+        color = arch_color(shown)
         if "fx_alpha" in curves:
             for alpha in ALPHA_VALUES:
                 pair = curves["fx_alpha"][alpha]
                 ax_dfx.plot(S_GRID, pair["model"] - pair["parent"],
                             color=color, linestyle=ALPHA_LINESTYLE[alpha],
                             linewidth=2.0,
-                            label=rf"{arch_name} (vs SCAN, $\alpha={alpha:g}$)")
+                            label=rf"{shown} (vs SCAN, $\alpha={alpha:g}$)")
                 pair = curves["fc_alpha"][alpha][rs_for_fc]
                 ax_dfc.plot(S_GRID, pair["model"] - pair["parent"],
                             color=color, linestyle=ALPHA_LINESTYLE[alpha],
                             linewidth=2.0,
-                            label=rf"{arch_name} (vs SCAN, $\alpha={alpha:g}$)")
+                            label=rf"{shown} (vs SCAN, $\alpha={alpha:g}$)")
         else:
             ax_dfx.plot(S_GRID, curves["fx_model"] - curves["fx_parent"],
                         color=color, linewidth=2.0,
-                        label=f"{arch_name} (vs PBE)")
+                        label=f"{shown} (vs PBE)")
             pair = curves["fc"][rs_for_fc]
             if pair["parent"] is not None:
                 ax_dfc.plot(S_GRID, pair["model"] - pair["parent"],
                             color=color, linewidth=2.0,
-                            label=f"{arch_name} (vs PBE)")
+                            label=f"{shown} (vs PBE)")
     for ax, label in ((ax_dfx,
                        rf"$F_x^{{\mathrm{{NN}}}} - F_x^{{{parent_tag}}}$"),
                       (ax_dfc,
@@ -498,12 +514,13 @@ def _render_delta_figure_with_scan(all_curves: dict[str, dict], outdir: Path,
         ax.set_axisbelow(True)
         ax.legend(frameon=False, fontsize=7, ncol=2)
     fig.suptitle(
-        "Pretrained corrections to each architecture's own parent "
-        "(PBE for GGA, SCAN for meta-GGA)" if has_pbe else
-        "Pretrained corrections to the SCAN parent, all architectures",
+        "Pre-trained networks against each architecture's own parent: "
+        "differences (PBE for GGA, SCAN for meta-GGA)" if has_pbe else
+        "Pre-trained networks against the SCAN parent: differences, "
+        "all architectures",
         fontsize=12)
-    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
-             color="0.35", wrap=True)
+    fig.text(0.5, 0.005, _footer_with_key(footer, shown_names), ha="center",
+             va="bottom", fontsize=7, color="0.35", wrap=True)
     fig.tight_layout(rect=(0.0, 0.05, 1.0, 0.95))
     out = outdir / "pretrain_fx_fc_delta_all.png"
     fig.savefig(out, dpi=150)
@@ -515,20 +532,24 @@ def write_curves_csv(all_curves: dict[str, dict], outdir: Path) -> Path:
     out = outdir / "pretrain_fx_fc_curves.csv"
     if any("fx_alpha" in c for c in all_curves.values()):
         return _write_curves_csv_with_alpha(all_curves, out)
+    # the CSV convention of the figure layer: ``arch`` is the shown name,
+    # ``arch_stored`` the pre-training directory it came from
     with open(out, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["arch", "channel", "rs", "s", "f_model", "f_parent"])
+        w.writerow(["arch", "arch_stored", "channel", "rs", "s", "f_model",
+                    "f_parent"])
         for arch_name, curves in all_curves.items():
+            shown = display_name(arch_name)
             for s, fm, fp in zip(S_GRID, curves["fx_model"],
                                  curves["fx_parent"]):
-                w.writerow([arch_name, "fx", "", f"{s:.6f}", repr(float(fm)),
-                            repr(float(fp))])
+                w.writerow([shown, arch_name, "fx", "", f"{s:.6f}",
+                            repr(float(fm)), repr(float(fp))])
             for rs in RS_VALUES:
                 pair = curves["fc"][rs]
                 parent = (pair["parent"] if pair["parent"] is not None
                           else [float("nan")] * len(S_GRID))
                 for s, fm, fp in zip(S_GRID, pair["model"], parent):
-                    w.writerow([arch_name, "fc", f"{rs:g}", f"{s:.6f}",
+                    w.writerow([shown, arch_name, "fc", f"{rs:g}", f"{s:.6f}",
                                 repr(float(fm)), repr(float(fp))])
     return out
 
@@ -540,15 +561,16 @@ def _write_curves_csv_with_alpha(all_curves: dict[str, dict],
     rows leave ``rs`` empty."""
     with open(out, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["arch", "channel", "rs", "alpha", "s", "f_model",
-                    "f_parent"])
+        w.writerow(["arch", "arch_stored", "channel", "rs", "alpha", "s",
+                    "f_model", "f_parent"])
         for arch_name, curves in all_curves.items():
+            shown = display_name(arch_name)
             if "fx_alpha" in curves:
                 for alpha in ALPHA_VALUES:
                     pair = curves["fx_alpha"][alpha]
                     for s, fm, fp in zip(S_GRID, pair["model"],
                                          pair["parent"]):
-                        w.writerow([arch_name, "fx", "", f"{alpha:g}",
+                        w.writerow([shown, arch_name, "fx", "", f"{alpha:g}",
                                     f"{s:.6f}", repr(float(fm)),
                                     repr(float(fp))])
                 for alpha in ALPHA_VALUES:
@@ -556,20 +578,20 @@ def _write_curves_csv_with_alpha(all_curves: dict[str, dict],
                         pair = curves["fc_alpha"][alpha][rs]
                         for s, fm, fp in zip(S_GRID, pair["model"],
                                              pair["parent"]):
-                            w.writerow([arch_name, "fc", f"{rs:g}",
+                            w.writerow([shown, arch_name, "fc", f"{rs:g}",
                                         f"{alpha:g}", f"{s:.6f}",
                                         repr(float(fm)), repr(float(fp))])
             else:
                 for s, fm, fp in zip(S_GRID, curves["fx_model"],
                                      curves["fx_parent"]):
-                    w.writerow([arch_name, "fx", "", "", f"{s:.6f}",
+                    w.writerow([shown, arch_name, "fx", "", "", f"{s:.6f}",
                                 repr(float(fm)), repr(float(fp))])
                 for rs in RS_VALUES:
                     pair = curves["fc"][rs]
                     parent = (pair["parent"] if pair["parent"] is not None
                               else [float("nan")] * len(S_GRID))
                     for s, fm, fp in zip(S_GRID, pair["model"], parent):
-                        w.writerow([arch_name, "fc", f"{rs:g}", "",
+                        w.writerow([shown, arch_name, "fc", f"{rs:g}", "",
                                     f"{s:.6f}", repr(float(fm)),
                                     repr(float(fp))])
     return out
@@ -587,7 +609,10 @@ def main(argv=None) -> int:
     outdir = Path(args.outdir).expanduser()
     outdir.mkdir(parents=True, exist_ok=True)
 
-    archs = (tuple(a.strip() for a in args.archs.split(","))
+    # --archs in either spelling: the pre-training directories are the
+    # registry keys, a shown name (deep0_3x16) is mapped to its key; a name
+    # that is both (deep_3x16) is read in the shown sense, as the suite does
+    archs = (tuple(stored_key(a.strip()) for a in args.archs.split(","))
              if args.archs else tuple(discover_archs(run_dir)))
     if not archs:
         print(f"no pretrained xnet/cnet pairs under {run_dir}/pretrain "

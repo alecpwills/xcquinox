@@ -310,7 +310,11 @@ class ArchitectureConfig:
         constraint specs as ``{"name", "kwargs"}`` mappings, the flags as they
         are. The architecture identity in full, ``parent_anchor`` and
         ``descriptor_coordinates`` included, for the records that name a model
-        class rather than a registry entry."""
+        class rather than a registry entry. ``display_name`` is the shown name
+        derived from THIS configuration (``xcquinox.alec.arch_names``: the
+        initialization family, the tokens of ``name``, the size), so a
+        configuration replaced away from its registry entry is named by what
+        it is, and a caller that writes the dict reads it without the map."""
         out: dict = {}
         for f in fields(self):
             value = getattr(self, f.name)
@@ -319,6 +323,8 @@ class ArchitectureConfig:
                                for s in value]
             else:
                 out[f.name] = value
+        from xcquinox.alec.arch_names import derive_display_name
+        out["display_name"] = derive_display_name(self.name, self)
         return out
 
     @property
@@ -691,7 +697,17 @@ ARCHITECTURES = {
 
 
 def get_architecture(name: str) -> ArchitectureConfig:
-    return ARCHITECTURES[name]
+    """The registry entry ``name``, or the entry a shown name
+    (``xcquinox.alec.arch_names``) is an alias of: ``deep0_3x16`` resolves to
+    ``deep_3x16``, ``deep_2x8`` to ``shallow``. A stored key is never shadowed
+    (``deep_3x16`` stays the zero-init entry); an unknown name raises KeyError."""
+    try:
+        return ARCHITECTURES[name]
+    except KeyError:
+        from xcquinox.alec.arch_names import ALIASES
+        if name in ALIASES:
+            return ARCHITECTURES[ALIASES[name]]
+        raise
 
 
 def list_architectures() -> list[str]:

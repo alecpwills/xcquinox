@@ -255,7 +255,9 @@ plotting-only script).
 
 | Visual | Meaning |
 |---|---|
-| Bar/line color | Architecture, fixed palette from `arch_style.py` (`ARCH_COLOR`); legends are rung-ordered |
+| Architecture name | The SHOWN name, derived from the registry configuration by `xcquinox/alec/arch_names.py`: the family word states the initialization (`deep` = Glorot start, `deep0` = last layer zeroed so pre-training starts at the LDA), the tokens are the descriptor and attention markers of the registry key, the size suffix states depth x width. The registry keys stay the storage names (run directories, manifests, `train_metadata.json`): `medium` is shown as `deep_3x16`, `medium_attn` as `deep_attn_3x16`, `deep_3x16` as `deep0_3x16`, `deep_attn_3x16` as `deep0_attn_3x16`, `deep_cusp_3x16` as `deep0_cusp_3x16`, `deep_cusp_mgga_3x16` as `deep0_cusp_mgga_3x16`, `shallow` as `deep_2x8`, `shallow_attn` as `deep_attn_2x8`, `deep` as `deep0_4x32`. A run trained under another protocol carries a tag on the name (`deep_3x16 [anchored]` for the v6 parent-anchored runs; the cell's `protocol` for the arms). The manifest reader (`make_cluster_pulls_figure._read_manifest_cells`) is the one place the conversion happens; every row keeps the registry key beside it as `arch_stored` |
+| Footer key line | The provenance line of every figure ends with the expanded key of each architecture drawn (`name: depth x width, initialization, heads, descriptors, rung; tag`), so the shown names read without the table above |
+| Bar/line color | Architecture, fixed palette from `arch_style.py` (`ARCH_COLOR`, keyed by the shown name; a stored key's colour moves with it); legends are rung-ordered, then in `ARCH_ORDER`: the Glorot ladder, the 3x16 zero-init family, the 4x32 legacy family |
 | Black dashed horizontal line | PBE baseline of that panel's metric (energy panels; ED panels) |
 | Grey dashed line | PBE-vs-CCSD DENSITY baseline (pool-mean line in held-out density; per-subset line in in-sample density) |
 | Green triangle-down | "beats PBE": the value sits strictly below that panel's PBE line (`_beats_pbe_marks`, :1962) |
@@ -341,7 +343,8 @@ share units, blank there when the in-sample rows carry no eps columns) and
 | Column | Meaning |
 |---|---|
 | `leg` | Energy leg: `wtmad2` (headline), `mae`, or -- eps columns present -- `wtmad2_eps_gamma_dfs` / `wtmad2_eps_gamma_fit` |
-| `arch` | Architecture (ARCH_ORDER-sorted within each leg) |
+| `arch` | Architecture, the SHOWN name (Section 3; ARCH_ORDER-sorted within each leg) |
+| `arch_stored` | The registry key the cell is filed under (its run directory, manifest and checkpoint name); the join back to the run. The same pair of columns heads `holdout_density_tail.csv`, the pre-training and trained enhancement-factor curve CSVs and the certificate summary CSV |
 | `subset_size` | Training subset size of the cell |
 | `n_reactions` | Finite-NN reactions in the cell behind E, name-deduplicated (matching the deduped cell metrics; the pool's four duplicate-name entries count once). `n_reactions < n_reactions_slice` is the machine-readable incomplete-eval condition behind the figures' starred bars |
 | `n_density_species` | Distinct species (case twins collapsed) with a finite NN density in the cell behind D (counted on the leg's own channel: RMSE rows, or eps rows on the DFS-units legs) |

@@ -96,9 +96,11 @@ def test_arch_color_covers_every_arch_order_entry():
 
 
 def test_base8_take_tab10():
+    """The eight 4x32 legacy bases own tab10 in their palette order; the
+    display order moved them to the tail, the palette did not move."""
     import matplotlib
     tab = matplotlib.cm.get_cmap("tab10")
-    for i, a in enumerate(A.ARCH_ORDER[:8]):
+    for i, a in enumerate(_LEGACY_4X32):
         assert A.ARCH_COLOR[a] == matplotlib.colors.to_hex(tab(i))
 
 
@@ -109,7 +111,9 @@ def test_meta_gga_archs_have_mutually_distinct_colors():
 
 
 def test_3x16_twin_inherits_base_color():
-    assert A.ARCH_COLOR["deep_cusp_3x16"] == A.ARCH_COLOR["deep_cusp"]
+    # the palette is keyed by the shown names; a stored key maps through
+    assert A.ARCH_COLOR["deep0_cusp_3x16"] == A.ARCH_COLOR["deep0_cusp_4x32"]
+    assert A.arch_color("deep_cusp_3x16") == A.arch_color("deep_cusp")
 
 
 def test_arch_color_unknown_falls_back_to_rung_accent():
@@ -180,26 +184,32 @@ def test_v4_campaign_archs_all_in_arch_order_with_distinct_colors():
     }
     v4_archs = list(expected_rung)
     assert len(v4_archs) == 11
+    # the YAML axes hold STORED keys; the order and the palette hold shown
+    # names, so membership is checked through the display map (a stored key
+    # that is also a shown name -- deep_3x16 -- cannot be mapped by inspection)
     for a in v4_archs:
-        assert a in A.ARCH_ORDER, a
-        assert a in A.ARCH_COLOR, a
+        shown = A.display_name(a)
+        assert shown in A.ARCH_ORDER, (a, shown)
+        assert shown in A.ARCH_COLOR, (a, shown)
         # rung placement drives every rung-banded figure (gutters, spans,
         # by_rung summaries), so the roster pins it explicitly
-        assert A.rung_of(a) == expected_rung[a], a
-    cols = [A.ARCH_COLOR[a] for a in v4_archs]
+        assert A.rung_of(shown) == expected_rung[a], a
+    cols = [A.arch_color(A.display_name(a)) for a in v4_archs]
     assert len(set(cols)) == len(cols), cols
     assert "#333333" not in cols  # nothing fell through to the unknown-base default
 
 
 def test_v6_campaign_archs_all_in_arch_order_with_distinct_colors():
-    """Every arch of the five v6 group files must be figure-renderable.
+    """Every arch of the six v6 group files must be figure-renderable.
 
     Same guard as the v4 roster test above, but read from the group YAMLs
     themselves (hpcjobs/configs/dfs_step7.dfs6311_grid3_v6g*.yaml) so an
     edit to a group's arch axis cannot drift past the palette. The union is
     the campaign's 20 architectures; the four G1 size-ladder base names
     (shallow/shallow_attn/medium/medium_attn) are the entries the palette
-    gained for v6 -- registered GGA archs with no width-twin suffix.
+    gained for v6 -- registered GGA archs with no width-twin suffix, shown
+    as the Glorot ladder deep_2x8 / deep_attn_2x8 / deep_3x16 /
+    deep_attn_3x16.
     """
     import glob
 
@@ -208,7 +218,7 @@ def test_v6_campaign_archs_all_in_arch_order_with_distinct_colors():
     repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     files = sorted(glob.glob(os.path.join(
         repo, "hpcjobs", "configs", "dfs_step7.dfs6311_grid3_v6g*.yaml")))
-    assert len(files) == 5, files
+    assert len(files) == 6, files
     union: set = set()
     for path in files:
         with open(path) as fh:
@@ -221,23 +231,24 @@ def test_v6_campaign_archs_all_in_arch_order_with_distinct_colors():
         # repeats: a width twin reuses its 4x32 base's color, and G4's
         # deep/deep_attn are the bases of G2's deep_3x16/deep_attn_3x16).
         # Membership and collision are separate defects with separate
-        # messages: a missing palette key must not read as a collision.
-        missing = [a for a in archs if a not in A.ARCH_COLOR]
+        # messages: a missing palette key must not read as a collision. The
+        # axes hold stored keys; the palette holds shown names.
+        missing = [a for a in archs if A.display_name(a) not in A.ARCH_COLOR]
         assert not missing, (path, missing)
-        group_cols = [A.ARCH_COLOR[a] for a in archs]
+        group_cols = [A.arch_color(A.display_name(a)) for a in archs]
         assert len(set(group_cols)) == len(group_cols), (path, group_cols)
     assert len(union) == 20, sorted(union)
     for a in sorted(union):
-        assert a in A.ARCH_ORDER, a
-        assert a in A.ARCH_COLOR, a
-    cols = [A.ARCH_COLOR[a] for a in sorted(union)]
+        assert A.display_name(a) in A.ARCH_ORDER, a
+        assert A.display_name(a) in A.ARCH_COLOR, a
+    cols = [A.arch_color(A.display_name(a)) for a in sorted(union)]
     assert "#333333" not in cols  # nothing fell through to the unknown-base default
     # the only union-level repeats are the two by-design base/twin pairs
     assert len(set(cols)) == len(cols) - 2, cols
-    assert A.ARCH_COLOR["deep"] == A.ARCH_COLOR["deep_3x16"]
-    assert A.ARCH_COLOR["deep_attn"] == A.ARCH_COLOR["deep_attn_3x16"]
+    assert A.ARCH_COLOR["deep0_4x32"] == A.ARCH_COLOR["deep0_3x16"]
+    assert A.ARCH_COLOR["deep0_attn_4x32"] == A.ARCH_COLOR["deep0_attn_3x16"]
     # the size ladder is registered and classifies GGA off the registry
-    for a in ("shallow", "shallow_attn", "medium", "medium_attn"):
+    for a in ("deep_2x8", "deep_attn_2x8", "deep_3x16", "deep_attn_3x16"):
         assert A.rung_of(a) == A.RUNG_GGA, a
 
 
@@ -250,14 +261,15 @@ def test_size_ladder_colors_explicit_not_suffix_stripped():
     names without the ``_3x16`` suffix while leaving the twin inheritance
     intact.
     """
-    ladder = ("shallow", "shallow_attn", "medium", "medium_attn")
+    ladder = ("deep_2x8", "deep_attn_2x8", "deep_3x16", "deep_attn_3x16")
     cols = [A.ARCH_COLOR[a] for a in ladder]
     assert len(set(cols)) == len(cols), cols
     assert "#333333" not in cols
-    # width-twin inheritance unchanged
-    assert A.ARCH_COLOR["deep_3x16"] == A.ARCH_COLOR["deep"]
-    assert A.ARCH_COLOR["deep_rung35_3x16"] == A.ARCH_COLOR["deep_rung35"]
-    assert A.ARCH_COLOR["deep_mgga_3x16"] == A.ARCH_COLOR["deep_mgga"]
+    # width-twin inheritance unchanged; the colour-only base names
+    # (deep_rung35, deep_mgga: never registry keys) keep their stored spelling
+    assert A.ARCH_COLOR["deep0_3x16"] == A.ARCH_COLOR["deep0_4x32"]
+    assert A.ARCH_COLOR["deep0_rung35_3x16"] == A.ARCH_COLOR["deep_rung35"]
+    assert A.ARCH_COLOR["deep0_mgga_3x16"] == A.ARCH_COLOR["deep_mgga"]
 
 
 def test_rung_bands_contiguous_and_cover_all_indices():
@@ -297,3 +309,172 @@ def test_taxonomy_delegates_to_library_rungs():
     import pytest as _pytest
     with _pytest.raises(KeyError):
         rungs.rung_of("deep_mgga")
+
+
+# --------------------------------------------------------------------------- #
+# T3: display names (2026-09-09)
+#
+# ARCH_ORDER and ARCH_COLOR move to the SHOWN names -- the names that say what
+# each network is -- and every style function resolves a name in the shown
+# sense, mapping a stored key through ``display_name`` first. The colour of a
+# stored key moves with it, so the shown ``deep_3x16`` (the registry's
+# ``medium``) carries medium's green and ``deep0_3x16`` (the registry's
+# ``deep_3x16``) carries the tab10 blue of the old deep family.
+# --------------------------------------------------------------------------- #
+
+_MEDIUM_GREEN = "#98df8a"
+_MEDIUM_ATTN_GREEN = "#c7e9c0"
+_DEEP_BLUE = "#1f77b4"        # tab10[0], the old `deep` / `deep_3x16` colour
+_DEEP_CUSP_GREEN = "#2ca02c"  # tab10[2]
+_ZEROED_TEXT = "last layer zeroed (pre-training starts at the LDA)"
+#: the eight 4x32 legacy bases, in their tab10 palette order
+_LEGACY_4X32 = (
+    "deep0_4x32", "deep0_attn_4x32", "deep0_cusp_4x32", "deep0_dm_4x32",
+    "deep0_combined_4x32", "deep0_combined_attn_4x32",
+    "deep0_notransform_4x32", "deep0_notransform_attn_4x32")
+
+
+def test_arch_order_holds_shown_names_only():
+    """No stored-only key survives in the ordering the figures draw by.
+
+    RED: ARCH_ORDER carries `medium`, `deep_cusp_3x16` and the rest of the
+    stored keys today.
+    """
+    for a in A.ARCH_ORDER:
+        assert A.display_name(A.stored_key(a)) == a, a
+    # the order runs along the axes: the Glorot ladder, the 3x16 zero-init
+    # family (plain, attention, cusp, dm, combined, notransform, rung-3.5,
+    # meta-GGA), the 4x32 legacy family last
+    assert A.ARCH_ORDER[:12] == (
+        "deep_2x8", "deep_attn_2x8", "deep_3x16", "deep_attn_3x16",
+        "deep0_3x16", "deep0_attn_3x16", "deep0_cusp_3x16", "deep0_dm_3x16",
+        "deep0_combined_3x16", "deep0_combined_attn_3x16",
+        "deep0_notransform_3x16", "deep0_notransform_attn_3x16")
+    assert A.ARCH_ORDER[-8:] == _LEGACY_4X32
+    for stored_only in ("medium", "medium_attn", "shallow", "shallow_attn",
+                        "deep", "deep_cusp_3x16", "deep_mgga_3x16"):
+        assert stored_only not in A.ARCH_ORDER, stored_only
+    for shown in ("deep_3x16", "deep0_3x16", "deep0_cusp_3x16",
+                  "deep0_cusp_mgga_3x16", "deep_2x8"):
+        assert shown in A.ARCH_ORDER, shown
+
+
+def test_arch_color_keyed_by_shown_names():
+    """Each stored key's colour travels with it under the rename.
+
+    Kills m1/m3 at the palette: a rename that left the palette keyed on the
+    stored keys would give the shown `deep_3x16` the old deep blue -- the
+    colour of a DIFFERENT network -- in every figure.
+    """
+    assert A.ARCH_COLOR["deep_3x16"] == _MEDIUM_GREEN
+    assert A.arch_color("deep_3x16") == _MEDIUM_GREEN
+    assert A.ARCH_COLOR["deep_attn_3x16"] == _MEDIUM_ATTN_GREEN
+    assert A.ARCH_COLOR["deep0_4x32"] == _DEEP_BLUE
+    assert A.arch_color("deep0_3x16") == _DEEP_BLUE
+    assert A.ARCH_COLOR["deep0_cusp_4x32"] == _DEEP_CUSP_GREEN
+    # the width-twin inheritance, restated in shown names
+    assert A.ARCH_COLOR["deep0_cusp_3x16"] == A.ARCH_COLOR["deep0_cusp_4x32"]
+    assert A.ARCH_COLOR["deep0_3x16"] == A.ARCH_COLOR["deep0_4x32"]
+    # nothing fell through to the unknown-base default
+    assert "#333333" not in [A.ARCH_COLOR[a] for a in A.ARCH_ORDER]
+
+
+def test_a_stored_key_is_accepted_and_mapped_through_display_name():
+    """A caller holding a stored key (a pulled manifest read outside the
+    boundary, a fixture) still gets the right colour and rung.
+
+    Kills m2 at the colour: `arch_color("medium")` must be the colour of the
+    shown `deep_3x16`, not of the stored key `deep_3x16`.
+    """
+    assert A.arch_color("medium") == A.arch_color("deep_3x16") == _MEDIUM_GREEN
+    assert A.arch_color("deep_cusp") == A.arch_color("deep0_cusp_4x32")
+    assert A.arch_color("deep_cusp_3x16") == _DEEP_CUSP_GREEN
+    assert A.rung_of("medium") == A.RUNG_GGA
+    assert A.rung_of("deep_cusp_mgga_3x16") == A.RUNG_MGGA
+
+
+def test_display_name_and_expanded_key_are_reexported():
+    """The figure scripts import the layer from here, so the re-exports are
+    part of this module's interface. Kills m2: with ``stored_key`` returning
+    its input, ``expanded_key("deep_3x16")`` reads the zero-init text of the
+    other network."""
+    assert A.display_name("medium") == "deep_3x16"
+    assert A.display_name("medium", protocol="25 cycles") == \
+        "deep_3x16 [25 cycles]"
+    assert A.stored_key("deep_3x16") == "medium"
+    assert A.expanded_key("deep_3x16") == "3 x 16, Glorot initialization"
+    assert A.expanded_key("deep0_3x16") == f"3 x 16, {_ZEROED_TEXT}"
+    assert A.key_line(["deep_3x16", "deep0_3x16"]) == (
+        "deep_3x16: 3 x 16, Glorot initialization; "
+        f"deep0_3x16: 3 x 16, {_ZEROED_TEXT}")
+
+
+def test_rung_of_a_shown_name_delegates_to_the_registry():
+    """The rung of a shown name is the rung of the configuration it names.
+
+    The VALUES below do not discriminate on their own -- arch_style's
+    name-token fallback already reads `mgga` / `rung35` out of a shown name --
+    so the pin is the delegation itself: the rung must come from the registry
+    entry ``stored_key`` resolves, not from the characters of the label.
+    """
+    from xcquinox.alec import rungs
+    for shown in ("deep_3x16", "deep0_3x16", "deep0_cusp_mgga_3x16",
+                  "deep0_rung35ms_mgga_3x16", "deep0_mgga_3x16"):
+        assert A.rung_of(shown) == rungs.rung_of(A.stored_key(shown)), shown
+    assert A.rung_of("deep0_cusp_mgga_3x16") == A.RUNG_MGGA
+    assert A.rung_of("deep0_rung35ms_mgga_3x16") == A.RUNG_R35_MGGA
+
+
+def test_sort_by_rung_orders_shown_names_by_arch_order():
+    """Within a rung the order is ARCH_ORDER's, which now holds shown names:
+    the Glorot ladder leads, the zero-init 3x16 family follows, the 4x32
+    legacy family closes.
+
+    RED: today `deep_3x16` is an ARCH_ORDER member and `deep0_4x32` is not,
+    so the unknown name sorts last by the fallback rather than by position.
+    """
+    assert A.sort_by_rung(["deep0_4x32", "deep_3x16"]) == \
+        ["deep_3x16", "deep0_4x32"]
+    assert A.sort_by_rung(["deep0_3x16", "deep_3x16", "deep_2x8"]) == \
+        ["deep_2x8", "deep_3x16", "deep0_3x16"]
+
+
+# --------------------------------------------------------------------------- #
+# Protocol-tagged names: a tag rides on the shown name and changes neither the
+# colour nor the position of the architecture (2026-09-09, review findings)
+# --------------------------------------------------------------------------- #
+
+def test_tagged_names_keep_their_architectures_colour():
+    """RED before the fix: the tagged branch of arch_color looked the stored
+    key up in the SHOWN-keyed palette, so every tagged name of an anchored
+    run fell through to the rung accent (four architectures in one colour)
+    and ``deep0_3x16 [anchored]`` took medium's green."""
+    assert A.arch_color("deep_3x16 [anchored]") == A.arch_color("deep_3x16") \
+        == _MEDIUM_GREEN
+    assert A.arch_color("deep0_3x16 [anchored]") == A.arch_color("deep0_3x16") \
+        == _DEEP_BLUE
+    assert A.arch_color("deep_2x8 [anchored]") == A.ARCH_COLOR["deep_2x8"]
+    assert A.arch_color("deep_attn_3x16 [25 cycles]") == _MEDIUM_ATTN_GREEN
+    # a tagged STORED-only key maps through as well
+    assert A.arch_color("medium [anchored]") == _MEDIUM_GREEN
+    assert A.as_shown("medium [anchored]") == "deep_3x16 [anchored]"
+    assert A.base_name("medium [anchored]") == "deep_3x16"
+
+
+def test_tagged_names_are_order_members_and_sort_after_their_base():
+    """A tagged name is an ARCH_ORDER member through its base (the per-arch
+    figures can draw it) and sorts right after the untagged name of the same
+    architecture; unknown names stay last."""
+    assert A.in_order("deep_3x16 [anchored]")
+    assert A.in_order("medium [anchored]")
+    assert not A.in_order("no_such_arch")
+    got = A.order_present(["deep0_3x16", "deep_3x16 [anchored]", "zzz",
+                           "deep_3x16", "deep_3x16 [25 cycles]", "deep_2x8"])
+    assert got == ["deep_2x8", "deep_3x16", "deep_3x16 [25 cycles]",
+                   "deep_3x16 [anchored]", "deep0_3x16", "zzz"]
+    assert A.order_known(got) == got[:-1]
+    assert A.order_present(["deep_3x16", "deep_3x16", None]) == ["deep_3x16"]
+    assert A.sort_by_rung(["deep_3x16 [anchored]", "deep0_mgga_3x16",
+                           "deep_3x16"]) == \
+        ["deep_3x16", "deep_3x16 [anchored]", "deep0_mgga_3x16"]
+    assert A.rung_of("deep0_mgga_3x16 [anchored]") == A.RUNG_MGGA

@@ -99,9 +99,13 @@ except Exception:
 
 _SOLVER_HATCH = {"full_3": "", "full_25": "//"}  # distinguish SCF-cycle count
 
+def _shown(arch):
+    "The shown name of a registry key (arch_names: deep_3x16 -> deep0_3x16), mapped explicitly."
+    return arch_style.display_name(arch) if arch_style is not None else arch
+
 def _nn_color(key):
     "Per-arch shared-palette color for an (arch, solver) key (None -> mpl default)."
-    return arch_style.arch_color(key[0]) if arch_style is not None else None
+    return arch_style.arch_color(_shown(key[0])) if arch_style is not None else None
 
 def _nn_hatch(key):
     return _SOLVER_HATCH.get(key[1], "")
@@ -465,7 +469,7 @@ for key in _keys_a:
         continue
     L = np.asarray(np.load(lp)).ravel()
     ax.plot(np.arange(len(L)), L, color=_nn_color(key),
-            ls=_SOLVER_LS.get(key[1], "-"), lw=1.4, label=f"{key[0]}/{key[1]}")
+            ls=_SOLVER_LS.get(key[1], "-"), lw=1.4, label=f"{_shown(key[0])}/{key[1]}")
 ax.set_xlabel("optimizer step"); ax.set_ylabel("training loss")
 ax.set_title("training loss  (color = arch, style = solver)")
 if ax.has_data():
@@ -500,7 +504,7 @@ ax.bar(x + width, [scan_rmse.get(m, np.nan) for m in mols], width, label="SCAN",
 for i, key in enumerate(_keys_b):
     vals = [nn_rmse[key].get(m, np.nan) for m in mols]
     ax.bar(x + (i + 2) * width, vals, width, color=_nn_color(key), hatch=_nn_hatch(key),
-           edgecolor="white", linewidth=0.3, label=f"NN {key[0]}/{key[1]}")
+           edgecolor="white", linewidth=0.3, label=f"NN {_shown(key[0])}/{key[1]}")
     for xi, (m, v) in enumerate(zip(mols, vals)):
         _mark_beats(ax, x[xi] + (i + 2) * width, v,
                     np.isfinite(v) and v < scan_rmse.get(m, np.inf))

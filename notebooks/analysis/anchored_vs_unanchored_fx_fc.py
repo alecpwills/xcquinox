@@ -243,7 +243,12 @@ def read_curve(path: Path, arch: str, channel: str, *,
                 f"{path} is missing the column(s) {', '.join(absent)}; it "
                 f"carries {', '.join(fields) if fields else 'no header'}")
         for row in reader:
-            if row["arch"] != arch or row["channel"] != channel:
+            # ``arch`` names the registry key of the series; the curve files
+            # written since the display layer carry the shown name in
+            # ``arch`` and the key in ``arch_stored``, the older committed
+            # files the key in ``arch`` alone
+            key = row["arch_stored"] if "arch_stored" in fields else row["arch"]
+            if key != arch or row["channel"] != channel:
                 continue
             if subset_size is not None and \
                     int(row["subset_size"]) != subset_size:

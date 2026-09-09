@@ -880,3 +880,80 @@ def test_pretrain_spec_parent_density_set_is_named_once(tmp_path):
             arch=config_mod.get_architecture("deep_3x16"),
             data_dir=str(tmp_path), checkpoint_dir=str(tmp_path / "ck"),
             parent_density=value)
+
+
+# ---------------------------------------------------------------------------
+# T2: the display-name layer reaches the registry (2026-09-09)
+#
+# The figures are relabelled by what each network IS, and the shown names that
+# are not themselves registry keys resolve to the stored configuration, so a
+# later configuration file may use them directly. The stored keys are
+# untouched: the running arms and every pulled result are filed under them.
+# ---------------------------------------------------------------------------
+
+def test_get_architecture_resolves_display_name_aliases():
+    """A shown name that is not a stored key resolves to its configuration,
+    and the two shown names that ARE stored keys of other configurations keep
+    resolving to those.
+
+    Kills m4 (the alias lookup removed): without it every assertion in the
+    first block raises KeyError.
+    """
+    from xcquinox.alec.config import ARCHITECTURES, get_architecture
+    assert get_architecture("deep0_3x16") is ARCHITECTURES["deep_3x16"]
+    assert get_architecture("deep0_attn_3x16") is ARCHITECTURES["deep_attn_3x16"]
+    assert get_architecture("deep0_cusp_mgga_3x16") is \
+        ARCHITECTURES["deep_cusp_mgga_3x16"]
+    assert get_architecture("deep_2x8") is ARCHITECTURES["shallow"]
+    assert get_architecture("deep_attn_2x8") is ARCHITECTURES["shallow_attn"]
+    assert get_architecture("deep0_4x32") is ARCHITECTURES["deep"]
+    # the collision: `deep_3x16` is medium's SHOWN name and another entry's
+    # stored key. The registry lookup is the storage sense and does not move.
+    assert get_architecture("deep_3x16") is ARCHITECTURES["deep_3x16"]
+    assert get_architecture("deep_attn_3x16") is ARCHITECTURES["deep_attn_3x16"]
+    assert get_architecture("medium") is ARCHITECTURES["medium"]
+    # an alias never shadows a stored key, and an unknown name still raises
+    assert not set(_alias_map()) & set(ARCHITECTURES)
+    with pytest.raises(KeyError):
+        get_architecture("nonexistent")
+    with pytest.raises(KeyError):
+        get_architecture("deep0_not_an_arch")
+
+
+def _alias_map():
+    from xcquinox.alec.arch_names import ALIASES
+    return ALIASES
+
+
+def test_list_architectures_still_lists_stored_keys_only():
+    """The alias layer is a lookup, not a registry entry: the enumeration the
+    spec builder and the run validator read must stay the storage set."""
+    from xcquinox.alec.config import ARCHITECTURES, list_architectures
+    from xcquinox.alec.arch_names import ALIASES
+    names = list_architectures()
+    assert names == sorted(ARCHITECTURES)
+    assert not set(names) & set(ALIASES)
+
+
+def test_architecture_describe_carries_display_name():
+    """``describe()`` is what the run records write; the record names both
+    identities, so a pulled record can be read without the map."""
+    from xcquinox.alec.config import get_architecture
+    out = get_architecture("medium").describe()
+    assert out["name"] == "medium"
+    assert out["display_name"] == "deep_3x16"
+    zeroed = get_architecture("deep_3x16").describe()
+    assert zeroed["name"] == "deep_3x16"
+    assert zeroed["display_name"] == "deep0_3x16"
+
+
+def test_architecture_describe_display_name_follows_the_configuration():
+    """The name in the record is derived from the fields in hand, not from
+    the registry entry the name came from: a configuration replaced away from
+    its entry is named by what it is."""
+    from dataclasses import replace
+    from xcquinox.alec.config import get_architecture
+    zeroed = replace(get_architecture("medium"), zero_init_final_layer=True)
+    assert zeroed.describe()["display_name"] == "deep0_3x16"
+    wide = replace(get_architecture("medium"), depth=5, nodes=64)
+    assert wide.describe()["display_name"] == "deep_5x64"

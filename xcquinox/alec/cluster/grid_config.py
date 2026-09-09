@@ -2017,7 +2017,8 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # Every value on the arch axis must resolve via get_architecture. Catching
     # an unknown arch on the login node gives a clear error instead of letting
     # the pretrain worker (_pretrain.py) fail at runtime on a compute node.
-    from xcquinox.alec.config import get_architecture, list_architectures
+    from xcquinox.alec.config import (ARCHITECTURES, get_architecture,
+                                      list_architectures)
     for a in cfg.sweep.arch:
         try:
             get_architecture(a)
@@ -2026,6 +2027,16 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                 f"sweep arch {a!r} is not a known architecture; valid "
                 f"architectures: {list_architectures()}"
             ) from None
+        if a not in ARCHITECTURES:
+            # a shown name (xcquinox.alec.arch_names) resolves in the registry
+            # but the run directories, the pretrain directory and the
+            # certificate lookup are filed under the registry key; a sweep
+            # written in the shown spelling would file under a name the
+            # figures read back as a different network
+            from xcquinox.alec.arch_names import stored_key
+            raise ValueError(
+                f"sweep arch {a!r} is the shown name of the registry key "
+                f"{stored_key(a)!r}; configuration files name the registry key")
 
     # --- the model block --------------------------------------------------
     # The parent anchor is a property of the model class the run builds, so

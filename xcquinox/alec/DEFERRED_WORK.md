@@ -996,3 +996,22 @@ never been compared against it on the same cell.
 group's first train cell: time one cell's first hundred steps at the two settings from the
 same checkpoint; if the capped setting is not slower, cap the train array too and retire the
 exemption in `test_render_thread_caps_present_every_template`.
+
+## 32. The anchored-versus-unanchored comparison tests read figure sets that left the tree (2026-09-09)
+
+**WHAT:** eleven tests of `notebooks/analysis/test_anchored_vs_unanchored_fx_fc.py` open the
+committed curve CSVs of the v3, v4gga and v6 G1 figure directories (`pretrain_fx_fc_curves.csv`,
+`trained_fx_fc_curves.csv`) and fail with FileNotFoundError.
+
+**WHY:** commit fca8e7bf0 removed those fourteen figure directories from tracking (kept under the
+gitignored `figures_archive/`); the tests were written against the tracked files and were not
+moved with them. Found while the display-name change ran that file (its new test, on a synthetic
+file, passes).
+
+**KNOWN:** the figure itself (`anchored_vs_unanchored_fx_fc.py`) reads the same paths and cannot
+be rebuilt from the tree either; the archived sets carry the registry names in `arch`, which the
+reader still accepts (a file without `arch_stored` is read by `arch`).
+
+**TRIGGER:** when the anchored-versus-unanchored figure is next needed: point the series at the
+archive root (or at the merged family view of the v7 plan), skip the eleven tests when the
+sources are absent, and record the source root in the figure footer.

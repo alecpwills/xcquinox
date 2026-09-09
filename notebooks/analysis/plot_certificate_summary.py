@@ -47,6 +47,25 @@ import matplotlib
 matplotlib.use("Agg")  # headless-safe; must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
 
+# the certificate directory is the STORED registry key; the axis and the CSV
+# show the derived name (medium -> deep_3x16, deep_3x16 -> deep0_3x16)
+from xcquinox.alec.arch_names import display_name  # noqa: E402
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from arch_style import ARCH_ORDER  # noqa: E402
+
+
+def _display_order(stored_keys):
+    """The stored keys in the display order of their shown names (ARCH_ORDER;
+    a name outside it last, in sorted order)."""
+    def _key(a):
+        shown = display_name(a)
+        try:
+            return (ARCH_ORDER.index(shown), shown)
+        except ValueError:
+            return (len(ARCH_ORDER), shown)
+    return sorted(stored_keys, key=_key)
+
 # Categorical palette: slot 1 blue, slot 2 orange, then aqua/yellow for
 # further labels. Color follows the LABEL (the campaign generation); the FAIL
 # state is carried by hatching and the verdict text, never by color alone.
@@ -127,15 +146,17 @@ def collect_certificates(runs):
 
 
 def write_csv(records, path):
-    """The figure's numbers as one row per (label, arch)."""
+    """The figure's numbers as one row per (label, arch); ``arch`` is the
+    shown name and ``arch_stored`` the certificate directory."""
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["label", "arch", "verdict", "n_atomizations",
+        w.writerow(["label", "arch", "arch_stored", "verdict",
+                    "n_atomizations",
                     "mean_abs_dAE_kcalmol", "rmse_dAE_kcalmol",
                     "max_abs_dAE_kcalmol", "species_over_1_kcalmol",
                     "tol_AE", "tol_AE_aggregate", "tol_AE_max_backstop"])
         for label, arch, r in records:
-            w.writerow([label, arch, r["verdict"], r["n"],
+            w.writerow([label, display_name(arch), arch, r["verdict"], r["n"],
                         r["mean"], r["rmse"], r["max"],
                         ";".join(r["species_over"]),
                         r["tol_AE"], r["aggregate"], r["backstop"]])
@@ -153,7 +174,10 @@ def plot_certificate_summary(records, out_path):
     for label, _arch, _r in records:
         if label not in labels:
             labels.append(label)
-    archs = sorted({arch for _l, arch, _r in records})
+    # the axis runs in the figures' display order of the SHOWN names (the
+    # ticks are labelled with them), not in the sorted order of the
+    # directory keys
+    archs = _display_order({arch for _l, arch, _r in records})
     by_key = {(label, arch): r for label, arch, r in records}
 
     # One line per DISTINCT (kind, value): certificates recording different
@@ -277,7 +301,8 @@ def plot_certificate_summary(records, out_path):
         manifest["gate_lines"].append((value, text))
 
     ax.set_xticks(range(len(archs)))
-    ax.set_xticklabels(archs, rotation=20, ha="right", fontsize=9)
+    ax.set_xticklabels([display_name(a) for a in archs], rotation=20,
+                       ha="right", fontsize=9)
     ax.set_xlim(-0.6, len(archs) - 0.4)
     ax.set_ylim(0.0, y_cap)
     ax.set_ylabel("|dAE| vs parent (kcal/mol)")

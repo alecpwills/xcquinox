@@ -138,7 +138,7 @@ def test_collect_holdout_reaction_rows_joins_cell(tmp_path):
     # 4 evaluated specs × 2 reactions each = 8.
     assert len(rows) == 8
     archs = {r["arch"] for r in rows}
-    assert archs == {"deep", "deep_notransform"}
+    assert archs == {"deep0_4x32", "deep0_notransform_4x32"}
     pools = {r["pool"] for r in rows}
     assert pools == {"bh76", "w411"}
     for r in rows:
@@ -186,7 +186,7 @@ def test_best_subset_per_arch_picks_largest(tmp_path):
     run = _make_run_dir(tmp_path)
     rows = fig.collect_holdout_reaction_rows(run)
     best = fig._best_subset_per_arch(rows)
-    assert best == {"deep": 3, "deep_notransform": 3}
+    assert best == {"deep0_4x32": 3, "deep0_notransform_4x32": 3}
 
 
 def test_reaction_mae_by_arch_subset(tmp_path):
@@ -194,8 +194,8 @@ def test_reaction_mae_by_arch_subset(tmp_path):
     rows = fig.collect_holdout_reaction_rows(run)
     mae = fig.reaction_mae_by_arch_subset(rows)
     # spec_0000 (deep, ss=1): mean(|108.7|, |2.0|) = 55.35
-    assert mae[("deep", 1)] == pytest.approx((108.7 + 2.0) / 2, rel=1e-6)
-    assert ("deep_notransform", 3) in mae
+    assert mae[("deep0_4x32", 1)] == pytest.approx((108.7 + 2.0) / 2, rel=1e-6)
+    assert ("deep0_notransform_4x32", 3) in mae
 
 
 def test_ae_mae_by_arch_subset(tmp_path):
@@ -203,7 +203,7 @@ def test_ae_mae_by_arch_subset(tmp_path):
     rows = fig.collect_insample_ae_rows(run)
     mae = fig.ae_mae_by_arch_subset(rows)
     # spec_0000 (deep, ss=1): mean(|6|, |-2|) = 4.0
-    assert mae[("deep", 1)] == pytest.approx(4.0, rel=1e-6)
+    assert mae[("deep0_4x32", 1)] == pytest.approx(4.0, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -902,7 +902,7 @@ def test_reconstruct_keeps_comparator_leg_on_nn_nan(tmp_path, monkeypatch,
     # An NN SCF failure must not shrink the cell's comparator row set: the
     # o3 row survives with a finite PBE leg and NaN NN columns.
     rows = _nan_recon_rows(tmp_path, monkeypatch)
-    attn = {r["name"]: r for r in rows if r["arch"] == "deep_attn"}
+    attn = {r["name"]: r for r in rows if r["arch"] == "deep0_attn_4x32"}
     assert sorted(attn) == ["bh76_hcn_to_hcnts", "w411_hnc_atomization",
                             "w411_o3_atomization"]
     o3 = attn["w411_o3_atomization"]
@@ -918,9 +918,9 @@ def test_comparator_anchor_invariant_to_nn_coverage(tmp_path, monkeypatch):
     # move the cell's PBE anchor off the group's shared value.
     rows = _nan_recon_rows(tmp_path, monkeypatch)
     mae = fig.pbe_reaction_mae_by_cell(rows)
-    assert mae[("deep", 2)] == mae[("deep_attn", 2)]
+    assert mae[("deep0_4x32", 2)] == mae[("deep0_attn_4x32", 2)]
     wt = fig.wtmad2_pbe_by_arch_subset(rows)
-    assert wt[("deep", 2)] == wt[("deep_attn", 2)]
+    assert wt[("deep0_4x32", 2)] == wt[("deep0_attn_4x32", 2)]
 
 
 def test_nn_metrics_exclude_nan_rows(tmp_path, monkeypatch):
@@ -930,23 +930,23 @@ def test_nn_metrics_exclude_nan_rows(tmp_path, monkeypatch):
     de_hnc = ((_NAN_RECON_E_NN["h"] + _NAN_RECON_E_NN["c"]
                + _NAN_RECON_E_NN["n"] - _NAN_RECON_E_NN["hnc"]) * _KCAL)
     expect = (abs(de_ts - 15.0) + abs(de_hnc - 298.7)) / 2.0
-    assert mae[("deep_attn", 2)] == pytest.approx(expect)
+    assert mae[("deep0_attn_4x32", 2)] == pytest.approx(expect)
 
 
 def test_group_span_single_after_nn_nan(tmp_path, monkeypatch):
     rows = _nan_recon_rows(tmp_path, monkeypatch)
     anchors = fig.pbe_reaction_mae_by_cell(rows)
-    xs, ys, hw = fig._group_span_points(anchors, ["deep", "deep_attn"],
+    xs, ys, hw = fig._group_span_points(anchors, ["deep0_4x32", "deep0_attn_4x32"],
                                         [2], 0.4)
     assert len(xs) == 1
-    assert ys[0] == anchors[("deep", 2)]
+    assert ys[0] == anchors[("deep0_4x32", 2)]
 
 
 def test_energy_cell_coverage_warning_names_cell(tmp_path, monkeypatch):
     rows = _nan_recon_rows(tmp_path, monkeypatch)
     w = fig._energy_cell_coverage_warning(rows)
     assert "incomplete hold-out eval" in w
-    assert "deep_attn/ss2" in w and "2/3" in w
+    assert "deep0_attn_4x32/ss2" in w and "2/3" in w
     assert "w411_o3_atomization" in w
     clean = [r for r in rows if r["arch"] == "deep"]
     assert fig._energy_cell_coverage_warning(clean) == ""
@@ -958,8 +958,8 @@ def test_span_fallback_fires_on_comparator_divergence(tmp_path, monkeypatch):
     # NN-coverage warning stays silent -- each NN scored its own full slice.
     rows = _nan_recon_rows(tmp_path, monkeypatch, drop_pbe_too=True)
     anchors = fig.pbe_reaction_mae_by_cell(rows)
-    assert anchors[("deep", 2)] != anchors[("deep_attn", 2)]
-    xs, ys, hw = fig._group_span_points(anchors, ["deep", "deep_attn"],
+    assert anchors[("deep0_4x32", 2)] != anchors[("deep0_attn_4x32", 2)]
+    xs, ys, hw = fig._group_span_points(anchors, ["deep0_4x32", "deep0_attn_4x32"],
                                         [2], 0.4)
     assert len(xs) == 2
     assert fig._energy_cell_coverage_warning(rows) == ""
@@ -1009,7 +1009,7 @@ _INS2_RXNS = [
      "coeffs": [-1.0, 1.0, 1.0], "e_rxn_ref": 0.12},
 ]
 
-_INS_ROW_SCHEMA = {"idx", "arch", "subset_size", "name", "pool",
+_INS_ROW_SCHEMA = {"idx", "arch", "arch_stored", "subset_size", "name", "pool",
                    "ref_kcalmol", "de_nn_kcalmol", "de_pbe_kcalmol",
                    "abs_error_nn_kcalmol", "abs_error_pbe_kcalmol",
                    "reactants", "products"}
@@ -1079,9 +1079,9 @@ def test_collect_insample_reaction_rows_forms_training_reactions(tmp_path):
 
     # cell join, from the manifest
     assert (by["HO"]["idx"], by["HO"]["arch"],
-            by["HO"]["subset_size"]) == (0, "deep", 1)
+            by["HO"]["subset_size"]) == (0, "deep0_4x32", 1)
     assert (by["HN"]["idx"], by["HN"]["arch"],
-            by["HN"]["subset_size"]) == (1, "deep", 3)
+            by["HN"]["subset_size"]) == (1, "deep0_4x32", 3)
     assert by["HO"]["reactants"] == ["HO"]
     assert by["HO"]["products"] == ["H", "O"]
 
@@ -1211,13 +1211,13 @@ def test_parity_errbars_pair_ref_with_scored_rows(tmp_path, monkeypatch):
 
     monkeypatch.setattr(matplotlib.axes.Axes, "errorbar", _rec)
     rows = [
-        {"arch": "deep", "subset_size": 1, "pool": "bh76", "name": "r1",
+        {"arch": "deep0_4x32", "subset_size": 1, "pool": "bh76", "name": "r1",
          "ref_kcalmol": 10.0, "de_nn_kcalmol": 11.0,
          "abs_error_nn_kcalmol": 1.0, "abs_error_pbe_kcalmol": 2.0},
-        {"arch": "deep", "subset_size": 1, "pool": "bh76", "name": "r2",
+        {"arch": "deep0_4x32", "subset_size": 1, "pool": "bh76", "name": "r2",
          "ref_kcalmol": 20.0, "de_nn_kcalmol": 21.0,
          "abs_error_nn_kcalmol": 1.0, "abs_error_pbe_kcalmol": 2.0},
-        {"arch": "deep", "subset_size": 1, "pool": "bh76", "name": "r3",
+        {"arch": "deep0_4x32", "subset_size": 1, "pool": "bh76", "name": "r3",
          "ref_kcalmol": 1.0e6, "de_nn_kcalmol": float("nan"),
          "abs_error_nn_kcalmol": float("nan"),
          "abs_error_pbe_kcalmol": 2.0},
@@ -1278,10 +1278,10 @@ def test_full_slice_anchor_matches_cluster_testset():
     for s, vals in sorted(by_ss.items()):
         lo, hi = min(vals), max(vals)
         assert (hi - lo) <= 1e-8 * max(abs(lo), abs(hi)), (s, lo, hi)
-    assert anchors[("deep_3x16", 1)] == pytest.approx(12.034743071213333,
+    assert anchors[("deep0_3x16", 1)] == pytest.approx(12.034743071213333,
                                                       rel=1e-9)
     cell_rows = [r for r in rows
-                 if r["arch"] == "deep_rung35_attn_3x16"
+                 if r["arch"] == "deep0_rung35_attn_3x16"
                  and r["subset_size"] == 1]
     w411 = fig._mae([r["abs_error_pbe_kcalmol"] for r in cell_rows
                      if r["pool"] == "w411"])
@@ -1304,7 +1304,7 @@ def test_full_slice_anchor_matches_cluster_testset():
     csv_bh76 = float(ts["test_set_bh76"]["mae_pbe_kcalmol"])
     assert sum(raw) / len(raw) == pytest.approx(csv_bh76, abs=5e-7)
     dedup_mae = fig.reaction_mae_by_arch_subset(
-        bh_rows, key="abs_error_pbe_kcalmol")[("deep_rung35_attn_3x16", 1)]
+        bh_rows, key="abs_error_pbe_kcalmol")[("deep0_rung35_attn_3x16", 1)]
     seen: set = set()
     extras = []
     for r in bh_rows:
@@ -1855,7 +1855,7 @@ def test_density_parity_by_channel_has_legend(tmp_path, monkeypatch):
     hd = fig.collect_holdout_density_rows(run)
     fig.plot_density_parity_by_channel(rows, hd, tmp_path / "dp.png", "run")
     assert cap.get("labels"), "no figure legend on the density parity"
-    assert "deep" in cap["labels"]
+    assert "deep0_4x32" in cap["labels"]
 
 
 def test_plot_parity_by_class_grid(tmp_path, monkeypatch):
@@ -2362,7 +2362,7 @@ def test_collect_insample_density_rows_drops_atoms(tmp_path):
     assert all(fig._is_num(r["density_rmse"]) for r in rows)
     assert {r["molecule"] for r in rows} == {"HO", "CH4"}
     assert all(r["subset_size"] in (1, 3) for r in rows)
-    assert {r["arch"] for r in rows} == {"deep", "deep_notransform"}
+    assert {r["arch"] for r in rows} == {"deep0_4x32", "deep0_notransform_4x32"}
 
 
 def test_training_subsets_by_size(tmp_path):
@@ -2420,7 +2420,7 @@ def test_collect_training_losses(tmp_path):
     # specs 0-4 have model.eqx + losses.npy (spec 5 untrained -> none).
     assert len(rows) == 5
     assert all(r["losses"].shape == (60,) for r in rows)
-    assert {r["arch"] for r in rows} == {"deep", "deep_notransform", "deep_attn"}
+    assert {r["arch"] for r in rows} == {"deep0_4x32", "deep0_notransform_4x32", "deep0_attn_4x32"}
     assert all(r["subset_size"] in (1, 3) for r in rows)
 
 
@@ -2663,7 +2663,7 @@ def test_collect_training_channel_losses_bins_weighted_components_by_epoch(
     assert sorted(by_idx) == [0, 2], sorted(by_idx)
 
     r0 = by_idx[0]
-    assert (r0["arch"], r0["subset_size"]) == ("deep", 1)
+    assert (r0["arch"], r0["subset_size"]) == ("deep0_4x32", 1)
     assert list(np.asarray(r0["epochs"])) == [0, 1, 2]
     ch = r0["channels"]
     assert set(ch) == set(_CHANNEL_KEYS), sorted(ch)
@@ -2685,7 +2685,7 @@ def test_collect_training_channel_losses_bins_weighted_components_by_epoch(
     assert r0["weights_source"] == "train_metadata"
 
     r2 = by_idx[2]
-    assert (r2["arch"], r2["subset_size"]) == ("deep_notransform", 1)
+    assert (r2["arch"], r2["subset_size"]) == ("deep0_notransform_4x32", 1)
     assert r2["weights"] == _DEFAULT_WEIGHTS
     assert r2["weights_source"] == "default"
     # the fallback weights are APPLIED, not merely reported
@@ -2828,7 +2828,7 @@ def test_build_per_run_diagnostics_skips_channels_without_aux_log_and_writes_the
     written2 = fig.build_per_run_diagnostics(run, tmp_path / "out2", "def2-svp")
     assert {p.name for p in written2} == {
         "holdout_size_consistency.png", "training_loss_total.png",
-        "training_loss_channels_deep.png"}
+        "training_loss_channels_deep0_4x32.png"}
     assert all(_png_ok(p) for p in written2)
     # the README documents the per-arch family under its pattern name, the
     # form the coverage rule of test_density_variants accepts for it
@@ -2959,7 +2959,11 @@ def test_chem_latex_renders_in_methods(tmp_path):
 
 
 def test_arch_input_forms_match_config():
-    forms = fig._arch_input_forms(fig.ARCH_ORDER)
+    # keyed by the names given; the stored keys reach the registry through
+    # stored_key (a stored-only key passes through unchanged)
+    forms = fig._arch_input_forms(
+        ("deep", "deep_attn", "deep_cusp", "deep_dm", "deep_combined",
+         "deep_combined_attn", "deep_notransform"))
     # base archs (polarized run): F_x(x_2), F_c(r_s, x_2, x_1)
     assert forms["deep"]["fx"] == ["x_2"]
     assert forms["deep"]["fc"] == ["r_s", "x_2", "x_1"]
@@ -3486,7 +3490,7 @@ def test_arch_coverage_evaled_without_weights_not_untrained(tmp_path):
              "abs_error_nn_kcalmol": 0.1, "abs_error_pbe_kcalmol": 0.1}]))
         # deliberately NO model.eqx (weights not pulled)
     cov = fig.arch_coverage(run)
-    assert set(cov["holdout"]) == {"deep", "deep_cusp"}
+    assert set(cov["holdout"]) == {"deep0_4x32", "deep0_cusp_4x32"}
     assert cov["untrained"] == []     # eval'd -> trained, despite missing weights
     # coverage count must not collapse to model.eqx count (0 here): both eval'd
     assert fig.trained_spec_count(run) == 2
@@ -3500,10 +3504,10 @@ def test_coverage_note_distinguishes_in_progress(tmp_path):
     (run / "checkpoints" / "spec_0004" / "model.eqx").unlink()
     (run / "checkpoints" / "spec_0005" / "resume_state.pkl").write_bytes(b"x")
     cov = fig.arch_coverage(run)
-    assert "deep_attn" in cov["untrained"]     # no final weights anywhere
-    assert "deep_attn" in cov["in_progress"]
+    assert "deep0_attn_4x32" in cov["untrained"]     # no final weights anywhere
+    assert "deep0_attn_4x32" in cov["in_progress"]
     note = fig.coverage_note(run)
-    assert "IN PROGRESS" in note and "deep_attn" in note
+    assert "IN PROGRESS" in note and "deep0_attn_4x32" in note
     assert "NOT TRAINED" not in note   # nothing purely not-started remains
     # A completion sentinel beats leftover resume files: completed is not
     # in-progress (matches the harness resume predicates).
@@ -3524,13 +3528,13 @@ def test_figure_cell_coverage_reports_renderable_cells(tmp_path):
     # deep×{1,3} + deep_notransform×{1,3} are eval'd (deep_attn trained-no-eval
     # / untrained -> not rendered)
     assert cov["n_cells"] == 4
-    assert set(cov["archs"]) == {"deep", "deep_notransform"}
+    assert set(cov["archs"]) == {"deep0_4x32", "deep0_notransform_4x32"}
     assert cov["subsets"] == [1, 3]
     assert cov["archs_not_in_order"] == []     # all renderable -> no silent drop
     # ARCH_ORDER archs with no eval cell yet (judged by eval, not model.eqx):
     # deep_attn is trained-but-uneval'd in the fixture -> reported missing
-    assert "deep_attn" in cov["archs_missing"]
-    assert "deep" not in cov["archs_missing"] and \
+    assert "deep0_attn_4x32" in cov["archs_missing"]
+    assert "deep0_4x32" not in cov["archs_missing"] and \
            "deep_notransform" not in cov["archs_missing"]
 
 
@@ -3605,7 +3609,7 @@ def test_build_bh76w411_suite_rejects_unknown_arch(tmp_path, monkeypatch):
     # an arch present in the data but absent from ARCH_ORDER must FAIL LOUD
     # (it would otherwise be silently dropped from the per-arch plots)
     root, runs = _make_bh76w411_results(tmp_path)
-    monkeypatch.setattr(fig, "ARCH_ORDER", ("deep",))   # drop deep_notransform
+    monkeypatch.setattr(fig.arch_style, "ARCH_ORDER", ("deep0_4x32",))   # drop deep_notransform; the guard reads the style module
     import pytest
     with pytest.raises(ValueError, match="not in ARCH_ORDER"):
         fig.build_bh76w411_suite(results_root=root, outroot=tmp_path / "f2")
@@ -3763,7 +3767,7 @@ def test_collect_holdout_density_rows_keeps_either_channel(tmp_path):
     assert all(r["molecule"] == "HO" for r in rows)   # all-None H row dropped
     assert all(r["density_rmse"] is None for r in rows)
     assert all(r["density_rmse_pbe"] == pytest.approx(8e-4) for r in rows)
-    assert {r["arch"] for r in rows} == {"deep", "deep_notransform"}
+    assert {r["arch"] for r in rows} == {"deep0_4x32", "deep0_notransform_4x32"}
 
 
 def test_load_pbe_density_table(tmp_path):
@@ -4126,7 +4130,7 @@ def test_write_combined_ed_csv_columns_and_legs(tmp_path):
         rd = list(csv.DictReader(fh))
     assert rd
     assert set(rd[0]) == {
-        "leg", "arch", "subset_size", "n_reactions", "n_density_species",
+        "leg", "arch", "arch_stored", "subset_size", "n_reactions", "n_density_species",
         "E_kcalmol", "D_rmse", "gamma", "gammaD_kcalmol", "ED_kcalmol",
         "E_pbe_kcalmol", "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
         "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol", "beats_scan",
@@ -5736,13 +5740,18 @@ def test_arch_order_includes_3x16_twins_sharing_sibling_colors():
     # the suite must RECOGNIZE them (it fails loud on unknown archs) and color
     # each twin like its 4x32 sibling (same architecture, reduced capacity), so
     # tab10's 10-color cap is never exceeded.
+    # The order and the palette hold SHOWN names (2026-09-09); the stored
+    # keys below map through display_name (deep -> deep0_4x32, deep_3x16 ->
+    # deep0_3x16), and a stored key that is also a shown name cannot be
+    # mapped by inspection, so the map is applied explicitly.
     base = ["deep", "deep_attn", "deep_cusp", "deep_dm", "deep_combined",
             "deep_combined_attn", "deep_notransform", "deep_notransform_attn"]
     for a in base:
-        twin = f"{a}_3x16"
+        twin = fig.display_name(f"{a}_3x16")
         assert twin in fig.ARCH_ORDER, f"{twin} missing from ARCH_ORDER"
-        assert fig.ARCH_COLOR[twin] == fig.ARCH_COLOR[a]   # twin shares sibling color
-    assert len({fig.ARCH_COLOR[a] for a in base}) == 8     # base-8 stay distinct
+        assert twin.startswith("deep0_") and twin.endswith("_3x16"), twin
+        assert fig.ARCH_COLOR[twin] == fig.ARCH_COLOR[fig.display_name(a)]
+    assert len({fig.ARCH_COLOR[fig.display_name(a)] for a in base}) == 8
 
 
 def test_arch_order_covers_v3_full25_sweep_archs():
@@ -5757,15 +5766,18 @@ def test_arch_order_covers_v3_full25_sweep_archs():
                "dfs_step7.dfs6311_grid3_v3.yaml"):
         cfg = yaml.safe_load((root / "hpcjobs" / "configs" / fn).read_text())
         for a in cfg["sweep"]["arch"]:
-            assert a in fig.ARCH_ORDER, f"{fn}: swept arch {a!r} not in ARCH_ORDER"
-            assert fig.ARCH_COLOR.get(a) not in (None, "#333333"), \
+            shown = fig.display_name(a)
+            assert shown in fig.ARCH_ORDER, \
+                f"{fn}: swept arch {a!r} ({shown!r}) not in ARCH_ORDER"
+            assert fig.ARCH_COLOR.get(shown) not in (None, "#333333"), \
                 f"{fn}: {a!r} has no distinct color (fell back to gray)"
-    for a in ("deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16"):
+    for a in ("deep0_rung35_3x16", "deep0_rung35_attn_3x16",
+              "deep0_rung35only_3x16"):
         assert a in fig.ARCH_ORDER, f"{a} missing from ARCH_ORDER"
         assert fig.ARCH_COLOR.get(a) not in (None, "#333333"), f"{a} has no color"
     # 2026-07-02: the DFS-faithful meta-GGA archs (dfs6311 sweep) must likewise be
     # in ARCH_ORDER with distinct colors + resolvable descriptor labels.
-    for a in ("deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16"):
+    for a in ("deep0_mgga_3x16", "deep0_mgga_attn_3x16", "deep0_rung35_mgga_3x16"):
         assert a in fig.ARCH_ORDER, f"{a} missing from ARCH_ORDER"
         assert fig.ARCH_COLOR.get(a) not in (None, "#333333"), f"{a} has no color"
     mgga_forms = fig._arch_input_forms(("deep_mgga_3x16", "deep_rung35_mgga_3x16"))
@@ -5789,9 +5801,9 @@ def _make_uneven_rung_rows():
     """Held-out rows mirroring the real dfs6311 sweep at 32/88 cells: one GGA
     arch at the full depth, a second GGA arch stopped part-way, and the single
     meta-GGA arch present only at the smallest subset."""
-    plan = {"deep_3x16": (1, 26),
-            "deep_cusp_3x16": (1, 15),
-            "deep_mgga_3x16": (1,)}
+    plan = {"deep0_3x16": (1, 26),
+            "deep0_cusp_3x16": (1, 15),
+            "deep0_mgga_3x16": (1,)}
     rows = []
     for i, (arch, sizes) in enumerate(plan.items()):
         for ss in sizes:
@@ -5839,12 +5851,12 @@ def _bar_rects(ax):
 
 def test_subset_coverage_and_shallow_archs():
     rows = _make_uneven_rung_rows()
-    assert fig._subset_coverage(rows) == {"deep_3x16": (1, 26),
-                                          "deep_cusp_3x16": (1, 15),
-                                          "deep_mgga_3x16": (1, 1)}
+    assert fig._subset_coverage(rows) == {"deep0_3x16": (1, 26),
+                                          "deep0_cusp_3x16": (1, 15),
+                                          "deep0_mgga_3x16": (1, 1)}
     shallow, deepest = fig._shallow_archs(rows)
     assert deepest == 26
-    assert shallow == {"deep_cusp_3x16", "deep_mgga_3x16"}
+    assert shallow == {"deep0_cusp_3x16", "deep0_mgga_3x16"}
     # A level grid marks nothing -- this is what keeps complete runs unchanged.
     level, level_deep = fig._shallow_archs(_make_multirung_rows())
     assert (level, level_deep) == (set(), 3)
@@ -5871,8 +5883,8 @@ def test_coverage_span_and_caveat_text():
     assert fig._coverage_span((1, 1)) == "1"
     rows = _make_uneven_rung_rows()
     arch_cav = fig._coverage_caveat(rows)
-    assert "deep_mgga_3x16 at subset_size 1" in arch_cav
-    assert "deep_cusp_3x16 at subset_size 1-15" in arch_cav
+    assert "deep0_mgga_3x16 at subset_size 1" in arch_cav
+    assert "deep0_cusp_3x16 at subset_size 1-15" in arch_cav
     assert "against 26" in arch_cav and "architecture" in arch_cav
     rung_cav = fig._coverage_caveat(rows, by_rung=True)
     assert fig.arch_style.RUNG_MGGA in rung_cav and "rung" in rung_cav
@@ -5908,17 +5920,17 @@ def test_mae_by_arch_hatches_only_the_shallow_archs(tmp_path):
         ax = seen[-1].axes[0]
         archs = [t.get_text() for t in ax.get_xticklabels()]
         # tick labels state the depth each arch's bars aggregate
-        assert any("deep_mgga_3x16" in a and "(ss 1)" in a for a in archs)
-        assert any("deep_3x16" in a and "(ss 1-26)" in a for a in archs)
-        order = fig.arch_style.sort_by_rung(["deep_3x16", "deep_cusp_3x16",
-                                             "deep_mgga_3x16"])
+        assert any("deep0_mgga_3x16" in a and "(ss 1)" in a for a in archs)
+        assert any("deep0_3x16" in a and "(ss 1-26)" in a for a in archs)
+        order = fig.arch_style.sort_by_rung(["deep0_3x16", "deep0_cusp_3x16",
+                                             "deep0_mgga_3x16"])
         hatched, plain = set(), set()
         for p in _bar_rects(ax):
             idx = int(round(p.get_x() + p.get_width() / 2.0))
             if 0 <= idx < len(order):
                 (hatched if p.get_hatch() else plain).add(order[idx])
-        assert hatched == {"deep_cusp_3x16", "deep_mgga_3x16"}
-        assert plain == {"deep_3x16"}
+        assert hatched == {"deep0_cusp_3x16", "deep0_mgga_3x16"}
+        assert plain == {"deep0_3x16"}
         assert any("shallower training depth" in t.get_text()
                    for t in ax.get_legend().get_texts())
 
@@ -6535,7 +6547,7 @@ def test_arch_coverage_reports_no_uncertified_arch_for_a_certified_run(
 def test_arch_coverage_flags_a_missing_certificate(tmp_path):
     run = _make_run_dir(tmp_path)
     (run / "pretrain" / "deep" / "fidelity_certificate.json").unlink()
-    assert fig.arch_coverage(run)["uncertified"] == ["deep"]
+    assert fig.arch_coverage(run)["uncertified"] == ["deep0_4x32"]
 
 
 def test_arch_coverage_flags_a_failed_certificate(tmp_path):
@@ -6544,7 +6556,7 @@ def test_arch_coverage_flags_a_failed_certificate(tmp_path):
         json.dumps({"verdict": "FAIL", "arch": "deep",
                     "summary": {"max_atom_mHa": 13.7,
                                 "max_dAE_kcalmol": 25.7}}))
-    assert "deep" in fig.arch_coverage(run)["uncertified"]
+    assert "deep0_4x32" in fig.arch_coverage(run)["uncertified"]
 
 
 def test_arch_coverage_flags_an_unenforced_failure(tmp_path):
@@ -6557,7 +6569,7 @@ def test_arch_coverage_flags_an_unenforced_failure(tmp_path):
                                    "override_reason": "workflow matrix"},
                     "summary": {"max_atom_mHa": 13.7,
                                 "max_dAE_kcalmol": 25.7}}))
-    assert "deep" in fig.arch_coverage(run)["uncertified"]
+    assert "deep0_4x32" in fig.arch_coverage(run)["uncertified"]
 
 
 def test_arch_coverage_ignores_non_registry_arch_names(tmp_path):
@@ -6815,9 +6827,9 @@ def test_coverage_note_states_why_each_arch_is_uncertified(tmp_path):
                                 "max_dAE_kcalmol": 25.7}}))
     note = fig.coverage_note(run)
     assert "UNCERTIFIED (no PASS fidelity certificate)" in note
-    assert "deep (MISSING)" in note
-    assert "deep_notransform (UNREADABLE)" in note
-    assert "deep_attn (waived FAIL)" in note
+    assert "deep0_4x32 (MISSING)" in note
+    assert "deep0_notransform_4x32 (UNREADABLE)" in note
+    assert "deep0_attn_4x32 (waived FAIL)" in note
 
 
 def test_fidelity_summary_keeps_a_bound_no_certificate_states_alone(tmp_path):
@@ -7015,9 +7027,9 @@ def test_arch_coverage_states_why_each_arch_is_uncertified(tmp_path):
                     "summary": {"max_atom_mHa": 13.7,
                                 "max_dAE_kcalmol": 25.7}}))
     cov = fig.arch_coverage(run)
-    assert cov["uncertified_status"] == {"deep": "MISSING",
-                                         "deep_notransform": "UNREADABLE",
-                                         "deep_attn": "waived FAIL"}
+    assert cov["uncertified_status"] == {"deep0_4x32": "MISSING",
+                                         "deep0_notransform_4x32": "UNREADABLE",
+                                         "deep0_attn_4x32": "waived FAIL"}
     assert sorted(cov["uncertified"]) == sorted(cov["uncertified_status"])
 
 
@@ -7039,9 +7051,9 @@ def test_build_bh76w411_suite_names_the_status_of_each_uncertified_arch(
     with pytest.raises(ValueError) as excinfo:
         fig.build_bh76w411_suite(results_root=root, outroot=tmp_path / "f")
     message = str(excinfo.value)
-    assert "deep (MISSING)" in message
-    assert "deep_notransform (UNREADABLE)" in message
-    assert "deep_attn (waived FAIL)" in message
+    assert "deep0_4x32 (MISSING)" in message
+    assert "deep0_notransform_4x32 (UNREADABLE)" in message
+    assert "deep0_attn_4x32 (waived FAIL)" in message
 
 
 def test_build_bh76w411_suite_refuses_an_uncertified_run(tmp_path):
@@ -7086,10 +7098,10 @@ def test_build_all_signature_carries_arch_restriction():
 
 
 def test_filter_rows_by_arch_narrows_and_passes_none_through():
-    rows = [{"arch": "deep", "x": 1}, {"arch": "deep_attn", "x": 2},
+    rows = [{"arch": "deep0_4x32", "x": 1}, {"arch": "deep0_attn_4x32", "x": 2},
             {"arch": None, "x": 3}]
     assert fig.filter_rows_by_arch(rows, None) is rows
-    assert fig.filter_rows_by_arch(rows, ("deep",)) == [{"arch": "deep", "x": 1}]
+    assert fig.filter_rows_by_arch(rows, ("deep",)) == [{"arch": "deep0_4x32", "x": 1}]
 
 
 def _capture_mae_by_arch(monkeypatch):
@@ -7114,11 +7126,11 @@ def test_arch_restriction_narrows_rendered_archs(tmp_path, monkeypatch):
     run = _make_run_dir(tmp_path)
     seen = _capture_mae_by_arch(monkeypatch)
     fig.build_all(run, tmp_path / "all")
-    assert seen["archs"] == ["deep", "deep_notransform"]
+    assert seen["archs"] == ["deep0_4x32", "deep0_notransform_4x32"]
     seen.clear()
     fig.build_all(run, tmp_path / "gga", archs=("deep",))
-    assert seen["archs"] == ["deep"]
-    assert seen["insample_archs"] == ["deep"]
+    assert seen["archs"] == ["deep0_4x32"]
+    assert seen["insample_archs"] == ["deep0_4x32"]
 
 
 def test_arch_restriction_refuses_unknown_name(tmp_path):
@@ -7140,10 +7152,10 @@ def test_arch_restriction_none_renders_byte_identical(tmp_path):
 def test_coverage_note_states_the_restriction(tmp_path):
     run = _make_run_dir(tmp_path)
     note = fig.coverage_note(run, archs=("deep",))
-    assert "Held-out reactions: 1/1 archs (deep)." in note
-    assert "Architectures rendered: deep." in note
+    assert "Held-out reactions: 1/1 archs (deep0_4x32)." in note
+    assert "Architectures rendered: deep0_4x32." in note
     assert ("Withheld from every panel, baseline and CSV here: "
-            "deep_attn, deep_notransform." in note)
+            "deep0_attn_4x32, deep0_notransform_4x32." in note)
     assert "Withheld" not in fig.coverage_note(run)
 
 
@@ -7181,7 +7193,7 @@ def test_provenance_footer_states_the_restriction(tmp_path, monkeypatch):
     run = _make_run_dir(tmp_path)
     seen = _capture_mae_by_arch(monkeypatch)
     fig.build_all(run, tmp_path / "gga", archs=("deep",))
-    assert "Architectures rendered: deep." in seen["provenance"]
+    assert "Architectures rendered: deep0_4x32." in seen["provenance"]
     assert "Architectures rendered:" in seen["note"]
 
 
@@ -7197,8 +7209,8 @@ def test_density_energy_builder_takes_the_restriction(tmp_path, monkeypatch):
 
     monkeypatch.setattr(fig, "plot_energy_wtmad_mae", _spy)
     fig.build_density_energy_figures(run, tmp_path / "de", archs=("deep",))
-    assert seen["archs"] == ["deep"]
-    assert "Architectures rendered: deep." in seen["note"]
+    assert seen["archs"] == ["deep0_4x32"]
+    assert "Architectures rendered: deep0_4x32." in seen["note"]
 
 
 # ---------------------------------------------------------------------------
@@ -7353,7 +7365,7 @@ def test_eval_writer_to_figure_reader_seam(tmp_path):
         csv_rows = {r["set"]: r for r in _csv.DictReader(f)}
     assert float(csv_rows["test_set_bh76"]["n_reactions"]) == 1
     # The CSV serializes to 6 decimals; agreement is to that precision.
-    assert mae_map[("deep", 1)] == pytest.approx(
+    assert mae_map[("deep0_4x32", 1)] == pytest.approx(
         float(csv_rows["test_set_bh76"]["mae_nn_kcalmol"]), abs=5e-7)
 
 
@@ -7664,3 +7676,372 @@ def test_other_scripts_carry_no_holdover_stems():
     assert "trained_enhancement_factors.png" in ef_src
     assert "subset_descriptor_completeness_vs_mae.png" in cov_src
     assert "subset_descriptor_histograms.png" in cov_src
+
+
+# ---------------------------------------------------------------------------
+# T4: architecture display names at the suite boundary (2026-09-09)
+#
+# The manifest cell keeps the stored key; everything downstream of
+# ``ccp._read_manifest_cells`` carries the SHOWN name, with the stored key
+# retained beside it (``arch_stored``) for joins back to the run and for the
+# three sites that reach the registry or the pretrain DIRECTORY.
+# ---------------------------------------------------------------------------
+
+_DISPLAY_STAMP = "run_20260902T145245Z"
+
+
+def _make_display_run_dir(root: Path, archs=("medium", "deep_3x16")) -> Path:
+    """A run whose cells name ``medium`` and ``deep_3x16``.
+
+    The pair is the point of the rename: one network (3x16, same inputs)
+    under two registry keys, separated only by ``zero_init_final_layer``.
+    Their shown names are ``deep_3x16`` and ``deep0_3x16``, so the stored key
+    ``deep_3x16`` and the SHOWN name ``deep_3x16`` denote different networks
+    and every site has to say which sense it means.
+    """
+    import numpy as _np
+    run_dir = root / "dfs_step7/svp_grid2/runs" / _DISPLAY_STAMP
+    run_dir.mkdir(parents=True)
+    specs = [{"arch": a, "subset_size": ss}
+             for a in archs for ss in (1, 3)]
+    (run_dir / "manifest.json").write_text(json.dumps(
+        {"n_specs": len(specs), "width": 4,
+         "specs": [{"index": i, "spec_file": f"spec_{i:04d}.spec",
+                    "sha256": "x" * 64, "cell": c}
+                   for i, c in enumerate(specs)]}))
+    (run_dir / "specs").mkdir()
+    (run_dir / "resolved_config.yaml").write_text(
+        "basis: def2-svp\ndensity_fit: false\n")
+    # Certificates live under the STORED key -- the pretrain directory the
+    # cluster wrote (``pretrain/<arch>``), which the rename does not touch.
+    for arch in sorted({c["arch"] for c in specs}):
+        pd = run_dir / "pretrain" / arch
+        pd.mkdir(parents=True, exist_ok=True)
+        (pd / "fidelity_certificate.json").write_text(json.dumps(
+            {"verdict": "PASS", "arch": arch,
+             "summary": {"max_atom_mHa": 0.31, "max_dAE_kcalmol": 0.62,
+                         "n_systems": 40, "failure_reasons": []}}))
+    for i, cell in enumerate(specs):
+        sd = run_dir / "checkpoints" / f"spec_{i:04d}"
+        sd.mkdir(parents=True)
+        (sd / "train_metadata.json").write_text(json.dumps(
+            {"molecules": (["HO", "h", "o"] if cell["subset_size"] == 1
+                           else ["HO", "CH4", "h", "c", "o"])}))
+        (sd / "model.eqx").write_bytes(b"x" * 16)
+        _np.save(sd / "losses.npy", _np.linspace(0.1, 1e-3, 60))
+        ev = sd / "eval"
+        ev.mkdir()
+        (ev / "per_molecule.json").write_text(json.dumps([
+            {"molecule": "HO", "AE_error_kcalmol": 6.0 + i,
+             "density_rmse": 3e-3, "skipped": False, "scf_converged": True},
+            {"molecule": "CH4", "AE_error_kcalmol": -2.0 - i,
+             "density_rmse": 1e-3, "skipped": False, "scf_converged": True},
+        ]))
+        eh = sd / "eval_holdout"
+        eh.mkdir()
+        (eh / "per_reaction.json").write_text(json.dumps([
+            {"name": "bh76_a", "pool": "bh76",
+             "reactants": ["HO", "h"], "products": ["HOh_ts"],
+             "reaction_energy_ref_kcalmol": 17.7,
+             "de_nn_kcalmol": -91.0 + i, "de_pbe_kcalmol": -91.2 + i,
+             "abs_error_nn_kcalmol": 108.7 - i,
+             "abs_error_pbe_kcalmol": 108.9 - i},
+            {"name": "w411_b", "pool": "w411",
+             "reactants": ["HO"], "products": ["h", "o"],
+             "reaction_energy_ref_kcalmol": 120.0,
+             "de_nn_kcalmol": 118.0 + i, "de_pbe_kcalmol": 119.0 + i,
+             "abs_error_nn_kcalmol": 2.0 + i,
+             "abs_error_pbe_kcalmol": 1.0 + i},
+        ]))
+    return run_dir
+
+
+def test_boundary_rows_carry_the_display_name_and_arch_stored(tmp_path):
+    """The manifest-cell reader renames; the rows keep both identities.
+
+    Kills m3 (the boundary leaving ``arch`` as the stored key): with the
+    stored key left in place the row set is {medium, deep_3x16}, which is the
+    pair of names the rename exists to separate.
+    """
+    run = _make_display_run_dir(tmp_path)
+    cells = fig.ccp._read_manifest_cells(run)
+    assert {c["arch"] for c in cells.values()} == {"deep_3x16", "deep0_3x16"}
+    assert {c["arch_stored"] for c in cells.values()} == {"medium", "deep_3x16"}
+    rows = fig.collect_holdout_reaction_rows(run)
+    assert len(rows) == 8
+    assert {(r["arch_stored"], r["arch"]) for r in rows} == {
+        ("medium", "deep_3x16"), ("deep_3x16", "deep0_3x16")}
+    ae = fig.collect_insample_ae_rows(run)
+    assert {(r["arch_stored"], r["arch"]) for r in ae} == {
+        ("medium", "deep_3x16"), ("deep_3x16", "deep0_3x16")}
+
+
+def test_validate_and_filter_accept_a_stored_key_display(tmp_path):
+    """An architecture restriction may be written either way and selects the
+    same cells; the normalized form is the shown name.
+
+    Kills m3 at the restriction: with the rows still carrying stored keys the
+    two spellings select DIFFERENT cells (each other's), which is the silent
+    failure the shown-sense rule prevents.
+    """
+    run = _make_display_run_dir(tmp_path)
+    rows = fig.collect_holdout_reaction_rows(run)
+    assert fig._validate_archs(("medium",)) == ("deep_3x16",)
+    assert fig._validate_archs(("deep_3x16",)) == ("deep_3x16",)
+    assert fig._validate_archs(("deep0_3x16",)) == ("deep0_3x16",)
+    by_stored = fig.filter_rows_by_arch(rows, ("medium",))
+    by_shown = fig.filter_rows_by_arch(rows, ("deep_3x16",))
+    assert by_stored == by_shown
+    assert len(by_stored) == 4
+    assert {r["arch_stored"] for r in by_stored} == {"medium"}
+    other = fig.filter_rows_by_arch(rows, ("deep0_3x16",))
+    assert {r["arch_stored"] for r in other} == {"deep_3x16"}
+    with pytest.raises(ValueError, match="unknown architecture"):
+        fig._validate_archs(("deep0_not_an_arch",))
+
+
+def test_archs_present_orders_display_names():
+    """The architecture axis is derived from the rows and ordered by
+    ARCH_ORDER, which now holds shown names.
+
+    RED: today ARCH_ORDER contains the stored key ``deep_3x16`` and neither
+    ``deep0_4x32`` nor ``deep0_3x16``, so the two unknown names sort by the
+    alphabetical fallback (``deep0_3x16`` ahead of ``deep0_4x32``) behind
+    ``deep_3x16``, while the display order puts the 4x32 legacy family last.
+    """
+    rows = [{"arch": "deep0_4x32", "subset_size": 1},
+            {"arch": "deep0_3x16", "subset_size": 1},
+            {"arch": "deep_3x16", "subset_size": 1}]
+    assert fig._archs_present(rows) == ["deep_3x16", "deep0_3x16",
+                                        "deep0_4x32"]
+
+
+def test_certificate_status_for_a_display_name_reads_the_stored_directory(
+        tmp_path):
+    """The certificate sits in ``pretrain/<stored key>``; the rows hold shown
+    names, so the lookup resolves the stored key first.
+
+    Kills m9 (the lookup by the shown name): ``pretrain/deep_3x16`` is the
+    directory of a DIFFERENT network, and for the shown ``deep_3x16`` the
+    read would return MISSING while a real PASS certificate sits in
+    ``pretrain/medium``.
+    """
+    # A run holding the `medium` network ALONE: `pretrain/deep_3x16` does not
+    # exist, so a lookup by the shown name finds nothing at all.
+    solo = _make_display_run_dir(tmp_path / "solo", archs=("medium",))
+    assert not (solo / "pretrain" / "deep_3x16").exists()
+    assert fig._arch_certificate_status(solo, "deep_3x16") == "PASS"
+    assert fig.uncertified_statuses(solo, ["deep_3x16"]) == {}
+    assert "UNCERTIFIED" not in fig.coverage_note(solo)
+    # And with both networks present, each shown name reads ITS OWN
+    # directory: `pretrain/deep_3x16` belongs to `deep0_3x16`, never to the
+    # shown `deep_3x16`.
+    run = _make_display_run_dir(tmp_path)
+    assert fig._arch_certificate_status(run, "deep_3x16") == "PASS"
+    assert fig._arch_certificate_status(run, "deep0_3x16") == "PASS"
+    assert fig.uncertified_statuses(run, ["deep_3x16", "deep0_3x16"]) == {}
+    assert "UNCERTIFIED" not in fig.coverage_note(run)
+    # the status is read from the stored directory, not guessed: downgrading
+    # pretrain/medium must show up on the shown name deep_3x16 alone
+    (run / "pretrain" / "medium" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "medium",
+                    "summary": {"max_atom_mHa": 9.0,
+                                "max_dAE_kcalmol": 8.0,
+                                "failure_reasons": ["max_dAE"]}}))
+    assert fig.uncertified_statuses(run, ["deep_3x16", "deep0_3x16"]) == \
+        {"deep_3x16": "FAIL"}
+
+
+def test_parity_footer_appends_the_key_line(monkeypatch):
+    """The expanded key of every architecture drawn is printed with the
+    provenance, so a reader never has to know the map.
+
+    Kills m5 (the footer ignoring ``_KEY_LINE_ARCHS``).
+    """
+    import matplotlib.pyplot as plt
+    monkeypatch.setattr(fig, "_KEY_LINE_ARCHS", ["deep_3x16", "deep0_3x16"])
+    f = plt.figure()
+    fig._stamp_parity_footer(f, run_id="run_20260902T145245Z", title="t",
+                             note="", provenance=None, caveat=None)
+    texts = " ".join(t.get_text() for t in f.texts)
+    assert fig._PROVENANCE_BASE in texts
+    assert "deep_3x16: 3 x 16, Glorot initialization" in texts
+    assert ("deep0_3x16: 3 x 16, last layer zeroed "
+            "(pre-training starts at the LDA)") in texts
+    plt.close(f)
+    # unset: the provenance line is the base line alone
+    monkeypatch.setattr(fig, "_KEY_LINE_ARCHS", None)
+    f2 = plt.figure()
+    fig._stamp_parity_footer(f2, run_id="run_20260902T145245Z", title="t",
+                             note="", provenance=None, caveat=None)
+    assert not any("Glorot" in t.get_text() for t in f2.texts)
+    plt.close(f2)
+
+
+def test_ed_and_tail_csv_fields_carry_arch_stored(tmp_path):
+    """Both CSV families gain the stored key beside the shown name, so a row
+    still joins back to the run directory it came from."""
+    for fields in (fig._ED_CSV_FIELDS, fig._TAIL_CSV_FIELDS):
+        names = list(fields)
+        assert "arch" in names and "arch_stored" in names, names
+        assert names[names.index("arch") + 1] == "arch_stored", names
+    summary = {"gamma": 1000.0, "e_pbe": 8.0, "d_pbe": 2e-4, "ed_pbe": 8.0,
+               "cells": {("deep_3x16", 1): {"E": 5.0, "D": 2e-4,
+                                            "gammaD": 0.2, "ED": 4.0,
+                                            "beats_pbe": False}}}
+    out = fig.write_combined_ed_csv(
+        {"wtmad2": summary}, tmp_path / "ed.csv",
+        n_reactions={("deep_3x16", 1): 10},
+        n_density={("deep_3x16", 1): 5})
+    row = next(csv.DictReader(out.open()))
+    assert row["arch"] == "deep_3x16"
+    assert row["arch_stored"] == "medium"
+
+
+def test_rendered_figure_shows_display_names_and_the_key_line(tmp_path,
+                                                              monkeypatch):
+    """No bare stored key reaches a drawn label, and the key line is on the
+    figure. Kills m3 and m5 at the rendered artifact."""
+    import matplotlib.figure as mfig
+    captured = []
+    real_savefig = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        captured.append(self)
+        return real_savefig(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    run = _make_display_run_dir(tmp_path)
+    rxn = fig.collect_holdout_reaction_rows(run)
+    ae = fig.collect_insample_ae_rows(run)
+    monkeypatch.setattr(fig, "_KEY_LINE_ARCHS", fig._archs_present(rxn))
+    out = fig.plot_mae_by_arch(rxn, ae, tmp_path / "bars.png",
+                               _DISPLAY_STAMP)
+    assert _png_ok(out)
+    assert captured, "no figure was saved"
+    f = captured[-1]
+    texts = [t.get_text() for t in f.texts]
+    for ax in f.axes:
+        texts += [t.get_text() for t in ax.texts]
+        texts += [t.get_text() for t in ax.get_xticklabels()]
+        texts += [t.get_text() for t in ax.get_yticklabels()]
+        legend = ax.get_legend()
+        if legend is not None:
+            texts += [t.get_text() for t in legend.get_texts()]
+    blob = " ".join(texts)
+    assert "deep_3x16" in blob
+    assert "deep0_3x16" in blob
+    assert not re.search(r"\bmedium\b", blob), blob
+    assert "3 x 16, Glorot initialization" in blob
+
+
+# ---------------------------------------------------------------------------
+# Protocol-tagged runs and the footer state (2026-09-09, review findings)
+# ---------------------------------------------------------------------------
+
+def test_an_anchored_run_is_drawn_under_tagged_names(tmp_path):
+    """A run whose resolved configuration states ``parent_anchor: true``
+    names its cells ``<shown> [anchored]``; the tag is not a new architecture:
+    the restriction, the coverage guard and the per-arch axis accept it and
+    order it after the untagged name, the certificate is read from the
+    stored directory, and the colour is the architecture's own.
+
+    RED before the fix: every tagged name was outside ARCH_ORDER, so the
+    suite refused the run and every per-arch selection was empty.
+    """
+    run = _make_display_run_dir(tmp_path)
+    (run / "resolved_config.yaml").write_text(
+        "basis: def2-svp\ndensity_fit: false\nmodel:\n"
+        "  parent_anchor: true  # the v6 anchor\n"
+        "  descriptor_coordinates: dfs\n")
+    cells = fig.ccp._read_manifest_cells(run)
+    assert {c["arch"] for c in cells.values()} == {
+        "deep_3x16 [anchored]", "deep0_3x16 [anchored]"}
+    rows = fig.collect_holdout_reaction_rows(run)
+    assert fig._archs_present(rows) == ["deep_3x16 [anchored]",
+                                        "deep0_3x16 [anchored]"]
+    assert fig._validate_archs(("deep_3x16 [anchored]", "medium [anchored]")) \
+        == ("deep_3x16 [anchored]",)
+    assert len(fig.filter_rows_by_arch(rows, ("medium [anchored]",))) == 4
+    cov = fig.figure_cell_coverage(run)
+    assert cov["archs_not_in_order"] == []
+    assert cov["n_cells"] == 4
+    assert fig._arch_certificate_status(run, "deep_3x16 [anchored]") == "PASS"
+    assert fig.uncertified_statuses(run, fig._archs_present(rows)) == {}
+    assert fig.arch_color("deep_3x16 [anchored]") == fig.arch_color("deep_3x16")
+    assert fig.arch_color("deep0_3x16 [anchored]") == fig.arch_color("deep0_3x16")
+    assert fig.arch_color("deep_3x16") != fig.arch_color("deep0_3x16")
+    # the whole set renders, and the key line spells the tag out
+    out = fig.build_all(run, tmp_path / "figs")
+    assert out and all(_png_ok(p) for p in out)
+    assert "anchored on the parent" in fig.key_line(fig._archs_present(rows))
+
+
+def test_protocol_tag_reads_yaml_boolean_spellings(tmp_path):
+    for text, want in (("model:\n  parent_anchor: true\n", "anchored"),
+                       ("model:\n  parent_anchor: True\n", "anchored"),
+                       ("model:\n  parent_anchor: yes\n", "anchored"),
+                       ("model:\n  parent_anchor: true  # comment\n", "anchored"),
+                       ("model:\n  parent_anchor: false\n", None),
+                       ("model:\n  parent_anchor: false  # c\n", None),
+                       ("basis: x\n", None)):
+        (tmp_path / "resolved_config.yaml").write_text(text)
+        assert fig.ccp._run_protocol_tag(tmp_path) == want, text
+    assert fig.ccp._run_protocol_tag(tmp_path / "absent") is None
+
+
+def test_a_restriction_matching_no_cell_is_refused(tmp_path):
+    """``--archs deep_3x16`` on a run whose cells are the registry's deep_3x16
+    (shown deep0_3x16) selects nothing; an empty figure set must not render
+    silently, and the message names the run's architectures and the rule."""
+    run = _make_display_run_dir(tmp_path, archs=("deep_3x16",))
+    with pytest.raises(ValueError, match="deep0_3x16") as exc:
+        fig.build_all(run, tmp_path / "figs", archs=("deep_3x16",))
+    assert "shown sense" in str(exc.value)
+    assert not (tmp_path / "figs").exists() or \
+        not list((tmp_path / "figs").glob("*.png"))
+    out = fig.build_all(run, tmp_path / "figs2", archs=("deep0_3x16",))
+    assert out
+
+
+def test_key_line_state_is_scoped_to_the_builder(tmp_path, monkeypatch):
+    """build_all sets the footer key line for its own figures and restores
+    the previous value on exit; a cross-run builder names ALL its runs'
+    architectures and leaves nothing behind."""
+    run = _make_display_run_dir(tmp_path)
+    monkeypatch.setattr(fig, "_KEY_LINE_ARCHS", None)
+    fig.build_all(run, tmp_path / "figs")
+    assert fig._KEY_LINE_ARCHS is None
+    solo = _make_display_run_dir(tmp_path / "solo", archs=("medium",))
+    seen = {}
+
+    def _capture(*a, **k):
+        seen["archs"] = list(fig._KEY_LINE_ARCHS or [])
+        return tmp_path / "x.png"
+
+    monkeypatch.setattr(fig, "plot_basis_comparison", _capture)
+    fig.build_basis_comparison_figures([run, solo], tmp_path / "cmp")
+    assert seen["archs"] == ["deep_3x16", "deep0_3x16"]
+    assert fig._KEY_LINE_ARCHS is None
+    with fig._key_line_scope(["deep_3x16"]):
+        assert fig._KEY_LINE_ARCHS == ["deep_3x16"]
+        with fig._key_line_scope(None):
+            assert fig._KEY_LINE_ARCHS is None
+        assert fig._KEY_LINE_ARCHS == ["deep_3x16"]
+    assert fig._KEY_LINE_ARCHS is None
+
+
+def test_every_provenance_footer_wraps():
+    """The key line lengthens the provenance line past the canvas of the
+    wider figures; every stamp site wraps it (a source pin: the text object
+    is drawn at seven sites besides the shared footer)."""
+    import inspect
+    import re
+    src = inspect.getsource(fig)
+    sites = [m.end() for m in re.finditer(r"_provenance_text\(provenance\)", src)]
+    assert len(sites) >= 8, len(sites)
+    for end in sites:
+        # the rest of the fig.text call: up to the closing line of the call
+        window = src[end:end + 200]
+        window = window[:window.index(")\n") + 1] if ")\n" in window else window
+        assert "wrap=True" in window, src[end - 60:end + 120]

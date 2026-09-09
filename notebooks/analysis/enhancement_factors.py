@@ -148,7 +148,10 @@ def representative_specs(run_dir: Path) -> Dict[str, int]:
         if not (spec_dir / "model.eqx").is_file():
             continue
         cell = cells.get(idx, {})
-        arch, ss = cell.get("arch"), cell.get("subset_size")
+        # keyed by the STORED key (the checkpoint loader and the registry
+        # take it); the shown name is applied at the draw sites
+        arch = cell.get("arch_stored", cell.get("arch"))
+        ss = cell.get("subset_size")
         if arch is None or ss is None:
             continue
         if arch not in best or ss > best[arch][0]:
@@ -356,7 +359,10 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
     reference it was PRETRAINED to (PBE for the GGA archs, SCAN for the
     meta-GGA ones), plus an alpha sweep for the meta-GGA family."""
     reps = representative_specs(run_dir)
-    archs = [a for a in ARCH_ORDER if a in reps]
+    # stored keys in ARCH_ORDER's (shown-name) order; a stored key that is
+    # also a shown name (deep_3x16) is mapped explicitly, never by inspection
+    shown_of = {a: sib.display_name(a) for a in reps}
+    archs = [a for s in ARCH_ORDER for a in reps if shown_of[a] == s]
     s_grid = np.linspace(1e-3, s_max, n_points)
 
     # Load each arch once; compute its Fx + Fc(rs) curves.
@@ -407,7 +413,8 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
         for arch in archs:
             if arch in fx_curves:
                 ax_fx.plot(s_grid, fx_curves[arch], linewidth=1.4,
-                           color=ARCH_COLOR[arch], label=arch)
+                           color=sib.arch_color(shown_of[arch]),
+                           label=shown_of[arch])
         ax_fx.plot(s_grid, pbe_fx_curve(s_grid), "k--", linewidth=1.8,
                    label="PBE (analytic)")
         if mgga_alpha:
@@ -435,7 +442,7 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
                 for i, a in enumerate(_ALPHA_PANELS):
                     ax_alpha.plot(s_grid, curves[a], linewidth=1.5,
                                   color=cmap(i / n_a),
-                                  label=fr"{arch} $\alpha$={a:g}")
+                                  label=fr"{shown_of[arch]} $\alpha$={a:g}")
                     ref = scan_fx_curve(s_grid, a)
                     if ref is not None:
                         ax_alpha.plot(s_grid, ref, ls="--", linewidth=1.0,
@@ -452,7 +459,8 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
             for arch in archs:
                 if arch in fc_curves:
                     ax.plot(s_grid, fc_curves[arch][rs], linewidth=1.3,
-                            color=ARCH_COLOR[arch], label=arch)
+                            color=sib.arch_color(shown_of[arch]),
+                            label=shown_of[arch])
             pbe_fc = pbe_fc_curve(s_grid, rs)
             if pbe_fc is not None:
                 ax.plot(s_grid, pbe_fc, "k--", linewidth=1.8, label="PBE")
@@ -467,8 +475,8 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
              f"PRETRAINED to · {run_dir.name}" if mgga_alpha else
              f"Learned enhancement factors vs PBE · {run_dir.name}"),
             fontsize=12)
-        loaded = [a for a in archs if a in fx_curves]
-        missing = [a for a in ARCH_ORDER if a not in reps]
+        loaded = [shown_of[a] for a in archs if a in fx_curves]
+        missing = [s for s in ARCH_ORDER if s not in set(shown_of.values())]
         cov = (f"Archs shown: {len(loaded)}/{len(ARCH_ORDER)} "
                f"({', '.join(loaded)}).")
         if missing:

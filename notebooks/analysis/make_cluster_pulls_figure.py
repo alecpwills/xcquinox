@@ -67,6 +67,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.colors import ListedColormap  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
+from xcquinox.alec.arch_names import display_name  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # House style -- match notebooks/analysis/make_multimode_figure.py
 # ---------------------------------------------------------------------------
@@ -180,9 +182,38 @@ def discover_pulled_categories(local_root: Path) -> Dict[str, Path]:
     return {cat: rd for cat, (_, rd) in out.items()}
 
 
+def _run_protocol_tag(run_dir: Path) -> Optional[str]:
+    """The run-level protocol tag: ``"anchored"`` when the run's
+    ``resolved_config.yaml`` states ``parent_anchor: true`` (the v6 runs; the
+    anchor zeroes the last layer at run time, so the registry key alone would
+    misname the network), else ``None``. Line-parsed, as the other readers of
+    that file are."""
+    cfg = run_dir / "resolved_config.yaml"
+    if not cfg.is_file():
+        return None
+    for line in cfg.read_text().splitlines():
+        s = line.strip()
+        if s.startswith("parent_anchor:"):
+            # the value token: a trailing comment dropped, YAML's spellings
+            # of a true boolean accepted
+            value = s.split(":", 1)[1].split("#", 1)[0].strip().lower()
+            if value in ("true", "yes", "on"):
+                return "anchored"
+            return None
+    return None
+
+
 def _read_manifest_cells(run_dir: Path) -> Dict[int, Dict[str, Any]]:
-    """``manifest.json`` -> ``{spec_index: {arch, loss, metric, subset_size,
-    solver}}``. Empty dict when the manifest is missing or malformed."""
+    """``manifest.json`` -> ``{spec_index: {arch, arch_stored, loss, metric,
+    subset_size, solver}}``. Empty dict when the manifest is missing or
+    malformed.
+
+    The display boundary: the manifest names the STORED registry key; every
+    cell handed out carries it as ``arch_stored`` and, as ``arch``, the shown
+    name (``xcquinox.alec.arch_names.display_name``: ``medium`` ->
+    ``deep_3x16``, ``deep_3x16`` -> ``deep0_3x16``) with the protocol tag
+    appended when the cell (``protocol``) or the run (``parent_anchor``)
+    carries one. Nothing downstream sees a bare stored key in ``arch``."""
     mpath = run_dir / "manifest.json"
     if not mpath.is_file():
         return {}
@@ -191,12 +222,20 @@ def _read_manifest_cells(run_dir: Path) -> Dict[int, Dict[str, Any]]:
             manifest = json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
+    run_tag = _run_protocol_tag(run_dir)
     cells: Dict[int, Dict[str, Any]] = {}
     for entry in manifest.get("specs", []):
         idx = entry.get("index")
         cell = entry.get("cell") or {}
         if isinstance(idx, int):
-            cells[idx] = dict(cell)
+            cell = dict(cell)
+            stored = cell.get("arch")
+            if stored is not None:
+                tags = [t for t in (cell.get("protocol"), run_tag) if t]
+                cell["arch_stored"] = str(stored)
+                cell["arch"] = display_name(
+                    str(stored), protocol=", ".join(tags) if tags else None)
+            cells[idx] = cell
     return cells
 
 
@@ -247,6 +286,7 @@ def collect_eval_df_rows(run_dir: Path) -> List[Dict[str, Any]]:
                 rows.append({
                     "idx": idx,
                     "arch": cell.get("arch"),
+                    "arch_stored": cell.get("arch_stored"),
                     "loss": cell.get("loss"),
                     "metric": cell.get("metric"),
                     "subset_size": cell.get("subset_size"),
@@ -284,6 +324,7 @@ def collect_per_molecule_rows(run_dir: Path) -> List[Dict[str, Any]]:
             rows.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
+                "arch_stored": cell.get("arch_stored"),
                 "loss": cell.get("loss"),
                 "metric": cell.get("metric"),
                 "subset_size": cell.get("subset_size"),
@@ -352,6 +393,7 @@ def collect_local_test_set_rows(run_dir: Path) -> List[Dict[str, Any]]:
                 rows.append({
                     "idx": idx,
                     "arch": cell.get("arch"),
+                    "arch_stored": cell.get("arch_stored"),
                     "loss": cell.get("loss"),
                     "metric": cell.get("metric"),
                     "subset_size": cell.get("subset_size"),
@@ -397,6 +439,7 @@ def collect_subset_descriptor_rows(run_dir: Path) -> List[Dict[str, Any]]:
         rows.append({
             "idx": idx,
             "arch": cell.get("arch"),
+            "arch_stored": cell.get("arch_stored"),
             "loss": cell.get("loss"),
             "metric": cell.get("metric"),
             "subset_size": cell.get("subset_size"),
@@ -436,6 +479,7 @@ def collect_per_reaction_rows(run_dir: Path) -> List[Dict[str, Any]]:
             rows.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
+                "arch_stored": cell.get("arch_stored"),
                 "loss": cell.get("loss"),
                 "metric": cell.get("metric"),
                 "subset_size": cell.get("subset_size"),

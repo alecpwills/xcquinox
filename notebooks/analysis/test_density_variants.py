@@ -70,6 +70,10 @@ _README = _HERE / "README_density_figures.md"
 # spec index -> cell, for the four evaluated specs of _make_run_dir
 _RICH_CELLS = {("deep", 1): 0, ("deep", 3): 1,
                ("deep_notransform", 1): 2, ("deep_notransform", 3): 3}
+# the same cells keyed by the SHOWN name, which every CSV and row carries in
+# ``arch`` (the manifest key rides beside it as ``arch_stored``)
+_RICH_CELLS_SHOWN = {(fig.display_name(a), ss): idx
+                     for (a, ss), idx in _RICH_CELLS.items()}
 
 # NN channels scale by (1 + 0.1*spec_index) so the four cells differ.
 _NN_RMSE = {"H2": 1.0e-3, "h2": 3.0e-3, "CO": 5.0e-3, "NO": 7.0e-3,
@@ -434,7 +438,7 @@ def test_holdout_density_tail_csv_collapses_twins_and_orders_by_ratio(
     out = tmp_path / "tail.csv"
     fig.write_holdout_density_tail_csv(rows, out, t1={"h2": 0.031})
     got = _read_csv(out)
-    assert list(got[0]) == ["arch", "subset_size", "molecule", "ratio",
+    assert list(got[0]) == ["arch", "arch_stored", "subset_size", "molecule", "ratio",
                             "density_rmse", "density_rmse_pbe",
                             "scf_energy_residual_0", "scf_converged",
                             "cycles_run", "t1_diagnostic"]
@@ -468,7 +472,7 @@ def test_builder_writes_holdout_density_tail_csv(builds):
     assert len(got) == len(_RICH_CELLS)
     ratios = {(r["arch"], int(r["subset_size"])): float(r["ratio"])
               for r in got}
-    for cell, idx in _RICH_CELLS.items():
+    for cell, idx in _RICH_CELLS_SHOWN.items():
         assert ratios[cell] == pytest.approx(
             _NN_RMSE["NO"] * _cell_factor(idx) / _PBE_RMSE["NO"], rel=1e-9)
 
@@ -483,7 +487,7 @@ def test_variant_csv_d_rmse_is_species_mean_without_excluded(builds):
                                  / "holdout_ed_combined.csv"))
     var = _by_leg_cell(_read_csv(builds.var
                                  / "holdout_ed_combined.csv"))
-    for (arch, ss), idx in _RICH_CELLS.items():
+    for (arch, ss), idx in _RICH_CELLS_SHOWN.items():
         s = std[("wtmad2", arch, ss)]
         v = var[("wtmad2", arch, ss)]
         assert float(s["D_rmse"]) == pytest.approx(_expected_d_rmse(idx),
@@ -519,7 +523,7 @@ def test_variant_csv_d_pbe_rmse_filtered_on_both_legs(builds):
     }
     for (leg, _key), (want_std, want_var) in exp.items():
         assert want_std != pytest.approx(want_var), "oracle must discriminate"
-        for (arch, ss) in _RICH_CELLS:
+        for (arch, ss) in _RICH_CELLS_SHOWN:
             assert float(std[(leg, arch, ss)]["D_pbe_rmse"]) == pytest.approx(
                 want_std, rel=1e-9), leg
             assert float(var[(leg, arch, ss)]["D_pbe_rmse"]) == pytest.approx(
@@ -620,7 +624,7 @@ def test_suite_loop_renders_the_t1_variant_directory(tmp_path):
         variant / "holdout_ed_combined.csv")
         if r["leg"] == "wtmad2"]
     assert csv_rows
-    assert {r["arch"] for r in csv_rows} == {"deep"}
+    assert {r["arch"] for r in csv_rows} == {"deep0_4x32"}
     for r in csv_rows:
         assert float(r["D_pbe_rmse"]) == pytest.approx(
             _expected_d_pbe("density_rmse_pbe", _KEPT_CF), rel=1e-9)
@@ -1365,7 +1369,7 @@ def test_tail_variant_directory_drops_the_recurring_species(tmp_path,
     assert (vdir / "holdout_density_vs_ccsd.png").is_file()
 
     var = _by_leg_cell(_read_csv(vdir / "holdout_ed_combined.csv"))
-    for (arch, ss), idx in _RICH_CELLS.items():
+    for (arch, ss), idx in _RICH_CELLS_SHOWN.items():
         row = var[("wtmad2", arch, ss)]
         want_nn = _expected_d_rmse(idx, _KEPT_CF)
         assert want_nn != pytest.approx(_expected_d_rmse(idx)), \
@@ -1659,7 +1663,7 @@ def test_insample_by_pool_3x3_eps_energy_leg_is_the_training_reactions(
                 for i in _RICH_CELLS.values()}) == 4
     assert len({round(_expected_ins_d_eps(i), 12)
                 for i in _RICH_CELLS.values()}) == 4
-    for (arch, ss), idx in _RICH_CELLS.items():
+    for (arch, ss), idx in _RICH_CELLS_SHOWN.items():
         row = got[(_INS_LEG, arch, ss)]
         assert float(row["E_kcalmol"]) == pytest.approx(
             _expected_ins_e(idx), rel=1e-9), (arch, ss)
@@ -1709,7 +1713,7 @@ def test_insample_by_pool_3x3_eps_is_unfiltered_by_the_variant(ins_builds):
     # equally-filtered tables
     for outdir in (ins_builds.std, ins_builds.var):
         rows = _by_leg_cell(_read_csv(outdir / name))
-        for (arch, ss), idx in _RICH_CELLS.items():
+        for (arch, ss), idx in _RICH_CELLS_SHOWN.items():
             full = _expected_ins_d_eps(idx)
             cut = _expected_ins_d_eps(idx, _INS_KEPT_CF)
             assert full != pytest.approx(cut), "oracle must discriminate"
@@ -1782,5 +1786,5 @@ def test_insample_by_pool_3x3_eps_follows_the_arch_restriction(ins_builds):
     ins_builds.require()
     rows = _read_csv(ins_builds.deep / "insample_by_pool_3x3_eps.csv")
     assert rows
-    assert {r["arch"] for r in rows} == {"deep"}
+    assert {r["arch"] for r in rows} == {"deep0_4x32"}
     assert {int(r["subset_size"]) for r in rows} == {1, 3}

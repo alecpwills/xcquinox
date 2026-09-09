@@ -1,5 +1,5 @@
-arch,subset_size,molecule,ratio,density_rmse,density_rmse_pbe,scf_energy_residual_0,scf_converged,cycles_run,t1_diagnostic
-deep,1,NO,7.0,0.007,0.001,0.22,False,25,
-deep,3,NO,7.700000000000001,0.007700000000000001,0.001,0.22,False,25,
-deep_notransform,1,NO,8.399999999999999,0.0084,0.001,0.22,False,25,
-deep_notransform,3,NO,9.1,0.0091,0.001,0.22,False,25,
+arch,arch_stored,subset_size,molecule,ratio,density_rmse,density_rmse_pbe,scf_energy_residual_0,scf_converged,cycles_run,t1_diagnostic
+deep0_4x32,deep,1,NO,7.0,0.007,0.001,0.22,False,25,
+deep0_4x32,deep,3,NO,7.700000000000001,0.007700000000000001,0.001,0.22,False,25,
+deep0_notransform_4x32,deep_notransform,1,NO,8.399999999999999,0.0084,0.001,0.22,False,25,
+deep0_notransform_4x32,deep_notransform,3,NO,9.1,0.0091,0.001,0.22,False,25,

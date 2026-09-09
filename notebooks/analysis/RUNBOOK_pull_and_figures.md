@@ -289,10 +289,25 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite \
   you haven't pulled. Pull it (Step 1) or drop it from `--bases`.
 - **`... has archs not in ARCH_ORDER [..]`** (raises, does not draw) -- a run
   contains an architecture the figures don't know how to order/color. This needs
-  a **code change**: add the arch name to `ARCH_ORDER` (and a color in
-  `ARCH_COLOR`) near the top of `make_ablation_arch_figure.py`. The `deep_*_3x16`
-  twins are already registered; you'd only hit this for a brand-new arch. If
-  unsure, ask the author rather than guess.
+  a **code change**: add the registry key to `_DISPLAY_ORDER` and `_STORED_ORDER`
+  (and a color in the palette block) in `arch_style.py`; the shown name is
+  derived from the registry entry by `xcquinox/alec/arch_names.py` and needs no
+  entry of its own. The `deep_*_3x16` twins are already registered; you'd only
+  hit this for a brand-new arch. If unsure, ask the author rather than guess.
+- **A figure names `deep_3x16` and `deep0_3x16`, or `deep_2x8`, and the run's
+  manifest says `medium`, `deep_3x16`, `shallow`** -- not a mismatch. Figures,
+  tables and file names use the SHOWN name derived from the registry
+  configuration (`deep` = Glorot start, `deep0` = last layer zeroed, size suffix
+  = depth x width; `README_density_figures.md` Section 3 has the table); the run
+  directories, manifests and checkpoints keep the registry key, which every CSV
+  carries beside the shown name as `arch_stored`. `--archs` accepts either
+  spelling, with one rule for the two names that are both a registry key and
+  a shown name: `deep_3x16` and `deep_attn_3x16` are read in the SHOWN sense
+  (the registry's `medium` and `medium_attn`); the registry's `deep_3x16`
+  and `deep_attn_3x16` are selected as `deep0_3x16` and `deep0_attn_3x16`.
+  A restriction that matches no cell of the run is refused, with the run's
+  architectures named. The v6 parent-anchored runs show the tag `[anchored]`
+  on the name.
 - **"only one basis with eval coverage -- skipping the basis-comparison set"** --
   expected when you pass one basis (or the 2nd basis has no `eval_holdout/` yet).
   Per-run figures still render; pull the other basis to get the comparison.

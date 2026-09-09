@@ -119,7 +119,7 @@ def test_collect_eval_df_rows_joins_manifest_cell(tmp_path):
     assert len(rows) == 2
     # Every row carries the manifest cell + set/MAE.
     for r in rows:
-        assert r["arch"] == "deep_combined_attn"
+        assert r["arch"] == "deep0_combined_attn_4x32"
         assert r["loss"] == "L5_test"
         assert r["metric"] in ("jsd", "l2")
         assert r["solver"] in ("full_3", "oneshot")
@@ -146,7 +146,7 @@ def test_collect_per_molecule_rows_keeps_skipped_atoms(tmp_path):
     assert h["skipped"] is True
     assert h["density_rmse"] is None
     # And the cell fields still got joined.
-    assert h["arch"] == "deep_combined_attn"
+    assert h["arch"] == "deep0_combined_attn_4x32"
 
 
 def test_aggregate_status_grid_pivots_on_metric_solver(tmp_path):
@@ -185,7 +185,7 @@ def test_collect_local_test_set_rows_joins_manifest_cell(tmp_path):
     assert len(rows) == 3
     by_pool = {r["pool"]: r for r in rows}
     assert set(by_pool) == {"bh76", "w411", "held_out_combined"}
-    assert all(r["arch"] == "deep_combined_attn" for r in rows)
+    assert all(r["arch"] == "deep0_combined_attn_4x32" for r in rows)
     # Both NN and PBE columns are surfaced; the legacy mae_kcalmol key
     # mirrors mae_nn_kcalmol so older readers still work.
     assert by_pool["bh76"]["mae_nn_kcalmol"] == pytest.approx(2.5)
@@ -562,7 +562,7 @@ def test_collect_subset_descriptor_rows_joins_manifest_cell(tmp_path):
     rows = fig_mod.collect_subset_descriptor_rows(run)
     assert len(rows) == 1
     r = rows[0]
-    assert r["arch"] == "deep_combined_attn"
+    assert r["arch"] == "deep0_combined_attn_4x32"
     assert r["training_molecule_names"] == ["H2O", "CH4"]
     assert r["per_molecule_features"].shape == (2, 2)
     assert r["per_subset_stats"]["range"] == [1.0, 10.0]
@@ -587,7 +587,7 @@ def test_collect_per_reaction_rows_joins_manifest_cell(tmp_path):
     r = rows[0]
     assert r["name"] == "AE_h2o"
     assert r["pool"] == "w411"
-    assert r["arch"] == "deep_combined_attn"
+    assert r["arch"] == "deep0_combined_attn_4x32"
     assert r["abs_error_nn_kcalmol"] == pytest.approx(12.974)
     assert r["abs_error_pbe_kcalmol"] == pytest.approx(9.974)
     assert r["in_sample_overlap"] == ["h"]

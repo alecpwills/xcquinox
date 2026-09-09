@@ -3482,3 +3482,18 @@ def test_validate_refuses_the_per_molecule_knobs_under_the_batched_scheme():
         _cfg_with(hp_kwargs=dict(optimizer="adam_plateau", seed_mix_atomic=True,
                                  update_scheme="per_molecule")),
         _StubDomain(pool_size=40))
+
+
+def test_validate_rejects_a_shown_name_on_the_arch_axis():
+    """The registry resolves a shown name (``deep_2x8`` is ``shallow``) but the
+    run directories, the pretrain directory and the certificate lookup are
+    filed under the registry key, so a sweep written in the shown spelling is
+    refused on the login node with the key named."""
+    with pytest.raises(ValueError, match="shown name of the registry key 'shallow'"):
+        validate_grid_semantics(
+            _cfg(arch=("medium", "deep_2x8")), _StubDomain(pool_size=40)
+        )
+    with pytest.raises(ValueError, match="registry key 'deep_3x16'"):
+        validate_grid_semantics(
+            _cfg(arch=("deep0_3x16",)), _StubDomain(pool_size=40)
+        )

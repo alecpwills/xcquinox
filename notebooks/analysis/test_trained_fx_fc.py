@@ -25,6 +25,7 @@ import csv
 import dataclasses
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -131,12 +132,15 @@ def test_seam_renders_an_anchored_checkpoint_at_round_off(tmp_path):
     outdir = tmp_path / "figs"
 
     assert T.build_all(run, outdir, eval_channel="val_best") == 0
-    assert (outdir / "trained_fx_fc_deep_3x16.png").stat().st_size > 0
+    # the stored key deep_3x16 (zero-init) is shown, and filed, as deep0_3x16
+    assert (outdir / "trained_fx_fc_deep0_3x16.png").stat().st_size > 0
     assert (outdir / "trained_fx_fc_delta_best.png").stat().st_size > 0
 
     rows = _csv_rows(outdir)
-    assert set(rows[0]) == {"arch", "subset_size", "channel", "rs", "s",
-                            "f_model", "f_parent", "eval_channel"}
+    assert set(rows[0]) == {"arch", "arch_stored", "subset_size", "channel",
+                            "rs", "s", "f_model", "f_parent", "eval_channel"}
+    assert {(r["arch"], r["arch_stored"]) for r in rows} == \
+        {("deep0_3x16", "deep_3x16")}
     assert len(rows) == len(T.S_GRID) * (1 + len(T.RS_VALUES))
     assert {r["eval_channel"] for r in rows} == {"val_best"}
     assert {r["subset_size"] for r in rows} == {"4"}
@@ -343,12 +347,13 @@ def test_seam_renders_an_anchored_mgga_checkpoint_at_round_off(tmp_path):
 
     assert T.build_all(run, outdir, eval_channel="val_best") == 0
     assert (outdir
-            / "trained_fx_fc_deep_cusp_mgga_3x16.png").stat().st_size > 0
+            / "trained_fx_fc_deep0_cusp_mgga_3x16.png").stat().st_size > 0
     assert (outdir / "trained_fx_fc_delta_best.png").stat().st_size > 0
 
     rows = _csv_rows(outdir)
-    assert set(rows[0]) == {"arch", "subset_size", "channel", "rs", "alpha",
-                            "s", "f_model", "f_parent", "eval_channel"}
+    assert set(rows[0]) == {"arch", "arch_stored", "subset_size", "channel",
+                            "rs", "alpha", "s", "f_model", "f_parent",
+                            "eval_channel"}
     n_scan = len(T.S_GRID) * len(T.ALPHA_VALUES) * (1 + len(T.RS_VALUES))
     assert len(rows) == n_scan
     fx = [r for r in rows if r["channel"] == "fx"]
@@ -404,12 +409,12 @@ def test_a_mixed_run_routes_each_arch_to_its_own_parent(tmp_path):
     outdir = tmp_path / "figs"
 
     assert T.build_all(run, outdir, eval_channel="val_best") == 0
-    assert (outdir / "trained_fx_fc_deep_3x16.png").is_file()
-    assert (outdir / "trained_fx_fc_deep_mgga_3x16.png").is_file()
+    assert (outdir / "trained_fx_fc_deep0_3x16.png").is_file()
+    assert (outdir / "trained_fx_fc_deep0_mgga_3x16.png").is_file()
     rows = _csv_rows(outdir)
-    gga_fx = [r for r in rows if r["arch"] == "deep_3x16"
+    gga_fx = [r for r in rows if r["arch"] == "deep0_3x16"
               and r["channel"] == "fx"]
-    scan_fx0 = [r for r in rows if r["arch"] == "deep_mgga_3x16"
+    scan_fx0 = [r for r in rows if r["arch"] == "deep0_mgga_3x16"
                 and r["channel"] == "fx" and r["alpha"] == "0"]
     assert {r["alpha"] for r in gga_fx} == {""}
     assert len(gga_fx) == len(T.S_GRID)
@@ -455,7 +460,7 @@ def test_subset_shades_run_light_to_dark_in_one_hue():
     """Sequential shading: subset size is a magnitude, so the family must read
     as an ordered ramp of the arch's own hue."""
     import matplotlib.colors as mcolors
-    base = T.ARCH_COLOR["deep_3x16"]
+    base = T.arch_color(T.display_name("deep_3x16"))
     shades = T.subset_shades(base, 5)
     assert len(shades) == 5
     assert shades[-1] == mcolors.to_hex(mcolors.to_rgb(base))
@@ -476,3 +481,91 @@ def test_the_parent_curves_are_the_anchors_own_parent():
     gap = float(np.max(np.abs(parents["fx"] - pbe_fx_curve(T.S_GRID))))
     assert 1e-7 < gap < 1e-4, gap
     assert set(parents["fc"]) == set(T.RS_VALUES)
+
+
+# ---------------------------------------------------------------------------
+# T5: architecture display names on the figures (2026-09-09)
+#
+# The manifest cell and the checkpoint directory keep the stored key; the
+# figure file names, titles and legends state what the network is.
+# ---------------------------------------------------------------------------
+
+def _fig_texts(f):
+    out = []
+    sup = getattr(f, "_suptitle", None)
+    if sup is not None:
+        out.append(sup.get_text())
+    out += [t.get_text() for t in f.texts]
+    for ax in f.axes:
+        out.append(ax.get_title())
+        out += [t.get_text() for t in ax.texts]
+        legend = ax.get_legend()
+        if legend is not None:
+            out += [t.get_text() for t in legend.get_texts()]
+    return out
+
+
+def _capture_figures(monkeypatch):
+    import matplotlib.figure as mfig
+    captured = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        captured.append(self)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    return captured
+
+
+def _synthetic_cell_and_curves(tmp_path, arch, index=0, subset_size=1):
+    n = T.S_GRID.size
+    model = np.linspace(1.0, 1.2, n)
+    parent = np.ones(n)
+    curves = {"fx_model": model, "fx_parent": parent,
+              "fc": {T.RS_FIGURE: {"model": model, "parent": parent}}}
+    cell = T.Cell(index=index, arch=arch, subset_size=subset_size,
+                  path=tmp_path / f"spec_{index:04d}" / "model.eqx",
+                  channel="final", fallback=False)
+    return cell, curves
+
+
+def test_per_arch_figure_file_and_title_use_the_display_name(tmp_path,
+                                                             monkeypatch):
+    """Kills m6 for the trained figures: the file of a ``medium`` cell would
+    be ``trained_fx_fc_medium.png`` beside a ``trained_fx_fc_deep_3x16.png``
+    written for a different network."""
+    captured = _capture_figures(monkeypatch)
+    cell, curves = _synthetic_cell_and_curves(tmp_path, "medium")
+    out = T.render_arch_figure("medium", [cell], {cell.index: curves},
+                               tmp_path, "footer")
+    assert out.name == "trained_fx_fc_deep_3x16.png"
+    assert out.is_file() and out.stat().st_size > 0
+    texts = _fig_texts(captured[-1])
+    blob = " ".join(texts)
+    assert "deep_3x16" in blob
+    assert not re.search(r"\bmedium\b", blob), blob
+    assert any(t.startswith("deep_3x16:") for t in texts), texts
+
+
+def test_render_best_figure_legend_shows_display_names(tmp_path, monkeypatch):
+    """The cross-arch panel labels each curve by the cell's architecture; the
+    label is the shown name, and the footer carries the key line for the
+    architectures drawn."""
+    captured = _capture_figures(monkeypatch)
+    c_med, curves_med = _synthetic_cell_and_curves(tmp_path, "medium",
+                                                   index=0)
+    c_zero, curves_zero = _synthetic_cell_and_curves(tmp_path, "deep_3x16",
+                                                     index=1)
+    out = T.render_best_figure([(c_med, curves_med, 3.5),
+                                (c_zero, curves_zero, 4.25)],
+                               tmp_path, "run run_x")
+    assert out.name == "trained_fx_fc_delta_best.png"
+    texts = _fig_texts(captured[-1])
+    # the MAE pins which curve carries which name: 3.50 is the `medium`
+    # cell, so a rename that merely relabelled both curves would fail here
+    assert "deep_3x16 (1 mol, 3.50 kcal/mol)" in texts, texts
+    assert "deep0_3x16 (1 mol, 4.25 kcal/mol)" in texts, texts
+    blob = " ".join(texts)
+    assert not re.search(r"\bmedium\b", blob), blob
+    assert "deep_3x16: 3 x 16, Glorot initialization" in blob, blob

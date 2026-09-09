@@ -421,3 +421,39 @@ def test_module_text_is_ascii_and_free_of_process_meta_commentary():
     # The dash is written as an escape so this file stays ASCII on disk.
     assert _style_offences("a rigorous check") == ["rigorous"]
     assert _style_offences("an em dash \u2014 here") == ["non-ascii 0x2014"]
+
+
+# ---------------------------------------------------------------------------
+# The curve files written since the display layer (2026-09-09): ``arch`` is
+# the shown name and ``arch_stored`` the registry key the series names
+# ---------------------------------------------------------------------------
+
+def test_read_curve_selects_the_series_by_the_stored_key_when_present(tmp_path):
+    """A file holding medium (shown ``deep_3x16``) AND the registry's deep_3x16
+    (shown ``deep0_3x16``): ``arch="deep_3x16"`` must return the registry's
+    deep_3x16, never medium's row that carries that spelling in ``arch``."""
+    columns = ["arch", "arch_stored", "channel", "rs", "s", "f_model",
+               "f_parent"]
+    rows = []
+    for shown, stored, value in (("deep_3x16", "medium", 11.0),
+                                 ("deep0_3x16", "deep_3x16", 22.0)):
+        for channel, rs in (("fx", ""), ("fc", f"{A.RS_FIGURE:g}")):
+            for s in (0.0, 0.5, 1.0):
+                rows.append([shown, stored, channel, rs, f"{s:.6f}",
+                             repr(value), "1.0"])
+    with open(tmp_path / A.PRETRAIN_CSV, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(columns)
+        w.writerows(rows)
+    curve = A.read_curve(tmp_path / A.PRETRAIN_CSV, "deep_3x16", "fx")
+    assert float(curve.f_model[0]) == 22.0
+    curve = A.read_curve(tmp_path / A.PRETRAIN_CSV, "medium", "fx")
+    assert float(curve.f_model[0]) == 11.0
+    # an older file (no arch_stored) is still read by ``arch``
+    old = [[r[0]] + r[2:] for r in rows]
+    with open(tmp_path / "old.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow([columns[0]] + columns[2:])
+        w.writerows(old)
+    curve = A.read_curve(tmp_path / "old.csv", "deep0_3x16", "fx")
+    assert float(curve.f_model[0]) == 22.0

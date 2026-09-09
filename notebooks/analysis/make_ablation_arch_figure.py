@@ -97,6 +97,16 @@ _as_spec.loader.exec_module(arch_style)  # type: ignore[union-attr]
 ARCH_ORDER: Tuple[str, ...] = arch_style.ARCH_ORDER
 ARCH_COLOR: Dict[str, str] = arch_style.ARCH_COLOR
 SUBSET_SIZES: Tuple[int, ...] = arch_style.SUBSET_SIZES
+# The display layer (xcquinox.alec.arch_names, re-exported by arch_style):
+# ARCH_ORDER and ARCH_COLOR hold SHOWN names, the rows carry the shown name
+# in ``arch`` (converted at ccp._read_manifest_cells) and the registry key in
+# ``arch_stored``; the registry and the pretrain directory are reached through
+# ``stored_key``.
+display_name = arch_style.display_name
+stored_key = arch_style.stored_key
+key_line = arch_style.key_line
+as_shown = arch_style.as_shown
+arch_color = arch_style.arch_color
 POOL_MARKER: Dict[str, str] = {"bh76": "o", "w411": "^"}
 
 # Output file names (2026-09-08). The prefix states which evaluation set a
@@ -163,6 +173,55 @@ _PROVENANCE_BASE = (
     "Held-out: GMTKN55-BH76 barrier heights + W4-11 atomization energies "
     "(reaction energies, kcal/mol)."
 )
+#: the shown architecture names whose expanded key the footer prints beside the
+#: provenance (``arch_names.key_line``); set by :func:`build_all` from the run's
+#: cells, ``None`` (no key line) for a direct call to a plot function
+_KEY_LINE_ARCHS: Optional[List[str]] = None
+
+
+def _provenance_text(provenance: Optional[str]) -> str:
+    """The provenance line every figure prints: ``provenance`` (or the base
+    banner), followed by the expanded key of every architecture drawn when
+    :data:`_KEY_LINE_ARCHS` is set, so the shown names (deep_3x16 /
+    deep0_3x16 ...) never need the map to be read."""
+    prov = provenance or _PROVENANCE_BASE
+    if _KEY_LINE_ARCHS:
+        keys = key_line(_KEY_LINE_ARCHS)
+        if keys:
+            prov = f"{prov}  ·  {keys}"
+    return prov
+
+
+class _key_line_scope:
+    """``with _key_line_scope(archs):`` sets :data:`_KEY_LINE_ARCHS` for the
+    figures rendered inside the block and restores the previous value on
+    exit, so one builder's key line never reaches another builder's
+    figures."""
+
+    def __init__(self, archs: Optional[List[str]]):
+        self.archs = list(archs) if archs else None
+        self.previous: Optional[List[str]] = None
+
+    def __enter__(self):
+        global _KEY_LINE_ARCHS
+        self.previous = _KEY_LINE_ARCHS
+        _KEY_LINE_ARCHS = self.archs
+        return self
+
+    def __exit__(self, *exc):
+        global _KEY_LINE_ARCHS
+        _KEY_LINE_ARCHS = self.previous
+        return False
+
+
+def _key_line_archs_of_runs(run_dirs, archs=None) -> List[str]:
+    """The architectures the manifests of ``run_dirs`` name (restricted by
+    ``archs``), in display order: the key line of a figure that spans runs."""
+    names: List[str] = []
+    for rd in run_dirs:
+        names += [c.get("arch") for c in ccp._read_manifest_cells(Path(rd)).values()]
+    rows = filter_rows_by_arch([{"arch": a} for a in names if a], archs)
+    return _archs_present(rows)
 
 
 def _is_num(v: Any) -> bool:
@@ -432,6 +491,7 @@ def collect_holdout_reaction_rows(run_dir: Path,
             rows.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
+                "arch_stored": cell.get("arch_stored"),
                 "subset_size": cell.get("subset_size"),
                 "name": r.get("name"),
                 "pool": r.get("pool"),
@@ -583,6 +643,7 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
         out.append({
             "idx": idx,
             "arch": cell.get("arch"),
+            "arch_stored": cell.get("arch_stored"),
             "subset_size": cell.get("subset_size"),
             "name": rxn.get("name"),
             "pool": rxn.get("source_pool"),
@@ -678,12 +739,16 @@ def _arch_certificate_status(run_dir: Path, arch: str) -> Optional[str]:
         from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
     except ImportError:      # the analysis layer runs without the package
         return None
+    # the rows hold shown names; the certificate sits in pretrain/<stored key>
+    # (pretrain/deep_3x16 is the directory of deep0_3x16, never of the shown
+    # deep_3x16, which is pretrain/medium)
+    key = stored_key(arch)
     try:
-        get_architecture(arch)
+        get_architecture(key)
     except KeyError:
         return None
     status, _reason, cert = read_certificate_status_in(
-        pretrain_checkpoint_dir(str(run_dir), arch))
+        pretrain_checkpoint_dir(str(run_dir), key))
     return _certificate_status_label(status, cert)
 
 
@@ -785,8 +850,9 @@ def fidelity_summary(run_dir: Path,
     not_pass: List[str] = []
     half_numbered: List[str] = []
     for arch in archs:
+        key = stored_key(arch)       # the rows hold shown names
         try:
-            get_architecture(arch)
+            get_architecture(key)
         except KeyError:
             # No certificate expectation for this name, and therefore no
             # contribution to the bound either: the certificate is located by
@@ -795,7 +861,7 @@ def fidelity_summary(run_dir: Path,
             # foreign PASS stating 99.0 / 88.0 replaced a run's 0.31 / 0.62).
             continue
         status, _reason, cert = read_certificate_status_in(
-            pretrain_checkpoint_dir(str(run_dir), arch))
+            pretrain_checkpoint_dir(str(run_dir), key))
         if not cert:
             n_unreadable += 1
             continue
@@ -865,14 +931,16 @@ def _validate_archs(archs) -> Optional[Tuple[str, ...]]:
         return None
     ordered: List[str] = []
     for a in archs:
-        name = str(a)
+        # a stored key is accepted and normalized to its shown name (the
+        # rows carry shown names); a name that is both resolves as shown
+        name = as_shown(str(a))
         if name not in ordered:
             ordered.append(name)
     if not ordered:
         raise ValueError(
             "archs is empty: an architecture restriction must name at least "
             "one architecture (archs=None is the unrestricted set).")
-    unknown = [a for a in ordered if a not in ARCH_ORDER]
+    unknown = [a for a in ordered if not arch_style.in_order(a)]
     if unknown:
         raise ValueError(
             f"unknown architecture name(s) in archs: {unknown}; the per-arch "
@@ -892,15 +960,14 @@ def filter_rows_by_arch(rows: List[Dict[str, Any]], archs
     each figure's ``present``-derived architecture axis narrow consistently."""
     if archs is None:
         return rows
-    keep = set(archs)
+    keep = {as_shown(str(a)) for a in archs}
     return [r for r in rows if r.get("arch") in keep]
 
 
 def order_archs(archs) -> List[str]:
-    """``archs`` in canonical :data:`ARCH_ORDER` order, unknown names last."""
-    present = set(archs or ())
-    return ([a for a in ARCH_ORDER if a in present]
-            + sorted(present - set(ARCH_ORDER)))
+    """``archs`` in canonical :data:`ARCH_ORDER` order (a protocol-tagged
+    name after the untagged one of its architecture), unknown names last."""
+    return arch_style.order_present(archs or ())
 
 
 def arch_restriction_note(archs, withheld=None) -> str:
@@ -2026,10 +2093,9 @@ def ae_mae_by_arch_subset(
 
 def _archs_present(rows: List[Dict[str, Any]]) -> List[str]:
     present = {r.get("arch") for r in rows if r.get("arch")}
-    ordered = [a for a in ARCH_ORDER if a in present]
-    # Append any unexpected arch names (defensive) in sorted order.
-    ordered += sorted(present - set(ordered))
-    return ordered
+    # ARCH_ORDER order of the untagged names, a tagged name after its
+    # architecture's untagged one; unexpected names (defensive) last, sorted
+    return arch_style.order_present(present)
 
 
 def _best_subset_per_arch(rows: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -2265,7 +2331,7 @@ def _draw_mae_inset(ax, mae_by_arch: Dict[str, float], archs: List[str], *,
     inset = ax.inset_axes([0.56, 0.13, 0.41, 0.33])
     xs = np.arange(len(archs))
     heights = [mae_by_arch.get(a, np.nan) for a in archs]
-    inset.bar(xs, heights, color=[ARCH_COLOR[a] for a in archs],
+    inset.bar(xs, heights, color=[arch_color(a) for a in archs],
               edgecolor="k", linewidth=0.3)
     if baseline is not None and math.isfinite(baseline):
         inset.axhline(baseline, ls="--", color="k", linewidth=1.0,
@@ -2356,7 +2422,7 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
                 xx, yy = zip(*pts)
                 xs_a += list(xx); ys_a += list(yy)
                 axa.scatter(xx, yy, s=14, marker=marker, alpha=0.55,
-                            color=ARCH_COLOR[arch], edgecolor="none", zorder=3)
+                            color=arch_color(arch), edgecolor="none", zorder=3)
         _diagonal(axa, xs_a, ys_a)
         axa.set_xlabel("PBE reaction energy  de_pbe  (kcal/mol)")
         axa.set_ylabel("NN reaction energy  de_nn  (kcal/mol)")
@@ -2381,7 +2447,7 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
                 continue
             xx, yy = zip(*pts)
             xs_b += list(xx); ys_b += list(yy)
-            axb.scatter(xx, yy, s=14, alpha=0.55, color=ARCH_COLOR[arch],
+            axb.scatter(xx, yy, s=14, alpha=0.55, color=arch_color(arch),
                         edgecolor="none", zorder=3, label=arch)
         # PBE-vs-ref as a single grey baseline series (same for every arch).
         pbe_pts = [(r["ref_kcalmol"], r["de_pbe_kcalmol"]) for r in sel
@@ -2415,7 +2481,7 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
         # Each arch's representative is its own deepest spec, and archs enter
         # the sweep at different depths -- so the cloud can mix a 1-molecule
         # net with a full-pool one. The legend states which depth each is.
-        handles = [Patch(facecolor=ARCH_COLOR[a],
+        handles = [Patch(facecolor=arch_color(a),
                          label=f"{a} (ss {best[a]})" if a in best else a)
                    for a in archs]
         handles.append(plt.Line2D([], [], marker="o", ls="", color="0.4",
@@ -2435,8 +2501,8 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
         if note:
             fig.text(0.5, 0.05, note, ha="center", fontsize=6.5,
                      color="#a33", wrap=True)
-        fig.text(0.5, 0.016, provenance or _PROVENANCE_BASE, ha="center",
-                 fontsize=6, color="#777777")
+        fig.text(0.5, 0.016, _provenance_text(provenance), ha="center",
+                 fontsize=6, color="#777777", wrap=True)
         fig.tight_layout(rect=(0, 0.155, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -2549,7 +2615,7 @@ def _heatmap_arch_axis(reaction_rows: List[Dict[str, Any]],
     rung-3.5 -> combined)."""
     present = (set(_archs_present(reaction_rows))
                | set(_archs_present(insample_rows)))
-    ordered = arch_style.sort_by_rung([a for a in ARCH_ORDER if a in present])
+    ordered = arch_style.sort_by_rung(arch_style.order_known(present))
     # Fall back to the full (rung-sorted) ladder when nothing is present, so the
     # panel never renders a zero-row grid (matches the pre-rung behavior).
     return ordered or arch_style.sort_by_rung(list(ARCH_ORDER))
@@ -2582,8 +2648,8 @@ def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
         fig.text(0.5, 0.028,
                  f"Coverage: {n_trained}/{n_total} specs trained · "
                  f"{n_holdout} carry held-out reactions · hatched = no data. "
-                 + (provenance or _PROVENANCE_BASE), ha="center",
-                 fontsize=6.5, color="#777777")
+                 + (_provenance_text(provenance)), ha="center",
+                 fontsize=6.5, color="#777777", wrap=True)
         if note:
             fig.text(0.5, 0.006, note, ha="center", fontsize=6.5, color="#a33")
         fig.tight_layout(rect=(0, 0.06, 1, 0.95))
@@ -2617,8 +2683,8 @@ def plot_arch_subset_heatmap_vs_pbe(reaction_rows: List[Dict[str, Any]],
                        subset_sizes=ss_axis, rung_separators=True,
                        vxc_pre_fix=_run_predates_vxc_fix(run_id))
         fig.suptitle(f"NN-vs-PBE cell grid · {run_id}", fontsize=11)
-        fig.text(0.5, 0.028, provenance or _PROVENANCE_BASE, ha="center",
-                 fontsize=6.5, color="#777777")
+        fig.text(0.5, 0.028, _provenance_text(provenance), ha="center",
+                 fontsize=6.5, color="#777777", wrap=True)
         if note:
             fig.text(0.5, 0.006, note, ha="center", fontsize=6.5, color="#a33")
         fig.tight_layout(rect=(0, 0.06, 1, 0.95))
@@ -2770,8 +2836,8 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
         if cov_caveat:
             fig.text(0.5, 0.026, cov_caveat, ha="center", fontsize=6.0,
                      color="#a33")
-        fig.text(0.5, 0.006, provenance or _PROVENANCE_BASE, ha="center",
-                 fontsize=6, color="#777777")
+        fig.text(0.5, 0.006, _provenance_text(provenance), ha="center",
+                 fontsize=6, color="#777777", wrap=True)
         fig.tight_layout(rect=(0, rect_bottom, 1, 1))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -2986,8 +3052,8 @@ def plot_mae_vs_subset(reaction_rows: List[Dict[str, Any]],
         fig.suptitle(f"Error vs training-subset size · {run_id}", fontsize=11)
         if note:
             fig.text(0.5, 0.03, note, ha="center", fontsize=6.5, color="#a33")
-        fig.text(0.5, 0.008, provenance or _PROVENANCE_BASE, ha="center",
-                 fontsize=6, color="#777777")
+        fig.text(0.5, 0.008, _provenance_text(provenance), ha="center",
+                 fontsize=6, color="#777777", wrap=True)
         fig.tight_layout(rect=(0, 0.06, 1, 0.95))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -3057,7 +3123,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
                 continue
             xx, yy = zip(*pts)
             xs_a += list(xx); ys_a += list(yy)
-            axa.scatter(xx, yy, s=16, alpha=0.6, color=ARCH_COLOR[arch],
+            axa.scatter(xx, yy, s=16, alpha=0.6, color=arch_color(arch),
                         edgecolor="none", zorder=3, label=arch)
         # PBE baseline points (same physical PBE for every arch -- draw once).
         pbe_pts = [(r["ref_kcalmol"], r["de_pbe_kcalmol"]) for r in sel]
@@ -3135,7 +3201,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
         # Each arch's representative is its own deepest spec, and archs enter
         # the sweep at different depths -- so the cloud can mix a 1-molecule
         # net with a full-pool one. The legend states which depth each is.
-        handles = [Patch(facecolor=ARCH_COLOR[a],
+        handles = [Patch(facecolor=arch_color(a),
                          label=f"{a} (ss {best[a]})" if a in best else a)
                    for a in archs]
         handles.append(plt.Line2D([], [], marker="x", ls="", color="0.4",
@@ -3154,8 +3220,8 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
         if note:
             fig.text(0.5, 0.05, note, ha="center", fontsize=6.5,
                      color="#a33", wrap=True)
-        fig.text(0.5, 0.016, provenance or _PROVENANCE_BASE, ha="center",
-                 fontsize=6, color="#777777")
+        fig.text(0.5, 0.016, _provenance_text(provenance), ha="center",
+                 fontsize=6, color="#777777", wrap=True)
         fig.tight_layout(rect=(0, 0.155, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -3220,7 +3286,7 @@ def _parity_scatter(ax, panel_rows: List[Dict[str, Any]], *, color_by: str,
                 continue
             xx, yy = zip(*pts)
             xs += list(xx); ys += list(yy)
-            ax.scatter(xx, yy, s=point_size, alpha=0.5, color=ARCH_COLOR[a],
+            ax.scatter(xx, yy, s=point_size, alpha=0.5, color=arch_color(a),
                        edgecolor="none", zorder=3, label=a)
     else:  # subset_size -> viridis
         sv = subset_values or _present_subsets(panel_rows)
@@ -3268,7 +3334,7 @@ def _combined_mae_inset(ax, rows_for_subset: List[Dict[str, Any]],
         errs = [r["abs_error_nn_kcalmol"] for r in rows_for_subset
                 if r.get("arch") == a and _is_num(r.get("abs_error_nn_kcalmol"))]
         heights.append(float(np.mean(errs)) if errs else np.nan)
-    inset.bar(xs, heights, color=[ARCH_COLOR[a] for a in archs],
+    inset.bar(xs, heights, color=[arch_color(a) for a in archs],
               edgecolor="k", linewidth=0.3)
     if pbe_combined is not None and math.isfinite(pbe_combined):
         inset.axhline(pbe_combined, ls="--", color="k", linewidth=0.8)
@@ -3282,7 +3348,7 @@ def _combined_mae_inset(ax, rows_for_subset: List[Dict[str, Any]],
 
 def _arch_pbe_legend_handles(archs: List[str], *, pools: Optional[List[str]] = None):
     # Rung-ordered so the compact (ncol ~ #rungs) legend reads up Jacob's ladder.
-    handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
+    handles = [Patch(facecolor=arch_color(a), label=a)
                for a in arch_style.sort_by_rung(archs)]
     if pools:
         handles += [plt.Line2D([], [], marker=POOL_MARKER[p], ls="", color="0.3",
@@ -3401,8 +3467,8 @@ def _stamp_parity_footer(fig, *, run_id: str, title: str, note: str,
     if note:
         fig.text(0.5, 0.032 if not extra_note else 0.058, note, ha="center",
                  fontsize=5.6, color="#a33", wrap=True)
-    fig.text(0.5, 0.010, provenance or _PROVENANCE_BASE, ha="center",
-             fontsize=5.6, color="#777777")
+    fig.text(0.5, 0.010, _provenance_text(provenance), ha="center",
+             fontsize=5.6, color="#777777", wrap=True)
 
 
 def _add_subset_colorbar(fig, mappable, *, x=0.945):
@@ -3590,7 +3656,7 @@ def plot_parity_errbars_by_subset(rows: List[Dict[str, Any]], out_path: Path,
                         continue
                     mref, mde, mae = agg[(s, a, pool)]
                     ax.errorbar(mref, mde, yerr=mae, fmt=POOL_MARKER[pool],
-                                color=ARCH_COLOR[a], ms=7, capsize=3,
+                                color=arch_color(a), ms=7, capsize=3,
                                 elinewidth=1.0, alpha=0.9, zorder=3)
                     xs.append(mref); ys.append(mde)
             anchor = list(glim) if glim else []
@@ -4044,6 +4110,7 @@ def collect_insample_density_rows(run_dir: Path) -> List[Dict[str, Any]]:
             rows.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
+                "arch_stored": cell.get("arch_stored"),
                 "subset_size": cell.get("subset_size"),
                 "molecule": r.get("molecule"),
                 "density_rmse": r.get("density_rmse"),
@@ -4144,6 +4211,7 @@ def collect_insample_reaction_rows(run_dir: Path) -> List[Dict[str, Any]]:
             rows.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
+                "arch_stored": cell.get("arch_stored"),
                 "subset_size": cell.get("subset_size"),
                 "name": rxn.get("name"),
                 "pool": pool,
@@ -4321,6 +4389,7 @@ def collect_holdout_density_rows(run_dir: Path,
             raw.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
+                "arch_stored": cell.get("arch_stored"),
                 "subset_size": cell.get("subset_size"),
                 "molecule": mol,
                 "density_rmse": r.get("density_rmse"),
@@ -4430,7 +4499,8 @@ def load_t1_table(run_dir: Path) -> Dict[str, Any]:
     return {"t1": t1, "threshold": threshold, "source": str(raw.get("source", ""))}
 
 
-_TAIL_CSV_FIELDS = ["arch", "subset_size", "molecule", "ratio", "density_rmse",
+_TAIL_CSV_FIELDS = ["arch", "arch_stored", "subset_size", "molecule", "ratio",
+                    "density_rmse",
                     "density_rmse_pbe", "scf_energy_residual_0",
                     "scf_converged", "cycles_run", "t1_diagnostic"]
 
@@ -4518,7 +4588,7 @@ def write_holdout_density_tail_csv(hd_rows: List[Dict[str, Any]],
         cyc = [int(r["cycles_run"]) for r in rs if _is_num(r.get("cycles_run"))]
         t1_val = (t1 or {}).get(cf)
         out_rows.append({
-            "arch": arch, "subset_size": ss,
+            "arch": arch, "arch_stored": stored_key(arch), "subset_size": ss,
             "molecule": min(str(r.get("molecule")) for r in rs),
             "ratio": ratio, "density_rmse": nn, "density_rmse_pbe": pbe,
             "scf_energy_residual_0": max(resid) if resid else "",
@@ -5343,7 +5413,7 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
     return out
 
 
-_ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
+_ED_CSV_FIELDS = ["leg", "arch", "arch_stored", "subset_size", "n_reactions",
                   "n_density_species", "E_kcalmol", "D_rmse", "gamma",
                   "gammaD_kcalmol", "ED_kcalmol", "E_pbe_kcalmol",
                   "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
@@ -5415,7 +5485,8 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                                            kv[0][0], kv[0][1]))
             for (arch, ss), c in cells:
                 w.writerow({
-                    "leg": leg, "arch": arch, "subset_size": ss,
+                    "leg": leg, "arch": arch, "arch_stored": stored_key(arch),
+                    "subset_size": ss,
                     "n_reactions": nr.get((arch, ss), ""),
                     "n_density_species": nd.get((arch, ss), ""),
                     "E_kcalmol": c["E"], "D_rmse": c["D"],
@@ -5901,10 +5972,10 @@ def _insample_density_lines_panel(ax, density_rows: List[Dict[str, Any]], *,
                      for (arch, s), m in means.items() if arch == a)
         if pts:
             ax.plot([s for s, _, _ in pts], [m for _, m, _ in pts],
-                    marker="o", ms=5, color=ARCH_COLOR[a], label=a)
+                    marker="o", ms=5, color=arch_color(a), label=a)
             for s, m, n in pts:
                 ax.annotate(f"n={n}", (s, m), fontsize=5,
-                            color=ARCH_COLOR[a], xytext=(0, 4),
+                            color=arch_color(a), xytext=(0, 4),
                             textcoords="offset points")
     # PBE-vs-CCSD baseline (arch-independent): the species-mean over the
     # molecules present at each subset_size, grey dashed
@@ -6093,7 +6164,7 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
                 ylabel=f"{unit} vs CCSD")
             _insample_ratio_panel(axes[0][2], density_rows, key=key,
                                   pbe_key=pbe_key)
-            arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
+            arch_handles = [Patch(facecolor=arch_color(a), label=a)
                             for a in arch_style.sort_by_rung(archs)]
             fig.legend(handles=arch_handles, loc="lower center",
                        ncol=len(arch_style.RUNG_ORDER), fontsize=7,
@@ -6283,7 +6354,7 @@ def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
                                      scan_density_records)
         _density_parity_panel(axes[0][1], density_rows, pbe_mol)
 
-        arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
+        arch_handles = [Patch(facecolor=arch_color(a), label=a)
                         for a in arch_style.sort_by_rung(archs) if a in ARCH_COLOR]
         if arch_handles:
             fig.legend(handles=arch_handles, loc="lower center",
@@ -7249,6 +7320,7 @@ def collect_training_losses(run_dir: Path,
             continue
         cell = cells.get(idx, {})
         rows.append({"idx": idx, "arch": cell.get("arch"),
+                     "arch_stored": cell.get("arch_stored"),
                      "subset_size": cell.get("subset_size"), "losses": losses,
                      "basis": basis_label})
     return rows
@@ -7392,6 +7464,7 @@ def collect_training_channel_losses(run_dir: Path) -> List[Dict[str, Any]]:
         rows.append({
             "idx": idx,
             "arch": cell.get("arch"),
+            "arch_stored": cell.get("arch_stored"),
             "subset_size": cell.get("subset_size"),
             "epochs": epochs,
             "channels": channels,
@@ -7426,7 +7499,7 @@ def plot_training_losses(loss_rows: List[Dict[str, Any]], out_path: Path,
     _LS = ["-", "--", "-.", ":"]
     with plt.rc_context(_STYLE):
         present = {r["arch"] for r in loss_rows if r.get("arch")}
-        archs = [a for a in ARCH_ORDER if a in present]
+        archs = arch_style.order_known(present)
         archs += sorted(present - set(archs))
         archs = archs or ["deep"]
         subset_values = sorted({r["subset_size"] for r in loss_rows
@@ -7519,7 +7592,7 @@ def plot_training_loss_channels(rows: List[Dict[str, Any]], outdir: Path,
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     present = {r["arch"] for r in rows if r.get("arch")}
-    archs = [a for a in ARCH_ORDER if a in present]
+    archs = arch_style.order_known(present)
     archs += sorted(present - set(archs))
     panels = [("total", _TRAINING_CHANNEL_LABELS["total"])] + [
         (k, _TRAINING_CHANNEL_LABELS[k]) for k in _TRAINING_CHANNELS]
@@ -7871,7 +7944,7 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
         # (deep < attn < cusp < combined < combined_attn) and each arch falls
         # toward PBE as ss grows (overfitting relieved by data).
         present = {c["arch"] for c in cells}
-        archs = [a for a in ARCH_ORDER if a in present]
+        archs = arch_style.order_known(present)
         archs += sorted(present - set(archs))
         # GLOBAL ss scale (over BOTH bases) so the viridis subset colours match
         # between the two sub-panels.
@@ -7930,7 +8003,7 @@ def plot_capacity_trends(runs: List[Tuple[Path, str]], out_path: Path,
     and the fall-to-PBE-with-more-data trend explicit."""
     cells = classify_failures(runs, eval_subdir=eval_subdir)
     present = {c["arch"] for c in cells}
-    archs = [a for a in ARCH_ORDER if a in present]
+    archs = arch_style.order_known(present)
     archs += sorted(present - set(archs))
     bases = list(dict.fromkeys(c["basis"] for c in cells))
     prim = _primary_basis(cells)
@@ -8326,7 +8399,7 @@ def _arch_input_forms(arch_names: Tuple[str, ...] = ARCH_ORDER,
     from xcquinox.alec.config import ARCHITECTURES
     out: Dict[str, Dict[str, Any]] = {}
     for name in arch_names:
-        cfg = ARCHITECTURES[name]
+        cfg = ARCHITECTURES[stored_key(name)]    # shown names reach the registry
         extras: List[str] = []
         for spec in cfg.descriptors:
             extras.extend(_DESCRIPTOR_X_LABELS[spec.name])
@@ -8571,6 +8644,9 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                                     []).append(r["density_rmse"])
             data.append((label, mae, wt, pbe_mae, pbe_wt, dmap))
             cellsets.append(set(mae.keys()))
+        if archs is not None:
+            # either spelling: a stored key is normalized to its shown name
+            archs = [as_shown(str(a)) for a in archs]
         cells = _comparison_cells(cellsets, archs)
         if archs is not None:
             present = {a for cs in cellsets for (a, _s) in cs}
@@ -8684,8 +8760,8 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
             "where a basis hasn't run) -- NN bars vs benchmark, PBE dashed"
             f"  ·  {run_id}", fontsize=11, y=1.0 - _f(0.16))
         if not bars_only:
-            fig.text(0.5, _f(0.09), provenance or _PROVENANCE_BASE, ha="center",
-                     fontsize=6, color="#777777")
+            fig.text(0.5, _f(0.09), _provenance_text(provenance), ha="center",
+                     fontsize=6, color="#777777", wrap=True)
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -8713,7 +8789,10 @@ def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path,
     if archs:
         rid += " · " + " + ".join(dict.fromkeys(archs))
         sfx = "_focus"
-    return [
+    # the key line of a figure spanning runs names the architectures of ALL
+    # of them, and leaves nothing behind for the next builder
+    with _key_line_scope(_key_line_archs_of_runs(run_dirs, archs)):
+        return [
         plot_basis_comparison(runs, outdir / f"basis_comparison{sfx}.png", rid,
                               eval_subdir=eval_subdir, archs=archs),
         # variant without the lower references key (columns + subset footer kept)
@@ -8739,9 +8818,13 @@ def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
     runs = list(zip((Path(rd) for rd in run_dirs), labels))
     rid = " + ".join(labels) + f" [{_ckpt_label(eval_subdir)}]"
     loss_rows = collect_training_losses_multi(runs)
-    return [
+    with _key_line_scope(_key_line_archs_of_runs(run_dirs)):
+        return [
         plot_training_losses(loss_rows, outdir / "training_loss_total.png",
-                             rid, highlight=[("deep_attn", 6)]),
+                             rid,
+                             # the rows carry shown names; the highlighted
+                             # cell is the registry's deep_attn at 6
+                             highlight=[(display_name("deep_attn"), 6)]),
         plot_failure_diagnostic(runs, outdir / "holdout_failure_mechanisms.png",
                                 rid, eval_subdir=eval_subdir),
         plot_capacity_trends(runs, outdir / "holdout_capacity_trends.png", rid,
@@ -8754,6 +8837,22 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                                  archs=None, *,
                                  exclude_cf: FrozenSet[str] = frozenset(),
                                  variant_note: str = "") -> List[Path]:
+    """:func:`_build_density_energy_figures_inner` under a key-line scope: a
+    standalone call footers the run's own architectures, a call inside
+    :func:`build_all` keeps the key line build_all set, and nothing leaks
+    out."""
+    archs_line = (_KEY_LINE_ARCHS if _KEY_LINE_ARCHS is not None
+                  else _key_line_archs_of_runs([run_dir], _validate_archs(archs)))
+    with _key_line_scope(archs_line):
+        return _build_density_energy_figures_inner(
+            run_dir, outdir, eval_subdir=eval_subdir, archs=archs,
+            exclude_cf=exclude_cf, variant_note=variant_note)
+
+
+def _build_density_energy_figures_inner(
+        run_dir: Path, outdir: Path, eval_subdir: str = "eval_holdout",
+        archs=None, *, exclude_cf: FrozenSet[str] = frozenset(),
+        variant_note: str = "") -> List[Path]:
     """Render the held-out energy (MAE + 2-subset WTMAD-2) figure and the
     in-sample density-vs-CCSD diagnostic, kept SEPARATE. The in-sample density
     panel always reads ``eval/`` (the final-checkpoint in-sample eval); only the
@@ -9629,7 +9728,7 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
         run_dir, basis_label=basis_label or run_basis_label(run_dir)), archs)
     written.append(plot_training_losses(
         loss_rows, outdir / "training_loss_total.png", run_id, note=note,
-        highlight=[("deep_attn", 6)]))
+        highlight=[(display_name("deep_attn"), 6)]))
     # the per-channel losses (2026-09-08), from aux_log.pkl where the pull
     # carried it down
     ch_rows = filter_rows_by_arch(collect_training_channel_losses(run_dir),
@@ -9678,6 +9777,14 @@ def build_all(run_dir: Path, outdir: Path,
     withdrawn when no rendered architecture is parented by it
     (:func:`scan_comparator_applies`). ``archs=None`` is the unrestricted
     pipeline, byte for byte."""
+    with _key_line_scope(None):
+        return _build_all_inner(run_dir, outdir, eval_subdir=eval_subdir,
+                                archs=archs)
+
+
+def _build_all_inner(run_dir: Path, outdir: Path, eval_subdir: str,
+                     archs) -> List[Path]:
+    global _KEY_LINE_ARCHS
     archs = _validate_archs(archs)
     outdir.mkdir(parents=True, exist_ok=True)
     run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
@@ -9685,6 +9792,20 @@ def build_all(run_dir: Path, outdir: Path,
         collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir), archs)
     insample_rows = filter_rows_by_arch(
         collect_insample_ae_rows(run_dir), archs)
+    if archs is not None and not reaction_rows and not insample_rows:
+        present = _archs_present([
+            {"arch": c.get("arch")}
+            for c in ccp._read_manifest_cells(run_dir).values()])
+        raise ValueError(
+            f"archs {list(archs)} match no evaluated cell of {run_dir.name} "
+            f"(its architectures: {present}); an empty figure set would "
+            "render. The two names that are both a registry key and a shown "
+            "name are read in the shown sense: deep_3x16 is the registry's "
+            "medium, and the registry's deep_3x16 is selected as deep0_3x16.")
+    # the footer's key line names every architecture the collected rows
+    # carry, so every figure of the set explains the shown names it draws;
+    # the scope opened by build_all restores the previous value on exit
+    _KEY_LINE_ARCHS = _archs_present(reaction_rows + insample_rows)
     _report_missing_archs(archs, reaction_rows)
     n_trained = trained_spec_count(run_dir, eval_subdir=eval_subdir,
                                    archs=archs)
@@ -9824,7 +9945,7 @@ def figure_cell_coverage(run_dir: Path,
         "archs": archs,
         "subsets": sorted({s for _, s in cells}),
         # archs the figure CANNOT render (present in data, absent from ARCH_ORDER)
-        "archs_not_in_order": [a for a in archs if a not in ARCH_ORDER],
+        "archs_not_in_order": [a for a in archs if not arch_style.in_order(a)],
         # ARCH_ORDER archs with NO held-out eval cell yet (run still in progress);
         # judged by eval coverage, not model.eqx (weights are often not pulled)
         "archs_missing": [a for a in ladder if a not in archs],

@@ -90,7 +90,15 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from arch_style import ARCH_COLOR, arch_color  # noqa: E402
+from arch_style import arch_color, display_name, key_line, stored_key  # noqa: E402
+
+
+def _footer_with_key(footer: str, shown_names) -> str:
+    """``footer`` with the expanded key of every shown name drawn appended on
+    its own line, so the names (deep_3x16 / deep0_3x16 ...) read without the
+    map. The renderer's own addition: a caller's footer never carries it."""
+    keys = key_line(shown_names)
+    return f"{footer}\n{keys}" if keys else footer
 from enhancement_factors import model_fc_curve, model_fx_curve  # noqa: E402
 from pretrain_fx_fc import (  # noqa: E402
     ALPHA_LINESTYLE,
@@ -184,7 +192,10 @@ def discover_cells(run_dir: Path, eval_channel: str,
     a run pulled without the weights looks like.
     """
     width, manifest_cells = read_manifest(run_dir)
-    wanted = set(archs) if archs else None
+    # ``archs`` in either spelling: the manifest names the registry key, a
+    # shown name is mapped to it; a name that is both is read in the shown
+    # sense, as the suite does
+    wanted = {stored_key(a) for a in archs} if archs else None
     found: List[Cell] = []
     missing: List[Tuple[int, str, int]] = []
     for index in sorted(manifest_cells):
@@ -433,8 +444,10 @@ def render_arch_figure(arch_name: str, cells: Sequence[Cell],
     if "fx_alpha" in curves_by_index[ordered[0].index]:
         return _render_arch_figure_scan(arch_name, ordered, curves_by_index,
                                         outdir, footer)
-    shades = subset_shades(ARCH_COLOR.get(arch_name, arch_color(arch_name)),
-                           len(ordered))
+    # ``arch_name`` is the manifest's stored key; the figure shows the derived
+    # name and is filed under it
+    shown = display_name(arch_name)
+    shades = subset_shades(arch_color(shown), len(ordered))
     fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.6))
     (ax_fx, ax_dfx), (ax_fc, ax_dfc) = axes
 
@@ -472,12 +485,12 @@ def render_arch_figure(arch_name: str, cells: Sequence[Cell],
         # text (which is legible there because each panel holds few curves).
         ax.legend(fontsize=7, ncol=2, title="training subset", frameon=True,
                   framealpha=0.85, edgecolor="0.85").get_title().set_fontsize(7)
-    fig.suptitle(f"{arch_name}: trained networks against the PBE parent",
+    fig.suptitle(f"{shown}: trained networks against the PBE parent",
                  fontsize=12)
-    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
-             color="0.35", wrap=True)
+    fig.text(0.5, 0.005, _footer_with_key(footer, [shown]), ha="center",
+             va="bottom", fontsize=7, color="0.35", wrap=True)
     fig.tight_layout(rect=(0.0, 0.045, 1.0, 0.97))
-    out = outdir / f"trained_fx_fc_{arch_name}.png"
+    out = outdir / f"trained_fx_fc_{shown}.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return out
@@ -491,8 +504,10 @@ def _render_arch_figure_scan(arch_name: str, ordered: Sequence[Cell],
     differences below, so every panel is a single-alpha family of cell curves
     exactly like the PBE panels. ``ordered`` is the cell list already sorted
     by (subset_size, index)."""
-    shades = subset_shades(ARCH_COLOR.get(arch_name, arch_color(arch_name)),
-                           len(ordered))
+    # ``arch_name`` is the manifest's stored key; the figure shows the derived
+    # name and is filed under it
+    shown = display_name(arch_name)
+    shades = subset_shades(arch_color(shown), len(ordered))
     fig, axes = plt.subplots(2, 4, figsize=(18.0, 7.6))
     top, bottom = axes
     first = curves_by_index[ordered[0].index]
@@ -536,12 +551,12 @@ def _render_arch_figure_scan(arch_name: str, ordered: Sequence[Cell],
         ax.set_axisbelow(True)
         ax.legend(fontsize=7, ncol=2, title="training subset", frameon=True,
                   framealpha=0.85, edgecolor="0.85").get_title().set_fontsize(7)
-    fig.suptitle(f"{arch_name}: trained networks against the SCAN parent",
+    fig.suptitle(f"{shown}: trained networks against the SCAN parent",
                  fontsize=12)
-    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
-             color="0.35", wrap=True)
+    fig.text(0.5, 0.005, _footer_with_key(footer, [shown]), ha="center",
+             va="bottom", fontsize=7, color="0.35", wrap=True)
     fig.tight_layout(rect=(0.0, 0.045, 1.0, 0.97))
-    out = outdir / f"trained_fx_fc_{arch_name}.png"
+    out = outdir / f"trained_fx_fc_{shown}.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return out
@@ -555,9 +570,11 @@ def render_best_figure(best: Sequence[Tuple[Cell, dict, Optional[float]]],
     if any("fx_alpha" in curves for _cell, curves, _mae in best):
         return _render_best_figure_with_scan(best, outdir, footer)
     fig, (ax_dfx, ax_dfc) = plt.subplots(1, 2, figsize=(11.0, 4.4))
+    shown_names = [display_name(cell.arch) for cell, _c, _m in best]
     for cell, curves, mae in best:
-        color = ARCH_COLOR.get(cell.arch, arch_color(cell.arch))
-        label = (f"{cell.arch} ({cell.subset_size} mol"
+        shown = display_name(cell.arch)
+        color = arch_color(shown)
+        label = (f"{shown} ({cell.subset_size} mol"
                  + ("" if cell.subset_size == 1 else "s")
                  + (f", {mae:.2f} kcal/mol" if mae is not None else "")
                  + (", final" if cell.fallback else "") + ")")
@@ -576,10 +593,10 @@ def render_best_figure(best: Sequence[Tuple[Cell, dict, Optional[float]]],
         ax.grid(True, color="0.92", linewidth=0.8)
         ax.set_axisbelow(True)
         ax.legend(frameon=False, fontsize=7)
-    fig.suptitle("Trained corrections to the PBE parent, each architecture at "
-                 "its best held-out cell", fontsize=12)
-    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
-             color="0.35", wrap=True)
+    fig.suptitle("Trained networks against the PBE parent: differences, each "
+                 "architecture at its best held-out cell", fontsize=12)
+    fig.text(0.5, 0.005, _footer_with_key(footer, shown_names), ha="center",
+             va="bottom", fontsize=7, color="0.35", wrap=True)
     fig.tight_layout(rect=(0.0, 0.06, 1.0, 0.95))
     out = outdir / "trained_fx_fc_delta_best.png"
     fig.savefig(out, dpi=150)
@@ -597,9 +614,11 @@ def _render_best_figure_with_scan(
     has_pbe = any("fx_model" in curves for _cell, curves, _mae in best)
     parent_tag = r"\mathrm{parent}" if has_pbe else r"\mathrm{SCAN}"
     fig, (ax_dfx, ax_dfc) = plt.subplots(1, 2, figsize=(11.0, 4.4))
+    shown_names = [display_name(cell.arch) for cell, _c, _m in best]
     for cell, curves, mae in best:
-        color = ARCH_COLOR.get(cell.arch, arch_color(cell.arch))
-        stem = (f"{cell.arch} ({cell.subset_size} mol"
+        shown = display_name(cell.arch)
+        color = arch_color(shown)
+        stem = (f"{shown} ({cell.subset_size} mol"
                 + ("" if cell.subset_size == 1 else "s")
                 + (f", {mae:.2f} kcal/mol" if mae is not None else "")
                 + (", final" if cell.fallback else ""))
@@ -632,12 +651,12 @@ def _render_best_figure_with_scan(
         ax.set_axisbelow(True)
         ax.legend(frameon=False, fontsize=7)
     fig.suptitle(
-        "Trained corrections to each architecture's own parent at its best "
-        "held-out cell (PBE for GGA, SCAN for meta-GGA)" if has_pbe else
-        "Trained corrections to the SCAN parent, each architecture at its "
-        "best held-out cell", fontsize=12)
-    fig.text(0.5, 0.005, footer, ha="center", va="bottom", fontsize=7,
-             color="0.35", wrap=True)
+        "Trained networks against each architecture's own parent: differences "
+        "at its best held-out cell (PBE for GGA, SCAN for meta-GGA)" if has_pbe
+        else "Trained networks against the SCAN parent: differences, each "
+        "architecture at its best held-out cell", fontsize=12)
+    fig.text(0.5, 0.005, _footer_with_key(footer, shown_names), ha="center",
+             va="bottom", fontsize=7, color="0.35", wrap=True)
     fig.tight_layout(rect=(0.0, 0.06, 1.0, 0.95))
     out = outdir / "trained_fx_fc_delta_best.png"
     fig.savefig(out, dpi=150)
@@ -656,23 +675,26 @@ def write_curves_csv(cells: Sequence[Cell], curves_by_index: Dict[int, dict],
     ordered = sorted(cells, key=lambda c: (c.arch, c.subset_size, c.index))
     if any("fx_alpha" in curves_by_index[c.index] for c in ordered):
         return _write_curves_csv_with_alpha(ordered, curves_by_index, out)
+    # the CSV convention of the figure layer: ``arch`` is the shown name,
+    # ``arch_stored`` the manifest's key
     with open(out, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["arch", "subset_size", "channel", "rs", "s", "f_model",
-                    "f_parent", "eval_channel"])
+        w.writerow(["arch", "arch_stored", "subset_size", "channel", "rs", "s",
+                    "f_model", "f_parent", "eval_channel"])
         for cell in ordered:
             curves = curves_by_index[cell.index]
+            shown = display_name(cell.arch)
             for s, fm, fp in zip(S_GRID, curves["fx_model"],
                                  curves["fx_parent"]):
-                w.writerow([cell.arch, cell.subset_size, "fx", "",
+                w.writerow([shown, cell.arch, cell.subset_size, "fx", "",
                             f"{s:.6f}", repr(float(fm)), repr(float(fp)),
                             cell.channel])
             for rs in RS_VALUES:
                 pair = curves["fc"][rs]
                 for s, fm, fp in zip(S_GRID, pair["model"], pair["parent"]):
-                    w.writerow([cell.arch, cell.subset_size, "fc", f"{rs:g}",
-                                f"{s:.6f}", repr(float(fm)), repr(float(fp)),
-                                cell.channel])
+                    w.writerow([shown, cell.arch, cell.subset_size, "fc",
+                                f"{rs:g}", f"{s:.6f}", repr(float(fm)),
+                                repr(float(fp)), cell.channel])
     return out
 
 
@@ -683,17 +705,18 @@ def _write_curves_csv_with_alpha(ordered: Sequence[Cell],
     the cell list already sorted by (arch, subset_size, index))."""
     with open(out, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["arch", "subset_size", "channel", "rs", "alpha", "s",
-                    "f_model", "f_parent", "eval_channel"])
+        w.writerow(["arch", "arch_stored", "subset_size", "channel", "rs",
+                    "alpha", "s", "f_model", "f_parent", "eval_channel"])
         for cell in ordered:
             curves = curves_by_index[cell.index]
+            shown = display_name(cell.arch)
             if "fx_alpha" in curves:
                 for alpha in ALPHA_VALUES:
                     pair = curves["fx_alpha"][alpha]
                     for s, fm, fp in zip(S_GRID, pair["model"],
                                          pair["parent"]):
-                        w.writerow([cell.arch, cell.subset_size, "fx", "",
-                                    f"{alpha:g}", f"{s:.6f}",
+                        w.writerow([shown, cell.arch, cell.subset_size, "fx",
+                                    "", f"{alpha:g}", f"{s:.6f}",
                                     repr(float(fm)), repr(float(fp)),
                                     cell.channel])
                 for alpha in ALPHA_VALUES:
@@ -701,21 +724,21 @@ def _write_curves_csv_with_alpha(ordered: Sequence[Cell],
                         pair = curves["fc_alpha"][alpha][rs]
                         for s, fm, fp in zip(S_GRID, pair["model"],
                                              pair["parent"]):
-                            w.writerow([cell.arch, cell.subset_size, "fc",
-                                        f"{rs:g}", f"{alpha:g}", f"{s:.6f}",
-                                        repr(float(fm)), repr(float(fp)),
-                                        cell.channel])
+                            w.writerow([shown, cell.arch, cell.subset_size,
+                                        "fc", f"{rs:g}", f"{alpha:g}",
+                                        f"{s:.6f}", repr(float(fm)),
+                                        repr(float(fp)), cell.channel])
             else:
                 for s, fm, fp in zip(S_GRID, curves["fx_model"],
                                      curves["fx_parent"]):
-                    w.writerow([cell.arch, cell.subset_size, "fx", "", "",
-                                f"{s:.6f}", repr(float(fm)), repr(float(fp)),
-                                cell.channel])
+                    w.writerow([shown, cell.arch, cell.subset_size, "fx", "",
+                                "", f"{s:.6f}", repr(float(fm)),
+                                repr(float(fp)), cell.channel])
                 for rs in RS_VALUES:
                     pair = curves["fc"][rs]
                     for s, fm, fp in zip(S_GRID, pair["model"],
                                          pair["parent"]):
-                        w.writerow([cell.arch, cell.subset_size, "fc",
+                        w.writerow([shown, cell.arch, cell.subset_size, "fc",
                                     f"{rs:g}", "", f"{s:.6f}",
                                     repr(float(fm)), repr(float(fp)),
                                     cell.channel])

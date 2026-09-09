@@ -127,3 +127,75 @@ def test_rung_ordering_and_render_mixed_rungs(tmp_path):
     out = tmp_path / "mixed.png"
     written = ppc.plot_pretraining_curves(curves, out, run_label="mixed")
     assert written.is_file() and written.stat().st_size > 1000
+
+
+# ---------------------------------------------------------------------------
+# T6: architecture display names (2026-09-09)
+#
+# The pre-training directories keep the stored key (they are what the cluster
+# wrote); the legend states what each network is.
+# ---------------------------------------------------------------------------
+
+def test_legend_labels_show_the_display_name(tmp_path, monkeypatch):
+    """A ``pretrain/medium`` directory is labelled ``deep_3x16``.
+
+    Kills the label half of m3/m6 here: the curve of ``medium`` and the curve
+    of the registry's ``deep_3x16`` would otherwise sit in one legend under
+    two names that say nothing about the difference between them (the
+    zero-initialized last layer), while a reader takes ``medium`` for a size.
+    """
+    import matplotlib.figure as mfig
+    captured = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        captured.append(self)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    run = _make_run(tmp_path, archs=("medium", "deep_3x16"), n=60)
+    curves = ppc.load_pretrain_curves(run)
+    # the loader still keys on the DIRECTORY, which is the stored key
+    assert set(curves) == {"medium", "deep_3x16"}
+    ppc.plot_pretraining_curves(curves, tmp_path / "out.png",
+                                run_label="run_x")
+    assert captured, "no figure was saved"
+    f = captured[-1]
+    labels = []
+    for ax in f.axes:
+        legend = ax.get_legend()
+        if legend is not None:
+            labels += [t.get_text() for t in legend.get_texts()]
+    assert labels
+    assert any(t.startswith("deep_3x16") for t in labels), labels
+    assert any(t.startswith("deep0_3x16") for t in labels), labels
+    assert not any(t.startswith("medium") for t in labels), labels
+
+
+def test_ordering_keeps_directory_keys_while_color_resolves_the_display_name(
+        tmp_path):
+    """The curves are keyed by DIRECTORY (the stored key), so the ordering
+    helper must hand those keys back -- the plot loop indexes the mapping with
+    them -- while the palette, now keyed on the shown names, is reached
+    through the display map.
+
+    RED: ``arch_color("medium")`` and ``ARCH_COLOR["deep_3x16"]`` are two
+    different colours today (medium's green and the old deep blue).
+    """
+    run = _make_run(tmp_path, archs=("medium", "deep_3x16"), n=60)
+    curves = ppc.load_pretrain_curves(run)
+    assert ppc._order_archs(list(curves)) == ["medium", "deep_3x16"]
+    assert ppc._arch_color("medium", 0) == \
+        ppc.arch_style.ARCH_COLOR["deep_3x16"]
+    assert ppc._arch_color("deep_3x16", 1) == \
+        ppc.arch_style.ARCH_COLOR["deep0_3x16"]
+
+
+def test_ordering_keeps_two_directories_that_share_a_shown_name():
+    """A directory named by an alias sits beside the registry directory of
+    the same network; the ordering must hand both back (the plot loop indexes
+    the curve mapping with them), never drop one."""
+    got = ppc._order_archs(["shallow", "deep_2x8", "medium"])
+    assert sorted(got) == ["deep_2x8", "medium", "shallow"]
+    assert got.index("deep_2x8") < got.index("medium")
+    assert got.index("shallow") < got.index("medium")

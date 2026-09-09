@@ -60,10 +60,18 @@ _FALLBACK_CMAP = plt.get_cmap("tab10")
 _RUNG_LS = {"GGA": "-", "meta-GGA": "--", "rung-3.5": ":", "rung-3.5+meta-GGA": "-."}
 
 
+def _shown(arch: str) -> str:
+    """The shown name of a pre-training DIRECTORY (a stored key), mapped
+    explicitly: a stored key that is also a shown name (``deep_3x16``) cannot
+    be told apart by inspection."""
+    return arch_style.display_name(arch) if arch_style is not None else arch
+
+
 def _arch_color(arch: str, idx: int):
-    """Rung-keyed shared color if available, else a stable tab10 fallback."""
+    """Rung-keyed shared color of the directory's shown name if available,
+    else a stable tab10 fallback."""
     if arch_style is not None:
-        return arch_style.arch_color(arch)
+        return arch_style.arch_color(_shown(arch))
     return _FALLBACK_CMAP(idx % 10)
 
 
@@ -71,12 +79,19 @@ def _arch_linestyle(arch: str):
     """Rung-keyed linestyle (solid GGA .. dashdot combined); solid if unavailable."""
     if arch_style is None:
         return "-"
-    return _RUNG_LS.get(arch_style.rung_of(arch), "-")
+    return _RUNG_LS.get(arch_style.rung_of(_shown(arch)), "-")
 
 
 def _order_archs(archs):
-    """Rung-grouped order (GGA -> meta-GGA -> rung-3.5 -> combined) if available."""
-    return arch_style.sort_by_rung(archs) if arch_style is not None else sorted(archs)
+    """Rung-grouped order (GGA -> meta-GGA -> rung-3.5 -> combined) if
+    available. Takes and returns the DIRECTORY keys (the plot loop indexes
+    the curve mapping with them); the order is that of their shown names."""
+    if arch_style is None:
+        return sorted(archs)
+    shown = {a: _shown(a) for a in archs}
+    rank = {s: i for i, s in enumerate(arch_style.sort_by_rung(sorted(set(shown.values()))))}
+    # two directories mapping to one shown name keep both, in key order
+    return sorted(archs, key=lambda a: (rank[shown[a]], a))
 
 
 def load_pretrain_curves(run_dir):
@@ -154,8 +169,9 @@ def plot_pretraining_curves(curves, out_path, run_label=""):
         ls = _arch_linestyle(arch)
         meta = d.get("meta") or {}
         fx, fc = meta.get("final_loss_x"), meta.get("final_loss_c")
-        lbl_x = arch if fx is None else f"{arch}  (final {fx:.2e})"
-        lbl_c = arch if fc is None else f"{arch}  (final {fc:.2e})"
+        shown = _shown(arch)
+        lbl_x = shown if fx is None else f"{shown}  (final {fx:.2e})"
+        lbl_c = shown if fc is None else f"{shown}  (final {fc:.2e})"
         axx.plot(np.arange(d["x"].size), d["x"], color=color, lw=1.3, ls=ls, label=lbl_x)
         axc.plot(np.arange(d["c"].size), d["c"], color=color, lw=1.3, ls=ls, label=lbl_c)
     for ax, title in ((axx, "X-net  (exchange $F_x$)"),

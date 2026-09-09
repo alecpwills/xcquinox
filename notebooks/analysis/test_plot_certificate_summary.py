@@ -102,9 +102,11 @@ def test_png_and_csv_written_with_hand_checked_numbers(two_label_tree,
     csv_path = tmp_path / "figs" / "certificate_summary.csv"
     assert csv_path.is_file()
     with open(csv_path) as f:
-        rows = {(r["label"], r["arch"]): r for r in csv.DictReader(f)}
+        # keyed by the directory (``arch_stored``); ``arch`` is the shown name
+        rows = {(r["label"], r["arch_stored"]): r for r in csv.DictReader(f)}
     assert len(rows) == 4
     r = rows[("v7", "shallow")]
+    assert r["arch"] == "deep_2x8"
     assert float(r["mean_abs_dAE_kcalmol"]) == pytest.approx(
         (0.2 + 0.4 + 1.42) / 3, abs=1e-12)
     assert float(r["max_abs_dAE_kcalmol"]) == pytest.approx(1.42, abs=1e-12)
@@ -224,3 +226,86 @@ def test_an_arch_directory_mismatch_is_refused(tmp_path):
         "medium": _cert("shallow", [0.2], verdict="PASS")})
     with pytest.raises(ValueError, match="mislabeled"):
         pcs.collect_certificates([("v7", run)])
+
+
+# ---------------------------------------------------------------------------
+# T6: architecture display names (2026-09-09)
+#
+# The certificate is located by DIRECTORY and names its own arch, so the
+# record keeps the stored key; the drawn axis and the CSV's second name state
+# what each network is.
+# ---------------------------------------------------------------------------
+
+def _display_tree(tmp_path):
+    """One run holding the two 3x16 networks the rename separates."""
+    return _write_run(tmp_path, "run_v7", {
+        "medium": _cert("medium", [0.2, -0.4], verdict="PASS"),
+        "deep_3x16": _cert("deep_3x16", [0.3, 0.5], verdict="PASS"),
+    })
+
+
+def test_certificate_csv_shows_the_display_name_and_keeps_the_stored_key(
+        tmp_path):
+    """The one CSV convention of the figure layer: ``arch`` is the shown name
+    and ``arch_stored`` the key that joins back to ``pretrain/<arch>``.
+
+    RED: ``arch_stored`` does not exist, and the two rows are labelled
+    ``medium`` and ``deep_3x16`` -- the second of which is the FIRST one's
+    shown name, so the table cannot be read without the map.
+    """
+    run = _display_tree(tmp_path)
+    out = tmp_path / "figs" / "certificate_summary.png"
+    assert pcs.main(["--runs", f"v7={run}", "--out", str(out)]) == 0
+    csv_path = tmp_path / "figs" / "certificate_summary.csv"
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        names = list(reader.fieldnames)
+        rows = {r["arch"]: r for r in reader}
+    assert names[names.index("arch") + 1] == "arch_stored", names
+    assert set(rows) == {"deep_3x16", "deep0_3x16"}
+    assert rows["deep_3x16"]["arch_stored"] == "medium"
+    assert rows["deep0_3x16"]["arch_stored"] == "deep_3x16"
+
+
+def test_axis_labels_show_the_display_name(tmp_path, monkeypatch):
+    """The drawn axis carries the shown names; no bare stored key reaches a
+    tick label, where ``medium`` reads as a size and ``deep_3x16`` reads as
+    the other network."""
+    import matplotlib.figure as mfig
+    captured = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        captured.append(self)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    records = pcs.collect_certificates([("v7", _display_tree(tmp_path))])
+    pcs.plot_certificate_summary(records, str(tmp_path / "cert.png"))
+    assert captured, "no figure was saved"
+    ticks = [t.get_text() for ax in captured[-1].axes
+             for t in ax.get_xticklabels() if t.get_text()]
+    assert set(ticks) == {"deep_3x16", "deep0_3x16"}, ticks
+
+
+def test_axis_runs_in_display_order_not_in_stored_key_order(tmp_path,
+                                                            monkeypatch):
+    """The ticks are labelled with the shown names, so the axis is ordered by
+    them (ARCH_ORDER: the Glorot ladder before the zero-init family), not by
+    the alphabetical order of the invisible directory keys."""
+    import matplotlib.figure as mfig
+    captured = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        captured.append(self)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    records = pcs.collect_certificates([("v7", _display_tree(tmp_path))])
+    pcs.plot_certificate_summary(records, str(tmp_path / "cert.png"))
+    ticks = [t.get_text() for ax in captured[-1].axes
+             for t in ax.get_xticklabels() if t.get_text()]
+    assert ticks == ["deep_3x16", "deep0_3x16"], ticks
+    assert pcs._display_order(["deep_3x16", "medium", "shallow"]) == \
+        ["shallow", "medium", "deep_3x16"]
