@@ -964,6 +964,165 @@ def test_span_fallback_fires_on_comparator_divergence(tmp_path, monkeypatch):
     assert fig._energy_cell_coverage_warning(rows) == ""
 
 
+# ---------------------------------------------------------------------------
+# In-sample reaction rows: the cell's OWN training reactions, formed from the
+# final checkpoint's self-consistent species energies
+# ---------------------------------------------------------------------------
+
+# The element anchors of train_metadata.json; the pool test is membership of
+# a reaction's PRODUCTS in this dict (an atomization written as a reaction).
+_INS_ANCHORS = {"H": -0.5, "O": -75.0, "C": -37.8, "N": -54.5}
+
+# Hartree. 'h' (the BH76 spelling of the hydrogen atom) carries a DIFFERENT
+# energy from the W4-11 'H', so a species lookup that casefolds names cannot
+# reproduce the barrier's reaction energy.
+_INS_E_NN = {"HO": -75.65, "H": -0.50, "O": -75.00, "h": -0.48,
+             "HOh_ts": -76.09,
+             # the IP pair's species carry energies too, so a collector that
+             # turned IP pairs into reactions would form a row for them
+             # rather than drop it as comparator-less
+             "Li": -7.47, "Li+": -7.27}
+_INS_E_PBE = {"HO": -75.62, "H": -0.505, "O": -75.01, "h": -0.49,
+              "HOh_ts": -76.06, "Li": -7.48, "Li+": -7.28}
+
+_INS_RXNS = [
+    # atomization written as a reaction: products are all anchors -> w411
+    {"name": "HO", "reactants": ["HO"], "products": ["H", "O"],
+     "coeffs": [-1.0, 1.0, 1.0], "e_rxn_ref": 0.20},
+    # barrier: the product is a transition state, not an anchor -> bh76
+    {"name": "OH+h_to_HOh_ts", "reactants": ["HO", "h"],
+     "products": ["HOh_ts"], "coeffs": [-1.0, -1.0, 1.0],
+     "e_rxn_ref": 0.03},
+]
+
+# second spec: 'C' has no PBE leg (its reaction has no comparator and drops),
+# 'N' no NN leg (its row stays, NN columns NaN -- the held-out convention)
+_INS2_E_NN = {"CO": -113.30, "C": -37.80, "O": -75.00, "HN": -55.25,
+              "H": -0.50}
+_INS2_E_PBE = {"CO": -113.27, "O": -75.01, "HN": -55.20, "H": -0.505,
+               "N": -54.60}
+_INS2_RXNS = [
+    {"name": "CO", "reactants": ["CO"], "products": ["C", "O"],
+     "coeffs": [-1.0, 1.0, 1.0], "e_rxn_ref": 0.40},
+    {"name": "HN", "reactants": ["HN"], "products": ["H", "N"],
+     "coeffs": [-1.0, 1.0, 1.0], "e_rxn_ref": 0.12},
+]
+
+_INS_ROW_SCHEMA = {"idx", "arch", "subset_size", "name", "pool",
+                   "ref_kcalmol", "de_nn_kcalmol", "de_pbe_kcalmol",
+                   "abs_error_nn_kcalmol", "abs_error_pbe_kcalmol",
+                   "reactants", "products"}
+
+
+def _write_insample_training_reactions(run, spec, reactions, e_nn, e_pbe, *,
+                                       loss_kwargs_extra=None):
+    """Give one spec the training-record shape the in-sample energy leg reads:
+    ``loss_kwargs.bh76_reactions`` + ``atom_energies`` in train_metadata.json,
+    per-species ``E_total_nn`` / ``E_pbe`` in eval/per_molecule.json."""
+    sd = run / "checkpoints" / spec
+    meta = json.loads((sd / "train_metadata.json").read_text())
+    lk = {"bh76_reactions": reactions}
+    lk.update(loss_kwargs_extra or {})
+    meta["loss_kwargs"] = lk
+    meta["atom_energies"] = dict(_INS_ANCHORS)
+    (sd / "train_metadata.json").write_text(json.dumps(meta))
+    ev = sd / "eval"
+    ev.mkdir(parents=True, exist_ok=True)
+    (ev / "per_molecule.json").write_text(json.dumps(
+        [{"molecule": m, "skipped": False,
+          "E_total_nn": e_nn.get(m), "E_pbe": e_pbe.get(m)}
+         for m in sorted(set(e_nn) | set(e_pbe))]))
+
+
+def _de(coeffs, species, energies):
+    """Reaction energy in kcal/mol from the signed coefficients, which run
+    over reactants THEN products."""
+    return sum(c * energies[s] for c, s in zip(coeffs, species)) * _KCAL
+
+
+def test_collect_insample_reaction_rows_forms_training_reactions(tmp_path):
+    """The in-sample energy leg is the cell's own supervised reactions, formed
+    from the final checkpoint's self-consistent species energies -- not the
+    fixed-anchor in-sample AE metric.
+
+    Kills: coefficients applied to the reactants only (the products carry the
+    atoms of an atomization); an unconverted ``e_rxn_ref`` (Hartree in the
+    training record, kcal/mol in the row); an inverted pool rule (an
+    atomization is W4-11, a barrier BH76); IP13 pairs turned into rows (they
+    are reactions of neither pool); and a comparator-less reaction kept
+    (a PBE-less species leaves no baseline to compare against, while an
+    NN-less species keeps the row with NaN NN columns)."""
+    run = _make_run_dir(tmp_path)
+    _write_insample_training_reactions(
+        run, "spec_0000", _INS_RXNS, _INS_E_NN, _INS_E_PBE,
+        loss_kwargs_extra={"ip13_pairs": [
+            {"name": "Li_IP", "neutral": "Li", "cation": "Li+",
+             "ip_ref": 0.198}]})
+    _write_insample_training_reactions(
+        run, "spec_0001", _INS2_RXNS, _INS2_E_NN, _INS2_E_PBE)
+
+    rows = fig.collect_insample_reaction_rows(run)
+    by = {r["name"]: r for r in rows}
+    # specs 2-5 carry no bh76_reactions and contribute nothing; the CO
+    # reaction has no comparator leg; the IP pair is not a reaction
+    assert sorted(by) == ["HN", "HO", "OH+h_to_HOh_ts"], sorted(by)
+    assert len(rows) == 3, rows
+    assert "CO" not in by and "Li_IP" not in by
+    for r in rows:
+        assert set(r) == _INS_ROW_SCHEMA, sorted(set(r) ^ _INS_ROW_SCHEMA)
+
+    # pools: products all anchors -> w411, otherwise bh76
+    assert by["HO"]["pool"] == "w411"
+    assert by["HN"]["pool"] == "w411"
+    assert by["OH+h_to_HOh_ts"]["pool"] == "bh76"
+
+    # cell join, from the manifest
+    assert (by["HO"]["idx"], by["HO"]["arch"],
+            by["HO"]["subset_size"]) == (0, "deep", 1)
+    assert (by["HN"]["idx"], by["HN"]["arch"],
+            by["HN"]["subset_size"]) == (1, "deep", 3)
+    assert by["HO"]["reactants"] == ["HO"]
+    assert by["HO"]["products"] == ["H", "O"]
+
+    de_ho = _de([-1.0, 1.0, 1.0], ["HO", "H", "O"], _INS_E_NN)
+    de_ho_pbe = _de([-1.0, 1.0, 1.0], ["HO", "H", "O"], _INS_E_PBE)
+    de_ts = _de([-1.0, -1.0, 1.0], ["HO", "h", "HOh_ts"], _INS_E_NN)
+    de_ts_pbe = _de([-1.0, -1.0, 1.0], ["HO", "h", "HOh_ts"], _INS_E_PBE)
+    de_hn_pbe = _de([-1.0, 1.0, 1.0], ["HN", "H", "N"], _INS2_E_PBE)
+    # the oracle discriminates: no two legs (and no leg and its reference)
+    # coincide, so a swapped de/ref or a dropped product term MOVES a number
+    assert len({round(v, 6) for v in (de_ho, de_ho_pbe, de_ts, de_ts_pbe,
+                                      0.20 * _KCAL, 0.03 * _KCAL)}) == 6
+
+    ho = by["HO"]
+    assert ho["ref_kcalmol"] == pytest.approx(0.20 * _KCAL)
+    assert ho["de_nn_kcalmol"] == pytest.approx(de_ho)
+    assert ho["de_pbe_kcalmol"] == pytest.approx(de_ho_pbe)
+    assert ho["abs_error_nn_kcalmol"] == pytest.approx(
+        abs(de_ho - 0.20 * _KCAL))
+    assert ho["abs_error_pbe_kcalmol"] == pytest.approx(
+        abs(de_ho_pbe - 0.20 * _KCAL))
+
+    ts = by["OH+h_to_HOh_ts"]
+    assert ts["ref_kcalmol"] == pytest.approx(0.03 * _KCAL)
+    assert ts["de_nn_kcalmol"] == pytest.approx(de_ts)
+    assert ts["de_pbe_kcalmol"] == pytest.approx(de_ts_pbe)
+    assert ts["abs_error_nn_kcalmol"] == pytest.approx(
+        abs(de_ts - 0.03 * _KCAL))
+    assert ts["abs_error_pbe_kcalmol"] == pytest.approx(
+        abs(de_ts_pbe - 0.03 * _KCAL))
+
+    # NN leg missing for 'N': the row stays with NaN NN columns and a FINITE
+    # comparator leg
+    hn = by["HN"]
+    assert math.isnan(hn["de_nn_kcalmol"])
+    assert math.isnan(hn["abs_error_nn_kcalmol"])
+    assert hn["de_pbe_kcalmol"] == pytest.approx(de_hn_pbe)
+    assert hn["abs_error_pbe_kcalmol"] == pytest.approx(
+        abs(de_hn_pbe - 0.12 * _KCAL))
+    assert hn["ref_kcalmol"] == pytest.approx(0.12 * _KCAL)
+
+
 def test_grouped_bars_star_marks_incomplete_cells(tmp_path):
     import matplotlib.pyplot as plt
     # a2's metric is NaN: an incomplete cell with no finite bar height
@@ -6979,7 +7138,11 @@ def test_output_names_carry_no_holdover_stems():
     # renamed away from its twin (``_log`` for ``_logy``) or a second writer
     # site drifting to a near-miss (``training_losses_total``) is a leftover
     # the prefix scan above cannot see; the review's two surviving mutations.
+    # Stems added AFTER the renaming carry no old name and so no table row;
+    # the module records them in NEW_OUTPUTS and the converse check reads
+    # that tuple beside the table (else every new output reads as a stray).
     new_stems = {v for v in names.values() if v != "_eps"}
+    new_stems |= set(getattr(fig, "NEW_OUTPUTS", ()))
     allowed = {"holdout_density_tail.csv", "basis_comparison{sfx}.png",
                "basis_comparison{sfx}_clean.png",
                "basis_comparison{sfx}_no_refs.png"}
@@ -6992,6 +7155,25 @@ def test_output_names_carry_no_holdover_stems():
         if stem not in new_stems:
             stray.append(lit)
     assert not stray, sorted(stray)
+
+
+def test_new_outputs_are_recorded():
+    """An output added after the 2026-05 renaming has no old name, so
+    ``OUTPUT_NAMES`` (a rename table) has no row for it; the module records
+    such stems in ``NEW_OUTPUTS`` and the holdover guard's converse check
+    reads both. Without the tuple the new in-sample 3x3 reads as a stray
+    literal, and with a stale tuple it records a file nothing writes."""
+    assert fig.NEW_OUTPUTS == ("insample_by_pool_3x3",)
+    # a new stem is not a renamed one
+    assert not set(fig.NEW_OUTPUTS) & set(fig.OUTPUT_NAMES.values())
+    assert not set(fig.NEW_OUTPUTS) & set(fig.OUTPUT_NAMES)
+    # every recorded stem is a literal the module actually writes
+    src = Path(fig.__file__).read_text()
+    missing = [stem for stem in fig.NEW_OUTPUTS
+               if not re.search(r"['\"]" + re.escape(stem)
+                                + r"(_logy|_eps|_eps_logy)?\.(png|csv)['\"]",
+                                src)]
+    assert not missing, missing
 
 
 def test_other_scripts_carry_no_holdover_stems():

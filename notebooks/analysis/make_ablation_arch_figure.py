@@ -138,6 +138,9 @@ OUTPUT_NAMES: Dict[str, str] = {
     "diagnostic_capacity_trends": "holdout_capacity_trends",
     "_dfs_units": EPS_SUFFIX,
 }
+# Stems added after the renaming (no old name): the holdover guard reads
+# them beside OUTPUT_NAMES.
+NEW_OUTPUTS: Tuple[str, ...] = ("insample_by_pool_3x3",)
 
 # Compact rung tags for tight gutters/labels (the full RUNG_ORDER names are too
 # long for a heatmap gutter or a 1-arch-tall rung span).
@@ -4062,6 +4065,133 @@ def collect_insample_density_rows(run_dir: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def collect_insample_reaction_rows(run_dir: Path) -> List[Dict[str, Any]]:
+    """The cells' OWN training reactions, scored from the final checkpoint's
+    self-consistent species energies -- the in-sample energy leg.
+
+    Per spec, the reactions the cell trained on are read from
+    ``train_metadata.json`` (``loss_kwargs["bh76_reactions"]``: name,
+    reactants, products, signed ``coeffs`` aligned with reactants then
+    products, ``e_rxn_ref`` in Hartree; under ``ae_as_reactions`` the W4-11
+    atomizations sit here as molecule-to-atoms reactions beside the BH76
+    barriers) and each reaction's energy is formed as ``sum_i c_i E_i`` over
+    the per-species ``E_total_nn`` / ``E_pbe`` of ``eval/per_molecule.json``
+    (the same energies the held-out reconstruction uses), both legs in
+    kcal/mol. A reaction is an atomization (pool ``w411``) when every
+    product is a key of the record's ``atom_energies``; otherwise a barrier
+    (``bh76``). IP13 pairs are reactions of neither pool and produce no row.
+    Rows carry the held-out reaction schema (``_reconstruct_spec_rows``), so
+    the per-channel reducers and the 3x3 renderer read them unchanged; as
+    there, a reaction with a species lacking its PBE energy is not a row
+    (no comparator) and one lacking an NN energy keeps its row with NaN NN
+    columns. The suite's in-sample AE metric is NOT used: it subtracts the
+    network's molecular energy from fixed exact-atom anchors and reports an
+    absolute-energy offset."""
+    cells = ccp._read_manifest_cells(run_dir)
+    rows: List[Dict[str, Any]] = []
+    # skipped reactions, printed like the held-out reconstruction's stats so
+    # a silent drop cannot pass for an empty training record
+    skipped = {"unreadable": 0, "malformed": 0, "no_ref": 0, "no_pbe": 0,
+               "nan_nn": 0}
+    for idx, spec_dir in ccp._spec_dirs(run_dir):
+        tm_path = spec_dir / "train_metadata.json"
+        pm_path = spec_dir / "eval" / "per_molecule.json"
+        if not (tm_path.is_file() and pm_path.is_file()):
+            continue
+        try:
+            with tm_path.open() as f:
+                meta = json.load(f)
+            with pm_path.open() as f:
+                pm = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            skipped["unreadable"] += 1
+            continue
+        reactions = (meta.get("loss_kwargs") or {}).get("bh76_reactions") or []
+        if not reactions:
+            continue
+        anchors = set((meta.get("atom_energies") or {}).keys())
+        e_nn = {str(r.get("molecule")): float(r["E_total_nn"]) for r in pm
+                if _is_num(r.get("E_total_nn"))}
+        e_pbe = {str(r.get("molecule")): float(r["E_pbe"]) for r in pm
+                 if _is_num(r.get("E_pbe"))}
+        cell = cells.get(idx, {})
+        for rxn in reactions:
+            reactants = [str(s) for s in (rxn.get("reactants") or [])]
+            products = [str(s) for s in (rxn.get("products") or [])]
+            species = reactants + products
+            coeffs = [float(c) for c in (rxn.get("coeffs") or [])]
+            if len(coeffs) != len(species) or not species:
+                skipped["malformed"] += 1
+                continue
+            if not _is_num(rxn.get("e_rxn_ref")):
+                skipped["no_ref"] += 1
+                continue
+            if any(s not in e_pbe for s in species):
+                skipped["no_pbe"] += 1        # no comparator: not a row
+                continue
+            ref = float(rxn["e_rxn_ref"]) * HA_TO_KCAL
+            de_pbe = sum(c * e_pbe[s] for c, s in zip(coeffs, species)) \
+                * HA_TO_KCAL
+            if all(s in e_nn for s in species):
+                de_nn = sum(c * e_nn[s] for c, s in zip(coeffs, species)) \
+                    * HA_TO_KCAL
+            else:
+                skipped["nan_nn"] += 1
+                de_nn = float("nan")          # NN leg unscored: row kept
+            pool = "w411" if products and all(p in anchors for p in products) \
+                else "bh76"
+            rows.append({
+                "idx": idx,
+                "arch": cell.get("arch"),
+                "subset_size": cell.get("subset_size"),
+                "name": rxn.get("name"),
+                "pool": pool,
+                "ref_kcalmol": ref,
+                "de_nn_kcalmol": de_nn,
+                "de_pbe_kcalmol": de_pbe,
+                "abs_error_nn_kcalmol": abs(de_nn - ref),
+                "abs_error_pbe_kcalmol": abs(de_pbe - ref),
+                "reactants": reactants,
+                "products": products,
+            })
+    if any(skipped.values()):
+        print("  (in-sample reactions: skipped "
+              f"{skipped['unreadable']} unreadable spec(s), "
+              f"{skipped['malformed']} malformed, {skipped['no_ref']} without "
+              f"a reference, {skipped['no_pbe']} without a PBE leg; "
+              f"{skipped['nan_nn']} kept with a NaN NN leg)")
+    return rows
+
+
+def _insample_eval_note(ins_rows: List[Dict[str, Any]],
+                        drows: List[Dict[str, Any]]) -> str:
+    """The in-sample counterpart of :func:`_holdout_eval_note`: the run's
+    union of training reactions per pool (name-deduplicated) and the
+    trained species with an Eq. 20 eps value, for the footer's dataset line
+    of the in-sample 3x3."""
+    pool_label = {"bh76": "BH76", "w411": "W4-11"}
+    pools: Dict[str, int] = {}
+    for r in _dedup_rows_by_name(ins_rows):
+        p = r.get("pool")
+        if p:
+            pools[p] = pools.get(p, 0) + 1
+    parts: List[str] = []
+    if pools:
+        frag = " + ".join(f"{pool_label.get(p, str(p).upper())} {n}"
+                          for p, n in sorted(pools.items()))
+        parts.append(f"each cell's own training reactions (the run's union: "
+                     f"{frag}; atomizations as reactions and barriers; IP "
+                     "pairs excluded; reaction energies, kcal/mol)")
+    n_sp = len({_mol_cf(r.get("molecule")) for r in drows
+                if r.get("molecule") and _is_num(r.get("density_eps_l1"))})
+    if n_sp:
+        parts.append(f"density: {n_sp} trained species vs CCSD refs "
+                     "(atoms excluded)")
+    if not parts:
+        return ""
+    return "In-sample (final checkpoint): " + "; ".join(parts) + "."
+
+
 # Cross-spec relative spread above which a species' PBE density reference is
 # reference-inconsistent (the c2 class: two arms carrying incompatible c2
 # references differ 11x; within-arm scatter is ~0). The energy-side twin of
@@ -6234,8 +6364,33 @@ _INSAMPLE_OVERVIEW_CAVEAT = (
     "the panels are identical in the final-step and val-best dirs; only the "
     "title's checkpoint stamp differs).\n"
     "No PBE AE baseline exists in-sample (per_molecule.json has no PBE AE "
-    "column); no in-sample " + _ED_SYM + " (no PBE energy anchor to "
-    "self-calibrate gamma).")
+    "column), so panel (A) has no PBE bar and this canvas carries no "
+    + _ED_SYM + "; the in-sample energy leg against PBE is the training "
+    "reactions themselves, on insample_by_pool_3x3_eps.png (DFS units).")
+
+# The in-sample 3x3's caveat (2026-09-08): the held-out eps caveat's channel
+# and reduction statements hold, its gamma rule and cross-reference do not --
+# the in-sample figure always carries the Letter's published slope and has
+# no parity companion.
+_3X3_INSAMPLE_EPS_CAVEAT = (
+    "Columns are channels: BH76 | W4-11 | combined, over each cell's OWN "
+    "training reactions (pool by the reaction's form: atomizations W4-11, "
+    "barriers BH76) and training molecules. A/B and the G/H ED energy legs "
+    "use the SINGLE-POOL 'WTMAD-2', which collapses to "
+    "56.84*MAD_pool/mean|dE_ref|_pool -- a scaled relative error, NOT a "
+    "reweighting (only the combined column reweights; NOT full GMTKN55).\n"
+    + _ED_N_SYM + " = 2/(1/E + 1/(gamma " + _EPS_N_SYM + ")); " + _EPS_N_EQ
+    + " (Eq. 20 per species); ONE gamma shared by all channels, the "
+    "Letter's published 1084.87 kcal/mol (never the own-axes fit), stamped "
+    "in each panel -- " + _ED_N_SYM + " compares across columns; "
+    + _ED_N_SYM + " of PBE != E_PBE. Density row = cell-mean " + _EPS_N_SYM
+    + " over the trained molecules. The dashed 'PBE (pooled)' line reduces "
+    "the UNION of the run's training reactions / molecules, not any one "
+    "cell's; the capped spans and the beats marks use each cell's own "
+    "reactions. SCAN-referenced architectures carry no beats mark here (no "
+    "SCAN comparator on the training reactions). Final checkpoint only "
+    "(eval/ has no val-best variant: identical in the final-step and "
+    "val-best directories, only the title's checkpoint stamp differs).")
 
 
 def _gamma_stamp_text(summary: Dict[str, Any]) -> str:
@@ -8454,7 +8609,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         ds = _holdout_eval_note(rows, hd_rows)
         # the variant note describes the held-out density family only: the
         # six figures already rendered above (energy-only and in-sample)
-        # hold unfiltered data and keep the plain note
+        # hold unfiltered data and keep the plain note, as does the in-sample
+        # 3x3 rendered below inside the eps branch
+        note_plain = note
         if variant_note:
             note = f"{note}  {variant_note}" if note else variant_note
         # the tail table: the species this directory's cell means carry
@@ -8860,11 +9017,90 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     outdir / "holdout_by_pool_3x3_eps.csv",
                     n_reactions={}, n_density={}, counts_by_leg=counts3_eps)
                 print(f"  (per-channel DFS-units ED: wrote {csv3_eps})")
+                # The IN-SAMPLE twin of the 3x3 (2026-09-08): the cells' own
+                # training reactions and training molecules against PBE on
+                # the same reactions and molecules, final checkpoint, never
+                # filtered by a variant (like every in-sample figure), the
+                # arch restriction applied like the other collectors'.
+                ins_rows = filter_rows_by_arch(
+                    collect_insample_reaction_rows(run_dir), archs)
+                ins_eps = any(_is_num(r.get("density_eps_l1"))
+                              and _is_num(r.get("density_eps_l1_pbe"))
+                              for r in drows)
+                ch_ins = (channel_ed_summaries(
+                    ins_rows, drows, None, fixed_gamma=_DFS_GAMMA_KCAL,
+                    gamma_source="DFS published",
+                    density_key="density_eps_l1",
+                    pbe_density_key="density_eps_l1_pbe")
+                    if ins_rows and ins_eps else {})
+                if any(v is not None for v in ch_ins.values()):
+                    ds_ins = _insample_eval_note(ins_rows, drows)
+                    x3_ins_kw = dict(
+                        pbe_table=None, ch_summaries=ch_ins,
+                        # the plain note: this figure holds unfiltered data
+                        # in a variant directory like every in-sample figure
+                        note=note_plain,
+                        provenance=(
+                            "IN-SAMPLE: energy legs from each cell's OWN "
+                            "training reactions (train_metadata.json; W4-11 "
+                            "atomizations as molecule-to-atoms reactions, "
+                            "BH76 barriers; IP pairs excluded), formed from "
+                            "the final checkpoint's self-consistent species "
+                            "energies (eval/per_molecule.json, the trained "
+                            "solver's tail-weighted SCF energy) -- NOT the "
+                            "fixed-anchor in-sample AE metric. Density rows: "
+                            "the trained molecules' " + _EPS_N_SYM
+                            + " (DFS Eq. 20) vs CCSD; PBE on the same "
+                            "reactions and molecules. Training-set fit, NOT "
+                            "generalization. " + _CELL_ROWS_GLYPH_NOTE),
+                        caveat=_3X3_INSAMPLE_EPS_CAVEAT, dataset=ds_ins,
+                        density_nn_key="density_eps_l1",
+                        density_pbe_key="density_eps_l1_pbe",
+                        density_unit_label=_EPS_N_SYM,
+                        ed_gamma_label="",
+                        lockfix_cells=lf_cells,
+                        title="In-sample per-channel story (DFS units): "
+                              f"WTMAD-2 | {_EPS_N_SYM} | {_ED_N_SYM} "
+                              "(BH76, W4-11, combined) -- training fit")
+                    written.append(plot_density_energy_3x3(
+                        ins_rows, drows,
+                        outdir / "insample_by_pool_3x3_eps.png",
+                        run_id, **x3_ins_kw))
+                    written.append(plot_density_energy_3x3(
+                        ins_rows, drows,
+                        outdir / "insample_by_pool_3x3_eps_logy.png",
+                        run_id, yscale="log", **x3_ins_kw))
+                    pools_of_ins = _species_pools(ins_rows)
+                    legs_ins: Dict[str, Optional[Dict[str, Any]]] = {}
+                    counts_ins: Dict[str, Tuple[Dict, ...]] = {}
+                    for ch in ch_ins:
+                        ch_rows_ = ins_rows if ch == "combined" else [
+                            r for r in ins_rows if r.get("pool") == ch]
+                        ch_d_ = drows if ch == "combined" else [
+                            r for r in drows
+                            if ch in pools_of_ins.get(
+                                _mol_cf(r.get("molecule")), ())]
+                        legs_ins[f"{ch}_wtmad2_eps_gamma_dfs"] = ch_ins[ch]
+                        counts_ins[f"{ch}_wtmad2_eps_gamma_dfs"] = (
+                            _cell_counts(ch_rows_, "abs_error_nn_kcalmol"),
+                            _cell_counts(ch_d_, "density_eps_l1"),
+                            _cell_counts(ch_rows_, "abs_error_pbe_kcalmol"))
+                    csv_ins = write_combined_ed_csv(
+                        legs_ins, outdir / "insample_by_pool_3x3_eps.csv",
+                        n_reactions={}, n_density={},
+                        counts_by_leg=counts_ins)
+                    print(f"  (in-sample DFS-units 3x3: wrote {csv_ins})")
+                else:
+                    print("  (in-sample DFS-units 3x3: skipped -- no "
+                          "training reactions in train_metadata.json, no "
+                          "Eq. 20 eps columns on the trained molecules, or "
+                          "no positive PBE anchor on any channel)")
             else:
                 print("  (no Eq. 20 eps columns / positive eps PBE anchor in "
                       "this pull -- skipping the DFS-units ED legs and the "
                       "_eps figure twins (combined ED, decomposition, "
-                      "overview, 3x3 + CSV, parity-by-channel); a stale "
+                      "overview, 3x3 + CSV, parity-by-channel) and the "
+                      "in-sample 3x3 (skipped with them); a stale "
                       "file from a prior render persists, as with the "
                       "holdout density figure)")
             csv_path = write_combined_ed_csv(

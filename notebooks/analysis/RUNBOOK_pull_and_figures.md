@@ -238,7 +238,13 @@ the DFS-units twins -- `holdout_ed_combined_eps.png`,
 `holdout_overview_eps.png` (+ `_logy`),
 `holdout_by_pool_3x3_eps.png` + `.csv` (+ `_logy`; ALL BARS: eps
 density-error row + combined-metric row under one shared gamma, stamped
-in-panel), and `holdout_density_parity_by_pool_eps.png`;
+in-panel), `holdout_density_parity_by_pool_eps.png`, and the IN-SAMPLE
+twin of the 3x3, `insample_by_pool_3x3_eps.png` + `.csv` (+ `_logy`; 2026-09-08:
+each cell's own training reactions, formed from the final checkpoint's
+species energies in `eval/per_molecule.json` against the reaction references
+of `train_metadata.json`, and its training molecules' eps, against PBE on the
+same reactions and molecules; final checkpoint only, unfiltered in the
+variant directories);
 coverage disclosures stamped in the note bands; the 3x3 twin's shared
 gamma makes its combined metric comparable across channels. The held-out figures carry
 a dataset footer line stating what the held-out eval is (live name-dedup

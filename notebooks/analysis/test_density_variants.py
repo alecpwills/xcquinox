@@ -29,7 +29,9 @@ before its commits landed.
 """
 from __future__ import annotations
 
+import contextlib
 import csv
+import io
 import json
 import os
 import re
@@ -53,7 +55,12 @@ _GOLDEN_CSVS = ("holdout_ed_combined.csv",
 # the tail table joins the byte-identity set (2026-09-08: its per-cell rule is shared
 # with the recurring-tail variant, so the refactor is pinned here); the commit-B column
 # test keeps the three ED tables it was written for
-_GOLDEN_BYTE_CSVS = _GOLDEN_CSVS + ("holdout_density_tail.csv",)
+_GOLDEN_BYTE_CSVS = _GOLDEN_CSVS + ("holdout_density_tail.csv",
+                                    "insample_by_pool_3x3_eps.csv")
+# The in-sample table is rendered from the SIBLING fixture (:func:`_insample_run_dir`):
+# the Eq. 20 eps columns its in-sample rows need would fill D_insample_rmse on
+# the eps legs of holdout_ed_combined.csv, a column the goldens above pin blank.
+_INSAMPLE_GOLDENS = frozenset({"insample_by_pool_3x3_eps.csv"})
 _README = _HERE / "README_density_figures.md"
 
 # ---------------------------------------------------------------------------
@@ -250,6 +257,9 @@ class _Builds:
         self.std = None
         self.var = None
         self.notes = {"std": [], "var": []}
+        # the builder's own stdout per run, so a skip line printed at build
+        # time is assertable without a second render
+        self.out = {"std": "", "var": ""}
         self.error = None
 
     def require(self):
@@ -279,13 +289,18 @@ def builds(tmp_path_factory):
 
     fig._stamp_parity_footer = _spy
     try:
-        fig.build_density_energy_figures(b.run, b.std,
-                                         exclude_cf=frozenset(),
-                                         variant_note="")
-        bucket["which"] = "var"
-        fig.build_density_energy_figures(b.run, b.var,
-                                         exclude_cf=_EXCLUDED_CF,
-                                         variant_note=_VARIANT_NOTE)
+        for which, outdir, excl, note in (
+                ("std", b.std, frozenset(), ""),
+                ("var", b.var, _EXCLUDED_CF, _VARIANT_NOTE)):
+            bucket["which"] = which
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):
+                    fig.build_density_energy_figures(b.run, outdir,
+                                                     exclude_cf=excl,
+                                                     variant_note=note)
+            finally:
+                b.out[which] = buf.getvalue()
     except Exception as exc:                      # RED until commit A lands
         b.error = exc
     finally:
@@ -536,23 +551,31 @@ def test_variant_note_and_dataset_reach_the_footer(builds):
     assert std_n.pop() - var_n.pop() == 1
 
 
-def test_standard_dir_csvs_byte_identical_to_golden(builds):
-    """The variant hook is a no-op at its defaults: the three CSVs of the
-    standard directory match, byte for byte, goldens produced by the
-    unmodified builder on this same fixture.
+def test_standard_dir_csvs_byte_identical_to_golden(builds, ins_builds):
+    """The variant hook is a no-op at its defaults: the CSVs of the standard
+    directory match, byte for byte, goldens produced by the unmodified
+    builder on this same fixture.
 
     Commit B moves `n_density_species` by design (case twins collapse), so
     the goldens are re-baselined in that commit; regenerate with
     DENSITY_VARIANTS_REGOLD=1 pytest -k byte_identical and re-read the diff.
+    ``insample_by_pool_3x3_eps.csv`` is pinned from the in-sample fixture's
+    standard directory (see :data:`_INSAMPLE_GOLDENS`).
     """
     builds.require()
+    ins_builds.require()
+
+    def _src(name: str) -> Path:
+        base = ins_builds.std if name in _INSAMPLE_GOLDENS else builds.std
+        return base / name
+
     if os.environ.get("DENSITY_VARIANTS_REGOLD"):
         _GOLDEN.mkdir(parents=True, exist_ok=True)
         for name in _GOLDEN_BYTE_CSVS:
-            (_GOLDEN / name).write_bytes((builds.std / name).read_bytes())
+            (_GOLDEN / name).write_bytes(_src(name).read_bytes())
         pytest.fail("goldens rewritten; re-run without DENSITY_VARIANTS_REGOLD")
     for name in _GOLDEN_BYTE_CSVS:
-        got = (builds.std / name).read_bytes()
+        got = _src(name).read_bytes()
         want = (_GOLDEN / name).read_bytes()
         assert got == want, name
 
@@ -603,13 +626,17 @@ def test_suite_loop_renders_the_t1_variant_directory(tmp_path):
             _expected_d_pbe("density_rmse_pbe", _KEPT_CF), rel=1e-9)
 
 
-def test_readme_documents_every_written_png_and_csv(builds):
+def test_readme_documents_every_written_png_and_csv(builds, ins_builds):
     """Kills the mutation `README walk over PNGs only`: the walk covers the
-    CSVs too, so a tail table with no README row is caught."""
+    CSVs too, so a tail table with no README row is caught. Both standard
+    directories are walked -- the in-sample fixture is the only one whose run
+    carries training reactions, so the in-sample 3x3 family is written there
+    and nowhere else."""
     builds.require()
+    ins_builds.require()
     text = _README.read_text()
-    written = sorted(p.name for p in builds.std.iterdir()
-                     if p.suffix in (".png", ".csv"))
+    written = sorted({p.name for d in (builds.std, ins_builds.std)
+                      for p in d.iterdir() if p.suffix in (".png", ".csv")})
     missing = [n for n in written if n not in text]
     assert not missing, missing
 
@@ -797,7 +824,7 @@ def test_ed_csv_fields_carry_the_insample_columns():
 
 def test_write_combined_ed_csv_writes_insample_columns(tmp_path):
     """Filled from the maps when they are supplied, blank when they are not
-    (the two per-channel 3x3 calls pass nothing)."""
+    (the per-channel 3x3 calls, the held-out pair and the in-sample one, pass nothing)."""
     energy = {("deep", 1): 8.0, ("deep_attn", 1): 20.0}
     density = {("deep", 1): 0.004, ("deep_attn", 1): 0.02}
     wt = fig.combined_ed_by_cell(energy, 10.0, density, 0.005)
@@ -839,6 +866,12 @@ def test_builder_fills_insample_columns_in_the_combined_csv_only(builds):
         for r in _read_csv(builds.std / name):
             assert r["D_insample_rmse"] == "", name
             assert r["n_insample_species"] == "", name
+    # the in-sample 3x3's own table (written by the in-sample fixture's run)
+    # is a per-channel table too: its density leg IS the in-sample value, so
+    # the two trailing columns stay blank there as well
+    for r in _read_csv(_GOLDEN / "insample_by_pool_3x3_eps.csv"):
+        assert r["D_insample_rmse"] == "", "insample_by_pool_3x3_eps.csv"
+        assert r["n_insample_species"] == "", "insample_by_pool_3x3_eps.csv"
     # the variant directory carries the SAME in-sample columns: the exclusion
     # filters the held-out rows only, never the trained species
     var = _read_csv(builds.var / "holdout_ed_combined.csv")
@@ -1362,3 +1395,377 @@ def test_tail_variant_skipped_when_no_species_recurs(tmp_path, capsys):
     assert not [p.name for p in tmp_path.iterdir() if "_excl_" in p.name]
     assert "excl_tail" in out, out
     assert "nothing to exclude" in out, out
+
+
+# ---------------------------------------------------------------------------
+# The in-sample 3x3 in DFS units (2026-09-08): WTMAD-2 / eps / ED per pool on
+# the cells' OWN training reactions
+# ---------------------------------------------------------------------------
+
+# Element anchors of the training record; a reaction whose PRODUCTS are all
+# anchors is an atomization (w411), otherwise a barrier (bh76).
+_INS_ATOM_ENERGIES = {"H": -0.5, "O": -75.0, "C": -37.8}
+
+# Model-free PBE species energies (Ha), spec-invariant as the real ones are.
+# 'h' (the BH76 spelling of the hydrogen atom) differs from the W4-11 'H', so
+# a casefolding species lookup cannot reproduce the barrier's energy.
+_INS_E_PBE = {"HO": -75.62, "H": -0.505, "O": -75.01, "h": -0.49,
+              "HOh_ts": -76.06, "CH4": -40.30, "C": -37.79}
+
+# Eq. 20 eps channels of the in-sample rows. The H2/h2 twins carry DIFFERENT
+# NN values, so a row mean and a twin-then-species mean differ.
+_INS_NN_EPS = {"HO": 2.0e-3, "CH4": 4.0e-3, "H2": 1.0e-3, "h2": 3.0e-3}
+_INS_PBE_EPS = {"HO": 5.0e-3, "CH4": 6.0e-3, "H2": 4.0e-3, "h2": 4.0e-3}
+_INS_ALL_CF = frozenset(m.casefold() for m in _INS_NN_EPS)
+
+# The variant excludes an in-sample species as well as the held-out outlier:
+# without CH4 in the set, "the in-sample rows are unfiltered" would be
+# untestable on this fixture (nothing excluded reaches them).
+_INS_EXCLUDED_CF = frozenset({"no", "ch4"})
+_INS_KEPT_CF = _INS_ALL_CF - _INS_EXCLUDED_CF
+_INS_VARIANT_NOTE = ("2 species excluded in every cell (T1 > 0.02, Lee-Taylor "
+                     "1989): ['CH4', 'NO']")
+
+_INS_KCAL = 627.5094740631        # CODATA-2018 Hartree -> kcal/mol
+_INS_WTMAD2_SCALE = 56.84         # GMTKN55 global mean |dE| (Goerigk 2017)
+
+_SS_BY_IDX = {idx: ss for (_arch, ss), idx in _RICH_CELLS.items()}
+
+_INS_RXN_HO = {"name": "HO", "reactants": ["HO"], "products": ["H", "O"],
+               "coeffs": [-1.0, 1.0, 1.0], "e_rxn_ref": 0.20}
+_INS_RXN_CH4 = {"name": "CH4", "reactants": ["CH4"], "products": ["C", "H"],
+                "coeffs": [-1.0, 1.0, 4.0], "e_rxn_ref": 0.65}
+_INS_RXN_TS = {"name": "OH+h_to_HOh_ts", "reactants": ["HO", "h"],
+               "products": ["HOh_ts"], "coeffs": [-1.0, -1.0, 1.0],
+               "e_rxn_ref": 0.03}
+
+
+def _ins_e_nn(idx):
+    """One cell's self-consistent species energies (Ha). The molecules drift
+    with the spec index (the atoms do not), so the four cells carry different
+    reaction errors and a per-cell reduction is distinguishable from a pooled
+    one."""
+    return {"HO": -75.65 - 0.002 * idx, "H": -0.50, "O": -75.00, "h": -0.48,
+            "HOh_ts": -76.09 - 0.001 * idx, "CH4": -40.33 - 0.003 * idx,
+            "C": -37.80}
+
+
+def _ins_reactions(idx):
+    """The cell's OWN training reactions: the ss=1 cells train on HO alone
+    (one atomization + one barrier), the ss=3 cells add the CH4 atomization.
+    The cells therefore do NOT share a reaction set, as in a real subset-size
+    sweep -- a leg reduced over the run's union instead of the cell's own
+    reactions lands on different numbers."""
+    return ([_INS_RXN_HO, _INS_RXN_TS] if _SS_BY_IDX[idx] == 1
+            else [_INS_RXN_HO, _INS_RXN_CH4, _INS_RXN_TS])
+
+
+def _ins_pool(rxn):
+    return ("w411" if all(p in _INS_ATOM_ENERGIES for p in rxn["products"])
+            else "bh76")
+
+
+def _insample_rows_with_energies(idx):
+    """``_rich_insample_rows`` plus the two columns the in-sample 3x3 needs:
+    the Eq. 20 eps density channels and the per-species self-consistent
+    energies the energy leg is formed from."""
+    e_nn, e_pbe = _ins_e_nn(idx), _INS_E_PBE
+    f = _cell_factor(idx)
+    rows = [dict(r) for r in _rich_insample_rows(idx)]
+    for r in rows:
+        m = r.get("molecule")
+        if m in _INS_NN_EPS:
+            r["density_eps_l1"] = _INS_NN_EPS[m] * f
+            r["density_eps_l1_pbe"] = _INS_PBE_EPS[m]
+        if m in e_nn:
+            r["E_total_nn"] = e_nn[m]
+        if m in e_pbe:
+            r["E_pbe"] = e_pbe[m]
+    have = {r.get("molecule") for r in rows}
+    for m in sorted(set(e_nn) | set(e_pbe)):
+        if m in have:
+            continue
+        # atoms and the transition state carry no density channels
+        rows.append({"molecule": m, "skipped": m in _INS_ATOM_ENERGIES,
+                     "AE_error_kcalmol": None, "density_rmse": None,
+                     "E_total_nn": e_nn.get(m), "E_pbe": e_pbe.get(m)})
+    return rows
+
+
+def _insample_run_dir(root: Path) -> Path:
+    """The rich fixture with the in-sample energy layer written over it: each
+    spec's training record carries the cell's own reactions, the element
+    anchors and an IP13 pair (a reaction of neither pool), and its
+    ``eval/per_molecule.json`` the species energies beside the eps columns.
+
+    A SIBLING of :func:`_rich_run_dir` on purpose: those eps columns fill
+    ``D_insample_rmse`` on the eps legs of ``holdout_ed_combined.csv``, which
+    the standard fixture's byte goldens pin blank."""
+    run = _rich_run_dir(root)
+    for sd in sorted((run / "checkpoints").glob("spec_*")):
+        idx = int(sd.name.split("_")[1])
+        if not (sd / "eval_holdout" / "per_reaction.json").is_file():
+            continue
+        tm = sd / "train_metadata.json"
+        meta = json.loads(tm.read_text())
+        meta["atom_energies"] = dict(_INS_ATOM_ENERGIES)
+        meta["loss_kwargs"] = {
+            "bh76_reactions": _ins_reactions(idx),
+            "ip13_pairs": [{"name": "Li_IP", "neutral": "Li",
+                            "cation": "Li+", "ip_ref": 0.198}],
+        }
+        tm.write_text(json.dumps(meta))
+        (sd / "eval" / "per_molecule.json").write_text(
+            json.dumps(_insample_rows_with_energies(idx)))
+    return run
+
+
+# -- independent oracles (plain python; no reducer from the module) ---------
+
+def _expected_ins_e(idx):
+    """2-subset WTMAD-2 over the cell's own training reactions:
+    (scale/N) * sum_pool N_pool * MAD_pool / mean|ref|_pool, with the reaction
+    energies formed from the signed coefficients over reactants-then-products
+    and both legs converted to kcal/mol."""
+    e = _ins_e_nn(idx)
+    pools = {}
+    for rxn in _ins_reactions(idx):
+        species = list(rxn["reactants"]) + list(rxn["products"])
+        de = sum(c * e[s]
+                 for c, s in zip(rxn["coeffs"], species)) * _INS_KCAL
+        ref = rxn["e_rxn_ref"] * _INS_KCAL
+        pools.setdefault(_ins_pool(rxn), []).append((abs(de - ref), abs(ref)))
+    n_total = sum(len(v) for v in pools.values())
+    acc = 0.0
+    for vals in pools.values():
+        mad = sum(a for a, _ in vals) / len(vals)
+        mean_ref = sum(r for _, r in vals) / len(vals)
+        acc += len(vals) * mad / mean_ref
+    return _INS_WTMAD2_SCALE / n_total * acc
+
+
+def _expected_ins_d_eps(idx, keep=None):
+    """Twin-then-species mean of the in-sample Eq. 20 eps column."""
+    f = _cell_factor(idx)
+    return _species_mean({m: v * f for m, v in _INS_NN_EPS.items()}, keep)
+
+
+class _InsBuilds:
+    def __init__(self):
+        self.run = None
+        self.std = None
+        self.var = None
+        self.deep = None
+        self.out = {}
+        # footer kwargs per run (the _stamp_parity_footer spy of `builds`)
+        # and the (file name, yscale) of every plot_density_energy_3x3 call,
+        # so the in-sample 3x3's note and its _logy twin's scale are
+        # assertable without a second render
+        self.notes = {}
+        self.calls3x3 = {}
+        self.error = None
+
+    def require(self):
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.fixture(scope="module")
+def ins_builds(tmp_path_factory):
+    """Three builder runs over the in-sample fixture: the standard directory,
+    an outlier-free variant whose exclusion set names an in-sample species,
+    and an architecture-restricted directory."""
+    b = _InsBuilds()
+    root = tmp_path_factory.mktemp("insample")
+    b.run = _insample_run_dir(root)
+    b.std, b.var, b.deep = root / "std", root / "var", root / "deep"
+    real_stamp = fig._stamp_parity_footer
+    real_3x3 = fig.plot_density_energy_3x3
+    bucket = {"which": "std"}
+
+    def _spy_stamp(mpl_fig, **kw):
+        b.notes.setdefault(bucket["which"], []).append(kw)
+        return real_stamp(mpl_fig, **kw)
+
+    def _spy_3x3(rows, hd_rows, out_path, run_id, **kw):
+        b.calls3x3.setdefault(bucket["which"], []).append(
+            (Path(out_path).name, kw.get("yscale", "linear"),
+             kw.get("note") or "", kw.get("title") or ""))
+        return real_3x3(rows, hd_rows, out_path, run_id, **kw)
+
+    fig._stamp_parity_footer = _spy_stamp
+    fig.plot_density_energy_3x3 = _spy_3x3
+    try:
+        for which, outdir, kw in (
+                ("std", b.std, {}),
+                ("var", b.var, {"exclude_cf": _INS_EXCLUDED_CF,
+                                "variant_note": _INS_VARIANT_NOTE}),
+                ("deep", b.deep, {"archs": ("deep",)})):
+            bucket["which"] = which
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):
+                    fig.build_density_energy_figures(b.run, outdir, **kw)
+            finally:
+                b.out[which] = buf.getvalue()
+    except Exception as exc:            # RED until the in-sample 3x3 lands
+        b.error = exc
+    finally:
+        fig._stamp_parity_footer = real_stamp
+        fig.plot_density_energy_3x3 = real_3x3
+    return b
+
+
+_INS_LEG = "combined_wtmad2_eps_gamma_dfs"
+
+
+def test_insample_by_pool_3x3_eps_energy_leg_is_the_training_reactions(
+        ins_builds):
+    """Kills the mutations `the 3x3 written from the held-out rows`,
+    `coefficients applied to the reactants only`, `e_rxn_ref left in Hartree`
+    and `the pool rule inverted`: the combined leg's E per cell is the
+    plain-python 2-subset WTMAD-2 over THAT cell's training reactions, and its
+    D the twin-collapsed mean of the in-sample eps column -- neither is the
+    held-out value for the same cell."""
+    ins_builds.require()
+    png = ins_builds.std / "insample_by_pool_3x3_eps.png"
+    logy = ins_builds.std / "insample_by_pool_3x3_eps_logy.png"
+    table = ins_builds.std / "insample_by_pool_3x3_eps.csv"
+    assert _png_ok(png), sorted(p.name for p in ins_builds.std.iterdir())
+    assert _png_ok(logy)
+    assert table.is_file()
+
+    got = _by_leg_cell(_read_csv(table))
+    holdout = _by_leg_cell(_read_csv(ins_builds.std
+                                     / "holdout_by_pool_3x3_eps.csv"))
+    # the oracle discriminates the cells: four different energies, four
+    # different densities (a single pooled number would satisfy neither)
+    assert len({round(_expected_ins_e(i), 9)
+                for i in _RICH_CELLS.values()}) == 4
+    assert len({round(_expected_ins_d_eps(i), 12)
+                for i in _RICH_CELLS.values()}) == 4
+    for (arch, ss), idx in _RICH_CELLS.items():
+        row = got[(_INS_LEG, arch, ss)]
+        assert float(row["E_kcalmol"]) == pytest.approx(
+            _expected_ins_e(idx), rel=1e-9), (arch, ss)
+        assert float(row["D_rmse"]) == pytest.approx(
+            _expected_ins_d_eps(idx), rel=1e-9), (arch, ss)
+        # the held-out leg of the same cell is a different number, so the
+        # in-sample table cannot have been rendered from the held-out rows
+        hd = holdout[(_INS_LEG, arch, ss)]
+        assert float(row["E_kcalmol"]) != pytest.approx(
+            float(hd["E_kcalmol"]), rel=1e-6)
+        assert float(row["D_rmse"]) != pytest.approx(
+            float(hd["D_rmse"]), rel=1e-6)
+
+
+def test_insample_by_pool_3x3_eps_skipped_without_training_reactions(builds):
+    """A run whose training record carries no reactions has no in-sample
+    energy leg: nothing is written and the builder says so. Without the
+    printed line this would pass on a build that never considered the
+    figure."""
+    builds.require()
+    for name in ("insample_by_pool_3x3_eps.png",
+                 "insample_by_pool_3x3_eps_logy.png",
+                 "insample_by_pool_3x3_eps.csv"):
+        assert not (builds.std / name).exists(), name
+        assert not (builds.var / name).exists(), name
+    said = [ln for ln in builds.out["std"].splitlines()
+            if re.search(r"(?i)in-?sample", ln)
+            and re.search(r"(?i)skip", ln)]
+    assert said, builds.out["std"]
+
+
+def test_insample_by_pool_3x3_eps_is_unfiltered_by_the_variant(ins_builds):
+    """Kills the mutation `the in-sample rows filtered by exclude_cf`: every
+    in-sample figure reads the cells' full training set, so the variant
+    directory's in-sample table is byte-identical to the standard one -- while
+    its held-out twin, on the same run, is not."""
+    ins_builds.require()
+    name = "insample_by_pool_3x3_eps.csv"
+    assert "ch4" in _INS_EXCLUDED_CF, \
+        "the exclusion must reach an in-sample species"
+    assert (ins_builds.std / name).read_bytes() == \
+        (ins_builds.var / name).read_bytes()
+    # the variant run really did exclude something: its held-out twin moved
+    assert (ins_builds.std / "holdout_by_pool_3x3_eps.csv").read_bytes() != \
+        (ins_builds.var / "holdout_by_pool_3x3_eps.csv").read_bytes()
+    # ... and the identity is the UNFILTERED value on both sides, not two
+    # equally-filtered tables
+    for outdir in (ins_builds.std, ins_builds.var):
+        rows = _by_leg_cell(_read_csv(outdir / name))
+        for (arch, ss), idx in _RICH_CELLS.items():
+            full = _expected_ins_d_eps(idx)
+            cut = _expected_ins_d_eps(idx, _INS_KEPT_CF)
+            assert full != pytest.approx(cut), "oracle must discriminate"
+            assert float(rows[(_INS_LEG, arch, ss)]["D_rmse"]) == \
+                pytest.approx(full, rel=1e-9), (outdir.name, arch, ss)
+
+
+def test_insample_by_pool_3x3_eps_carries_the_plain_note_and_its_logy_scale(
+        ins_builds):
+    """Two review findings on the first implementation: the variant run
+    stamped its exclusion note on the in-sample 3x3 (whose data the
+    variant never filters), and the ``_logy`` twin sat outside the module's
+    log-scale guard. The in-sample calls of the variant run carry the plain
+    note and an ``In-sample`` title (the unfiltered-title rule of
+    ``test_rf_variant_note_reaches_only_the_filtered_figures``), and the
+    ``_logy`` call carries ``yscale="log"``."""
+    ins_builds.require()
+    calls = {name: (scale, note, title)
+             for name, scale, note, title in ins_builds.calls3x3["var"]}
+    assert "insample_by_pool_3x3_eps.png" in calls, sorted(calls)
+    assert "insample_by_pool_3x3_eps_logy.png" in calls, sorted(calls)
+    for name in ("insample_by_pool_3x3_eps.png",
+                 "insample_by_pool_3x3_eps_logy.png"):
+        scale, note, title = calls[name]
+        assert "excluded in every cell" not in note, (name, note)
+        assert title.startswith("In-sample"), (name, title)
+    assert calls["insample_by_pool_3x3_eps.png"][0] == "linear"
+    assert calls["insample_by_pool_3x3_eps_logy.png"][0] == "log"
+    # the held-out twin of the same run DOES carry the exclusion note
+    hd = calls["holdout_by_pool_3x3_eps.png"]
+    assert "excluded in every cell" in hd[1], hd[1]
+    # and the footer the figure stamped says what its comparator lines are
+    stamped = [kw for kw in ins_builds.notes["var"]
+               if str(kw.get("title", "")).startswith("In-sample per-channel")]
+    assert stamped, [kw.get("title") for kw in ins_builds.notes["var"]]
+    for kw in stamped:
+        assert "excluded in every cell" not in (kw.get("note") or "")
+        assert "UNION" in (kw.get("caveat") or ""), kw.get("caveat")
+        assert "Capped horizontal spans" in (kw.get("provenance") or "")
+
+
+def test_insample_eval_note_counts_deduplicated_reactions_and_species():
+    """The in-sample dataset line: the run's union of training reactions per
+    pool counted once per name (a reaction trained by several cells is one
+    reaction), the trained species with an eps value counted once per
+    casefolded name, and the checkpoint stated."""
+    rows = [{"name": "HO", "pool": "w411", "abs_error_nn_kcalmol": 1.0,
+             "ref_kcalmol": 100.0},
+            {"name": "HO", "pool": "w411", "abs_error_nn_kcalmol": 2.0,
+             "ref_kcalmol": 100.0},
+            {"name": "bh76_a", "pool": "bh76", "abs_error_nn_kcalmol": 1.0,
+             "ref_kcalmol": 10.0}]
+    drows = [{"molecule": "HO", "density_eps_l1": 1e-3},
+             {"molecule": "H2", "density_eps_l1": 1e-3},
+             {"molecule": "h2", "density_eps_l1": 2e-3},
+             {"molecule": "CO", "density_eps_l1": None}]
+    note = fig._insample_eval_note(rows, drows)
+    assert note.startswith("In-sample (final checkpoint): ")
+    assert "BH76 1 + W4-11 1" in note, note
+    assert "2 trained species" in note, note
+    assert fig._insample_eval_note([], []) == ""
+
+
+def test_insample_by_pool_3x3_eps_follows_the_arch_restriction(ins_builds):
+    """The architecture restriction reaches the in-sample rows as it reaches
+    every other row set of this builder: a directory drawn for one arch must
+    not carry another arch's cells in its in-sample table (the two directories
+    describe the same run and would otherwise disagree on which cells they
+    draw)."""
+    ins_builds.require()
+    rows = _read_csv(ins_builds.deep / "insample_by_pool_3x3_eps.csv")
+    assert rows
+    assert {r["arch"] for r in rows} == {"deep"}
+    assert {int(r["subset_size"]) for r in rows} == {1, 3}
