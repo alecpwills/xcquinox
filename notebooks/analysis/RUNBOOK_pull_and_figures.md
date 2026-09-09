@@ -190,7 +190,7 @@ otherwise.
 
 Each per-basis dir contains: the arch-aware ablation set (parity, MAE-by-arch,
 arch×subset heatmap, MAE-vs-subset), held-out energy/density figures, the five
-parity-layout variants, per-run size-consistency / training-loss diagnostics,
+parity-layout variants, per-run size-consistency / training-loss diagnostics (the total loss and, from `aux_log.pkl`, the per-channel losses at their trained weights per architecture, `training_loss_channels_<arch>.png`, 2026-09-08),
 and the DFS Eq. 21 combined energy-density figure + per-cell CSV
 (`holdout_ed_combined.png` / `.csv`; held-out only, rendered when
 the pulled `eval_holdout*/per_molecule.json` carries the NN + PBE density

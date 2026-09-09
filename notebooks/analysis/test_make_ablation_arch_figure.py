@@ -9,6 +9,7 @@ Three layers, mirroring ``test_make_cluster_pulls_figure.py``:
 from __future__ import annotations
 
 import contextlib
+import io
 import csv
 import importlib.util
 import json
@@ -2530,6 +2531,317 @@ def test_build_per_run_diagnostics_writes_two(tmp_path):
     assert {p.name for p in written} == {"holdout_size_consistency.png",
                                          "training_loss_total.png"}
     assert all(_png_ok(p) for p in written)
+
+
+# ---------------------------------------------------------------------------
+# Per-channel training losses (aux_log.pkl): the five weighted channels and
+# the validation checks, per epoch
+# ---------------------------------------------------------------------------
+
+# The component keys the per-molecule loop records under ``aux`` (train.py
+# ~2220) and the density-dominant weights it applies when the spec names none
+# (``_DEFAULT_CHANNEL_WEIGHTS``, train.py 1829).
+_CHANNEL_KEYS = ("loss_AE", "loss_BH76", "loss_IP13", "loss_vxc", "loss_rho")
+_DEFAULT_WEIGHTS = {"loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0,
+                    "loss_vxc": 1.0, "loss_rho": 20.0}
+
+# Three epochs x two group updates of hand-chosen components. Every per-epoch
+# mean is distinct across the epochs AND across the channels, so a collector
+# that bins by anything other than the ``epoch`` key -- or that plots the raw
+# component instead of the weighted one -- lands on a value no assertion here
+# accepts.
+_CHANNEL_COMPONENTS = {
+    0: [{"loss_AE": 1.0, "loss_BH76": 10.0, "loss_IP13": 0.25,
+         "loss_vxc": 7.0, "loss_rho": 0.010},
+        {"loss_AE": 1.5, "loss_BH76": 11.0, "loss_IP13": 0.25,
+         "loss_vxc": 8.0, "loss_rho": 0.015}],
+    1: [{"loss_AE": 2.0, "loss_BH76": 12.0, "loss_IP13": 0.50,
+         "loss_vxc": 9.0, "loss_rho": 0.020},
+        {"loss_AE": 2.5, "loss_BH76": 13.0, "loss_IP13": 0.50,
+         "loss_vxc": 10.0, "loss_rho": 0.025}],
+    2: [{"loss_AE": 3.0, "loss_BH76": 14.0, "loss_IP13": 0.75,
+         "loss_vxc": 11.0, "loss_rho": 0.030},
+        {"loss_AE": 3.5, "loss_BH76": 15.0, "loss_IP13": 0.75,
+         "loss_vxc": 12.0, "loss_rho": 0.035}],
+}
+
+_NO_WEIGHTS_KEY = object()   # "the metadata carries no weights at all"
+
+
+def _aux_update_rows(weights, *, with_epoch=True):
+    """The per-group-update rows of ``aux_log.pkl`` exactly as the
+    per-molecule loop writes them (train.py 2219-2225): plain Python floats,
+    and ``loss`` the identity ``sum_k w_k aux_k`` that loop guarantees, so the
+    per-epoch total is the mean of the rows' own ``loss``. ``with_epoch=False``
+    reproduces the batched loops' rows (step only, no epoch)."""
+    rows = []
+    step = 0
+    for epoch in sorted(_CHANNEL_COMPONENTS):
+        for gi, comps in enumerate(_CHANNEL_COMPONENTS[epoch]):
+            row = {"step": step, "epoch": epoch, "group": f"group_{gi}",
+                   "loss": float(sum(weights[k] * comps[k]
+                                     for k in _CHANNEL_KEYS)),
+                   "aux": {k: float(comps[k]) for k in _CHANNEL_KEYS},
+                   "update_scheme": "per_molecule",
+                   "rss_gb": 3.5 + 0.1 * step, "hwm_gb": 4.25 + 0.1 * step}
+            if not with_epoch:
+                del row["epoch"]
+            rows.append(row)
+            step += 1
+    return rows
+
+
+def _val_row(step, epoch, mae):
+    """A ``__validation__`` row as train.py 2269-2277 appends it."""
+    return {"step": step, "epoch": epoch, "group": "__validation__",
+            "val_mae_kcalmol": mae, "update_scheme": "per_molecule",
+            "rss_gb_pre_val": 3.0, "rss_gb_post_val": 3.2,
+            "hwm_gb_post_val": 4.1}
+
+
+def _plateau_row(step, epoch, lr):
+    """A ``__plateau__`` row as train.py 2253-2258 appends it."""
+    return {"step": step, "epoch": epoch, "group": "__plateau__",
+            "epoch_loss": 1.5, "plateau_metric": 1224.7, "lr": lr,
+            "update_scheme": "per_molecule"}
+
+
+def _write_channel_aux_log(spec_dir, rows, weights=_NO_WEIGHTS_KEY):
+    """Write ``aux_log.pkl`` with the standard pickle module (the log holds
+    plain floats -- no JAX import needed to read it) and record
+    ``effective_channel_weights`` in the spec's ``train_metadata.json``,
+    MERGED into what the fixture already wrote there."""
+    import pickle
+    spec_dir = Path(spec_dir)
+    with (spec_dir / "aux_log.pkl").open("wb") as f:
+        pickle.dump(list(rows), f, protocol=4)
+    mp = spec_dir / "train_metadata.json"
+    meta = json.loads(mp.read_text()) if mp.is_file() else {}
+    if weights is not _NO_WEIGHTS_KEY:
+        meta["effective_channel_weights"] = weights
+    mp.write_text(json.dumps(meta))
+    return spec_dir / "aux_log.pkl"
+
+
+def test_collect_training_channel_losses_bins_weighted_components_by_epoch(
+        tmp_path, capsys):
+    """The report must show EVERY training loss at the weight it was trained
+    with, per epoch. The collector reads the five components of each
+    group-update row of ``aux_log.pkl``, scales each by the run's own
+    ``effective_channel_weights`` and averages them within an epoch; the
+    ``__validation__`` and ``__plateau__`` rows come back as (epoch, value)
+    pairs and never enter a channel mean.
+
+    spec 0 sets ``loss_vxc`` to weight 0 in its metadata, so a collector that
+    reads the defaults instead lands on 7.5/9.5/11.5 rather than 0; spec 2
+    records no weights and must fall back to the defaults (its vxc column
+    then IS 7.5/9.5/11.5); spec 1 carries no ``aux_log.pkl``; spec 3 carries
+    the batched loops' rows, which have no ``epoch`` key, and is skipped with
+    a printed line naming the spec and the missing key."""
+    import numpy as np
+    run = _make_run_dir(tmp_path)
+    ck = run / "checkpoints"
+    w0 = {"loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0,
+          "loss_vxc": 0.0, "loss_rho": 20.0}
+    rows0 = _aux_update_rows(w0)
+    rows0 += [_val_row(4, 1, 42.5), _plateau_row(4, 1, 5e-5),
+              _val_row(6, 2, 37.25)]
+    _write_channel_aux_log(ck / "spec_0000", rows0, w0)
+    _write_channel_aux_log(ck / "spec_0002",
+                           _aux_update_rows(_DEFAULT_WEIGHTS))
+    _write_channel_aux_log(ck / "spec_0003",
+                           _aux_update_rows(_DEFAULT_WEIGHTS,
+                                            with_epoch=False),
+                           _DEFAULT_WEIGHTS)
+    assert not (ck / "spec_0001" / "aux_log.pkl").exists()
+    # the merge keeps what the fixture wrote
+    assert json.loads(
+        (ck / "spec_0000" / "train_metadata.json").read_text())["molecules"]
+
+    got = fig.collect_training_channel_losses(run)
+    by_idx = {r["idx"]: r for r in got}
+    assert sorted(by_idx) == [0, 2], sorted(by_idx)
+
+    r0 = by_idx[0]
+    assert (r0["arch"], r0["subset_size"]) == ("deep", 1)
+    assert list(np.asarray(r0["epochs"])) == [0, 1, 2]
+    ch = r0["channels"]
+    assert set(ch) == set(_CHANNEL_KEYS), sorted(ch)
+    assert list(ch["loss_AE"]) == pytest.approx([1.25, 2.25, 3.25])
+    assert list(ch["loss_BH76"]) == pytest.approx([10.5, 12.5, 14.5])
+    assert list(ch["loss_IP13"]) == pytest.approx([0.25, 0.50, 0.75])
+    # weight 0 in THIS run's metadata (the defaults would give 7.5/9.5/11.5)
+    assert list(ch["loss_vxc"]) == pytest.approx([0.0, 0.0, 0.0])
+    # 20 x the raw per-epoch means 0.0125 / 0.0225 / 0.0325
+    assert list(ch["loss_rho"]) == pytest.approx([0.25, 0.45, 0.65])
+    # the total is the mean of the rows' own ``loss``
+    assert list(r0["total"]) == pytest.approx([12.25, 15.7, 19.15])
+    # and the weighted channels add up to it: the panels sum to the total
+    assert [sum(float(ch[k][i]) for k in _CHANNEL_KEYS) for i in range(3)] \
+        == pytest.approx(list(r0["total"]))
+    assert [tuple(p) for p in r0["validation"]] == [(1, 42.5), (2, 37.25)]
+    assert [tuple(p) for p in r0["lr"]] == [(1, 5e-5)]
+    assert r0["weights"] == w0
+    assert r0["weights_source"] == "train_metadata"
+
+    r2 = by_idx[2]
+    assert (r2["arch"], r2["subset_size"]) == ("deep_notransform", 1)
+    assert r2["weights"] == _DEFAULT_WEIGHTS
+    assert r2["weights_source"] == "default"
+    # the fallback weights are APPLIED, not merely reported
+    assert list(r2["channels"]["loss_vxc"]) == pytest.approx([7.5, 9.5, 11.5])
+    assert list(r2["channels"]["loss_rho"]) == pytest.approx([0.25, 0.45, 0.65])
+    assert list(r2["validation"]) == [] and list(r2["lr"]) == []
+
+    out = capsys.readouterr().out
+    assert "epoch" in out.lower(), out
+    assert ("0003" in out or "spec 3" in out), out
+
+
+def test_collect_training_channel_losses_falls_back_on_null_weights(tmp_path):
+    """``effective_channel_weights`` is written as JSON null on a run that did
+    not take the per-molecule path (train.py 1091-1095 records None there), so
+    the key being PRESENT is not the same as weights being recorded: the
+    fallback keys on the VALUE, and a null must not reach the arithmetic."""
+    run = _make_run_dir(tmp_path)
+    _write_channel_aux_log(run / "checkpoints" / "spec_0000",
+                           _aux_update_rows(_DEFAULT_WEIGHTS), None)
+    rows = fig.collect_training_channel_losses(run)
+    r0 = next(r for r in rows if r["idx"] == 0)
+    assert r0["weights"] == _DEFAULT_WEIGHTS
+    assert r0["weights_source"] == "default"
+    assert list(r0["channels"]["loss_vxc"]) == pytest.approx([7.5, 9.5, 11.5])
+
+
+def test_collect_training_channel_losses_skips_a_log_it_cannot_load(
+        tmp_path, capsys):
+    """The batched loops pickle device arrays into ``aux_log.pkl``, which
+    cannot be unpickled without the training environment; the load itself,
+    not only the row layout, is guarded: the spec is skipped with a printed
+    line and the other specs still come back. Reproduced with a class from a
+    module that no longer exists at load time."""
+    import pickle
+    import sys
+    import types
+    run = _make_run_dir(tmp_path)
+    ck = run / "checkpoints"
+    mod = types.ModuleType("_vanishing_training_module")
+
+    class Leaf:
+        pass
+    Leaf.__module__ = mod.__name__
+    Leaf.__qualname__ = "Leaf"      # picklable by reference to the module
+    mod.Leaf = Leaf
+    sys.modules[mod.__name__] = mod
+    try:
+        rows = _aux_update_rows(_DEFAULT_WEIGHTS)
+        rows[0]["aux"]["loss_AE"] = Leaf()
+        with (ck / "spec_0000" / "aux_log.pkl").open("wb") as f:
+            pickle.dump(rows, f, protocol=4)
+    finally:
+        del sys.modules[mod.__name__]
+    _write_channel_aux_log(ck / "spec_0002", _aux_update_rows(_DEFAULT_WEIGHTS),
+                           _DEFAULT_WEIGHTS)
+    got = fig.collect_training_channel_losses(run)
+    assert [r["idx"] for r in got] == [2], [r["idx"] for r in got]
+    out = capsys.readouterr().out
+    assert "0000" in out and "skipped" in out, out
+
+
+def _channel_row(idx, arch, subset_size, *, ip13):
+    """One collector row, built directly to the documented schema so the
+    figure writer is exercised without the collector."""
+    import numpy as np
+    s = 1.0 + 0.1 * idx
+    ch = {"loss_AE": np.asarray([1.25, 0.90, 0.60]) * s,
+          "loss_BH76": np.asarray([10.5, 8.00, 6.50]) * s,
+          "loss_IP13": np.asarray([ip13, ip13, ip13]),
+          "loss_vxc": np.asarray([0.30, 0.20, 0.15]) * s,
+          "loss_rho": np.asarray([0.25, 0.20, 0.18]) * s}
+    return {"idx": idx, "arch": arch, "subset_size": subset_size,
+            "epochs": np.asarray([0, 1, 2]), "channels": ch,
+            "total": sum(ch.values()),
+            "weights": dict(_DEFAULT_WEIGHTS), "weights_source": "default",
+            "validation": [(1, 42.5), (2, 37.25)], "lr": [(1, 5e-5)]}
+
+
+def test_plot_training_loss_channels_writes_one_figure_per_arch(tmp_path,
+                                                                monkeypatch):
+    """One figure per architecture (``training_loss_channels_<arch>.png``),
+    every path returned. A channel that is zero on every update of an arch --
+    IP13 on the small subsets, V_xc under the parity arm -- cannot be drawn on
+    a log axis, so its panel carries the text ``channel empty on every
+    update`` instead of an empty frame that reads as missing data; an arch
+    whose channels are all populated carries no such text. The validation
+    checks are a panel of their own, named for what they are."""
+    import matplotlib.figure as mfig
+    seen = {}
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        name = Path(a[0] if a else k.get("fname")).name
+        seen[name] = {
+            "texts": [t.get_text() for ax in self.axes for t in ax.texts],
+            "labels": [f"{ax.get_title()} {ax.get_ylabel()}"
+                       for ax in self.axes],
+        }
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    rows = [_channel_row(0, "deep", 1, ip13=0.0),
+            _channel_row(1, "deep", 3, ip13=0.0),
+            _channel_row(2, "deep_notransform", 1, ip13=0.5)]
+    written = fig.plot_training_loss_channels(rows, tmp_path / "out", "run_x")
+    assert {p.name for p in written} == {
+        "training_loss_channels_deep.png",
+        "training_loss_channels_deep_notransform.png"}
+    assert all(_png_ok(p) for p in written)
+
+    empty = "channel empty on every update"
+    deep = seen["training_loss_channels_deep.png"]
+    other = seen["training_loss_channels_deep_notransform.png"]
+    assert any(empty in t for t in deep["texts"]), deep["texts"]
+    assert not any(empty in t for t in other["texts"]), other["texts"]
+    # the validation checks reach the figure, named
+    for name, cap in seen.items():
+        assert any("validation" in s.lower() for s in cap["labels"]), \
+            (name, cap["labels"])
+
+
+def test_build_per_run_diagnostics_skips_channels_without_aux_log_and_writes_them_with_it(
+        tmp_path, capsys):
+    """The per-run set gains the channel figure only where the training log
+    is present: a run pulled without ``aux_log.pkl`` (every pull before the
+    log was carried down) says so on the console rather than writing an empty
+    figure or dropping the line silently."""
+    run = _make_run_dir(tmp_path)
+    written = fig.build_per_run_diagnostics(run, tmp_path / "out", "def2-svp")
+    assert {p.name for p in written} == {"holdout_size_consistency.png",
+                                         "training_loss_total.png"}
+    out = capsys.readouterr().out
+    assert "aux_log" in out, out
+    assert "skip" in out.lower(), out
+
+    _write_channel_aux_log(run / "checkpoints" / "spec_0000",
+                           _aux_update_rows(_DEFAULT_WEIGHTS),
+                           _DEFAULT_WEIGHTS)
+    written2 = fig.build_per_run_diagnostics(run, tmp_path / "out2", "def2-svp")
+    assert {p.name for p in written2} == {
+        "holdout_size_consistency.png", "training_loss_total.png",
+        "training_loss_channels_deep.png"}
+    assert all(_png_ok(p) for p in written2)
+    # the README documents the per-arch family under its pattern name, the
+    # form the coverage rule of test_density_variants accepts for it
+    readme = (_HERE / "README_density_figures.md").read_text()
+    assert "training_loss_channels_<arch>.png" in readme
+    # and the skip line of a run filtered to an arch without a log names
+    # the filter and the stale file
+    _out3 = io.StringIO()
+    with contextlib.redirect_stdout(_out3):
+        fig.build_per_run_diagnostics(run, tmp_path / "out3", "def2-svp",
+                                      archs=("deep_notransform",))
+    assert "requested archs" in _out3.getvalue() and \
+        "stale" in _out3.getvalue(), _out3.getvalue()
 
 
 def test_heatmap_panel_diverging_renders(tmp_path):
@@ -7152,6 +7464,13 @@ def test_output_names_carry_no_holdover_stems():
         if lit in allowed:
             continue
         stem = re.sub(r"(_logy|_eps|_eps_logy)?\.(png|csv)$", "", lit)
+        # A NEW_OUTPUTS family whose name is completed by an f-string field
+        # (``training_loss_channels_{arch}.png``: one figure per
+        # architecture): what the tuple records is the stem before the
+        # ``_{``, and the rest is filled at write time.
+        if ("_{" in stem
+                and stem.split("_{", 1)[0] in set(fig.NEW_OUTPUTS)):
+            continue
         if stem not in new_stems:
             stray.append(lit)
     assert not stray, sorted(stray)
@@ -7163,17 +7482,174 @@ def test_new_outputs_are_recorded():
     such stems in ``NEW_OUTPUTS`` and the holdover guard's converse check
     reads both. Without the tuple the new in-sample 3x3 reads as a stray
     literal, and with a stale tuple it records a file nothing writes."""
-    assert fig.NEW_OUTPUTS == ("insample_by_pool_3x3",)
+    assert fig.NEW_OUTPUTS == ("insample_by_pool_3x3",
+                               "training_loss_channels")
     # a new stem is not a renamed one
     assert not set(fig.NEW_OUTPUTS) & set(fig.OUTPUT_NAMES.values())
     assert not set(fig.NEW_OUTPUTS) & set(fig.OUTPUT_NAMES)
-    # every recorded stem is a literal the module actually writes
+    # Every recorded stem is written by the module. A per-arch family is
+    # completed by an f-string field (``training_loss_channels_{arch}.png``),
+    # so it carries no whole-file literal to match; the stem itself has to
+    # appear either way, which is what a stale tuple entry fails.
     src = Path(fig.__file__).read_text()
-    missing = [stem for stem in fig.NEW_OUTPUTS
-               if not re.search(r"['\"]" + re.escape(stem)
-                                + r"(_logy|_eps|_eps_logy)?\.(png|csv)['\"]",
-                                src)]
+    # the tuple is itself a literal in the source, so a bare substring test
+    # is vacuous; a stem counts as written only as a file name (with the
+    # optional siblings' suffixes) or as the head of an f-string family
+    quote = r"""['"]"""
+
+    def _written(stem):
+        return (re.search(quote + re.escape(stem)
+                          + r"(_logy|_eps|_eps_logy)?\.(png|csv)" + quote, src)
+                or re.search(quote + re.escape(stem) + r"_\{", src))
+
+    missing = [stem for stem in fig.NEW_OUTPUTS if not _written(stem)]
     assert not missing, missing
+    # the check fires: a stem nothing writes is reported
+    assert not _written("a_file_nothing_writes")
+
+
+def test_new_outputs_include_the_channel_figure():
+    """The per-arch channel family is an output added after the 2026-05
+    renaming, so it carries no ``OUTPUT_NAMES`` row; the holdover guard reads
+    it from ``NEW_OUTPUTS`` instead, and without the entry every
+    ``training_loss_channels_{arch}.png`` literal reads as a stray. The
+    family is written with a bare ``{arch}`` field, which is what both
+    guards key on."""
+    assert "training_loss_channels" in fig.NEW_OUTPUTS
+    src = Path(fig.__file__).read_text()
+    assert 'f"training_loss_channels_{arch}.png"' in src
+
+
+def _channel_rows_for_drawing():
+    """Rows whose drawn quantities are all distinguishable from their
+    alternatives: a total that is NOT the panel sum, non-default weights,
+    a dropped validation check, a weight-0 channel with a live residual, a
+    validation series whose minimum is neither first nor last, and a
+    plateau schedule."""
+    import numpy as np
+    ch = {"loss_AE": np.asarray([1.0, 0.8, 0.6, 0.5]),
+          "loss_BH76": np.asarray([9.0, 7.0, 5.0, 4.0]),
+          "loss_IP13": np.asarray([0.2, 0.2, 0.1, 0.1]),
+          "loss_vxc": np.asarray([0.0, 0.0, 0.0, 0.0]),
+          "loss_rho": np.asarray([0.4, 0.3, 0.25, 0.2])}
+    raw = dict(ch)
+    raw["loss_vxc"] = np.asarray([3.0, 2.0, 1.5, 1.2])
+    raw["loss_rho"] = ch["loss_rho"] / 20.0
+    weights = {"loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0,
+               "loss_vxc": 0.0, "loss_rho": 20.0}
+    return [{"idx": 0, "arch": "deep", "subset_size": 3,
+             "epochs": np.asarray([0, 1, 2, 3]), "channels": ch,
+             "raw_channels": raw,
+             # the recorded total, deliberately NOT the panel sum
+             "total": np.asarray([100.0, 90.0, 80.0, 70.0]),
+             "weights": weights, "weights_source": "train_metadata",
+             "validation": [(0, 30.0), (1, 12.5), (2, 20.0), (3, 25.0)],
+             "validation_dropped": 2, "lr": [(1, 1e-4), (2, 1e-5)],
+             "extra_keys": []}]
+
+
+def test_plot_training_loss_channels_draws_what_the_rows_say(tmp_path,
+                                                             monkeypatch):
+    """Pins the drawn content the review found unpinned: the validation star
+    sits at the epoch of the MINIMUM check (the checkpoint saved as
+    validation-best), the total panel draws the recorded total and not the
+    panel sum, a weight-0 channel draws its unweighted residual dotted and
+    says so instead of claiming an empty channel, the learning-rate step
+    starts one epoch after the row that set it, and the footer states the
+    cell's own weights and the dropped-check count."""
+    import matplotlib.figure as mfig
+    seen = {}
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        name = Path(a[0] if a else k.get("fname")).name
+        seen[name] = {ax.get_title(): ax for ax in self.axes}
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    stamped = []
+    real_stamp = fig._stamp_parity_footer
+    monkeypatch.setattr(fig, "_stamp_parity_footer",
+                        lambda f, **kw: (stamped.append(kw),
+                                         real_stamp(f, **kw))[1])
+    rows = _channel_rows_for_drawing()
+    written = fig.plot_training_loss_channels(rows, tmp_path / "out", "run_x")
+    assert [p.name for p in written] == ["training_loss_channels_deep.png"]
+    axes = seen["training_loss_channels_deep.png"]
+    by_title = {t: ax for t, ax in axes.items()}
+    total_ax = next(ax for t, ax in by_title.items() if t.startswith("total"))
+    assert list(total_ax.lines[0].get_ydata()) == [100.0, 90.0, 80.0, 70.0]
+    val_ax = next(ax for t, ax in by_title.items()
+                  if t.startswith("validation"))
+    stars = [ln for ln in val_ax.lines if ln.get_marker() == "*"]
+    assert len(stars) == 1
+    assert list(stars[0].get_xdata()) == [1.0]     # argmin, not argmax
+    vxc_ax = next(ax for t, ax in by_title.items()
+                  if t.startswith("potential channel"))
+    assert any("weight 0" in t.get_text() for t in vxc_ax.texts), \
+        [t.get_text() for t in vxc_ax.texts]
+    assert not any("empty on every update" in t.get_text()
+                   for t in vxc_ax.texts)
+    dotted = [ln for ln in vxc_ax.lines if ln.get_linestyle() == ":"]
+    assert len(dotted) == 1
+    assert list(dotted[0].get_ydata()) == [3.0, 2.0, 1.5, 1.2]
+    lr_ax = next(ax for t, ax in by_title.items()
+                 if t.startswith("learning rate"))
+    assert list(lr_ax.lines[0].get_xdata()) == [2.0, 3.0]  # epoch + 1
+    prov = stamped[-1]["provenance"]
+    assert "loss_vxc 0" in prov and "loss_rho 20" in prov, prov
+    assert "2 validation check(s)" in prov, prov
+    assert "add up to the total" in prov and "do NOT" not in prov
+
+
+def test_plot_training_loss_channels_states_extra_components(tmp_path,
+                                                             monkeypatch):
+    """A log carrying a component outside the five (a loss returning a
+    sixth key) breaks the panels-sum-to-total identity; the figure says so
+    in its title and footer instead of asserting the identity."""
+    stamped = []
+    real_stamp = fig._stamp_parity_footer
+    monkeypatch.setattr(fig, "_stamp_parity_footer",
+                        lambda f, **kw: (stamped.append(kw),
+                                         real_stamp(f, **kw))[1])
+    rows = _channel_rows_for_drawing()
+    rows[0]["extra_keys"] = ["loss_anchor"]
+    fig.plot_training_loss_channels(rows, tmp_path / "out", "run_x")
+    kw = stamped[-1]
+    assert "extra components present" in kw["title"], kw["title"]
+    assert "do NOT add up" in kw["provenance"] and "loss_anchor" in kw["provenance"]
+
+
+def test_collect_training_channel_losses_records_raw_and_extra_components(
+        tmp_path):
+    """Beside the weighted columns the collector carries the unweighted
+    components (so a weight-0 channel is distinguishable from an empty one)
+    and the names of any component outside the five."""
+    import numpy as np
+    run = _make_run_dir(tmp_path)
+    w0 = {"loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0,
+          "loss_vxc": 0.0, "loss_rho": 20.0}
+    rows0 = _aux_update_rows(w0)
+    for r in rows0:
+        # a sixth component the loop folded into the stepped total: the
+        # recorded ``loss`` is then NOT the sum of the five weighted panels
+        r["aux"]["loss_anchor"] = 0.5
+        r["loss"] += 0.5
+    # a validation check recorded non-finite (null) beside a finite one
+    rows0 += [_val_row(4, 1, None), _val_row(6, 2, 37.25)]
+    _write_channel_aux_log(run / "checkpoints" / "spec_0000", rows0, w0)
+    r0 = next(r for r in fig.collect_training_channel_losses(run)
+              if r["idx"] == 0)
+    assert list(r0["channels"]["loss_vxc"]) == pytest.approx([0.0, 0.0, 0.0])
+    assert list(r0["raw_channels"]["loss_vxc"]) == pytest.approx(
+        [7.5, 9.5, 11.5])
+    assert list(r0["raw_channels"]["loss_rho"]) == pytest.approx(
+        [0.0125, 0.0225, 0.0325])
+    assert r0["extra_keys"] == ["loss_anchor"]
+    # the total is the recorded loss, not the five-panel sum
+    assert list(r0["total"]) == pytest.approx([12.75, 16.2, 19.65])
+    assert [tuple(p) for p in r0["validation"]] == [(2, 37.25)]
+    assert r0["validation_dropped"] == 1
 
 
 def test_other_scripts_carry_no_holdover_stems():

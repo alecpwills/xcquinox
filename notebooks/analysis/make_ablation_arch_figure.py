@@ -51,6 +51,7 @@ import csv
 import importlib.util
 import json
 import math
+import pickle  # noqa: S403 -- the run's own training log, plain floats
 import sys
 import warnings
 from pathlib import Path
@@ -140,7 +141,7 @@ OUTPUT_NAMES: Dict[str, str] = {
 }
 # Stems added after the renaming (no old name): the holdover guard reads
 # them beside OUTPUT_NAMES.
-NEW_OUTPUTS: Tuple[str, ...] = ("insample_by_pool_3x3",)
+NEW_OUTPUTS: Tuple[str, ...] = ("insample_by_pool_3x3", "training_loss_channels")
 
 # Compact rung tags for tight gutters/labels (the full RUNG_ORDER names are too
 # long for a heatmap gutter or a 1-arch-tall rung span).
@@ -7265,6 +7266,147 @@ def collect_training_losses_multi(runs: List[Tuple[Path, str]]
     return rows
 
 
+# The five channels the per-molecule loop records per group update
+# (train.py, the ``aux`` dict of each aux_log.pkl row) and the density-dominant
+# weights it applies when a spec names none (train._DEFAULT_CHANNEL_WEIGHTS).
+_TRAINING_CHANNELS: Tuple[str, ...] = ("loss_AE", "loss_BH76", "loss_IP13",
+                                       "loss_vxc", "loss_rho")
+_TRAINING_CHANNEL_DEFAULT_WEIGHTS: Dict[str, float] = {
+    "loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0, "loss_vxc": 1.0,
+    "loss_rho": 20.0}
+_TRAINING_CHANNEL_LABELS: Dict[str, str] = {
+    "total": "total loss (the quantity stepped)",
+    "loss_AE": "anchors channel (loss_AE: free-atom totals, relative; "
+               "plus AE targets when a spec supplies them)",
+    "loss_BH76": "reaction channel (loss_BH76: atomizations as reactions, "
+                 "barriers)",
+    "loss_IP13": "ionization channel (loss_IP13)",
+    "loss_vxc": "potential channel (loss_vxc)",
+    "loss_rho": "density channel (loss_rho)",
+}
+
+
+def collect_training_channel_losses(run_dir: Path) -> List[Dict[str, Any]]:
+    """Every training loss of every cell, per epoch, at its trained weight.
+
+    Per spec with ``aux_log.pkl``: the group-update rows (``{"step", "epoch",
+    "group", "loss", "aux": {channel: float}, ...}``, one per optimizer step
+    of the per-molecule loop) are binned by their ``epoch`` key into the mean
+    of each WEIGHTED component ``w_k * aux[k]`` and of the total ``loss``,
+    so the channel curves add up to the total the loop stepped; the weights
+    are the record's ``effective_channel_weights`` when that is a complete
+    numeric dict (``weights_source == "train_metadata"``), else the loop's
+    density-dominant defaults (``"default"``; the record writes null outside
+    the per-molecule scheme). The ``__validation__`` rows come back as
+    ``(epoch, val_mae_kcalmol)`` pairs (a non-finite check, recorded as
+    null, is dropped and counted in ``validation_dropped``) and the
+    ``__plateau__`` rows as ``(epoch, lr)`` pairs. The log is read with the
+    standard pickle module: the per-molecule loop writes plain floats. A log
+    that cannot be loaded without the training environment (the batched
+    loops pickle device arrays), a log without group-update rows, or rows
+    without an ``epoch`` key (the batched scheme) skip the spec with a
+    printed line. Joined with the manifest cell like the other collectors."""
+    cells = ccp._read_manifest_cells(run_dir)
+    rows: List[Dict[str, Any]] = []
+    for idx, spec_dir in ccp._spec_dirs(run_dir):
+        p = spec_dir / "aux_log.pkl"
+        if not p.is_file():
+            continue
+        try:
+            with p.open("rb") as f:
+                log = pickle.load(f)
+        except Exception as exc:  # noqa: BLE001 -- any unpicklable content
+            print(f"  (training channels: spec_{idx:04d} aux_log.pkl not "
+                  f"loadable here ({type(exc).__name__}); skipped)")
+            continue
+        if not isinstance(log, list):
+            print(f"  (training channels: spec_{idx:04d} aux_log.pkl is not "
+                  "a row list; skipped)")
+            continue
+        weights = dict(_TRAINING_CHANNEL_DEFAULT_WEIGHTS)
+        weights_source = "default"
+        meta: Dict[str, Any] = {}
+        mp = spec_dir / "train_metadata.json"
+        if mp.is_file():
+            try:
+                with mp.open() as f:
+                    meta = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                meta = {}
+        w = meta.get("effective_channel_weights")
+        if isinstance(w, dict) and all(_is_num(w.get(k))
+                                       for k in _TRAINING_CHANNELS):
+            weights = {k: float(w[k]) for k in _TRAINING_CHANNELS}
+            weights_source = "train_metadata"
+        # the validation and plateau rows carry no ``aux``, so the dict test
+        # alone selects the group updates
+        updates = [e for e in log
+                   if isinstance(e, dict) and isinstance(e.get("aux"), dict)]
+        if not updates:
+            print(f"  (training channels: spec_{idx:04d} aux_log.pkl carries "
+                  "no group-update rows; skipped)")
+            continue
+        if any("epoch" not in e for e in updates):
+            print(f"  (training channels: spec_{idx:04d} rows carry no epoch "
+                  "key (the batched scheme); skipped)")
+            continue
+        by_epoch: Dict[int, List[Dict[str, Any]]] = {}
+        for e in updates:
+            by_epoch.setdefault(int(e["epoch"]), []).append(e)
+        epochs = np.asarray(sorted(by_epoch), dtype=int)
+        channels = {
+            k: np.asarray([np.mean([weights[k] * float(e["aux"].get(k, 0.0))
+                                    for e in by_epoch[ep]])
+                           for ep in epochs], dtype=float)
+            for k in _TRAINING_CHANNELS}
+        # the unweighted components beside the weighted ones: a channel the
+        # run weighted 0 is not a channel that was zero on every update
+        raw = {
+            k: np.asarray([np.mean([float(e["aux"].get(k, 0.0))
+                                    for e in by_epoch[ep]])
+                           for ep in epochs], dtype=float)
+            for k in _TRAINING_CHANNELS}
+        # components outside the five: the weighted panels then do NOT add
+        # up to the recorded total, and the figure says so
+        extra_keys = sorted({str(k) for e in updates for k in e["aux"]
+                             if k not in _TRAINING_CHANNELS})
+        total = np.asarray([np.mean([float(e.get("loss", float("nan")))
+                                     for e in by_epoch[ep]])
+                            for ep in epochs], dtype=float)
+        validation: List[Tuple[int, float]] = []
+        n_dropped = 0
+        lr: List[Tuple[int, float]] = []
+        for e in log:
+            if not isinstance(e, dict):
+                continue
+            g = e.get("group")
+            if g == "__validation__" and "epoch" in e:
+                v = e.get("val_mae_kcalmol")
+                if _is_num(v):
+                    validation.append((int(e["epoch"]), float(v)))
+                else:
+                    n_dropped += 1
+            elif g == "__plateau__" and "epoch" in e and _is_num(e.get("lr")):
+                lr.append((int(e["epoch"]), float(e["lr"])))
+        cell = cells.get(idx, {})
+        rows.append({
+            "idx": idx,
+            "arch": cell.get("arch"),
+            "subset_size": cell.get("subset_size"),
+            "epochs": epochs,
+            "channels": channels,
+            "total": total,
+            "weights": weights,
+            "weights_source": weights_source,
+            "validation": validation,
+            "validation_dropped": n_dropped,
+            "lr": lr,
+            "raw_channels": raw,
+            "extra_keys": extra_keys,
+        })
+    return rows
+
+
 def _rolling_mean(x: np.ndarray, w: int) -> np.ndarray:
     if w <= 1 or x.size < w:
         return x
@@ -7356,6 +7498,181 @@ def plot_training_losses(loss_rows: List[Dict[str, Any]], out_path: Path,
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
+
+
+def plot_training_loss_channels(rows: List[Dict[str, Any]], outdir: Path,
+                                run_id: str, *, note: str = "",
+                                provenance: Optional[str] = None
+                                ) -> List[Path]:
+    """One figure per architecture, ``training_loss_channels_<arch>.png``:
+    the total loss and the five channels at their trained weights (rows of
+    :func:`collect_training_channel_losses`), per-epoch means on a log axis,
+    one viridis curve per subset size as in :func:`plot_training_losses`;
+    the weighted panels add up to the total. A channel that is zero on every
+    update of every cell of the arch (IP13 on the small subsets, V_xc under
+    the parity arm) has nothing to draw on a log axis and says
+    ``channel empty on every update`` in its panel. A seventh panel carries
+    the validation reaction-energy MAE checks (kcal/mol, linear), the
+    validation-best epoch starred per cell; the eighth the learning rate
+    when any ``__plateau__`` row exists. The footer states the weights and
+    their source and the count of validation checks dropped as non-finite."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    present = {r["arch"] for r in rows if r.get("arch")}
+    archs = [a for a in ARCH_ORDER if a in present]
+    archs += sorted(present - set(archs))
+    panels = [("total", _TRAINING_CHANNEL_LABELS["total"])] + [
+        (k, _TRAINING_CHANNEL_LABELS[k]) for k in _TRAINING_CHANNELS]
+    written: List[Path] = []
+    empty_text = "channel empty on every update"
+    with plt.rc_context(_STYLE):
+        for arch in archs:
+            arows = sorted((r for r in rows if r.get("arch") == arch),
+                           key=lambda r: (r.get("subset_size") or 0))
+            subset_values = sorted({r["subset_size"] for r in arows
+                                    if r.get("subset_size") is not None})
+            norm = plt.Normalize(vmin=min(subset_values) if subset_values else 0,
+                                 vmax=max(subset_values) if subset_values else 1)
+            cmap = plt.get_cmap("viridis")
+            fig, axes = plt.subplots(2, 4, figsize=(21.0, 9.0), squeeze=False)
+            flat = axes.ravel()
+            for ax, (key, label) in zip(flat[:6], panels):
+                drawn = False
+                raw_drawn = False
+                for r in arows:
+                    y = r["total"] if key == "total" else \
+                        r.get("channels", {}).get(key)
+                    if y is None:
+                        continue
+                    y = np.asarray(y, dtype=float)
+                    c = cmap(norm(r.get("subset_size") or 0))
+                    if not np.any(y > 0.0):
+                        # weighted to zero: the raw residual, when the run
+                        # computed one, is drawn dotted so a weight-0 channel
+                        # is not read as a channel that was zero
+                        raw_y = None if key == "total" else \
+                            r.get("raw_channels", {}).get(key)
+                        if raw_y is not None and np.any(np.asarray(raw_y) > 0.0):
+                            ax.plot(np.asarray(r["epochs"]),
+                                    np.clip(np.asarray(raw_y, float), 1e-14,
+                                            None),
+                                    color=c, lw=1.0, ls=":", alpha=0.8)
+                            raw_drawn = True
+                        continue
+                    ax.plot(np.asarray(r["epochs"]), np.clip(y, 1e-14, None),
+                            color=c, lw=1.2, alpha=0.9)
+                    drawn = True
+                if drawn or raw_drawn:
+                    ax.set_yscale("log")
+                if not drawn:
+                    ax.text(0.5, 0.5,
+                            ("channel weight 0 in this run (dotted: the "
+                             "unweighted residual)" if raw_drawn
+                             else empty_text),
+                            transform=ax.transAxes, ha="center", va="center",
+                            fontsize=9, color="0.4")
+                ax.set_title(label, fontsize=8.5)
+                ax.set_xlabel("epoch", fontsize=7.5)
+                ax.set_ylabel("weighted loss (epoch mean, log)" if drawn
+                              else "weighted loss (epoch mean)", fontsize=7.5)
+                ax.grid(True, which="both", alpha=0.3)
+                ax.tick_params(labelsize=6.5)
+            # the validation checks, the validation-best epoch starred
+            ax = flat[6]
+            any_val = False
+            for r in arows:
+                pairs = list(r.get("validation") or [])
+                if not pairs:
+                    continue
+                ep = np.asarray([p[0] for p in pairs], dtype=float)
+                v = np.asarray([p[1] for p in pairs], dtype=float)
+                c = cmap(norm(r.get("subset_size") or 0))
+                ax.plot(ep, v, marker="o", ms=3, lw=1.0, color=c, alpha=0.9)
+                b = int(np.argmin(v))
+                ax.plot([ep[b]], [v[b]], marker="*", ms=11, color=c,
+                        mec="k", mew=0.4, ls="none")
+                any_val = True
+            if not any_val:
+                ax.text(0.5, 0.5, "no validation checks recorded",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=9, color="0.4")
+            ax.set_title("validation reaction-energy MAE checks (star = "
+                         "validation-best epoch)", fontsize=8.5)
+            ax.set_xlabel("epoch", fontsize=7.5)
+            ax.set_ylabel("validation MAE (kcal/mol)", fontsize=7.5)
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=6.5)
+            # the learning rate under the plateau schedule, when recorded
+            ax = flat[7]
+            any_lr = False
+            for r in arows:
+                pairs = list(r.get("lr") or [])
+                if not pairs:
+                    continue
+                # a __plateau__ row records the rate set at the END of its
+                # epoch, which governs the next one
+                ax.step([p[0] + 1 for p in pairs], [p[1] for p in pairs],
+                        where="post", color=cmap(norm(r.get("subset_size") or 0)),
+                        lw=1.0)
+                any_lr = True
+            if any_lr:
+                ax.set_yscale("log")
+                ax.set_title("learning rate (plateau schedule; each step "
+                             "governs the epoch after its row)", fontsize=8.5)
+                ax.set_xlabel("epoch", fontsize=7.5)
+                ax.set_ylabel("learning rate (log)", fontsize=7.5)
+                ax.grid(True, which="both", alpha=0.3)
+                ax.tick_params(labelsize=6.5)
+            else:
+                ax.axis("off")
+            sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+            sm.set_array([])
+            fig.tight_layout(rect=(0, 0.07, 0.94, 0.90))
+            cax = fig.add_axes([0.952, 0.22, 0.010, 0.5])
+            cbar = fig.colorbar(sm, cax=cax)
+            cbar.set_label("training subset_size", fontsize=7)
+            cbar.ax.tick_params(labelsize=6)
+            weight_sets: List[Tuple[Tuple[str, float], ...]] = []
+            for r in arows:
+                ws = tuple((k, float((r.get("weights")
+                                      or _TRAINING_CHANNEL_DEFAULT_WEIGHTS)[k]))
+                           for k in _TRAINING_CHANNELS)
+                if ws not in weight_sets:
+                    weight_sets.append(ws)
+            sources = sorted({r.get("weights_source", "?") for r in arows})
+            n_drop = sum(int(r.get("validation_dropped") or 0) for r in arows)
+            extra = sorted({k for r in arows
+                            for k in (r.get("extra_keys") or ())})
+            if len(weight_sets) == 1:
+                wtxt = ", ".join(f"{k} {v:g}" for k, v in weight_sets[0])
+            else:
+                wtxt = "vary by cell: " + " / ".join(
+                    ", ".join(f"{k} {v:g}" for k, v in ws)
+                    for ws in weight_sets)
+            sum_txt = ("so the five channel panels add up to the total."
+                       if not extra else
+                       "and the log carries components outside the five ("
+                       + ", ".join(extra) + "), so the five panels do NOT add "
+                       "up to the total.")
+            weights_text = ("Channel weights as trained: " + wtxt
+                            + f" (source: {', '.join(sources)}); every panel "
+                            "is the weighted epoch mean over the epoch's "
+                            "group updates of aux_log.pkl, " + sum_txt
+                            + (f" {n_drop} validation check(s) recorded "
+                               "non-finite were dropped." if n_drop else ""))
+            _stamp_parity_footer(
+                fig, run_id=run_id, note=note,
+                provenance=(provenance + " " if provenance else "")
+                + weights_text, caveat=None,
+                title=f"Per-channel training losses -- {arch} (weighted "
+                      "epoch means"
+                      + ("; panels sum to the total)" if not extra
+                         else "; extra components present)"))
+            path = outdir / f"training_loss_channels_{arch}.png"
+            fig.savefig(path, dpi=150)
+            plt.close(fig)
+            written.append(path)
+    return written
 
 
 def _final_window_loss(losses: Any, n: int = 50) -> float:
@@ -9313,6 +9630,18 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
     written.append(plot_training_losses(
         loss_rows, outdir / "training_loss_total.png", run_id, note=note,
         highlight=[("deep_attn", 6)]))
+    # the per-channel losses (2026-09-08), from aux_log.pkl where the pull
+    # carried it down
+    ch_rows = filter_rows_by_arch(collect_training_channel_losses(run_dir),
+                                  archs)
+    if ch_rows:
+        written.extend(plot_training_loss_channels(ch_rows, outdir, run_id,
+                                                   note=note))
+    else:
+        print("  (per-channel training losses: no aux_log.pkl with epoch rows "
+              "in this run" + (" for the requested archs" if archs else "")
+              + " -- skipping training_loss_channels_<arch>.png; a stale file "
+              "from a prior render persists)")
     return written
 
 

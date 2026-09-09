@@ -637,8 +637,23 @@ def test_readme_documents_every_written_png_and_csv(builds, ins_builds):
     text = _README.read_text()
     written = sorted({p.name for d in (builds.std, ins_builds.std)
                       for p in d.iterdir() if p.suffix in (".png", ".csv")})
-    missing = [n for n in written if n not in text]
+
+    def documented(name):
+        if name in text:
+            return True
+        # a per-arch family (a NEW_OUTPUTS stem followed by ``_<arch>``) is
+        # documented under its pattern name
+        for stem in getattr(fig, "NEW_OUTPUTS", ()):
+            if name.startswith(stem + "_") and name.endswith(".png"):
+                return f"{stem}_<arch>.png" in text
+        return False
+
+    missing = [n for n in written if not documented(n)]
     assert not missing, missing
+    # the family rule is live: the channel family's pattern name is what
+    # the README carries, and a name outside any family is still literal
+    assert documented("training_loss_channels_medium.png")
+    assert not documented("a_file_nothing_writes.png")
 
 
 # ---------------------------------------------------------------------------
