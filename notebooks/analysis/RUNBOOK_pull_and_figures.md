@@ -422,6 +422,31 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite \
 (`pull auto --category dfs_step7` also discovers the v7 runs by activity.)
 Outputs land at `figures_dfs_step7_dfs6311_grid3_v7*` (+ `_val_best`).
 
+### The training-subset selection record (2026-09-09)
+
+The subsets every v7 cell trains on were chosen in 2026-06 by exhaustive
+Jensen-Shannon minimization against the 26-point DFS pool (the ledger
+`notebooks/checkpoints_step7/alpha_on/subset_index_log.json`). The figure and
+table that document them are recomputed from the shipped caches, every
+divergence checked against the ledger to 1e-9 (a mismatch is an error):
+
+```bash
+JAX_PLATFORMS=cpu python notebooks/analysis/plot_subset_jsd.py
+```
+
+Defaults: the ledger above, the reference histogram
+`notebooks/checkpoints_step7/alpha_on/dfs_pool_full_hist/reference.npz`, the
+per-species descriptor caches `notebooks/checkpoints_step7/subset_descriptors/`
+(`--ledger`, `--reference`, `--descriptors` and `--outdir` override them; `--show-r` picks the
+subsets overlaid on the marginal panels, default 1 7 26). Writes
+`notebooks/analysis/figures_dfs_step7_v7_subsets/subset_jsd_vs_full.png` (panel
+a: the divergence against the subset size, total and per marginal; b-d: the
+three reference marginals as probability mass functions with the chosen
+subsets overlaid) and `subset_table.csv` (one row per size: the members, the
+species union, the kind counts, the ledger and recomputed divergences and the
+three marginal terms). The package import pulls jaxlib; the script itself runs
+no JAX.
+
 ### The converged-SCF channel and the T1 backfill (2026-09-07)
 
 The density audit found the held-out density metric comparing an unconverged NN density
