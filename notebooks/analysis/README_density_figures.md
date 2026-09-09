@@ -529,6 +529,15 @@ Figures gated on missing inputs are skipped with a console note; a stale file fr
 earlier render then persists on disk -- the console line is the truth about what was
 refreshed.
 
+The v7 campaign is rendered once, over every finished cell of every listed run, from the
+merged family view (`family_runs.yaml` lists the runs; `merge_family_runs.py` composes
+`<results root>/dfs_step7/v7_family/runs/run_<stamp>`; the runbook's v7 section has the
+three commands). The tracked sets are `figures_dfs_step7_v7_family` (final channel),
+`_val_best`, the `_excl_tail` siblings, and `figures_dfs_step7_v7_family_pretrain`; a
+cell of a run trained under another protocol carries the run's tag on its architecture
+name (`deep_3x16 [25 cycles]`), and the key line of every footer carries the tag (spelled out for the anchor tag, echoed otherwise). The
+per-run sets of the earlier refreshes are not regenerated.
+
 ## 6. Reading order and permitted claims
 
 Start with the held-out overview (4.6): panels A-C say whether a cell beats PBE on energies

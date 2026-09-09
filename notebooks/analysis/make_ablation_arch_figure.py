@@ -184,12 +184,64 @@ def _provenance_text(provenance: Optional[str]) -> str:
     banner), followed by the expanded key of every architecture drawn when
     :data:`_KEY_LINE_ARCHS` is set, so the shown names (deep_3x16 /
     deep0_3x16 ...) never need the map to be read."""
-    prov = provenance or _PROVENANCE_BASE
-    if _KEY_LINE_ARCHS:
-        keys = key_line(_KEY_LINE_ARCHS)
-        if keys:
-            prov = f"{prov}  ·  {keys}"
-    return prov
+    return provenance or _PROVENANCE_BASE
+
+
+_KEY_LINE_FONTSIZE = 5.0
+
+
+def _wrap_lines(text: str, fig, fontsize: float, sep: str = "; ") -> List[str]:
+    """``text`` split into lines that fit the figure's width at ``fontsize``
+    (0.52 em per character, the mean of the sans-serif glyphs), breaking at
+    ``sep`` first and at spaces when a segment alone is too long."""
+    budget = max(20, int(fig.get_figwidth() * 72.0 / (0.52 * fontsize)))
+    lines: List[str] = []
+    for segment in text.split(sep):
+        piece = segment
+        # a segment longer than a line is cut at its last space before the
+        # budget; the head lines are final, the tail joins the flow below
+        while len(piece) > budget:
+            cut = piece.rfind(" ", 0, budget)
+            cut = cut if cut > 0 else budget
+            lines.append(piece[:cut].rstrip())
+            piece = piece[cut:].lstrip()
+        if lines and len(lines[-1]) + len(sep) + len(piece) <= budget:
+            lines[-1] = f"{lines[-1]}{sep}{piece}"
+        else:
+            lines.append(piece)
+    return [ln for ln in lines if ln]
+
+
+def _stamp_provenance(fig, y: float, provenance: Optional[str], *,
+                      fontsize: float = 6.0, color: str = "#777777",
+                      prefix: str = "", notes=()) -> float:
+    """Draw the footer stack: the key line at the bottom edge when it is set
+    (:data:`_KEY_LINE_ARCHS`), the provenance line at figure fraction ``y`` or
+    just above the key line, and ``notes`` (``(text, fontsize, color)``
+    triples, first one lowest) stacked above the provenance, each band above
+    the previous one's estimated top. Returns the top of the stack in figure
+    fraction, for the caller's layout rectangle."""
+    height_in = fig.get_figheight()
+    gap = 0.004
+
+    def _draw(y0, text, size, col):
+        lines = _wrap_lines(text, fig, size, sep="  ")
+        fig.text(0.5, y0, "\n".join(lines), ha="center", va="bottom",
+                 fontsize=size, color=col, linespacing=1.15)
+        return y0 + len(lines) * size * 1.2 / 72.0 / height_in
+
+    keys = key_line(_KEY_LINE_ARCHS) if _KEY_LINE_ARCHS else ""
+    if keys:
+        lines = _wrap_lines(keys, fig, _KEY_LINE_FONTSIZE)
+        fig.text(0.5, 0.002, "\n".join(lines), ha="center", va="bottom",
+                 fontsize=_KEY_LINE_FONTSIZE, color="#999999", linespacing=1.15)
+        y = max(y, 0.002 + len(lines) * _KEY_LINE_FONTSIZE * 1.2 / 72.0 / height_in
+                + gap)
+    top = _draw(y, prefix + _provenance_text(provenance), fontsize, color)
+    for text, size, col in notes:
+        if text:
+            top = _draw(top + gap, text, size, col)
+    return top
 
 
 class _key_line_scope:
@@ -1076,8 +1128,7 @@ def arch_coverage(run_dir: Path,
             insample.add(arch)
 
     def _ordered(s: set) -> List[str]:
-        return ([a for a in ARCH_ORDER if a in s]
-                + sorted(s - set(ARCH_ORDER)))
+        return arch_style.order_present(s)
 
     return {
         "trained": _ordered(trained),
@@ -2091,6 +2142,18 @@ def ae_mae_by_arch_subset(
     return {k: m for k, v in buckets.items() if (m := _mae(v)) is not None}
 
 
+def _order_rank(arch) -> Tuple[int, str]:
+    """The sort key of an architecture name in the display order: the ARCH_ORDER
+    position of its untagged shown name (unknown names last), then its protocol
+    tag, so a tagged name sorts right after the untagged one."""
+    base, tag = arch_style.split_tag(arch_style.as_shown(str(arch)))
+    try:
+        pos = ARCH_ORDER.index(base)
+    except ValueError:
+        pos = len(ARCH_ORDER)
+    return (pos, tag)
+
+
 def _archs_present(rows: List[Dict[str, Any]]) -> List[str]:
     present = {r.get("arch") for r in rows if r.get("arch")}
     # ARCH_ORDER order of the untagged names, a tagged name after its
@@ -2498,12 +2561,9 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
         if caveat:
             fig.text(0.5, 0.925, caveat, ha="center", fontsize=7.5,
                      style="italic", color="#444444")
-        if note:
-            fig.text(0.5, 0.05, note, ha="center", fontsize=6.5,
-                     color="#a33", wrap=True)
-        fig.text(0.5, 0.016, _provenance_text(provenance), ha="center",
-                 fontsize=6, color="#777777", wrap=True)
-        fig.tight_layout(rect=(0, 0.155, 1, 0.90))
+        top = _stamp_provenance(fig, 0.016, provenance, fontsize=6,
+                                notes=[(note or "", 6.5, "#a33")])
+        fig.tight_layout(rect=(0, max(0.155, top + 0.01), 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -2645,14 +2705,12 @@ def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
                        rung_separators=True, vxc_pre_fix=_hm_vxc)
         fig.suptitle(f"Architecture × subset_size error grid · {run_id}",
                      fontsize=11)
-        fig.text(0.5, 0.028,
-                 f"Coverage: {n_trained}/{n_total} specs trained · "
-                 f"{n_holdout} carry held-out reactions · hatched = no data. "
-                 + (_provenance_text(provenance)), ha="center",
-                 fontsize=6.5, color="#777777", wrap=True)
-        if note:
-            fig.text(0.5, 0.006, note, ha="center", fontsize=6.5, color="#a33")
-        fig.tight_layout(rect=(0, 0.06, 1, 0.95))
+        top = _stamp_provenance(
+            fig, 0.006, provenance, fontsize=6.5,
+            prefix=(f"Coverage: {n_trained}/{n_total} specs trained · "
+                    f"{n_holdout} carry held-out reactions · hatched = no data. "),
+            notes=[(note or "", 6.5, "#a33")])
+        fig.tight_layout(rect=(0, max(0.06, top + 0.01), 1, 0.95))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -2683,11 +2741,9 @@ def plot_arch_subset_heatmap_vs_pbe(reaction_rows: List[Dict[str, Any]],
                        subset_sizes=ss_axis, rung_separators=True,
                        vxc_pre_fix=_run_predates_vxc_fix(run_id))
         fig.suptitle(f"NN-vs-PBE cell grid · {run_id}", fontsize=11)
-        fig.text(0.5, 0.028, _provenance_text(provenance), ha="center",
-                 fontsize=6.5, color="#777777", wrap=True)
-        if note:
-            fig.text(0.5, 0.006, note, ha="center", fontsize=6.5, color="#a33")
-        fig.tight_layout(rect=(0, 0.06, 1, 0.95))
+        top = _stamp_provenance(fig, 0.006, provenance, fontsize=6.5,
+                                notes=[(note or "", 6.5, "#a33")])
+        fig.tight_layout(rect=(0, max(0.06, top + 0.01), 1, 0.95))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -2721,9 +2777,8 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
     with plt.rc_context({**_STYLE, **_SHALLOW_HATCH_RC}):
         rxn_map = reaction_mae_by_arch_subset(reaction_rows)
         ae_map = ae_mae_by_arch_subset(insample_rows)
-        archs = arch_style.sort_by_rung([a for a in ARCH_ORDER
-                 if any(k[0] == a for k in rxn_map)
-                 or any(k[0] == a for k in ae_map)])
+        archs = arch_style.sort_by_rung(arch_style.order_known(
+            {k[0] for k in rxn_map} | {k[0] for k in ae_map}))
         # Depth is judged over BOTH row sets, matching the arch axis above (an
         # arch can carry in-sample AE cells without held-out reactions yet).
         depth_rows = list(reaction_rows) + list(insample_rows)
@@ -2830,15 +2885,11 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
         ax.grid(True, axis="y", which="both", alpha=0.3)
         # Without a coverage caveat the footer stack is unchanged; with one the
         # two lines are lifted to make room rather than overprinting.
-        y_note, rect_bottom = (0.045, 0.075) if cov_caveat else (0.028, 0.06)
-        if note:
-            fig.text(0.5, y_note, note, ha="center", fontsize=6.5, color="#a33")
-        if cov_caveat:
-            fig.text(0.5, 0.026, cov_caveat, ha="center", fontsize=6.0,
-                     color="#a33")
-        fig.text(0.5, 0.006, _provenance_text(provenance), ha="center",
-                 fontsize=6, color="#777777", wrap=True)
-        fig.tight_layout(rect=(0, rect_bottom, 1, 1))
+        rect_bottom = 0.075 if cov_caveat else 0.06
+        top = _stamp_provenance(fig, 0.006, provenance, fontsize=6,
+                                notes=[(cov_caveat or "", 6.0, "#a33"),
+                                       (note or "", 6.5, "#a33")])
+        fig.tight_layout(rect=(0, max(rect_bottom, top + 0.01), 1, 1))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -3050,11 +3101,9 @@ def plot_mae_vs_subset(reaction_rows: List[Dict[str, Any]],
                              ls_for=ls_for)
         ax1.legend(fontsize=6, ncol=2)
         fig.suptitle(f"Error vs training-subset size · {run_id}", fontsize=11)
-        if note:
-            fig.text(0.5, 0.03, note, ha="center", fontsize=6.5, color="#a33")
-        fig.text(0.5, 0.008, _provenance_text(provenance), ha="center",
-                 fontsize=6, color="#777777", wrap=True)
-        fig.tight_layout(rect=(0, 0.06, 1, 0.95))
+        top = _stamp_provenance(fig, 0.008, provenance, fontsize=6,
+                                notes=[(note or "", 6.5, "#a33")])
+        fig.tight_layout(rect=(0, max(0.06, top + 0.01), 1, 0.95))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -3217,12 +3266,9 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
                  "atomization energy. PBE (grey ×, dashed baseline) is the bar "
                  "to beat; points above/below the diagonal over/under-bind.",
                  ha="center", fontsize=7.5, style="italic", color="#444444")
-        if note:
-            fig.text(0.5, 0.05, note, ha="center", fontsize=6.5,
-                     color="#a33", wrap=True)
-        fig.text(0.5, 0.016, _provenance_text(provenance), ha="center",
-                 fontsize=6, color="#777777", wrap=True)
-        fig.tight_layout(rect=(0, 0.155, 1, 0.90))
+        top = _stamp_provenance(fig, 0.016, provenance, fontsize=6,
+                                notes=[(note or "", 6.5, "#a33")])
+        fig.tight_layout(rect=(0, max(0.155, top + 0.01), 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -3461,14 +3507,11 @@ def _stamp_parity_footer(fig, *, run_id: str, title: str, note: str,
         # the axes; None (the default) renders every legacy figure unchanged
         fig.text(0.5, 0.922, dataset, ha="center", fontsize=5.6,
                  color="#555555")
-    if extra_note:
-        fig.text(0.5, 0.030, extra_note, ha="center", fontsize=5.6,
-                 color="#a33", wrap=True)
-    if note:
-        fig.text(0.5, 0.032 if not extra_note else 0.058, note, ha="center",
-                 fontsize=5.6, color="#a33", wrap=True)
-    fig.text(0.5, 0.010, _provenance_text(provenance), ha="center",
-             fontsize=5.6, color="#777777", wrap=True)
+    # the provenance first (with the key line beneath it when set); the red
+    # notes stack above its estimated top, so a longer footer never overlaps
+    _stamp_provenance(fig, 0.010, provenance, fontsize=5.6,
+                      notes=[(extra_note or "", 5.6, "#a33"),
+                             (note or "", 5.6, "#a33")])
 
 
 def _add_subset_colorbar(fig, mappable, *, x=0.945):
@@ -4567,7 +4610,7 @@ def write_holdout_density_tail_csv(hd_rows: List[Dict[str, Any]],
                                    ) -> Path:
     """The held-out density tail: one row per (arch, subset_size, casefolded
     species) whose NN/PBE density-RMSE ratio exceeds ``ratio_threshold``,
-    ratio-descending within each cell, cells in ARCH_ORDER-then-subset order.
+    ratio-descending within each cell, cells in the display order (a tagged name after its untagged base), then subset.
     Case twins collapse to one row: the NN and PBE errors are the twin means
     (the same reduction as the cell means), the first-cycle SCF residual is
     the MAX over the pair, ``scf_converged`` the AND, ``cycles_run`` the MAX;
@@ -4575,7 +4618,6 @@ def write_holdout_density_tail_csv(hd_rows: List[Dict[str, Any]],
     -> T1 diagnostic) fills the last column, blank when absent. Rows without
     a finite NN leg or a positive PBE leg produce nothing."""
     cells = cell_species_density_ratios(hd_rows)
-    order = {a: i for i, a in enumerate(ARCH_ORDER)}
     out_rows: List[Dict[str, Any]] = []
     for (arch, ss, cf), c in cells.items():
         rs, nn, pbe, ratio = c["rows"], c["nn"], c["pbe"], c["ratio"]
@@ -4596,7 +4638,7 @@ def write_holdout_density_tail_csv(hd_rows: List[Dict[str, Any]],
             "cycles_run": max(cyc) if cyc else "",
             "t1_diagnostic": t1_val if _is_num(t1_val) else "",
         })
-    out_rows.sort(key=lambda r: (order.get(r["arch"], len(order)), r["arch"],
+    out_rows.sort(key=lambda r: (_order_rank(r["arch"]), r["arch"],
                                  r["subset_size"], -r["ratio"], r["molecule"]))
     out_path = Path(out_path)
     with out_path.open("w", newline="") as fh:
@@ -5447,7 +5489,7 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                           = None) -> Path:
     """Per-cell ED table for the given energy legs, alongside the figure --
     the machine-readable source for a paper table. One row per (leg, cell),
-    cells in ARCH_ORDER-then-subset order; None legs skipped.
+    cells in the display order (a tagged name after its untagged base), then subset; None legs skipped.
     ``n_reactions`` counts the cell's NN-scored deduped reactions;
     ``n_reactions_slice`` the cell's full test slice (finite-comparator
     rows) -- ``n_reactions < n_reactions_slice`` is the machine-readable
@@ -5466,7 +5508,6 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
     leave it blank while the species count stays. The CSV path is NOT
     appended to the figure list returned by ``build_density_energy_figures``
     (that return contract stays PNG-only)."""
-    order = {a: i for i, a in enumerate(ARCH_ORDER)}
     out_path = Path(out_path)
     with out_path.open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=_ED_CSV_FIELDS)
@@ -5481,7 +5522,7 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                 nr, nd = cl[0], cl[1]
                 ns = cl[2] if len(cl) > 2 else {}
             cells = sorted(summary["cells"].items(),
-                           key=lambda kv: (order.get(kv[0][0], len(order)),
+                           key=lambda kv: (_order_rank(kv[0][0]),
                                            kv[0][0], kv[0][1]))
             for (arch, ss), c in cells:
                 w.writerow({
@@ -8760,8 +8801,7 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
             "where a basis hasn't run) -- NN bars vs benchmark, PBE dashed"
             f"  ·  {run_id}", fontsize=11, y=1.0 - _f(0.16))
         if not bars_only:
-            fig.text(0.5, _f(0.09), _provenance_text(provenance), ha="center",
-                     fontsize=6, color="#777777", wrap=True)
+            _stamp_provenance(fig, _f(0.09), provenance, fontsize=6)
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -9718,9 +9758,8 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
     present = list(reaction_mae_by_arch_subset(rows).keys())
     if present:
         ss0 = min(ss for _, ss in present)
-        order = {a: i for i, a in enumerate(ARCH_ORDER)}
         sc_cells = sorted((cell for cell in present if cell[1] == ss0),
-                          key=lambda c: (order.get(c[0], len(ARCH_ORDER)), c[0]))
+                          key=lambda c: (_order_rank(c[0]), c[0]))
         written.append(plot_size_consistency_diagnostic(
             rows, outdir / "holdout_size_consistency.png", run_id, sc_cells,
             note=note, dataset=_holdout_eval_note(rows, [])))

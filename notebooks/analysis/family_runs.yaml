@@ -1,0 +1,45 @@
+# The runs that form the merged family view (notebooks/analysis/merge_family_runs.py).
+#
+# One entry per cluster run. The view is composed from every entry in this order, the
+# figure suite renders it once as the basis token `view` under `domain`, and the documents
+# are built on those figures; a run enters the figures by one entry here and by nothing
+# else. A listed run that is not pulled locally refuses the build.
+#
+#   category  the run's category under the results root's domain
+#   run       `latest` (the newest run_* directory pulled) or a run_YYYYMMDDTHHMMSSZ name
+#   archs     the REGISTRY keys to take (the names the manifests carry: medium,
+#             deep_3x16, ...; omitted: every architecture the manifest names)
+#   protocol  the tag shown on the cells' names (`deep_3x16 [25 cycles]`) for a run that
+#             trains the same architectures under another training protocol; omitted
+#             otherwise. A tag names a protocol, never a basis or a grid: a run whose
+#             production identity differs from the first entry's is refused.
+#   pretrain  whether the run's certified pre-training directories are carried into the
+#             view; false for a run whose architectures already have a carried slot (the
+#             arms copy the size group's certificates), recorded in the view's manifest
+#
+# A category may appear once. Every architecture with a cell must carry a PASS
+# pretraining-fidelity certificate in its own run; a run without cells yet is admitted
+# with a note and enters the figures as its cells land.
+
+view: v7_family
+domain: dfs_step7
+
+runs:
+  - category: dfs6311_grid3_v7g1_size
+    run: latest
+  - category: dfs6311_grid3_v7g2a_families_core
+    run: latest
+  - category: dfs6311_grid3_v7g2_families_mgga
+    run: latest
+  - category: dfs6311_grid3_v7g1_c25
+    run: latest
+    protocol: 25 cycles
+    pretrain: false
+  - category: dfs6311_grid3_v7g1_dfsparity
+    run: latest
+    protocol: dpyscf parity
+    pretrain: false
+#
+# The coupling is deliberate: a listed run whose architecture fails its certificate
+# refuses the merge and with it the whole family set. A failed group leaves this list
+# by decision (or its certificate is fixed), never by a silent drop.

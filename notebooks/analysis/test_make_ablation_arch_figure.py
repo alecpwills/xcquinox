@@ -8031,17 +8031,116 @@ def test_key_line_state_is_scoped_to_the_builder(tmp_path, monkeypatch):
     assert fig._KEY_LINE_ARCHS is None
 
 
-def test_every_provenance_footer_wraps():
-    """The key line lengthens the provenance line past the canvas of the
-    wider figures; every stamp site wraps it (a source pin: the text object
-    is drawn at seven sites besides the shared footer)."""
+def test_every_provenance_footer_goes_through_the_stacking_helper():
+    """The key line would lengthen the provenance past the canvas and into the
+    note above it; every stamp site draws through ``_stamp_provenance`` (a
+    source pin: the seven sites besides the shared footer, and no bare
+    ``fig.text`` of the provenance remains)."""
     import inspect
     import re
     src = inspect.getsource(fig)
-    sites = [m.end() for m in re.finditer(r"_provenance_text\(provenance\)", src)]
-    assert len(sites) >= 8, len(sites)
-    for end in sites:
-        # the rest of the fig.text call: up to the closing line of the call
-        window = src[end:end + 200]
-        window = window[:window.index(")\n") + 1] if ")\n" in window else window
-        assert "wrap=True" in window, src[end - 60:end + 120]
+    assert len(re.findall(r"_stamp_provenance\(\s*fig,", src)) >= 8
+    assert not re.search(r"fig\.text\([^\n]*_provenance_text\(", src)
+
+
+def test_footer_texts_stack_without_overlap(monkeypatch):
+    """With the key line set on a wide axis the three footer texts (key line,
+    provenance, note) occupy disjoint vertical bands inside the canvas; the
+    key line's lines fit the figure width."""
+    import matplotlib.pyplot as plt
+    monkeypatch.setattr(fig, "_KEY_LINE_ARCHS",
+                        ["deep_3x16", "deep_attn_3x16", "deep0_3x16",
+                         "deep0_attn_3x16"])
+    f = plt.figure(figsize=(10.0, 6.0))
+    fig._stamp_parity_footer(f, run_id="run_20260902T145245Z", title="t",
+                             note="a red note about the panel", provenance=None,
+                             caveat=None)
+    f.canvas.draw()
+    renderer = f.canvas.get_renderer()
+    boxes = {}
+    for t in f.texts:
+        text = t.get_text()
+        bb = t.get_window_extent(renderer)
+        if "Glorot" in text:
+            boxes["keys"] = bb
+        elif text.startswith("Held-out: GMTKN55"):
+            boxes["prov"] = bb
+        elif text.startswith("a red note"):
+            boxes["note"] = bb
+    assert set(boxes) == {"keys", "prov", "note"}, list(boxes)
+    assert boxes["keys"].y0 >= 0
+    assert boxes["keys"].y1 <= boxes["prov"].y0, (boxes["keys"], boxes["prov"])
+    assert boxes["prov"].y1 <= boxes["note"].y0, (boxes["prov"], boxes["note"])
+    assert boxes["keys"].x0 >= 0 and boxes["keys"].x1 <= f.bbox.width
+    plt.close(f)
+
+
+def test_tagged_names_order_after_their_base_in_every_writer(tmp_path):
+    """The two CSV writers, the coverage helper and the rank behind them put a
+    protocol-tagged name right after its untagged architecture and keep the
+    display order otherwise (the 4x32 legacy family last)."""
+    assert fig._order_rank("deep_3x16") == (2, "")
+    assert fig._order_rank("deep_3x16 [25 cycles]") == (2, "25 cycles")
+    assert fig._order_rank("medium [25 cycles]") == (2, "25 cycles")
+    assert fig._order_rank("deep0_3x16") == (4, "")
+    assert fig._order_rank("deep0_4x32")[0] > fig._order_rank("deep0_3x16")[0]
+    assert fig._order_rank("no_such_arch") == (len(fig.ARCH_ORDER), "")
+    # the ED table
+    cells = {("deep0_3x16", 1): {"E": 5.0, "D": 2e-4, "gammaD": 0.2, "ED": 4.0,
+                                 "beats_pbe": False},
+             ("deep_3x16 [25 cycles]", 1): {"E": 5.0, "D": 2e-4, "gammaD": 0.2,
+                                            "ED": 4.0, "beats_pbe": False},
+             ("deep_3x16", 1): {"E": 5.0, "D": 2e-4, "gammaD": 0.2, "ED": 4.0,
+                                "beats_pbe": False}}
+    summary = {"gamma": 1000.0, "e_pbe": 8.0, "d_pbe": 2e-4, "ed_pbe": 8.0,
+               "cells": cells}
+    out = fig.write_combined_ed_csv({"wtmad2": summary}, tmp_path / "ed.csv",
+                                    n_reactions={}, n_density={})
+    rows = list(csv.DictReader(out.open()))
+    assert [r["arch"] for r in rows] == ["deep_3x16", "deep_3x16 [25 cycles]",
+                                         "deep0_3x16"]
+    assert [r["arch_stored"] for r in rows] == ["medium", "medium", "deep_3x16"]
+    # the tail table
+    hd = []
+    for arch in ("deep0_3x16", "deep_3x16 [25 cycles]", "deep_3x16"):
+        hd.append({"arch": arch, "subset_size": 1, "molecule": "NO",
+                   "density_rmse": 0.007, "density_rmse_pbe": 0.001,
+                   "scf_energy_residual_0": 0.2, "scf_converged": False,
+                   "cycles_run": 25})
+    out = fig.write_holdout_density_tail_csv(hd, tmp_path / "tail.csv")
+    rows = list(csv.DictReader(out.open()))
+    assert [r["arch"] for r in rows] == ["deep_3x16", "deep_3x16 [25 cycles]",
+                                         "deep0_3x16"]
+    # the coverage helper's ordering
+    run = _make_display_run_dir(tmp_path)
+    cov = fig.arch_coverage(run)
+    assert cov["holdout"] == ["deep_3x16", "deep0_3x16"]
+
+
+def test_energy_by_arch_footer_bands_are_disjoint(tmp_path, monkeypatch):
+    """The energy-by-architecture figure draws its own coverage caveat and
+    note; with the key line set, every footer text (key line, provenance,
+    caveat, note) occupies its own band and none overlaps another."""
+    import matplotlib.figure as mfig
+    captured = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        captured.append(self)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    rows = _make_uneven_rung_rows()
+    monkeypatch.setattr(fig, "_KEY_LINE_ARCHS", fig._archs_present(rows))
+    fig.plot_mae_by_arch(rows, [], tmp_path / "mba.png", "run_x",
+                         note="a red note about coverage")
+    f = captured[-1]
+    f.canvas.draw()
+    renderer = f.canvas.get_renderer()
+    footer = [t for t in f.texts if t.get_position()[1] < 0.2]
+    assert len(footer) >= 3, [t.get_text()[:30] for t in footer]
+    boxes = sorted((t.get_window_extent(renderer) for t in footer),
+                   key=lambda b: b.y0)
+    for lower, upper in zip(boxes, boxes[1:]):
+        assert lower.y1 <= upper.y0 + 0.5, (lower, upper)
+    assert boxes[0].y0 >= 0

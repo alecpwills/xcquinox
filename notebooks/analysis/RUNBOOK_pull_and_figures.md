@@ -427,15 +427,55 @@ content is the category names and output dirs:
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_size/runs
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g2a_families_core/runs
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g2_families_mgga/runs
+python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_c25/runs
+python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_dfsparity/runs
 
-python notebooks/analysis/make_ablation_arch_figure.py --suite \
-    --domain dfs_step7 \
-    --bases dfs6311_grid3_v7g1_size,dfs6311_grid3_v7g2a_families_core,dfs6311_grid3_v7g2_families_mgga \
-    --outroot notebooks/analysis
+python notebooks/analysis/merge_family_runs.py
+python notebooks/analysis/make_ablation_arch_figure.py --suite --domain dfs_step7 --bases v7_family --outroot notebooks/analysis
 ```
 
+### The merged family view (2026-09-09): one figure set over every finished cell
+
+The runs are not drawn one figure set each. `notebooks/analysis/family_runs.yaml` lists
+the runs that form the campaign (category, `latest` or a run name, the registry keys to
+take, the protocol tag shown on the cells' names, whether the run's certified
+pre-training directories are the canonical ones), and
+`notebooks/analysis/merge_family_runs.py` composes them into ONE view directory,
+`~/Documents/Research/xcquinox-results/runs/dfs_step7/v7_family/runs/run_<stamp>`
+(renumbered symlinks to the runs' spec directories, a composed `manifest.json` whose
+cells carry the run's cell plus the tag, the carried pretrain directories, the first
+run's `resolved_config.yaml`, the marker `MERGED_RUNS.txt` with the inventory). The suite
+then renders that view once as the basis token `v7_family`:
+`figures_dfs_step7_v7_family` (final channel), `_val_best`, `_excl_tail`,
+`_val_best_excl_tail`, and the converged views when that channel exists. A run enters
+the figures by one entry in the list and by nothing else; a listed run that is not
+pulled refuses the merge (it never silently drops a run), a run whose production
+identity (basis, density fitting, grid level, parent anchor) differs from the first
+entry's is refused, and a run with no cells yet is admitted with a note and enters as
+its cells land. The two arms carry the tags `25 cycles` and `dpyscf parity`, so their
+cells sit beside the size group's under `deep_3x16 [25 cycles]` and
+`deep_3x16 [dpyscf parity]`. The merge prints one inventory line per run and exits 1
+when no cell is evaluated; it also refuses a view lacking an evaluated cell of any
+listed run (a stale view after a pull: rerun the merge).
+
+The optimized and pre-training figures run on the view too, into the family
+directories:
+
+```bash
+JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py --run-dir <view> --eval-channel val_best --outdir notebooks/analysis/figures_dfs_step7_v7_family_val_best
+JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py --run-dir <view> --eval-channel final --outdir notebooks/analysis/figures_dfs_step7_v7_family
+python notebooks/analysis/plot_pretraining_curves.py <view> -o notebooks/analysis/figures_dfs_step7_v7_family_pretrain/pretrain_curves.png
+JAX_PLATFORMS=cpu python notebooks/analysis/pretrain_fx_fc.py --run-dir <view> --outdir notebooks/analysis/figures_dfs_step7_v7_family_pretrain
+JAX_PLATFORMS=cpu python notebooks/analysis/plot_certificate_summary.py --runs g1=<g1 run> --runs g2a=<g2a run> --runs mgga=<mgga run> --out notebooks/analysis/figures_dfs_step7_v7_family_pretrain/certificate_summary.png
+```
+
+The view's `pretrain/` holds the carried (PASS) directories only, so the certificate
+summary reads the source runs, where a FAIL (the meta-GGA group's) is visible. The
+tracked figure sets are the family ones; the per-run sets of the earlier refreshes are
+no longer regenerated.
+
 (`pull auto --category dfs_step7` also discovers the v7 runs by activity.)
-Outputs land at `figures_dfs_step7_dfs6311_grid3_v7*` (+ `_val_best`).
+Outputs land at `figures_dfs_step7_v7_family*` (the section above).
 
 ### Building the report PDFs from their markdown (2026-09-09)
 
@@ -517,7 +557,8 @@ mailed END, pull and regenerate:
 ```bash
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_size/runs
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g2a_families_core/runs
-python notebooks/analysis/make_ablation_arch_figure.py --suite --domain dfs_step7 --bases dfs6311_grid3_v7g1_size,dfs6311_grid3_v7g2a_families_core --outroot notebooks/analysis
+python notebooks/analysis/merge_family_runs.py
+python notebooks/analysis/make_ablation_arch_figure.py --suite --domain dfs_step7 --bases v7_family --outroot notebooks/analysis
 ```
 
 The suite then renders `figures_<alias>_converged` and `figures_<alias>_converged_val_best`
@@ -527,22 +568,21 @@ with its `scf_converged` flag; the collector prints the unconverged count per sp
 At partial coverage the suite runs on whatever cells have landed and
 skips the basis comparison until two bases carry cells. The optimized
 enhancement factors are a separate script, one call per checkpoint channel
-into the matching figure directory:
+into the matching figure directory (the family view, the section above):
 
 ```bash
-JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py \
-    --run-dir <pulled run dir> --eval-channel val_best \
-    --outdir notebooks/analysis/figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best
-JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py \
-    --run-dir <pulled run dir> --eval-channel final \
-    --outdir notebooks/analysis/figures_dfs_step7_dfs6311_grid3_v7g1_size
+JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py --run-dir <view> --eval-channel val_best --outdir notebooks/analysis/figures_dfs_step7_v7_family_val_best
+JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py --run-dir <view> --eval-channel final --outdir notebooks/analysis/figures_dfs_step7_v7_family
 ```
 
-The g1 and g2a figure sets (suite plus trained_fx_fc outputs) are tracked
-in full at partial coverage as the campaign's visible progress (g1 at sixteen
-cells and g2a at nine on 2026-09-07); the empty mgga placeholder set is not
-tracked until that array produces cells, and the shared basis-comparison
-sets stay untracked (regenerated on every suite call).
+The family figure sets (suite plus trained_fx_fc outputs) are tracked in
+full at partial coverage as the campaign's visible progress (33 evaluated
+cells on 2026-09-09); the shared basis-comparison sets stay untracked
+(regenerated on every suite call). A run whose architecture fails its
+certificate refuses the merge, and with it the whole family set: an
+uncertified architecture never enters the campaign's figures, and the
+coupling is deliberate (a failed group is removed from `family_runs.yaml`,
+or its certificate is fixed, by decision and not by a silent drop).
 Before the train arrays complete, the artifact worth pulling is the
 pretrain stage itself: each run's `pretrain/<arch>/fidelity_certificate.json`
 states whether the clone reproduced its parent (the campaign's gate), and
@@ -552,16 +592,21 @@ states whether the clone reproduced its parent (the campaign's gate), and
 ### Pretrain-stage quick-look figures (before any training lands)
 
 ```bash
-python notebooks/analysis/plot_pretraining_curves.py <pulled run dir> \
-    -o notebooks/analysis/figures_dfs_step7_v7_pretrain/pretrain_curves_<label>.png
-JAX_PLATFORMS=cpu python notebooks/analysis/pretrain_fx_fc.py \
-    --run-dir <pulled run dir> \
-    --outdir notebooks/analysis/figures_dfs_step7_v7_pretrain/fx_fc_<label>
+python notebooks/analysis/plot_pretraining_curves.py <view> -o notebooks/analysis/figures_dfs_step7_v7_family_pretrain/pretrain_curves.png
+JAX_PLATFORMS=cpu python notebooks/analysis/pretrain_fx_fc.py --run-dir <view> --outdir notebooks/analysis/figures_dfs_step7_v7_family_pretrain
 ```
 
 The first is the per-arch loss trajectories; the second draws the LEARNED
 F_x/F_c over the parent's curves with difference panels -- under the
-unanchored cloning class this is the direct is-it-learning visual.
+unanchored cloning class this is the direct is-it-learning visual. The view
+carries the certified (PASS) pre-training directories only; the evidence
+behind a FAILED certificate is rendered from the run itself into a
+subdirectory named for it, so the decision on that group can be read:
+
+```bash
+python notebooks/analysis/plot_pretraining_curves.py <mgga run dir> -o notebooks/analysis/figures_dfs_step7_v7_family_pretrain/uncertified_mgga/pretrain_curves.png
+JAX_PLATFORMS=cpu python notebooks/analysis/pretrain_fx_fc.py --run-dir <mgga run dir> --outdir notebooks/analysis/figures_dfs_step7_v7_family_pretrain/uncertified_mgga
+```
 
 The certificate summary (mean |dAE| bars + per-species max markers per
 architecture, gate lines read from the certificates' own tolerances, FAIL
@@ -571,7 +616,7 @@ hatching, flagged species; CSV written beside the PNG) compares rounds:
 JAX_PLATFORMS=cpu python notebooks/analysis/plot_certificate_summary.py \
     --runs v7=<v7 run dir> --runs v7=<second v7 run dir> \
     --runs legacy=<pre-protocol run dir> \
-    --out notebooks/analysis/figures_dfs_step7_v7_pretrain/certificate_summary_v7.png
+    --out notebooks/analysis/figures_dfs_step7_v7_family_pretrain/certificate_summary.png
 ```
 
 A repeated label merges disjoint architecture sets under one color; the
