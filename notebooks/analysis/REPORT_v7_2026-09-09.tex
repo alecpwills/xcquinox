@@ -24,17 +24,17 @@ The sections follow the pipeline: the model and its descriptors (Sec. 1), the ge
 
 \section*{Scope and inventory}
 
-The v7 campaign trains one network pair (an exchange network and a correlation network) per architecture and per training-subset size, under one protocol, on the cluster as separate runs that differ in their architecture axis. Each run carries its own pre-training (the cloning of the parent functional), a fidelity certificate that gates its training array, and the array itself, one cell per (architecture, subset size). The figures and tables of this report are drawn once over every finished cell of every run: the runs are merged into one view (\path{family_runs.yaml}, \path{merge_family_runs.py}; the runbook's v7 section) and the architecture axis is the one of Sec. 1.5, with the run of each cell recorded in the tables' first column. The architecture names are the shown names of Sec. 1.5 (the registry keys the runs are filed under are given there beside them).
+The v7 campaign trains one network pair (an exchange network and a correlation network) per architecture and per training-subset size, under one protocol, on the cluster as separate runs that differ in their architecture axis. Each run carries its own pre-training (the cloning of the parent functional), a fidelity certificate that gates its training array, and the array itself, one cell per (architecture, subset size). The figures and tables of this report are drawn once over every finished cell of every run: the runs are merged into one view (\path{family_runs.yaml}, \path{merge_family_runs.py}; the runbook's v7 section) and the architecture axis is the one of Sec. 1.5, with the run of each cell recorded in the tables' first column. The architecture names are those of Sec. 1.5.
 
 \begin{landscape}
 \begin{small}
-\begin{longtable}{lp{0.213\linewidth}p{0.213\linewidth}p{0.213\linewidth}l}
-\toprule Run & Configuration file & Architectures (registry key) & Cells done / planned & Run directory \\ \midrule \endhead
-size & \path{dfs_step7.dfs6311_grid3_v7g1_size.yaml} & deep\_2x8 (shallow), deep\_attn\_2x8 (shallow\_attn), deep\_3x16 (medium), deep\_attn\_3x16 (medium\_attn) & deep\_3x16 11/11, deep\_attn\_3x16 9/11, deep\_2x8 0/11, deep\_attn\_2x8 0/11 & \path{run_20260902T145245Z} \\
-families & \path{dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml} & deep0\_3x16 (deep\_3x16), deep0\_attn\_3x16 (deep\_attn\_3x16), deep0\_cusp\_3x16 (deep\_cusp\_3x16) & deep0\_3x16 11/11, deep0\_attn\_3x16 2/11, deep0\_cusp\_3x16 0/11 & \path{run_20260902T145247Z} \\
-meta-GGA families & \path{dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml} & deep0\_cusp\_mgga\_3x16, deep0\_mgga\_3x16, deep0\_mgga\_attn\_3x16, deep0\_rung35\_mgga\_3x16, deep0\_rung35ms\_mgga\_3x16 & 0/55 (the first certificate reads FAIL, Sec. 3.6; the other four are pending) & \path{run_20260902T145250Z} \\
-25-cycle arm & \path{dfs_step7.dfs6311_grid3_v7g1_c25.yaml} & deep\_3x16 (medium), tag \texttt{[25 cycles]} & 0/5 (pre-training done, training queued) & \path{run_20260908T153856Z} \\
-dpyscf-parity arm & \path{dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml} & deep\_3x16 (medium), tag \texttt{[dpyscf parity]} & 0/5 (pre-training done, training queued) & \path{run_20260908T153908Z} \\
+\begin{longtable}{lp{0.320\linewidth}p{0.320\linewidth}l}
+\toprule Run & Architectures & Cells done / planned & Run directory \\ \midrule \endhead
+size & deep\_3x16, deep\_attn\_3x16 & deep\_3x16 11/11, deep\_attn\_3x16 9/11 & \path{run_20260902T145245Z} \\
+families & deep0\_3x16, deep0\_attn\_3x16, deep0\_cusp\_3x16 & deep0\_3x16 11/11, deep0\_attn\_3x16 2/11, deep0\_cusp\_3x16 0/11 & \path{run_20260902T145247Z} \\
+meta-GGA families & deep0\_cusp\_mgga\_3x16, deep0\_mgga\_3x16, deep0\_mgga\_attn\_3x16, deep0\_rung35\_mgga\_3x16, deep0\_rung35ms\_mgga\_3x16 & 0/55 (the first certificate reads FAIL, Sec. 3.6; the other four are pending) & \path{run_20260902T145250Z} \\
+25-cycle arm & deep\_3x16, tag \texttt{[25 cycles]} & 0/5 (pre-training done, training queued) & \path{run_20260908T153856Z} \\
+dpyscf-parity arm & deep\_3x16, tag \texttt{[dpyscf parity]} & 0/5 (pre-training done, training queued) & \path{run_20260908T153908Z} \\
 \bottomrule \end{longtable}
 \end{small}
 \end{landscape}
@@ -139,20 +139,18 @@ It is a per-point re-mixing of hidden units, not a spatial or non-local operatio
 
 \subsection*{1.5 Architectures on the v7 axes}
 
-The architectures lie on four axes: the size (hidden layers x units), the initialization of the last layer, attention, and the extra descriptors (which set the rung and the parent). The name states them: the family word is the initialization (\path{deep} for the Glorot start of every layer; \path{deep0} for a last layer whose weight and bias are zeroed at construction, so that the untrained network is the LDA, $F = 1$, and pre-training starts from it), then the descriptor and attention tokens, then the size. The registry keys the runs are filed under are given beside the names; \path{deep_3x16} and \path{deep0_3x16} are the same network (the registry's \path{medium} and \path{deep_3x16}: depth 3, width 16, the same inputs, the same parameter count), separated by the initialization alone, so the two columns are replicates of one architecture under two starts. Nothing is frozen and nothing is appended in either; after pre-training both are PBE clones that differ in their fitted weights.
+The architectures lie on four axes: the size (hidden layers x units), the initialization of the last layer, attention, and the extra descriptors (which set the rung and the parent). The name states them: the family word is the initialization (\path{deep} for the Glorot start of every layer; \path{deep0} for a last layer whose weight and bias are zeroed at construction, so that the untrained network is the LDA, $F = 1$, and pre-training starts from it), then the descriptor and attention tokens, then the size. \path{deep_3x16} and \path{deep0_3x16} are the same network (depth 3, width 16, the same inputs, the same parameter count), separated by the initialization alone, so the two columns are replicates of one architecture under two starts. Nothing is frozen and nothing is appended in either; after pre-training both are PBE clones that differ in their fitted weights.
 
 \begin{landscape}
 \begin{footnotesize}
-\begin{longtable}{lllllll}
-\toprule Architecture & Registry key & Start & Rung, parent & Layers x units & Heads & Extra descriptors \\ \midrule \endhead
-deep\_2x8 & shallow & Glorot & GGA, PBE & 2 x 8 & none & none \\
-deep\_attn\_2x8 & shallow\_attn & Glorot & GGA, PBE & 2 x 8 & 2 & none \\
-deep\_3x16 & medium & Glorot & GGA, PBE & 3 x 16 & none & none \\
-deep\_attn\_3x16 & medium\_attn & Glorot & GGA, PBE & 3 x 16 & 4 & none \\
-deep0\_3x16 & deep\_3x16 & last layer zeroed & GGA, PBE & 3 x 16 & none & none \\
-deep0\_attn\_3x16 & deep\_attn\_3x16 & last layer zeroed & GGA, PBE & 3 x 16 & 4 & none \\
-deep0\_cusp\_3x16 & deep\_cusp\_3x16 & last layer zeroed & GGA, PBE & 3 x 16 & none & cusp \\
-deep0\_cusp\_mgga\_3x16 & deep\_cusp\_mgga\_3x16 & last layer zeroed & meta-GGA, SCAN & 3 x 16 & none & cusp, $\alpha$ \\
+\begin{longtable}{llllll}
+\toprule Architecture & Start & Rung, parent & Layers x units & Heads & Extra descriptors \\ \midrule \endhead
+deep\_3x16 & Glorot & GGA, PBE & 3 x 16 & none & none \\
+deep\_attn\_3x16 & Glorot & GGA, PBE & 3 x 16 & 4 & none \\
+deep0\_3x16 & last layer zeroed & GGA, PBE & 3 x 16 & none & none \\
+deep0\_attn\_3x16 & last layer zeroed & GGA, PBE & 3 x 16 & 4 & none \\
+deep0\_cusp\_3x16 & last layer zeroed & GGA, PBE & 3 x 16 & none & cusp \\
+deep0\_cusp\_mgga\_3x16 & last layer zeroed & meta-GGA, SCAN & 3 x 16 & none & cusp, $\alpha$ \\
 \bottomrule \end{longtable}
 \end{footnotesize}
 \end{landscape}
@@ -163,14 +161,14 @@ The network inputs follow from the rung and the extra descriptors:
 \begin{small}
 \begin{longtable}{p{0.334\linewidth}lp{0.334\linewidth}}
 \toprule Architecture & Exchange input & Correlation input \\ \midrule \endhead
-deep\_2x8, deep\_attn\_2x8, deep\_3x16, deep\_attn\_3x16, deep0\_3x16, deep0\_attn\_3x16 & $x_s$ & $x_0, x_1, x_s$ \\
+deep\_3x16, deep\_attn\_3x16, deep0\_3x16, deep0\_attn\_3x16 & $x_s$ & $x_0, x_1, x_s$ \\
 deep0\_cusp\_3x16 & $x_s, x_4, x_5$ & $x_0, x_1, x_s, x_4, x_5$ \\
 deep0\_cusp\_mgga\_3x16 & $x_s, x_4, x_5, x_\alpha$ & $x_0, x_1, x_s, x_4, x_5, x_\alpha$ \\
 \bottomrule \end{longtable}
 \end{small}
 
 
-The \path{deep0} entries of the registry also carry \path{dm_entropy_intensive} and \path{descriptor_log_transform}, both inert on this axis (no density-matrix descriptor; the DFS coordinates already compress $s$, and only the cusp column-1 logarithm acts). All v7 networks are unanchored (\texttt{model.parent\_anchor: false}): the network output is the whole enhancement factor, and the parent functional enters only as the pre-training target. A cell of a run trained under another protocol carries the run's tag on its name (\texttt{deep\_3x16 [25 cycles]}, \texttt{deep\_3x16 [dpyscf parity]}; Sec. 6), so that the same architecture under two protocols sits on one axis.
+The \path{deep0} networks also carry \path{dm_entropy_intensive} and \path{descriptor_log_transform}, both inert on this axis (no density-matrix descriptor; the DFS coordinates already compress $s$, and only the cusp column-1 logarithm acts). All v7 networks are unanchored (\texttt{model.parent\_anchor: false}): the network output is the whole enhancement factor, and the parent functional enters only as the pre-training target. A cell of a run trained under another protocol carries the run's tag on its name (\texttt{deep\_3x16 [25 cycles]}, \texttt{deep\_3x16 [dpyscf parity]}; Sec. 6), so that the same architecture under two protocols sits on one axis.
 
 \section*{2. Training-subset generation (step 0 of the pipeline)}
 
@@ -324,7 +322,7 @@ and a failing certificate makes the pre-training task exit without success, whic
 
 \textbf{Fig. 3.1} The pointwise term of the objective per step taken, for the exchange network (left) and the correlation network (right), one curve per architecture, log scale over the 20000 steps; the final value of each curve is printed in the legend. The regular spikes from step 5000 onward are the validation checks: every 50 steps the objective is evaluated on the held-out slice and the best network is snapshotted, and the training step that follows a snapshot reload sits above the trend line for one step. The first figure holds the seven certified GGA clones of the size and families runs; the second the meta-GGA clone (its certificate failed, so it is not in the merged view and is drawn from its run).
 
-The exchange curves of the four Glorot-start architectures reach $5 \times 10^{-8}$ to $8 \times 10^{-8}$ (deep\_attn\_3x16 $1.5 \times 10^{-8}$), the correlation curves $7 \times 10^{-8}$ (deep\_attn\_3x16) to $3 \times 10^{-6}$ (deep\_2x8); deep\_attn\_3x16 descends earliest and ends lowest on both networks, the deep\_2x8 correlation network is the slowest. Of the zero-init architectures deep0\_attn\_3x16 is lowest on both networks ($1.5 \times 10^{-8}$, $1.0 \times 10^{-7}$), deep0\_3x16 and deep0\_cusp\_3x16 within a factor 3.5 of each other ($2.8 \times 10^{-8}$ and $9.5 \times 10^{-8}$; $3.4 \times 10^{-6}$ and $1.1 \times 10^{-6}$). The meta-GGA clone stops at $3.7 \times 10^{-6}$ (exchange) and $5.2 \times 10^{-6}$ (correlation), fifty to a hundred times above the GGA clones after the same 20000 steps, with a smooth trajectory and no divergence.
+The exchange curves of the two Glorot-start architectures reach $6.4 \times 10^{-8}$ (deep\_3x16) and $1.5 \times 10^{-8}$ (deep\_attn\_3x16), the correlation curves $7.6 \times 10^{-7}$ and $6.7 \times 10^{-8}$; deep\_attn\_3x16 descends earliest and ends lowest on both networks. Of the zero-init architectures deep0\_attn\_3x16 is lowest on both networks ($1.5 \times 10^{-8}$, $1.0 \times 10^{-7}$), deep0\_3x16 and deep0\_cusp\_3x16 within a factor 3.5 of each other ($2.8 \times 10^{-8}$ and $9.5 \times 10^{-8}$; $3.4 \times 10^{-6}$ and $1.1 \times 10^{-6}$). The meta-GGA clone stops at $3.7 \times 10^{-6}$ (exchange) and $5.2 \times 10^{-6}$ (correlation), fifty to a hundred times above the GGA clones after the same 20000 steps, with a smooth trajectory and no divergence.
 
 \begin{landscape}
 \begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/pretrain_curves.png}\end{center}
@@ -334,7 +332,7 @@ The exchange curves of the four Glorot-start architectures reach $5 \times 10^{-
 
 \subsection*{3.4 Certificate summary}
 
-\textbf{Fig. 3.2} One bar per architecture, the mean $|\Delta AE|$ against the parent over the set's molecules; the marker above each bar is the largest single-species $|\Delta AE|$, with the species above 1 kcal/mol printed beside it. Blue bars are the v7 round (this campaign, the two-tier gate: the dashed line at 1.0 kcal/mol gates the mean, the dotted line at 2.0 kcal/mol every species), one colour per run (the size run, the families run, the meta-GGA run); the meta-GGA bar is the FAILED certificate, hatched, with its flagged species printed. The numbers are in the table of Sec. 3.6. Reading: every v7 bar sits below 0.35 kcal/mol and every v7 marker below 1.5 kcal/mol; the attention architectures are the tightest (deep\_attn\_3x16 0.031 mean, 0.115 max; deep0\_attn\_3x16 0.042 and 0.149), the deep\_2x8 plain network the loosest (0.343 mean, 1.421 max on C3H8 and C4H6).
+\textbf{Fig. 3.2} One bar per architecture, the mean $|\Delta AE|$ against the parent over the set's molecules; the marker above each bar is the largest single-species $|\Delta AE|$, with the species above 1 kcal/mol printed beside it. Blue bars are the v7 round (this campaign, the two-tier gate: the dashed line at 1.0 kcal/mol gates the mean, the dotted line at 2.0 kcal/mol every species), one colour per run (the size run, the families run, the meta-GGA run); the meta-GGA bar is the FAILED certificate, hatched, with its flagged species printed. The numbers are in the table of Sec. 3.6. Reading: every v7 bar sits below 0.35 kcal/mol and every v7 marker below 1.5 kcal/mol; the attention architectures are the tightest (deep\_attn\_3x16 0.031 mean, 0.115 max; deep0\_attn\_3x16 0.042 and 0.149), deep0\_cusp\_3x16 the loosest (0.188 mean, 1.071 max on AlCl3).
 
 \begin{landscape}
 \begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/certificate_summary.png}\end{center}
@@ -353,20 +351,20 @@ deep\_3x16: $|\Delta F_x| \le 7 \times 10^{-3}$ over $s \le 6$, a smooth negativ
 \begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/uncertified_mgga/pretrain_fx_fc_deep0_cusp_mgga_3x16.png}\end{center}
 
 
-\textbf{Fig. 3.4} The exchange differences (left) and the correlation differences at $r_s = 2$ (right) of every certified GGA clone on one pair of axes. The four Glorot-start exchange clones agree with PBE to $1 \times 10^{-3}$ below $s = 2.5$ and fan out beyond it (deep\_2x8 to $-0.005$ at $s = 3.3$, deep\_attn\_3x16 to $+0.003$ at $s = 3.9$, and at $s = 6$ deep\_attn\_2x8 $-0.015$, deep\_3x16 $-0.007$, deep\_attn\_3x16 $-0.006$, deep\_2x8 $-0.003$); their correlation clones stay within $3 \times 10^{-3}$ below $s = 3$, deep\_attn\_3x16 drifting to $+5 \times 10^{-3}$ by $s = 6$. The three zero-init clones stay within $4.2 \times 10^{-3}$ everywhere on both slices (deep0\_attn\_3x16 exchange $+0.0034$ at $s = 4.2$; deep0\_cusp\_3x16 correlation $+0.0041$ at $s = 3.2$).
+\textbf{Fig. 3.4} The exchange differences (left) and the correlation differences at $r_s = 2$ (right) of every certified GGA clone on one pair of axes. The two Glorot-start exchange clones agree with PBE to $1 \times 10^{-3}$ below $s = 2.5$ and fan out beyond it (deep\_attn\_3x16 to $+0.003$ at $s = 3.9$, and at $s = 6$ deep\_3x16 $-0.007$, deep\_attn\_3x16 $-0.006$); their correlation clones stay within $3 \times 10^{-3}$ below $s = 3$, deep\_attn\_3x16 drifting to $+5 \times 10^{-3}$ by $s = 6$. The three zero-init clones stay within $4.2 \times 10^{-3}$ everywhere on both slices (deep0\_attn\_3x16 exchange $+0.0034$ at $s = 4.2$; deep0\_cusp\_3x16 correlation $+0.0041$ at $s = 3.2$).
 
 \begin{landscape}
 \begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/pretrain_fx_fc_delta_all.png}\end{center}
 \end{landscape}
 
 
-The deep\_2x8 pair and the deep0\_attn\_3x16 and deep0\_cusp\_3x16 clones are drawn in the same directories (\path{pretrain_fx_fc_<arch>.png}).
+The deep0\_attn\_3x16 and deep0\_cusp\_3x16 clones are drawn in the same directories (\path{pretrain_fx_fc_<arch>.png}).
 
 \subsection*{3.6 Certificate results}
 
 Read from \path{pretrain/<arch>/fidelity_certificate.json} and \path{pretrain_metadata.json}; the pointwise losses are the saved network's, in units of the squared enhancement-factor residual.
 
-Every GGA clone passes on all three criteria; the two with a species above 1 kcal/mol (deep\_2x8: C3H8, C4H6; deep0\_cusp\_3x16: AlCl3) pass on the mean and under the 2.0 kcal/mol backstop. The attention variants are the tightest clones by every measure (deep\_attn\_3x16: max atom 0.058 mHa, mean 0.031 kcal/mol; deep0\_attn\_3x16: 0.123 mHa, 0.042 kcal/mol), at the price of the longest fits (about 28 h against 3.6 to 3.8 h for their plain twins, \path{duration_seconds}).
+Every GGA clone passes on all three criteria; the one with a species above 1 kcal/mol (deep0\_cusp\_3x16: AlCl3) passes on the mean and under the 2.0 kcal/mol backstop. The attention variants are the tightest clones by every measure (deep\_attn\_3x16: max atom 0.058 mHa, mean 0.031 kcal/mol; deep0\_attn\_3x16: 0.123 mHa, 0.042 kcal/mol), at the price of the longest fits (about 28 h against 3.6 to 3.8 h for their plain twins, \path{duration_seconds}).
 
 The meta-GGA clone deep0\_cusp\_mgga\_3x16 fails all three criteria after a converged 20000-step fit (pointwise residuals 3.7e-6 and 5.2e-6, an order of magnitude above the GGA clones'): the largest free-atom error is 3.13 mHa (O; B 2.91, Be 2.61), the mean atomization error 2.06 kcal/mol and the largest 7.26 kcal/mol (C4H6; C3H8 7.19, O2 4.77, SiCH6 3.52, CH4 3.47), 14 of 22 molecules above 1 kcal/mol, every one of the eight largest errors of the same sign. Fig. 3.3 (bottom) shows where the clone misses SCAN: the $\alpha = 0$ exchange slice is 0.015 to 0.027 above SCAN for $s > 2$ and the $\alpha = 1$ correlation slices sit 0.01 to 0.03 below it at $r_s = 0.5$, systematic offsets that do not cancel between a molecule and its atoms. The v6 meta-GGA certificates, all PASS, were fitted in the anchored model class (the network learns a correction on top of SCAN); this is the first unanchored meta-GGA clone the two-tier gate has judged. The four remaining meta-GGA architectures are pending; whether the rung or this architecture is the cause is decided by their certificates. Until then the meta-GGA training array is held.
 
@@ -374,8 +372,6 @@ The meta-GGA clone deep0\_cusp\_mgga\_3x16 fails all three criteria after a conv
 \begin{scriptsize}
 \begin{longtable}{lllllp{0.116\linewidth}p{0.116\linewidth}p{0.116\linewidth}p{0.116\linewidth}l}
 \toprule Run & Architecture & Parent & Steps & Pointwise loss X / C & max atom $\lvert\Delta E_{xc}\rvert$ (mHa) & mean $\lvert\Delta AE\rvert$ (kcal/mol) & max $\lvert\Delta AE\rvert$ (kcal/mol) & Species over 1 kcal/mol & Verdict \\ \midrule \endhead
-size & deep\_2x8 & PBE & 20000 & 5.41e-08 / 3.29e-06 & 0.369 & 0.343 & 1.421 & C3H8, C4H6 & PASS \\
-size & deep\_attn\_2x8 & PBE & 20000 & 7.62e-08 / 3.83e-07 & 0.201 & 0.131 & 0.573 & none & PASS \\
 size & deep\_3x16 & PBE & 20000 & 6.40e-08 / 7.58e-07 & 0.210 & 0.162 & 0.519 & none & PASS \\
 size & deep\_attn\_3x16 & PBE & 20000 & 1.51e-08 / 6.70e-08 & 0.058 & 0.031 & 0.115 & none & PASS \\
 families & deep0\_3x16 & PBE & 20000 & 2.77e-08 / 3.37e-06 & 0.439 & 0.114 & 0.450 & none & PASS \\
@@ -952,7 +948,7 @@ deep0\_attn\_3x16 & 2 & 177 & 178 & 13.64 & 8.92 & 0.01047 & 0.00909 & 12.40 & 9
 \section*{6. Pending work and open items}
 
 \begin{itemize}
-\item Cells: deep\_attn\_3x16 at 18 and 26, deep0\_attn\_3x16 from 3 to 26, deep0\_cusp\_3x16 at every subset, the deep\_2x8 pair at every subset, are queued on the cluster; the figures and tables are regenerated from the same suite as they land.
+\item Cells: deep\_attn\_3x16 at 18 and 26, deep0\_attn\_3x16 from 3 to 26, deep0\_cusp\_3x16 at every subset are queued on the cluster; the figures and tables are regenerated from the same suite as they land.
 \item Meta-GGA group: four certificates pending; the deep0\_cusp\_mgga\_3x16 FAIL holds the training array (Sec. 3.6). The decision between dropping the architecture, refitting with more capacity or a higher energy-term weight, and the anchored class follows the four results.
 \item Converged-SCF re-evaluation of the 33 finished cells (the \path{converged} channel, DIIS at $10^{-8}$ Ha) and the CCSD T1 diagnostics for the model-free multireference list: two cluster jobs pending; they produce the \path{_excl_t1} and \path{_excl_unconverged} siblings of every density figure, the model-free counterparts of the \path{_excl_tail} view used here.
 \item The two training arms of the density program on the deep\_3x16 architecture at 7, 12, 15, 18 and 26 molecules: 25 SCF cycles with the current protocol (arm A) and the dpyscf-parity protocol (arm B: no convergence freeze, the executed first-mix index, the randomized atomic/PBE seed mixture, Adam with the plateau schedule and the Letter's L2 and channel weights). Submitted 2026-09-08, no results yet.

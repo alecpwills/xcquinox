@@ -16,7 +16,7 @@
   \begin{tabular}{p{1.9cm}p{5.7cm}p{3.5cm}p{2.6cm}}
   \toprule
   Run & Architectures & Cells done / planned & Run directory \\ \midrule
-  size & deep\_2x8, deep\_attn\_2x8, deep\_3x16, deep\_attn\_3x16 & deep\_3x16 11/11, deep\_attn\_3x16 9/11, the 2x8 pair 0/11 & \path{run_20260902T145245Z} \\
+  size & deep\_3x16, deep\_attn\_3x16 & deep\_3x16 11/11, deep\_attn\_3x16 9/11 & \path{run_20260902T145245Z} \\
   families & deep0\_3x16, deep0\_attn\_3x16, deep0\_cusp\_3x16 & deep0\_3x16 11/11, deep0\_attn\_3x16 2/11, deep0\_cusp\_3x16 0/11 & \path{run_20260902T145247Z} \\
   meta-GGA families & deep0\_cusp\_mgga\_3x16, deep0\_mgga\_3x16, deep0\_mgga\_attn\_3x16, deep0\_rung35\_mgga\_3x16, deep0\_rung35ms\_mgga\_3x16 & 0/55 (first certificate FAIL, four pending) & \path{run_20260902T145250Z} \\
   \bottomrule
@@ -113,25 +113,23 @@
   \begin{center}\scriptsize
   \begin{tabular}{lllllll}
   \toprule
-  Architecture & Registry key & Last layer & Rung, parent & Hidden & Heads & Extra \\ \midrule
-  deep\_2x8 & shallow & Glorot & GGA, PBE & 2 x 8 & none & none \\
-  deep\_attn\_2x8 & shallow\_attn & Glorot & GGA, PBE & 2 x 8 & 2 & none \\
-  deep\_3x16 & medium & Glorot & GGA, PBE & 3 x 16 & none & none \\
-  deep\_attn\_3x16 & medium\_attn & Glorot & GGA, PBE & 3 x 16 & 4 & none \\
-  deep0\_3x16 & deep\_3x16 & zeroed & GGA, PBE & 3 x 16 & none & none \\
-  deep0\_attn\_3x16 & deep\_attn\_3x16 & zeroed & GGA, PBE & 3 x 16 & 4 & none \\
-  deep0\_cusp\_3x16 & deep\_cusp\_3x16 & zeroed & GGA, PBE & 3 x 16 & none & cusp \\
-  deep0\_cusp\_mgga\_3x16 & deep\_cusp\_mgga\_3x16 & zeroed & meta-GGA, SCAN & 3 x 16 & none & cusp, $\alpha$ \\
+  Architecture & Last layer & Rung, parent & Hidden & Heads & Extra \\ \midrule
+  deep\_3x16 & Glorot & GGA, PBE & 3 x 16 & none & none \\
+  deep\_attn\_3x16 & Glorot & GGA, PBE & 3 x 16 & 4 & none \\
+  deep0\_3x16 & zeroed & GGA, PBE & 3 x 16 & none & none \\
+  deep0\_attn\_3x16 & zeroed & GGA, PBE & 3 x 16 & 4 & none \\
+  deep0\_cusp\_3x16 & zeroed & GGA, PBE & 3 x 16 & none & cusp \\
+  deep0\_cusp\_mgga\_3x16 & zeroed & meta-GGA, SCAN & 3 x 16 & none & cusp, $\alpha$ \\
   \bottomrule
   \end{tabular}
   \end{center}
   \scriptsize
   \begin{itemize}
     \item Inputs: $F_x$ from $x_s$, $F_c$ from $x_0, x_1, x_s$; the cusp architectures add $x_4, x_5$ to both, the meta-GGA one $x_\alpha$ as well.
-    \item deep\_3x16 and deep0\_3x16 have the same layers, inputs and parameter count [code: config.py:512, 577--580]; deep0\_3x16 differs only in a zero-initialized final layer, $F_x = F_c = 1$ at initialization [code: config.py:137--141, networks.py:287--290] (its two other flags act on descriptors it does not carry). After pre-training both are PBE clones differing only in their fitted weights: the two columns are replicates of one architecture under two starts; their combined held-out verdicts agree at every subset size, and on the energy leg alone they differ at 3 and 4 points (Sec. 5).
+    \item deep\_3x16 and deep0\_3x16 have the same layers, inputs and parameter count; deep0\_3x16 differs only in a zero-initialized final layer, $F_x = F_c = 1$ at initialization. After pre-training both are PBE clones differing only in their fitted weights: the two columns are replicates of one architecture under two starts; their combined held-out verdicts agree at every subset size, and on the energy leg alone they differ at 3 and 4 points (Sec. 5).
   \end{itemize}
 \end{frame}
-\slidenote{\textbf{The names:} the family word states the initialization of the last layer (deep: Glorot; deep0: zeroed, so pre-training starts from the LDA), then the descriptor and attention tokens, then the size; the registry keys the runs are filed under are in the table. \textbf{Why deep\_3x16 and deep0\_3x16 look alike:} the registry (config.py) builds medium (shown as deep\_3x16) as depth 3, width 16 with no flags, and deep\_3x16 (shown as deep0\_3x16) as depth 3, width 16 with the three "deep-family" flags set. Of the three, \texttt{dm\_entropy\_intensive} acts on the density-matrix descriptor and \texttt{descriptor\_log\_transform} on descriptor columns, neither of which deep0\_3x16 carries, so on this axis only \texttt{zero\_init\_final\_layer} has an effect: the last layer's weights and bias start at zero, so the untrained network returns exactly the LDA ($F = 1$), whereas deep\_3x16 starts from a Glorot initialization (with $F_x$ about $2.6\times10^{-4}$ off 1 on average). Pre-training then fits both to PBE; the certificate shows both pass (deep\_3x16 mean $|\Delta AE|$ 0.162, deep0\_3x16 0.114 kcal/mol). The registry keys come from its history (the "deep" family was introduced as 4 x 32 networks with these flags, the 3 x 16 twins added later); the shown names state the one difference. \textbf{Do the deep networks do worse?} No: deep0\_3x16 and deep\_3x16 are below PBE on the combined objective at the same subset sizes (1, 7, 12, 15, 18, 26) and above it at the same sizes (2 to 6); on energy alone deep0\_3x16 is below PBE at 3 and 4 points where deep\_3x16 is not. The comparison is between two clones of one architecture, which is a replicate rather than an architecture contrast. The deep\_2x8 pair (2 x 8) and the descriptor families (cusp, meta-GGA) are the actual architecture axes, and their cells are still queued.}
+\slidenote{\textbf{The names:} the family word states the initialization of the last layer (deep: Glorot; deep0: zeroed, so pre-training starts from the LDA), then the descriptor and attention tokens, then the size. \textbf{Why deep\_3x16 and deep0\_3x16 look alike:} both are depth 3, width 16 with the same inputs and the same parameter count; the one difference is the start. In deep0\_3x16 the last layer's weights and bias start at zero, so the untrained network returns exactly the LDA ($F = 1$), whereas deep\_3x16 starts from a Glorot initialization (with $F_x$ about $2.6\times10^{-4}$ off 1 on average). Pre-training then fits both to PBE; the certificate shows both pass (deep\_3x16 mean $|\Delta AE|$ 0.162, deep0\_3x16 0.114 kcal/mol). \textbf{Do the deep networks do worse?} No: deep0\_3x16 and deep\_3x16 are below PBE on the combined objective at the same subset sizes (1, 7, 12, 15, 18, 26) and above it at the same sizes (2 to 6); on energy alone deep0\_3x16 is below PBE at 3 and 4 points where deep\_3x16 is not. The comparison is between two clones of one architecture, which is a replicate rather than an architecture contrast. The descriptor families (cusp, meta-GGA) are the actual architecture axes, and their cells are still queued.}
 
 % =====================================================================
 \section{2. Training-subset generation}
@@ -268,8 +266,6 @@
   \begin{tabular}{lllllll}
   \toprule
   Architecture & Parent & Loss X / C & max atom (mHa) & mean $|\Delta AE|$ & max $|\Delta AE|$ & Verdict \\ \midrule
-  deep\_2x8 & PBE & 5.4e-8 / 3.3e-6 & 0.369 & 0.343 & 1.421 (C3H8, C4H6) & PASS \\
-  deep\_attn\_2x8 & PBE & 7.6e-8 / 3.8e-7 & 0.201 & 0.131 & 0.573 & PASS \\
   deep\_3x16 & PBE & 6.4e-8 / 7.6e-7 & 0.210 & 0.162 & 0.519 & PASS \\
   deep\_attn\_3x16 & PBE & 1.5e-8 / 6.7e-8 & 0.058 & 0.031 & 0.115 & PASS \\
   deep0\_3x16 & PBE & 2.8e-8 / 3.4e-6 & 0.439 & 0.114 & 0.450 & PASS \\
@@ -309,7 +305,7 @@
     \includegraphics[width=\linewidth]{figures_dfs_step7_v7_family_pretrain/uncertified_mgga/pretrain_fx_fc_deep0_cusp_mgga_3x16.png}
     \scriptsize
     \begin{itemize}
-      \item Left: the difference $F^{\rm NN} - F^{\rm PBE}$ of every GGA clone, exchange at $n = 1$ and correlation at $r_s = 2$, along $s$. Within $10^{-3}$ for $s < 2.5$, at most 0.015 at $s = 6$ (deep\_attn\_2x8 exchange); the three zero-init clones within $4.2\times10^{-3}$ everywhere.
+      \item Left: the difference $F^{\rm NN} - F^{\rm PBE}$ of every GGA clone, exchange at $n = 1$ and correlation at $r_s = 2$, along $s$. Within $10^{-3}$ for $s < 2.5$, at most 0.007 at $s = 6$ (deep\_3x16 exchange); the three zero-init clones within $4.2\times10^{-3}$ everywhere.
       \item Right: the SCAN clone. $F_x(\alpha = 0)$ is 0.01 to 0.027 above SCAN for $s > 2.5$, $F_c(\alpha = 1)$ 0.005 to 0.033 below it from $s = 2$; same-sign offsets over wide $s$ ranges do not cancel between a molecule and its atoms.
     \end{itemize}
   \end{column}
@@ -479,7 +475,7 @@
 \begin{frame}{6. Pending work}
   \small
   \begin{itemize}
-    \item Cells still queued: deep\_attn\_3x16 at 12 to 26, deep0\_attn\_3x16 and deep0\_cusp\_3x16 at every subset, the deep\_2x8 pair.
+    \item Cells still queued: deep\_attn\_3x16 at 12 to 26, deep0\_attn\_3x16 and deep0\_cusp\_3x16 at every subset.
     \item Meta-GGA group: four certificates pending; the deep0\_cusp\_mgga\_3x16 FAIL holds the training array. The choice between dropping the architecture, refitting with more capacity or a higher energy-term weight, and an anchored form follows the four results.
     \item Converged-SCF re-evaluation of the 28 finished cells (DIIS at $10^{-8}$ Ha) and the CCSD T1 diagnostics for a model-free multireference list: two cluster jobs pending.
     \item Two training arms on the deep\_3x16 architecture at 7, 12, 15, 18 and 26 points: 25 SCF cycles with the current protocol (arm A) and the dpyscf-parity protocol (arm B: no convergence freeze, the executed first-mix index, the randomized atomic/PBE seed, Adam with the plateau schedule, the DFS L2 and channel weights). Submitted 2026-09-08, no results yet.
