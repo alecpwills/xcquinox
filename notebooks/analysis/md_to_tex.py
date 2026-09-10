@@ -69,6 +69,7 @@ _SPECIAL = {"\\": r"\textbackslash{}", "_": r"\_", "%": r"\%", "&": r"\&", "#": 
 _TOKEN = re.compile(r"(`[^`]*`|\$(?!\s)[^$]*?(?<!\s)\$)")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _IMAGE = re.compile(r"!\[[^\]]*\]\((.+)\)")
+_COMMENT = re.compile(r"<!--.*?-->")   # a whole-line HTML comment: the table generator's markers
 _SECTION = re.compile(r"## (\d+)\. ")
 _SUBSECTION = re.compile(r"### (\d+)\.(\d+) ")
 
@@ -302,6 +303,9 @@ def convert(md: str, figroot) -> str:
 
     while i < len(lines):
         ln = lines[i]
+        if _COMMENT.fullmatch(ln.strip()):
+            i += 1                        # a generator marker (<!-- table:NAME -->), not text
+            continue
         special = ln.startswith(("* ", "# ", "## ", "### ", "|", "![")) or ln.strip() in ("", "$$")
         if not special:
             para.append(ln.strip())
@@ -383,6 +387,32 @@ def convert(md: str, figroot) -> str:
     return "\n".join(out)
 
 
+#: the figure directories the v7 documents may reference: the merged family sets and the
+#: subset-selection set; a per-run set of an earlier refresh fails the build
+V7_FIGURE_PREFIXES = ("figures_dfs_step7_v7_family", "figures_dfs_step7_v7_subsets")
+V7_DOCUMENT_PREFIXES = ("REPORT_v7", "SUMMARY_v7", "SLIDES_v7")
+_IMAGE_REF = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)|\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
+
+
+def figure_paths(text: str) -> List[str]:
+    """Every image path referenced by markdown ``![](path)`` or LaTeX
+    ``\\includegraphics[...]{path}`` lines, in order."""
+    return [a or b for a, b in _IMAGE_REF.findall(text)]
+
+
+def check_figure_paths(text: str, allowed_prefixes=V7_FIGURE_PREFIXES) -> None:
+    """Raise :class:`MarkdownError` naming the first image path whose first directory
+    does not start with one of ``allowed_prefixes``: a v7 document may reference the
+    merged family sets and the subset set only, so a stale per-run path fails the
+    build instead of rendering an old figure."""
+    for path in figure_paths(text):
+        head = path.split("/", 1)[0]
+        if not any(head.startswith(p) for p in allowed_prefixes):
+            raise MarkdownError(
+                f"figure path outside the allowed directories {list(allowed_prefixes)}: "
+                f"{path}")
+
+
 def document(body: str, title: str, date: str) -> str:
     return (PREAMBLE + "\\begin{document}\n"
             + f"\\title{{{inline(title)}}}\n\\author{{}}\\date{{{date}}}\n\\maketitle\n\n"
@@ -415,6 +445,9 @@ def main(argv=None) -> int:
         print(f"markdown file not found: {src}")
         return 1
     md = src.read_text()
+    if src.name.startswith(V7_DOCUMENT_PREFIXES):
+        # the v7 documents are built on the merged family figure sets alone
+        check_figure_paths(md)
     title = args.title if args.title is not None else _default_title(md, src)
     tex = src.with_suffix(".tex")
     tex.write_text(document(convert(md, src.parent), title, args.date))

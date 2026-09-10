@@ -1,0 +1,30 @@
+\documentclass[aspectratio=169,10pt]{beamer}
+\usetheme{default}
+\usecolortheme{seagull}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}{\hfill\scriptsize\insertframenumber\,/\,\inserttotalframenumber\hspace{2em}\vspace{2pt}}
+\setbeamertemplate{itemize items}[circle]
+\setbeamerfont{frametitle}{size=\large,series=\bfseries}
+\setbeamerfont{title}{size=\Large,series=\bfseries}
+\setbeamersize{text margin left=0.7cm,text margin right=0.7cm}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{fontspec}
+\setmainfont{DejaVu Sans}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}[Scale=0.85]
+\graphicspath{{./}}
+\setlength{\tabcolsep}{3pt}
+% the plain deck: the notes are dropped
+\newcommand{\slidenote}[1]{}
+
+\title{Learned exchange-correlation functionals}
+\subtitle{Training-subset generation, pre-training, in-sample optimization and held-out generalization}
+\author{}
+\date{2026-09-09}
+
+\begin{document}
+\input{SLIDES_v7_2026-09-09_frames.tex}
+\end{document}

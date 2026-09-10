@@ -711,3 +711,130 @@ def test_main_pdf_compiles_and_removes_the_auxiliary_files(tmp_path):
     assert pdf.read_bytes()[:5] == b"%PDF-"
     for suffix in (".aux", ".log", ".out"):
         assert not md.with_suffix(suffix).exists(), f"the {suffix} file must be removed"
+
+
+# ---------------------------------------------------------------------------
+# T4  check_figure_paths: the v7 documents reference the family sets only
+#
+# The merged family sets replace the per-run sets, so a figure path left pointing at a removed
+# per-run directory must fail the build rather than reach a reader. The guard is the one
+# described in the design page ``scratch/density_audit_2026-09-07/page_documents_merged_set.md``;
+# its mutation m4 (the guard accepts every path) is killed by
+# test_check_figure_paths_names_the_first_stale_per_run_path and
+# test_main_refuses_a_stale_per_run_figure_path_in_a_v7_document.
+# ---------------------------------------------------------------------------
+
+_V7_PREFIXES = ("figures_dfs_step7_v7_family", "figures_dfs_step7_v7_subsets")
+
+# a path of the per-run set the family figures replace
+_STALE_PATH = "figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best/holdout_overview.png"
+_STALE_PATH_2 = ("figures_dfs_step7_dfs6311_grid3_v7g2a_families_core_val_best/"
+                 "holdout_ed_combined.png")
+
+_FAMILY_FIGURES_MD = (
+    "## 5. Held out\n"
+    "\n"
+    "![](figures_dfs_step7_v7_family_val_best/x.png)\n"
+    "\n"
+    "![](figures_dfs_step7_v7_family_pretrain/uncertified_mgga/y.png)\n"
+    "\n"
+    "![](figures_dfs_step7_v7_subsets/z.png)\n"
+)
+
+
+def test_check_figure_paths_accepts_the_family_and_the_subsets_directories():
+    """The three shapes the rebuilt documents use: a family set, a family subdirectory, the
+    subsets set. The prefixes are directory prefixes, so the ``_val_best`` and ``_pretrain``
+    siblings of ``figures_dfs_step7_v7_family`` are inside the allowed set."""
+    mod = _load_script()
+    mod.check_figure_paths(_FAMILY_FIGURES_MD, _V7_PREFIXES)
+
+
+def test_check_figure_paths_names_the_first_stale_per_run_path():
+    """Two stale paths after one good one: the error names the first of them."""
+    mod = _load_script()
+    md = ("![](figures_dfs_step7_v7_family_val_best/x.png)\n"
+          "\n"
+          f"![]({_STALE_PATH})\n"
+          "\n"
+          f"![]({_STALE_PATH_2})\n")
+    with pytest.raises(mod.MarkdownError, match=re.escape(_STALE_PATH)):
+        mod.check_figure_paths(md, _V7_PREFIXES)
+
+
+def _v7_like_document(tmp_path, name):
+    """A minimal document carrying one stale per-run figure path, the figure on disk.
+
+    The PNG exists so that the translation succeeds today: the only thing that can refuse this
+    document is the new guard, never ``image_aspect``'s missing-figure error.
+    """
+    figdir = tmp_path / "figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best"
+    figdir.mkdir(exist_ok=True)
+    _png(figdir / "holdout_overview.png", 700, 500)
+    md = tmp_path / name
+    md.write_text(
+        "# a v7 document\n"
+        "\n"
+        "## 1. Held out\n"
+        "\n"
+        "A paragraph before the figure.\n"
+        "\n"
+        f"![]({_STALE_PATH})\n"
+    )
+    return md
+
+
+def test_main_refuses_a_stale_per_run_figure_path_in_a_v7_document(tmp_path):
+    """A REPORT_v7 document is checked against the family prefixes and is refused by name."""
+    mod = _load_script()
+    md = _v7_like_document(tmp_path, "REPORT_v7_test.md")
+    with pytest.raises(mod.MarkdownError, match=re.escape(_STALE_PATH)):
+        mod.main([str(md), "--title", _TITLE, "--date", _DATE])
+    assert not md.with_suffix(".tex").exists(), "a refused document leaves no .tex behind"
+
+
+def test_main_translates_a_non_v7_document_carrying_the_same_path(tmp_path):
+    """The guard is scoped to the v7 documents: the same body under another name translates."""
+    mod = _load_script()
+    md = _v7_like_document(tmp_path, "NOTES.md")
+    rc = mod.main([str(md), "--title", _TITLE, "--date", _DATE])
+    assert not rc, "a document outside the v7 set is translated as before"
+    tex = md.with_suffix(".tex")
+    assert tex.exists()
+    assert _STALE_PATH in tex.read_text(), "its figure reference is translated unchanged"
+
+
+def test_the_tracked_v7_sources_reference_family_figures_only():
+    """The report, the summary and the slide frames in the tree pass the guard:
+    every figure they reference sits in a family directory or the subset set,
+    and the guard reads LaTeX includegraphics lines as well as markdown."""
+    import os
+    mod = _load_script()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("REPORT_v7_2026-09-09.md", "SUMMARY_v7_2026-09-09.md",
+                 "SLIDES_v7_2026-09-09_frames.tex"):
+        with open(os.path.join(here, name)) as fh:
+            text = fh.read()
+        paths = mod.figure_paths(text)
+        assert paths, name
+        mod.check_figure_paths(text)
+    assert mod.figure_paths("\\includegraphics[width=\\linewidth]{figures_dfs_step7_v7_family/a.png}") == \
+        ["figures_dfs_step7_v7_family/a.png"]
+
+
+def test_convert_drops_the_html_comment_lines_that_mark_generated_tables(tmp_path):
+    """The generated per-cell tables sit between ``<!-- table:NAME -->`` marker lines; the
+    markers are for the generator and must not reach the PDF, while the table between them
+    does."""
+    mod = _load_script()
+    md = ("Before.\n\n"
+          "<!-- table:holdout_combined -->\n"
+          "| Architecture | Subset |\n"
+          "|---|---|\n"
+          "| deep_3x16 | 1 |\n"
+          "<!-- /table:holdout_combined -->\n\n"
+          "After.\n")
+    body = mod.convert(md, tmp_path)
+    assert "<!--" not in body and "table:holdout" not in body
+    assert r"\begin{longtable}" in body
+    assert "Before." in body and "After." in body

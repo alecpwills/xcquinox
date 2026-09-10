@@ -22,17 +22,19 @@ This is the short form of \path{REPORT_v7_2026-09-09} (the full report, 72 pages
 
 \section*{Scope and inventory}
 
-The v7 campaign trains one network pair (an exchange network and a correlation network) per architecture and per training-subset size, in three groups that share one protocol and differ in their architecture axis. Each group runs its own pre-training (the cloning of the parent functional), a fidelity certificate that gates the group's training array, and the training array itself, one cell per (architecture, subset size).
+The v7 campaign trains one network pair (an exchange network and a correlation network) per architecture and per training-subset size, under one protocol, on the cluster as separate runs that differ in their architecture axis. Each run carries its own pre-training (the cloning of the parent functional), a fidelity certificate that gates its training array, and the array itself, one cell per (architecture, subset size). The figures and tables are drawn once over every finished cell of every run (the runs merged into one view, \path{family_runs.yaml}); the architecture names are the shown names of Sec. 1.5, the registry keys beside them.
 
 \begin{landscape}
-\begin{scriptsize}
-\begin{longtable}{p{0.204\linewidth}p{0.204\linewidth}p{0.204\linewidth}p{0.204\linewidth}l}
-\toprule Group & Configuration file & Architectures & Cells done / planned & Run \\ \midrule \endhead
-G1 (size) & \path{dfs_step7.dfs6311_grid3_v7g1_size.yaml} & shallow, shallow\_attn, medium, medium\_attn & medium 11/11, medium\_attn 7/11, shallow 0/11, shallow\_attn 0/11 & \path{run_20260902T145245Z} \\
-G2a (descriptor families, GGA core) & \path{dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml} & deep\_3x16, deep\_attn\_3x16, deep\_cusp\_3x16 & deep\_3x16 10/11, deep\_attn\_3x16 0/11, deep\_cusp\_3x16 0/11 & \path{run_20260902T145247Z} \\
-G2 (descriptor families, meta-GGA) & \path{dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml} & deep\_cusp\_mgga\_3x16, deep\_mgga\_3x16, deep\_mgga\_attn\_3x16, deep\_rung35\_mgga\_3x16, deep\_rung35ms\_mgga\_3x16 & 0/55 (the first certificate reads FAIL, Sec. 3.6; the other four are pending) & \path{run_20260902T145250Z} \\
+\begin{small}
+\begin{longtable}{lp{0.213\linewidth}p{0.213\linewidth}p{0.213\linewidth}l}
+\toprule Run & Configuration file & Architectures (registry key) & Cells done / planned & Run directory \\ \midrule \endhead
+size & \path{dfs_step7.dfs6311_grid3_v7g1_size.yaml} & deep\_2x8 (shallow), deep\_attn\_2x8 (shallow\_attn), deep\_3x16 (medium), deep\_attn\_3x16 (medium\_attn) & deep\_3x16 11/11, deep\_attn\_3x16 9/11, deep\_2x8 0/11, deep\_attn\_2x8 0/11 & \path{run_20260902T145245Z} \\
+families & \path{dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml} & deep0\_3x16 (deep\_3x16), deep0\_attn\_3x16 (deep\_attn\_3x16), deep0\_cusp\_3x16 (deep\_cusp\_3x16) & deep0\_3x16 11/11, deep0\_attn\_3x16 2/11, deep0\_cusp\_3x16 0/11 & \path{run_20260902T145247Z} \\
+meta-GGA families & \path{dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml} & deep0\_cusp\_mgga\_3x16, deep0\_mgga\_3x16, deep0\_mgga\_attn\_3x16, deep0\_rung35\_mgga\_3x16, deep0\_rung35ms\_mgga\_3x16 & 0/55 (the first certificate reads FAIL, Sec. 3.6; the other four are pending) & \path{run_20260902T145250Z} \\
+25-cycle arm & \path{dfs_step7.dfs6311_grid3_v7g1_c25.yaml} & deep\_3x16 (medium), tag \texttt{[25 cycles]} & 0/5 (pre-training done, training queued) & \path{run_20260908T153856Z} \\
+dpyscf-parity arm & \path{dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml} & deep\_3x16 (medium), tag \texttt{[dpyscf parity]} & 0/5 (pre-training done, training queued) & \path{run_20260908T153908Z} \\
 \bottomrule \end{longtable}
-\end{scriptsize}
+\end{small}
 \end{landscape}
 
 
@@ -135,24 +137,38 @@ It is a per-point re-mixing of hidden units, not a spatial or non-local operatio
 
 \subsection*{1.5 Architectures on the v7 axes}
 
+The architectures lie on four axes: the size (hidden layers x units), the initialization of the last layer, attention, and the extra descriptors (which set the rung and the parent). The name states them: the family word is the initialization (\path{deep} for the Glorot start of every layer; \path{deep0} for a last layer whose weight and bias are zeroed at construction, so that the untrained network is the LDA, $F = 1$, and pre-training starts from it), then the descriptor and attention tokens, then the size. The registry keys the runs are filed under are given beside the names; \path{deep_3x16} and \path{deep0_3x16} are the same network (the registry's \path{medium} and \path{deep_3x16}: depth 3, width 16, the same inputs, the same parameter count), separated by the initialization alone, so the two columns are replicates of one architecture under two starts. Nothing is frozen and nothing is appended in either; after pre-training both are PBE clones that differ in their fitted weights.
+
 \begin{landscape}
-\begin{scriptsize}
-\begin{longtable}{llllllp{0.211\linewidth}}
-\toprule Architecture & Rung, parent & Hidden layers x units & Attention heads & Extra descriptors & Exchange input & Correlation input \\ \midrule \endhead
-shallow & GGA, PBE & 2 x 8 & none & none & $x_s$ & $x_0, x_1, x_s$ \\
-shallow\_attn & GGA, PBE & 2 x 8 & 2 & none & $x_s$ & $x_0, x_1, x_s$ \\
-medium & GGA, PBE & 3 x 16 & none & none & $x_s$ & $x_0, x_1, x_s$ \\
-medium\_attn & GGA, PBE & 3 x 16 & 4 & none & $x_s$ & $x_0, x_1, x_s$ \\
-deep\_3x16 & GGA, PBE & 3 x 16 & none & none & $x_s$ & $x_0, x_1, x_s$ \\
-deep\_attn\_3x16 & GGA, PBE & 3 x 16 & 4 & none & $x_s$ & $x_0, x_1, x_s$ \\
-deep\_cusp\_3x16 & GGA, PBE & 3 x 16 & none & cusp & $x_s, x_4, x_5$ & $x_0, x_1, x_s, x_4, x_5$ \\
-deep\_cusp\_mgga\_3x16 & meta-GGA, SCAN & 3 x 16 & none & cusp, $\alpha$ & $x_s, x_4, x_5, x_\alpha$ & $x_0, x_1, x_s, x_4, x_5, x_\alpha$ \\
+\begin{footnotesize}
+\begin{longtable}{lllllll}
+\toprule Architecture & Registry key & Start & Rung, parent & Layers x units & Heads & Extra descriptors \\ \midrule \endhead
+deep\_2x8 & shallow & Glorot & GGA, PBE & 2 x 8 & none & none \\
+deep\_attn\_2x8 & shallow\_attn & Glorot & GGA, PBE & 2 x 8 & 2 & none \\
+deep\_3x16 & medium & Glorot & GGA, PBE & 3 x 16 & none & none \\
+deep\_attn\_3x16 & medium\_attn & Glorot & GGA, PBE & 3 x 16 & 4 & none \\
+deep0\_3x16 & deep\_3x16 & last layer zeroed & GGA, PBE & 3 x 16 & none & none \\
+deep0\_attn\_3x16 & deep\_attn\_3x16 & last layer zeroed & GGA, PBE & 3 x 16 & 4 & none \\
+deep0\_cusp\_3x16 & deep\_cusp\_3x16 & last layer zeroed & GGA, PBE & 3 x 16 & none & cusp \\
+deep0\_cusp\_mgga\_3x16 & deep\_cusp\_mgga\_3x16 & last layer zeroed & meta-GGA, SCAN & 3 x 16 & none & cusp, $\alpha$ \\
 \bottomrule \end{longtable}
-\end{scriptsize}
+\end{footnotesize}
 \end{landscape}
 
 
-medium and deep\_3x16 share the layer geometry; the \path{deep_*} family carries the physics-correction flags of the registry (\path{dm_entropy_intensive}, \path{descriptor_log_transform}, \path{zero_init_final_layer}), of which only the zero initialization and the cusp column-1 logarithm act on this axis (the DFS coordinates already compress $s$). All v7 networks are unanchored (\texttt{model.parent\_anchor: false}): the network output is the whole enhancement factor, and the parent functional enters only as the pre-training target.
+The network inputs follow from the rung and the extra descriptors:
+
+\begin{small}
+\begin{longtable}{p{0.334\linewidth}lp{0.334\linewidth}}
+\toprule Architecture & Exchange input & Correlation input \\ \midrule \endhead
+deep\_2x8, deep\_attn\_2x8, deep\_3x16, deep\_attn\_3x16, deep0\_3x16, deep0\_attn\_3x16 & $x_s$ & $x_0, x_1, x_s$ \\
+deep0\_cusp\_3x16 & $x_s, x_4, x_5$ & $x_0, x_1, x_s, x_4, x_5$ \\
+deep0\_cusp\_mgga\_3x16 & $x_s, x_4, x_5, x_\alpha$ & $x_0, x_1, x_s, x_4, x_5, x_\alpha$ \\
+\bottomrule \end{longtable}
+\end{small}
+
+
+The \path{deep0} entries of the registry also carry \path{dm_entropy_intensive} and \path{descriptor_log_transform}, both inert on this axis (no density-matrix descriptor; the DFS coordinates already compress $s$, and only the cusp column-1 logarithm acts). All v7 networks are unanchored (\texttt{model.parent\_anchor: false}): the network output is the whole enhancement factor, and the parent functional enters only as the pre-training target. A cell of a run trained under another protocol carries the run's tag on its name (\texttt{deep\_3x16 [25 cycles]}, \texttt{deep\_3x16 [dpyscf parity]}; Sec. 6), so that the same architecture under two protocols sits on one axis.
 
 \section*{2. Training-subset generation (step 0 of the pipeline)}
 
@@ -304,14 +320,13 @@ and a failing certificate makes the pre-training task exit without success, whic
 
 \subsection*{3.3 Pre-training loss curves}
 
-\textbf{Fig. 3.1} The pointwise term of the objective per step taken, for the exchange network (left) and the correlation network (right), one curve per architecture, log scale over the 20000 steps; the final value of each curve is printed in the legend. The regular spikes from step 5000 onward are the validation checks: every 50 steps the objective is evaluated on the held-out slice and the best network is snapshotted, and the training step that follows a snapshot reload sits above the trend line for one step. The three panels below are the G1 group (four architectures), the G2a group (three) and the meta-GGA group (its one finished clone).
+\textbf{Fig. 3.1} The pointwise term of the objective per step taken, for the exchange network (left) and the correlation network (right), one curve per architecture, log scale over the 20000 steps; the final value of each curve is printed in the legend. The regular spikes from step 5000 onward are the validation checks: every 50 steps the objective is evaluated on the held-out slice and the best network is snapshotted, and the training step that follows a snapshot reload sits above the trend line for one step. The first figure holds the seven certified GGA clones of the size and families runs; the second the meta-GGA clone (its certificate failed, so it is not in the merged view and is drawn from its run).
 
-G1: the exchange curves of the four architectures reach $5 \times 10^{-8}$ to $8 \times 10^{-8}$ (medium\_attn $1.5 \times 10^{-8}$), the correlation curves $7 \times 10^{-8}$ (medium\_attn) to $3 \times 10^{-6}$ (shallow); medium\_attn descends earliest and ends lowest on both networks, the shallow correlation network is the slowest. G2a: deep\_attn\_3x16 lowest on both networks ($1.5 \times 10^{-8}$, $1.0 \times 10^{-7}$), deep\_3x16 and deep\_cusp\_3x16 within a factor 3.5 of each other ($2.8 \times 10^{-8}$ and $9.5 \times 10^{-8}$; $3.4 \times 10^{-6}$ and $1.1 \times 10^{-6}$). The meta-GGA clone stops at $3.7 \times 10^{-6}$ (exchange) and $5.2 \times 10^{-6}$ (correlation), fifty to a hundred times above the GGA clones after the same 20000 steps, with a smooth trajectory and no divergence.
+The exchange curves of the four Glorot-start architectures reach $5 \times 10^{-8}$ to $8 \times 10^{-8}$ (deep\_attn\_3x16 $1.5 \times 10^{-8}$), the correlation curves $7 \times 10^{-8}$ (deep\_attn\_3x16) to $3 \times 10^{-6}$ (deep\_2x8); deep\_attn\_3x16 descends earliest and ends lowest on both networks, the deep\_2x8 correlation network is the slowest. Of the zero-init architectures deep0\_attn\_3x16 is lowest on both networks ($1.5 \times 10^{-8}$, $1.0 \times 10^{-7}$), deep0\_3x16 and deep0\_cusp\_3x16 within a factor 3.5 of each other ($2.8 \times 10^{-8}$ and $9.5 \times 10^{-8}$; $3.4 \times 10^{-6}$ and $1.1 \times 10^{-6}$). The meta-GGA clone stops at $3.7 \times 10^{-6}$ (exchange) and $5.2 \times 10^{-6}$ (correlation), fifty to a hundred times above the GGA clones after the same 20000 steps, with a smooth trajectory and no divergence.
 
 \begin{landscape}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_pretrain/pretrain_curves_v7g1_size.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_pretrain/pretrain_curves_v7g2a_families_core.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_pretrain/pretrain_curves_v7g2_families_mgga.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/pretrain_curves.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/uncertified_mgga/pretrain_curves.png}\end{center}
 \end{landscape}
 
 
@@ -323,44 +338,43 @@ The certificate-summary figure (Fig. 3.2 of the full report) is not repeated her
 
 \textbf{Fig. 3.3} For one architecture, the pre-trained network against its parent along two slices of descriptor space. Top left: the exchange enhancement factor $F_x(s)$ at density $n = 1$ and zero extra descriptors, the parent dashed, the network solid, from $s = 0$ to 6. Top right: the difference $F_x^{\rm NN} - F_x^{\rm parent}$ on the same slice, which is where the fit is visible at all. Bottom left: the correlation factor $F_c(s; r_s)$ at $\zeta = 0$ for $r_s = 0.5$, 2 and 5, parent dashed and network solid; bottom right: the three differences. For the meta-GGA clone the layout is three columns: $F_x(s; \alpha)$ at $\alpha = 0$ and $\alpha = 1$ (the SCAN Fig. 1 convention, $\alpha$ the exact iso-orbital indicator of the slice) and $F_c$ at the same two $\alpha$ values, each with its difference panel. The footer of each figure names the run, the slices, the largest $|\Delta F_x|$ on the slice and the certificate verdict.
 
-medium: $|\Delta F_x| \le 7 \times 10^{-3}$ over $s \le 6$, a smooth negative deviation growing beyond $s = 4$ (the region the pre-training set barely samples), $|\Delta F_c| \le 4.5 \times 10^{-3}$ with oscillations below $s = 1.5$ at every $r_s$. medium\_attn: $|\Delta F_x| \le 6 \times 10^{-3}$, $|\Delta F_c| \le 10^{-2}$ with one dip at $s = 2$, $r_s = 0.5$. deep\_3x16: $|\Delta F_x| \le 2.6 \times 10^{-3}$ (the tightest exchange clone of the three shown), $|\Delta F_c| \le 1.2 \times 10^{-2}$ at $r_s = 0.5$ and 5. deep\_cusp\_mgga\_3x16 against SCAN: $F_x$ at $\alpha = 0$ runs 0.005 below SCAN up to $s = 1$ and 0.01 to 0.027 above it for $s > 2.5$ (the maximum at $s = 4.3$), and $F_x$ at $\alpha = 1$ 0.005 to 0.013 below it between $s = 1$ and 4; $F_c$ at $\alpha = 1$, $r_s = 0.5$ has a spike of $+0.04$ near $s = 0.2$, a dip of $-0.022$ at $s = 0.8$ and sits 0.005 to 0.033 below SCAN from $s = 2$ onward; at $\alpha = 0$ the correlation differences stay within $\pm 0.02$. These are systematic, same-sign offsets over wide ranges of $s$, which is the shape of error that does not cancel between a molecule and its atoms (Sec. 3.6).
+deep\_3x16: $|\Delta F_x| \le 7 \times 10^{-3}$ over $s \le 6$, a smooth negative deviation growing beyond $s = 4$ (the region the pre-training set barely samples), $|\Delta F_c| \le 4.5 \times 10^{-3}$ with oscillations below $s = 1.5$ at every $r_s$. deep\_attn\_3x16: $|\Delta F_x| \le 6 \times 10^{-3}$, $|\Delta F_c| \le 10^{-2}$ with one dip at $s = 2$, $r_s = 0.5$. deep0\_3x16: $|\Delta F_x| \le 2.6 \times 10^{-3}$ (the tightest exchange clone of the three shown), $|\Delta F_c| \le 1.2 \times 10^{-2}$ at $r_s = 0.5$ and 5. deep0\_cusp\_mgga\_3x16 against SCAN: $F_x$ at $\alpha = 0$ runs 0.005 below SCAN up to $s = 1$ and 0.01 to 0.027 above it for $s > 2.5$ (the maximum at $s = 4.3$), and $F_x$ at $\alpha = 1$ 0.005 to 0.013 below it between $s = 1$ and 4; $F_c$ at $\alpha = 1$, $r_s = 0.5$ has a spike of $+0.04$ near $s = 0.2$, a dip of $-0.022$ at $s = 0.8$ and sits 0.005 to 0.033 below SCAN from $s = 2$ onward; at $\alpha = 0$ the correlation differences stay within $\pm 0.02$. These are systematic, same-sign offsets over wide ranges of $s$, which is the shape of error that does not cancel between a molecule and its atoms (Sec. 3.6).
 
-\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_pretrain/fx_fc_v7g1_size/pretrain_fx_fc_medium.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_pretrain/fx_fc_v7g1_size/pretrain_fx_fc_medium_attn.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_pretrain/fx_fc_v7g2a_families_core/pretrain_fx_fc_deep_3x16.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_pretrain/fx_fc_v7g2_families_mgga/pretrain_fx_fc_deep_cusp_mgga_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/pretrain_fx_fc_deep_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/pretrain_fx_fc_deep_attn_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/pretrain_fx_fc_deep0_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/uncertified_mgga/pretrain_fx_fc_deep0_cusp_mgga_3x16.png}\end{center}
 
 
-\textbf{Fig. 3.4} The exchange differences (left) and the correlation differences at $r_s = 2$ (right) of every GGA architecture of a group on one pair of axes: G1 above, G2a below. All four G1 exchange clones agree with PBE to $1 \times 10^{-3}$ below $s = 2.5$ and fan out beyond it (shallow to $-0.005$ at $s = 3.3$, medium\_attn to $+0.003$ at $s = 3.9$, and at $s = 6$ shallow\_attn $-0.015$, medium $-0.007$, medium\_attn $-0.006$, shallow $-0.003$); the G1 correlation clones stay within $3 \times 10^{-3}$ below $s = 3$, medium\_attn drifting to $+5 \times 10^{-3}$ by $s = 6$. The G2a clones stay within $4.2 \times 10^{-3}$ everywhere on both slices (deep\_attn\_3x16 exchange $+0.0034$ at $s = 4.2$; deep\_cusp\_3x16 correlation $+0.0041$ at $s = 3.2$).
+\textbf{Fig. 3.4} The exchange differences (left) and the correlation differences at $r_s = 2$ (right) of every certified GGA clone on one pair of axes. The four Glorot-start exchange clones agree with PBE to $1 \times 10^{-3}$ below $s = 2.5$ and fan out beyond it (deep\_2x8 to $-0.005$ at $s = 3.3$, deep\_attn\_3x16 to $+0.003$ at $s = 3.9$, and at $s = 6$ deep\_attn\_2x8 $-0.015$, deep\_3x16 $-0.007$, deep\_attn\_3x16 $-0.006$, deep\_2x8 $-0.003$); their correlation clones stay within $3 \times 10^{-3}$ below $s = 3$, deep\_attn\_3x16 drifting to $+5 \times 10^{-3}$ by $s = 6$. The three zero-init clones stay within $4.2 \times 10^{-3}$ everywhere on both slices (deep0\_attn\_3x16 exchange $+0.0034$ at $s = 4.2$; deep0\_cusp\_3x16 correlation $+0.0041$ at $s = 3.2$).
 
 \begin{landscape}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_pretrain/fx_fc_v7g1_size/pretrain_fx_fc_delta_all.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_pretrain/fx_fc_v7g2a_families_core/pretrain_fx_fc_delta_all.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_pretrain/pretrain_fx_fc_delta_all.png}\end{center}
 \end{landscape}
 
 
-The shallow pair and the deep\_attn\_3x16 and deep\_cusp\_3x16 clones are drawn in the same directories (\path{pretrain_fx_fc_<arch>.png}).
+The deep\_2x8 pair and the deep0\_attn\_3x16 and deep0\_cusp\_3x16 clones are drawn in the same directories (\path{pretrain_fx_fc_<arch>.png}).
 
 \subsection*{3.6 Certificate results}
 
 Read from \path{pretrain/<arch>/fidelity_certificate.json} and \path{pretrain_metadata.json}; the pointwise losses are the saved network's, in units of the squared enhancement-factor residual.
 
-Every GGA clone passes on all three criteria; the two with a species above 1 kcal/mol (shallow: C3H8, C4H6; deep\_cusp\_3x16: AlCl3) pass on the mean and under the 2.0 kcal/mol backstop. The attention variants are the tightest clones by every measure (medium\_attn: max atom 0.058 mHa, mean 0.031 kcal/mol; deep\_attn\_3x16: 0.123 mHa, 0.042 kcal/mol), at the price of the longest fits (about 28 h against 3.6 to 3.8 h for their plain twins, \path{duration_seconds}).
+Every GGA clone passes on all three criteria; the two with a species above 1 kcal/mol (deep\_2x8: C3H8, C4H6; deep0\_cusp\_3x16: AlCl3) pass on the mean and under the 2.0 kcal/mol backstop. The attention variants are the tightest clones by every measure (deep\_attn\_3x16: max atom 0.058 mHa, mean 0.031 kcal/mol; deep0\_attn\_3x16: 0.123 mHa, 0.042 kcal/mol), at the price of the longest fits (about 28 h against 3.6 to 3.8 h for their plain twins, \path{duration_seconds}).
 
-The meta-GGA clone deep\_cusp\_mgga\_3x16 fails all three criteria after a converged 20000-step fit (pointwise residuals 3.7e-6 and 5.2e-6, an order of magnitude above the GGA clones'): the largest free-atom error is 3.13 mHa (O; B 2.91, Be 2.61), the mean atomization error 2.06 kcal/mol and the largest 7.26 kcal/mol (C4H6; C3H8 7.19, O2 4.77, SiCH6 3.52, CH4 3.47), 14 of 22 molecules above 1 kcal/mol, every one of the eight largest errors of the same sign. Fig. 3.3 (bottom) shows where the clone misses SCAN: the $\alpha = 0$ exchange slice is 0.015 to 0.027 above SCAN for $s > 2$ and the $\alpha = 1$ correlation slices sit 0.01 to 0.03 below it at $r_s = 0.5$, systematic offsets that do not cancel between a molecule and its atoms. The v6 meta-GGA certificates, all PASS, were fitted in the anchored model class (the network learns a correction on top of SCAN); this is the first unanchored meta-GGA clone the two-tier gate has judged. The four remaining meta-GGA architectures are pending; whether the rung or this architecture is the cause is decided by their certificates. Until then the meta-GGA training array is held.
+The meta-GGA clone deep0\_cusp\_mgga\_3x16 fails all three criteria after a converged 20000-step fit (pointwise residuals 3.7e-6 and 5.2e-6, an order of magnitude above the GGA clones'): the largest free-atom error is 3.13 mHa (O; B 2.91, Be 2.61), the mean atomization error 2.06 kcal/mol and the largest 7.26 kcal/mol (C4H6; C3H8 7.19, O2 4.77, SiCH6 3.52, CH4 3.47), 14 of 22 molecules above 1 kcal/mol, every one of the eight largest errors of the same sign. Fig. 3.3 (bottom) shows where the clone misses SCAN: the $\alpha = 0$ exchange slice is 0.015 to 0.027 above SCAN for $s > 2$ and the $\alpha = 1$ correlation slices sit 0.01 to 0.03 below it at $r_s = 0.5$, systematic offsets that do not cancel between a molecule and its atoms. The v6 meta-GGA certificates, all PASS, were fitted in the anchored model class (the network learns a correction on top of SCAN); this is the first unanchored meta-GGA clone the two-tier gate has judged. The four remaining meta-GGA architectures are pending; whether the rung or this architecture is the cause is decided by their certificates. Until then the meta-GGA training array is held.
 
 \begin{landscape}
 \begin{scriptsize}
-\begin{longtable}{lllllp{0.122\linewidth}p{0.122\linewidth}p{0.122\linewidth}p{0.122\linewidth}l}
-\toprule Group & Architecture & Parent & Steps & Pointwise loss X / C & max atom $\lvert\Delta E_{xc}\rvert$ (mHa) & mean $\lvert\Delta AE\rvert$ (kcal/mol) & max $\lvert\Delta AE\rvert$ (kcal/mol) & Species over 1 kcal/mol & Verdict \\ \midrule \endhead
-G1 & shallow & PBE & 20000 & 5.41e-08 / 3.29e-06 & 0.369 & 0.343 & 1.421 & C3H8, C4H6 & PASS \\
-G1 & shallow\_attn & PBE & 20000 & 7.62e-08 / 3.83e-07 & 0.201 & 0.131 & 0.573 & none & PASS \\
-G1 & medium & PBE & 20000 & 6.40e-08 / 7.58e-07 & 0.210 & 0.162 & 0.519 & none & PASS \\
-G1 & medium\_attn & PBE & 20000 & 1.51e-08 / 6.70e-08 & 0.058 & 0.031 & 0.115 & none & PASS \\
-G2a & deep\_3x16 & PBE & 20000 & 2.77e-08 / 3.37e-06 & 0.439 & 0.114 & 0.450 & none & PASS \\
-G2a & deep\_attn\_3x16 & PBE & 20000 & 1.48e-08 / 9.86e-08 & 0.123 & 0.042 & 0.149 & none & PASS \\
-G2a & deep\_cusp\_3x16 & PBE & 20000 & 9.46e-08 / 1.10e-06 & 0.439 & 0.188 & 1.071 & AlCl3 & PASS \\
-G2 & deep\_cusp\_mgga\_3x16 & SCAN & 20000 & 3.70e-06 / 5.18e-06 & 3.132 & 2.062 & 7.257 & AlCl3, C2H2, C3H8, C4H6, CH2, CH4, CO, CO2, F2, H2O, HCN, O2, PH3, SiCH6 & FAIL \\
+\begin{longtable}{lllllp{0.116\linewidth}p{0.116\linewidth}p{0.116\linewidth}p{0.116\linewidth}l}
+\toprule Run & Architecture & Parent & Steps & Pointwise loss X / C & max atom $\lvert\Delta E_{xc}\rvert$ (mHa) & mean $\lvert\Delta AE\rvert$ (kcal/mol) & max $\lvert\Delta AE\rvert$ (kcal/mol) & Species over 1 kcal/mol & Verdict \\ \midrule \endhead
+size & deep\_2x8 & PBE & 20000 & 5.41e-08 / 3.29e-06 & 0.369 & 0.343 & 1.421 & C3H8, C4H6 & PASS \\
+size & deep\_attn\_2x8 & PBE & 20000 & 7.62e-08 / 3.83e-07 & 0.201 & 0.131 & 0.573 & none & PASS \\
+size & deep\_3x16 & PBE & 20000 & 6.40e-08 / 7.58e-07 & 0.210 & 0.162 & 0.519 & none & PASS \\
+size & deep\_attn\_3x16 & PBE & 20000 & 1.51e-08 / 6.70e-08 & 0.058 & 0.031 & 0.115 & none & PASS \\
+families & deep0\_3x16 & PBE & 20000 & 2.77e-08 / 3.37e-06 & 0.439 & 0.114 & 0.450 & none & PASS \\
+families & deep0\_attn\_3x16 & PBE & 20000 & 1.48e-08 / 9.86e-08 & 0.123 & 0.042 & 0.149 & none & PASS \\
+families & deep0\_cusp\_3x16 & PBE & 20000 & 9.46e-08 / 1.10e-06 & 0.439 & 0.188 & 1.071 & AlCl3 & PASS \\
+meta-GGA & deep0\_cusp\_mgga\_3x16 & SCAN & 20000 & 3.70e-06 / 5.18e-06 & 3.132 & 2.062 & 7.257 & AlCl3, C2H2, C3H8, C4H6, CH2, CH4, CO, CO2, F2, H2O, HCN, O2, PH3, SiCH6 & FAIL \\
 \bottomrule \end{longtable}
 \end{scriptsize}
 \end{landscape}
@@ -395,7 +409,7 @@ w_t = \left(\frac{t}{N-1}\right)^2,
 \]
 \end{itemize}
 
-Optimizer: AdamW, learning rate $10^{-3}$ held for the first half of the run and decayed linearly to $10^{-5}$ over the second (\texttt{lr\_decay\_start: 0.5}), weight decay $10^{-4}$, gradient clip 1.0. 200 epochs (\path{n_steps}), a validation reaction-energy MAE on the 47-reaction validation slice every 25 epochs, early stop after 5 checks without a 0.1 kcal/mol improvement; three checkpoints are kept (final, lowest training loss, lowest validation MAE), and the figures of Secs. 4 and 5 read the validation-best one. Over the 18 G1 cells the runs took 150 to 200 epochs (early-stopped in 12) and 1.2 to 22 h of wall each (\path{train_metadata.json}). epochs (early-stopped in 12) and 1.2 to 22 h of wall each (\path{train_metadata.json}).
+Optimizer: AdamW, learning rate $10^{-3}$ held for the first half of the run and decayed linearly to $10^{-5}$ over the second (\texttt{lr\_decay\_start: 0.5}), weight decay $10^{-4}$, gradient clip 1.0. 200 epochs (\path{n_steps}), a validation reaction-energy MAE on the 47-reaction validation slice every 25 epochs, early stop after 5 checks without a 0.1 kcal/mol improvement; three checkpoints are kept (final, lowest training loss, lowest validation MAE), and the figures of Secs. 4 and 5 read the validation-best one. Over the 33 cells the runs took 150 to 200 epochs (early-stopped in 17) and 1.2 to 34.9 h of wall each (\path{train_metadata.json}).
 
 \subsection*{4.2 The differentiable SCF}
 
@@ -405,16 +419,16 @@ The energies and densities above are self-consistent: the manual backend runs a 
 
 \textbf{Fig. 4.1} Per-channel training losses, one figure per architecture, eight panels. Every loss panel is the weighted per-epoch mean over the epoch's group updates read from the cell's \path{aux_log.pkl}, on a log axis against the epoch, one curve per subset size (the color bar: dark one molecule, yellow twenty-six). Panel 1 is the total loss, the quantity the optimizer steps; panels 2 to 6 are the five channels of Sec. 4.1 at their trained weights, and they add up to panel 1 at every epoch. Panel 7 is the validation reaction-energy MAE at each 25-epoch check, the star marking the validation-best epoch whose checkpoint every later figure reads. The footer states the weights and their source.
 
-medium (the first figure): the total falls from 1.3e-4 to 2.1e-4 at the first epoch to a plateau reached by epoch 25 in every cell, the plateau ordered by subset size from 3.7e-5 (one molecule) to 1.0e-4 (eighteen), because the potential and density channels grow with the number of supervised molecules. The reaction channel is the one that falls by orders of magnitude: from 1e-4 at the first epoch to 4e-9 (one molecule), 2e-6 to 8e-6 (two to six) and 1.6e-5 to 3.1e-5 (seven to twenty-six) at the end. The anchors channel is 1e-8 to 1e-6 throughout and drifts upward in the large-subset cells (the free atoms are released as the molecules pull the functional). The ionization channel (present from three molecules, where Li+ enters the subset) peaks at 1e-5 within the first 50 epochs and falls to 1e-6 to 4e-6. The potential channel is the one that rises: from 1e-5 to 1.3e-5 at the start to 1.4e-5 (one to six molecules) and 2.4e-5 to 4.3e-5 (seven to twenty-six) at the end, the rise steepest in the first 25 epochs. The density channel drops from 2.6e-5 to 4.8e-5 to 1.0e-5 (one molecule) and 1.8e-5 to 2.5e-5 (the rest) inside the first 10 epochs and is flat afterwards. The validation panel separates the cells into two families: the two-to-six-molecule cells start at 12 to 19 kcal/mol and rise to 15 to 33 by the last check (the star at epoch 25 for two, three, five and six; at 200 for four, whose MAE falls back from 20 to 14.6), while the one-molecule cell and the cells from seven upward hold 7 to 10 kcal/mol across every check.
+deep\_3x16 (the first figure): the total falls from 1.3e-4 to 2.1e-4 at the first epoch to a plateau reached by epoch 25 in every cell, the plateau ordered by subset size from 3.7e-5 (one molecule) to 1.0e-4 (eighteen), because the potential and density channels grow with the number of supervised molecules. The reaction channel is the one that falls by orders of magnitude: from 1e-4 at the first epoch to 4e-9 (one molecule), 2e-6 to 8e-6 (two to six) and 1.6e-5 to 3.1e-5 (seven to twenty-six) at the end. The anchors channel is 1e-8 to 1e-6 throughout and drifts upward in the large-subset cells (the free atoms are released as the molecules pull the functional). The ionization channel (present from three molecules, where Li+ enters the subset) peaks at 1e-5 within the first 50 epochs and falls to 1e-6 to 4e-6. The potential channel is the one that rises: from 1e-5 to 1.3e-5 at the start to 1.4e-5 (one to six molecules) and 2.4e-5 to 4.3e-5 (seven to twenty-six) at the end, the rise steepest in the first 25 epochs. The density channel drops from 2.6e-5 to 4.8e-5 to 1.0e-5 (one molecule) and 1.8e-5 to 2.5e-5 (the rest) inside the first 10 epochs and is flat afterwards. The validation panel separates the cells into two families: the two-to-six-molecule cells start at 12 to 19 kcal/mol and rise to 15 to 33 by the last check (the star at epoch 25 for two, three, five and six; at 200 for four, whose MAE falls back from 20 to 14.6), while the one-molecule cell and the cells from seven upward hold 7 to 10 kcal/mol across every check.
 
-medium\_attn (the second figure): the same shapes with a reaction channel that falls further (5e-7 to 2e-6 at two to six molecules, 8e-7 at seven), a density channel that ends lower (6e-6 to 1.3e-5), and a validation panel where the two-to-six-molecule cells fall rather than rise: from 22 to 37 kcal/mol at the first check to 7 to 13 by epoch 100, with the validation-best epochs at 75 to 200. deep\_3x16 (the third figure) reproduces the medium picture, validation included (two molecules: 11.2 to 32.4 kcal/mol; seven to eighteen: 6.2 to 8.8).
+deep\_attn\_3x16 (the second figure): the same shapes with a reaction channel that falls further (5e-7 to 2e-6 at two to six molecules, 8e-7 at seven), a density channel that ends lower (6e-6 to 1.3e-5), and a validation panel where the two-to-six-molecule cells fall rather than rise: from 22 to 37 kcal/mol at the first check to 7 to 13 by epoch 100, with the validation-best epochs at 75 to 200. deep0\_3x16 (the third figure) reproduces the deep\_3x16 picture, validation included (two molecules: 11.2 to 32.4 kcal/mol; seven to eighteen: 6.2 to 8.8).
 
 The first and last five-epoch means of every channel and every validation check are in the table of Sec. 4.5.
 
 \begin{landscape}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best/training_loss_channels_medium.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best/training_loss_channels_medium_attn.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g2a_families_core_val_best/training_loss_channels_deep_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/training_loss_channels_deep_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/training_loss_channels_deep_attn_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/training_loss_channels_deep0_3x16.png}\end{center}
 \end{landscape}
 
 
@@ -422,63 +436,67 @@ The first and last five-epoch means of every channel and every validation check 
 
 \textbf{Fig. 4.3} The trained networks against PBE, one figure per architecture, four panels, one curve per subset size at the validation-best checkpoint. Top left: $F_x(s)$ at $n = 1$ and zero extra descriptors, PBE dashed. Top right: $F_x^{\rm NN} - F_x^{\rm PBE}$ on the same slice. Bottom left: $F_c(s; r_s = 2)$ at $\zeta = 0$, PBE dashed. Bottom right: the correlation difference. The pre-trained curves of Fig. 3.3 are the starting point of every curve here, and the footer gives the largest $|\Delta F_x|$ over the slice.
 
-Exchange, all three architectures: every trained network lowers $F_x$ below PBE between $s = 0.3$ and 1.3 (by 0.02 to 0.06 at $s \approx 0.8$) and raises it above PBE from $s \approx 1.4$ onward, with the maximum of the raise at $s = 2.5$ to 3 (medium up to 0.18; medium\_attn 0.07 to 0.13; deep\_3x16 0.05 to 0.14) and a slow decay to $+0.03$ to $+0.06$ at $s = 6$, so that the trained $F_x$ crosses 1.7 near $s = 3.5$ where PBE crosses it near $s = 5$. The shape is the same at every subset size; the one-molecule cell moves least. Correlation at $r_s = 2$: PBE's $F_c$ falls from 1 at $s = 0$ to 0.02 at $s = 3$; every trained network holds $F_c$ between 0.6 and 1.0 up to $s = 2$, and beyond that the cells separate. medium: the one-molecule cell returns to PBE (a difference of 0.2 at $s = 1$ and 0 beyond 3), the two- and three-molecule cells rise to 1.1 to 1.4 at $s = 6$, the four-to-six-molecule cells decay to 0.15 to 0.25 and the cells from seven to twenty-six molecules to 0.4 to 0.6. deep\_3x16: the one-molecule cell as for medium, the two-molecule cell 1.5 at $s = 6$, the fifteen-molecule cell flat at 0.8 from $s = 2$, the twelve- and eighteen-molecule cells 1.1 to 1.2, the others 0.1 to 0.25. medium\_attn: the one-molecule cell returns to PBE, every other cell rises above 1 from $s = 2$ to 3 onward, to 1.2 (two molecules), 1.4 (three and seven), 1.7 (four) and 1.9 (five and six) at $s = 6$. The correlation difference therefore reaches 0.2 to 1.9 at large $s$ depending on the cell. The corrections are therefore not small perturbations of PBE: the density-gradient dependence of both channels is reshaped in the region $s > 1.5$, which is populated by the valence tails and the bonding regions of molecules, and what Sec. 5 measures is how that reshaping transfers.
+Exchange, all three architectures: every trained network lowers $F_x$ below PBE between $s = 0.3$ and 1.3 (by 0.02 to 0.06 at $s \approx 0.8$) and raises it above PBE from $s \approx 1.4$ onward, with the maximum of the raise at $s = 2.5$ to 3 (deep\_3x16 up to 0.18; deep\_attn\_3x16 0.07 to 0.13; deep0\_3x16 0.05 to 0.14) and a slow decay to $+0.03$ to $+0.06$ at $s = 6$, so that the trained $F_x$ crosses 1.7 near $s = 3.5$ where PBE crosses it near $s = 5$. The shape is the same at every subset size; the one-molecule cell moves least. Correlation at $r_s = 2$: PBE's $F_c$ falls from 1 at $s = 0$ to 0.02 at $s = 3$; every trained network holds $F_c$ between 0.6 and 1.0 up to $s = 2$, and beyond that the cells separate. deep\_3x16: the one-molecule cell returns to PBE (a difference of 0.2 at $s = 1$ and 0 beyond 3), the two- and three-molecule cells rise to 1.1 to 1.4 at $s = 6$, the four-to-six-molecule cells decay to 0.15 to 0.25 and the cells from seven to twenty-six molecules to 0.4 to 0.6. deep0\_3x16: the one-molecule cell as for deep\_3x16, the two-molecule cell 1.5 at $s = 6$, the fifteen-molecule cell flat at 0.8 from $s = 2$, the twelve- and eighteen-molecule cells 1.1 to 1.2, the others 0.1 to 0.25. deep\_attn\_3x16: the one-molecule cell returns to PBE, every other cell rises above 1 from $s = 2$ to 3 onward, to 1.2 (two molecules), 1.4 (three and seven), 1.7 (four) and 1.9 (five and six) at $s = 6$. The correlation difference therefore reaches 0.2 to 1.9 at large $s$ depending on the cell. The corrections are therefore not small perturbations of PBE: the density-gradient dependence of both channels is reshaped in the region $s > 1.5$, which is populated by the valence tails and the bonding regions of molecules, and what Sec. 5 measures is how that reshaping transfers.
 
-\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best/trained_fx_fc_medium.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best/trained_fx_fc_medium_attn.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g2a_families_core_val_best/trained_fx_fc_deep_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/trained_fx_fc_deep_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/trained_fx_fc_deep_attn_3x16.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/trained_fx_fc_deep0_3x16.png}\end{center}
 
 
 \subsection*{4.5 In-sample fit}
 
 The grid-RMSE density fit (Fig. 4.4 of the full report) is not repeated here; the per-cell ratios are in its table there.
 
-\textbf{Fig. 4.5} In-sample energy and density in DFS units, the 3x3 layout of Fig. 5.5 on the training set: rows WTMAD-2 / $\varepsilon_n$ / $\mathcal{ED}$, columns BH76 / W4-11 / combined, each cell against PBE on its own training reactions and molecules. The energy leg is the training reactions themselves (the W4-11 atomizations as molecule-to-atoms reactions and the BH76 barriers of \path{train_metadata.json}), each formed from the final checkpoint's self-consistent species energies in \path{eval/per_molecule.json} against its reference; PBE on the same reactions from the same file's PBE energies. The dashed line is PBE on the union of the run's training reactions (18.6 kcal/mol for the BH76 barriers, 3.83 for the W4-11 atomizations, 5.67 combined for G1); the capped spans and the verdict triangles use each cell's own reactions. A cell whose subset has no reaction of a column (the one-molecule cell in the BH76 column; the three-molecule cell, whose subset is H2O, Li+ and a barrier, in the W4-11 column) has no bar there.
+\textbf{Fig. 4.5} In-sample energy and density in DFS units, the 3x3 layout of Fig. 5.5 on the training set: rows WTMAD-2 / $\varepsilon_n$ / $\mathcal{ED}$, columns BH76 / W4-11 / combined, each cell against PBE on its own training reactions and molecules. The energy leg is the training reactions themselves (the W4-11 atomizations as molecule-to-atoms reactions and the BH76 barriers of \path{train_metadata.json}), each formed from the final checkpoint's self-consistent species energies in \path{eval/per_molecule.json} against its reference; PBE on the same reactions from the same file's PBE energies. The dashed line is PBE on the union of the run's training reactions (18.6 kcal/mol for the BH76 barriers, 3.83 for the W4-11 atomizations, 5.67 combined, the same union for every run since the runs train the same subsets); the capped spans and the verdict triangles use each cell's own reactions. A cell whose subset has no reaction of a column (the one-molecule cell in the BH76 column; the three-molecule cell, whose subset is H2O, Li+ and a barrier, in the W4-11 column) has no bar there.
 
-Panel A (BH76 energy): medium's barrier residual grows with the subset from 2.7 kcal/mol at two molecules to 9.5 at twenty-six, against 18.6 for PBE on the union and 12 to 25 on the cells' own barriers; medium\_attn 0.8 to 3.2. Panel B (W4-11): medium 0.02 (one molecule, H2O fitted to 0.02 kcal/mol) to 1.6, medium\_attn 0.05 to 0.36, against PBE's 3.83. Panel C: the two-subset combination, 0.02 to 4.3 against 5.67 (G1) and 6.44 (G2a). Panels D to F (density): the trained molecules' $\varepsilon_n$ is 0.0073 (one molecule) to 0.0135 (two) for medium and 0.0049 to 0.0073 for medium\_attn, against PBE's 0.0089 on the union of the trained molecules; the medium cells at two to seven molecules sit above PBE on this per-electron L1 while their grid RMSE (Fig. 4.4 of the full report) sits below it: the two norms rank the small-subset fits differently. Panels G to I: every cell's $\mathcal{ED}$ is below PBE's on its own slice (0.002 to 8.5 against 0.8 to 13.3), the energy leg deciding the combination at every subset.
+Panel A (BH76 energy): deep\_3x16's barrier residual grows with the subset from 2.7 kcal/mol at two molecules to 9.5 at twenty-six, against 18.6 for PBE on the union and 12 to 25 on the cells' own barriers; deep\_attn\_3x16 0.8 to 3.2. Panel B (W4-11): deep\_3x16 0.02 (one molecule, H2O fitted to 0.02 kcal/mol) to 1.6, deep\_attn\_3x16 0.05 to 0.36, against PBE's 3.83. Panel C: the two-subset combination, 0.02 to 4.3 against 5.67 on the union of the training reactions of every cell. Panels D to F (density): the trained molecules' $\varepsilon_n$ is 0.0073 (one molecule) to 0.0135 (two) for deep\_3x16 and 0.0049 to 0.0073 for deep\_attn\_3x16, against PBE's 0.0089 on the union of the trained molecules; the deep\_3x16 cells at two to seven molecules sit above PBE on this per-electron L1 while their grid RMSE (Fig. 4.4 of the full report) sits below it: the two norms rank the small-subset fits differently. Panels G to I: every cell's $\mathcal{ED}$ is below PBE's on its own slice (0.002 to 8.5 against 0.8 to 13.3), the energy leg deciding the combination at every subset.
 
 \begin{landscape}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best/insample_by_pool_3x3_eps.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g2a_families_core_val_best/insample_by_pool_3x3_eps.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/insample_by_pool_3x3_eps.png}\end{center}
 \end{landscape}
 
 
 \subsection*{4.6 Results per cell}
 
-\textbf{In-sample per cell in DFS units} (\path{insample_by_pool_3x3_eps.csv} of each group's \path{_val_best} set, identical in the final-step set; combined leg; E = 2-subset WTMAD-2 over the cell's own training reactions, kcal/mol; eps over its training molecules; ED under gamma = 1084.87 kcal/mol; the PBE columns are the union of the run's training reactions / molecules for E and eps and the cell's own slice for ED; n = training reactions and trained species with a density).
+\textbf{In-sample per cell in DFS units} (\path{insample_by_pool_3x3_eps.csv} of the family \path{_val_best} set, identical in the final-step set; combined leg; E = 2-subset WTMAD-2 over the cell's own training reactions, kcal/mol; eps over its training molecules; ED under gamma = 1084.87 kcal/mol; the PBE columns are the union of the run's training reactions / molecules for E and eps and the cell's own slice for ED; n = training reactions and trained species with a density).
 
 \begin{landscape}
 \begin{footnotesize}
 \begin{longtable}{llllllllllll}
-\toprule Group & Architecture & Subset & n rxn & E NN & E PBE (union) & n species & eps NN & eps PBE (union) & ED NN & ED PBE (cell) & beats \\ \midrule \endhead
-G1 & medium & 1 & 1 & 0.02 & 5.67 & 1 & 0.00728 & 0.00888 & 0.05 & 0.79 & True \\
-G1 & medium & 2 & 2 & 2.14 & 5.67 & 3 & 0.01353 & 0.00888 & 3.73 & 11.27 & True \\
-G1 & medium & 3 & 2 & 2.96 & 5.67 & 3 & 0.01106 & 0.00888 & 4.75 & 12.57 & True \\
-G1 & medium & 4 & 3 & 2.63 & 5.67 & 4 & 0.01118 & 0.00888 & 4.33 & 11.58 & True \\
-G1 & medium & 5 & 3 & 4.31 & 5.67 & 4 & 0.01315 & 0.00888 & 6.63 & 13.25 & True \\
-G1 & medium & 6 & 4 & 3.92 & 5.67 & 5 & 0.01234 & 0.00888 & 6.06 & 11.78 & True \\
-G1 & medium & 7 & 5 & 2.04 & 5.67 & 6 & 0.01042 & 0.00888 & 3.46 & 7.89 & True \\
-G1 & medium & 12 & 10 & 3.11 & 5.67 & 11 & 0.01026 & 0.00888 & 4.86 & 8.86 & True \\
-G1 & medium & 15 & 13 & 2.78 & 5.67 & 14 & 0.00900 & 0.00888 & 4.32 & 8.08 & True \\
-G1 & medium & 18 & 16 & 2.60 & 5.67 & 16 & 0.00944 & 0.00888 & 4.14 & 8.01 & True \\
-G1 & medium & 26 & 24 & 2.23 & 5.67 & 22 & 0.00731 & 0.00888 & 3.49 & 7.14 & True \\
-G1 & medium\_attn & 1 & 1 & 0.05 & 5.67 & 1 & 0.00494 & 0.00888 & 0.09 & 0.79 & True \\
-G1 & medium\_attn & 2 & 2 & 0.59 & 5.67 & 3 & 0.00617 & 0.00888 & 1.08 & 11.27 & True \\
-G1 & medium\_attn & 3 & 2 & 1.57 & 5.67 & 3 & 0.00626 & 0.00888 & 2.55 & 12.57 & True \\
-G1 & medium\_attn & 4 & 3 & 1.68 & 5.67 & 4 & 0.00648 & 0.00888 & 2.71 & 11.58 & True \\
-G1 & medium\_attn & 5 & 3 & 1.77 & 5.67 & 4 & 0.00732 & 0.00888 & 2.89 & 13.25 & True \\
-G1 & medium\_attn & 6 & 4 & 1.72 & 5.67 & 5 & 0.00724 & 0.00888 & 2.83 & 11.78 & True \\
-G1 & medium\_attn & 7 & 5 & 0.53 & 5.67 & 6 & 0.00640 & 0.00888 & 0.98 & 7.89 & True \\
-G2a & deep\_3x16 & 1 & 1 & 0.00 & 6.44 & 1 & 0.00753 & 0.00888 & 0.00 & 0.79 & True \\
-G2a & deep\_3x16 & 2 & 2 & 0.91 & 6.44 & 3 & 0.01392 & 0.00888 & 1.72 & 11.27 & True \\
-G2a & deep\_3x16 & 3 & 2 & 3.81 & 6.44 & 3 & 0.01046 & 0.00888 & 5.71 & 12.57 & True \\
-G2a & deep\_3x16 & 4 & 3 & 2.92 & 6.44 & 4 & 0.00969 & 0.00888 & 4.57 & 11.58 & True \\
-G2a & deep\_3x16 & 5 & 3 & 4.36 & 6.44 & 4 & 0.01327 & 0.00888 & 6.69 & 13.25 & True \\
-G2a & deep\_3x16 & 6 & 4 & 3.61 & 6.44 & 5 & 0.01257 & 0.00888 & 5.71 & 11.78 & True \\
-G2a & deep\_3x16 & 7 & 5 & 1.58 & 6.44 & 6 & 0.01038 & 0.00888 & 2.77 & 7.89 & True \\
-G2a & deep\_3x16 & 12 & 10 & 3.00 & 6.44 & 11 & 0.01037 & 0.00888 & 4.74 & 8.86 & True \\
-G2a & deep\_3x16 & 15 & 13 & 2.72 & 6.44 & 14 & 0.00913 & 0.00888 & 4.27 & 8.08 & True \\
-G2a & deep\_3x16 & 18 & 16 & 2.66 & 6.44 & 16 & 0.00873 & 0.00888 & 4.16 & 8.01 & True \\
+\toprule Architecture & Subset & n rxn & n species & E NN & E PBE (pool) & eps NN & eps PBE (pool) & ED NN & ED PBE (cell) & dED & beats \\ \midrule \endhead
+deep\_3x16 & 1 & 1 & 1 & 0.02 & 5.67 & 0.00728 & 0.00888 & 0.05 & 0.79 & \textbf{-0.74} & yes \\
+deep\_3x16 & 2 & 2 & 3 & 2.14 & 5.67 & 0.01353 & 0.00888 & 3.73 & 11.27 & \textbf{-7.55} & yes \\
+deep\_3x16 & 3 & 2 & 3 & 2.96 & 5.67 & 0.01106 & 0.00888 & 4.75 & 12.57 & \textbf{-7.82} & yes \\
+deep\_3x16 & 4 & 3 & 4 & 2.63 & 5.67 & 0.01118 & 0.00888 & 4.33 & 11.58 & \textbf{-7.25} & yes \\
+deep\_3x16 & 5 & 3 & 4 & 4.31 & 5.67 & 0.01315 & 0.00888 & 6.63 & 13.25 & \textbf{-6.63} & yes \\
+deep\_3x16 & 6 & 4 & 5 & 3.92 & 5.67 & 0.01234 & 0.00888 & 6.06 & 11.78 & \textbf{-5.72} & yes \\
+deep\_3x16 & 7 & 5 & 6 & 2.04 & 5.67 & 0.01042 & 0.00888 & 3.46 & 7.89 & \textbf{-4.44} & yes \\
+deep\_3x16 & 12 & 10 & 11 & 3.11 & 5.67 & 0.01026 & 0.00888 & 4.86 & 8.86 & \textbf{-4.00} & yes \\
+deep\_3x16 & 15 & 13 & 14 & 2.78 & 5.67 & 0.00900 & 0.00888 & 4.32 & 8.08 & \textbf{-3.76} & yes \\
+deep\_3x16 & 18 & 16 & 16 & 2.60 & 5.67 & 0.00944 & 0.00888 & 4.14 & 8.01 & \textbf{-3.86} & yes \\
+deep\_3x16 & 26 & 24 & 22 & 2.23 & 5.67 & 0.00731 & 0.00888 & 3.49 & 7.14 & \textbf{-3.66} & yes \\
+deep\_attn\_3x16 & 1 & 1 & 1 & 0.05 & 5.67 & 0.00494 & 0.00888 & 0.09 & 0.79 & \textbf{-0.70} & yes \\
+deep\_attn\_3x16 & 2 & 2 & 3 & 0.59 & 5.67 & 0.00617 & 0.00888 & 1.08 & 11.27 & \textbf{-10.20} & yes \\
+deep\_attn\_3x16 & 3 & 2 & 3 & 1.57 & 5.67 & 0.00626 & 0.00888 & 2.55 & 12.57 & \textbf{-10.02} & yes \\
+deep\_attn\_3x16 & 4 & 3 & 4 & 1.68 & 5.67 & 0.00648 & 0.00888 & 2.71 & 11.58 & \textbf{-8.87} & yes \\
+deep\_attn\_3x16 & 5 & 3 & 4 & 1.77 & 5.67 & 0.00732 & 0.00888 & 2.89 & 13.25 & \textbf{-10.36} & yes \\
+deep\_attn\_3x16 & 6 & 4 & 5 & 1.72 & 5.67 & 0.00724 & 0.00888 & 2.83 & 11.78 & \textbf{-8.96} & yes \\
+deep\_attn\_3x16 & 7 & 5 & 6 & 0.53 & 5.67 & 0.00640 & 0.00888 & 0.98 & 7.89 & \textbf{-6.92} & yes \\
+deep\_attn\_3x16 & 12 & 10 & 11 & 2.45 & 5.67 & 0.00784 & 0.00888 & 3.80 & 8.86 & \textbf{-5.05} & yes \\
+deep\_attn\_3x16 & 15 & 13 & 14 & 2.20 & 5.67 & 0.00667 & 0.00888 & 3.37 & 8.08 & \textbf{-4.70} & yes \\
+deep0\_3x16 & 1 & 1 & 1 & 0.00 & 5.67 & 0.00753 & 0.00888 & 0.00 & 0.79 & \textbf{-0.79} & yes \\
+deep0\_3x16 & 2 & 2 & 3 & 0.91 & 5.67 & 0.01392 & 0.00888 & 1.72 & 11.27 & \textbf{-9.56} & yes \\
+deep0\_3x16 & 3 & 2 & 3 & 3.81 & 5.67 & 0.01046 & 0.00888 & 5.71 & 12.57 & \textbf{-6.86} & yes \\
+deep0\_3x16 & 4 & 3 & 4 & 2.92 & 5.67 & 0.00969 & 0.00888 & 4.57 & 11.58 & \textbf{-7.01} & yes \\
+deep0\_3x16 & 5 & 3 & 4 & 4.36 & 5.67 & 0.01327 & 0.00888 & 6.69 & 13.25 & \textbf{-6.56} & yes \\
+deep0\_3x16 & 6 & 4 & 5 & 3.61 & 5.67 & 0.01257 & 0.00888 & 5.71 & 11.78 & \textbf{-6.08} & yes \\
+deep0\_3x16 & 7 & 5 & 6 & 1.58 & 5.67 & 0.01038 & 0.00888 & 2.77 & 7.89 & \textbf{-5.12} & yes \\
+deep0\_3x16 & 12 & 10 & 11 & 3.00 & 5.67 & 0.01037 & 0.00888 & 4.74 & 8.86 & \textbf{-4.12} & yes \\
+deep0\_3x16 & 15 & 13 & 14 & 2.72 & 5.67 & 0.00913 & 0.00888 & 4.27 & 8.08 & \textbf{-3.80} & yes \\
+deep0\_3x16 & 18 & 16 & 16 & 2.66 & 5.67 & 0.00873 & 0.00888 & 4.16 & 8.01 & \textbf{-3.85} & yes \\
+deep0\_3x16 & 26 & 24 & 22 & 2.22 & 5.67 & 0.00721 & 0.00888 & 3.46 & 7.14 & \textbf{-3.68} & yes \\
+deep0\_attn\_3x16 & 1 & 1 & 1 & 0.05 & 5.67 & 0.00508 & 0.00888 & 0.09 & 0.79 & \textbf{-0.70} & yes \\
+deep0\_attn\_3x16 & 2 & 2 & 3 & 0.77 & 5.67 & 0.01118 & 0.00888 & 1.45 & 11.27 & \textbf{-9.83} & yes \\
 \bottomrule \end{longtable}
 \end{footnotesize}
 \end{landscape}
@@ -524,62 +542,63 @@ The grid-RMSE density figures of the full report (Fig. 5.4 of the full report) a
 
 \subsection*{5.5 The per-pool 3x3 in DFS units}
 
-\textbf{Fig. 5.5} The held-out result in the Letter's units, nine panels: the rows are the energy leg (WTMAD-2), the density leg ($\varepsilon_n$, Eq. 20) and the combination ($\mathcal{ED}$ under the one shared $\gamma = 1084.87$ kcal/mol); the columns are the BH76 barriers, the W4-11 atomizations and both pooled. In every panel the abscissa is the subset size, the bars are the architectures (dark green medium, light green medium\_attn; deep\_3x16 in the G2a figure), the dashed line is PBE on the pooled slice and the black cap over each subset size is PBE on that cell's own slice; a triangle on a bar marks a cell below its cap. The first figure of each pair is the full set, the second the tail-excluded one. The panel values are in the four tables of Sec. 5.7.
+\textbf{Fig. 5.5} The held-out result in the Letter's units, nine panels: the rows are the energy leg (WTMAD-2), the density leg ($\varepsilon_n$, Eq. 20) and the combination ($\mathcal{ED}$ under the one shared $\gamma = 1084.87$ kcal/mol); the columns are the BH76 barriers, the W4-11 atomizations and both pooled. In every panel the abscissa is the subset size, the bars are the architectures (the greens deep\_3x16 and deep\_attn\_3x16, the blue deep0\_3x16, the orange deep0\_attn\_3x16, in the display order), the dashed line is PBE on the pooled slice and the black cap over each subset size is PBE on that cell's own slice; a triangle on a bar marks a cell below its cap. The first figure of each pair is the full set, the second the tail-excluded one. The panel values are in the four tables of Sec. 5.7.
 
-Row 1 (energy). Panel A, BH76: PBE's scaled relative error is 22.1 kcal/mol; medium reads 21.3 at one molecule, 23.6 to 36.6 at two to six (the peak at five), 16.3 at seven, 16.7 to 20.0 from twelve to twenty-six; medium\_attn 22.8 at one, then 20.6, 15.3, 14.6, 13.3, 14.0 and 15.5. Panel B, W4-11: PBE 2.54; medium 1.41 at one, 2.95 to 3.54 at two to six, 1.70 to 2.01 from seven; medium\_attn 1.17, 1.80, 3.46, 2.06, 2.63, 2.38, 1.31. Panel C, the two-subset WTMAD-2 of Fig. 5.1 of the full report.
+Row 1 (energy). Panel A, BH76: PBE's scaled relative error is 22.1 kcal/mol; deep\_3x16 reads 21.3 at one molecule, 23.6 to 36.6 at two to six (the peak at five), 16.3 at seven, 16.7 to 20.0 from twelve to twenty-six; deep\_attn\_3x16 22.8 at one, then 20.6, 15.3, 14.6, 13.3, 14.0 and 15.5. Panel B, W4-11: PBE 2.54; deep\_3x16 1.41 at one, 2.95 to 3.54 at two to six, 1.70 to 2.01 from seven; deep\_attn\_3x16 1.17, 1.80, 3.46, 2.06, 2.63, 2.38, 1.31. Panel C, the two-subset WTMAD-2 of Fig. 5.1 of the full report.
 
-Row 2 (density). PBE's $\varepsilon_n$ is 0.00928 (BH76 species), 0.00891 (W4-11) and 0.00923 (combined) per electron. Panel D: medium 0.0093 at one, 0.0119 to 0.0136 at two to six, 0.0102 to 0.0111 from seven; medium\_attn 0.0093, 0.0081, 0.0107, 0.0099, 0.0083, 0.0087, 0.0087, so the attention twin is below PBE at two, five, six and seven. Panel E: every medium cell is above PBE (0.0093 to 0.0109), and so is every medium\_attn cell, at one and five molecules by less than 0.4 percent (0.00894 and 0.00892 against 0.00891). Panel F, the combination of both.
+Row 2 (density). PBE's $\varepsilon_n$ is 0.00928 (BH76 species), 0.00891 (W4-11) and 0.00923 (combined) per electron. Panel D: deep\_3x16 0.0093 at one, 0.0119 to 0.0136 at two to six, 0.0102 to 0.0111 from seven; deep\_attn\_3x16 0.0093, 0.0081, 0.0107, 0.0099, 0.0083, 0.0087, 0.0087, so the attention twin is below PBE at two, five, six and seven. Panel E: every deep\_3x16 cell is above PBE (0.0093 to 0.0109), and so is every deep\_attn\_3x16 cell, at one and five molecules by less than 0.4 percent (0.00894 and 0.00892 against 0.00891). Panel F, the combination of both.
 
-Row 3 (the combination). Panel G, BH76: PBE 13.7; medium 13.7 at one, 16.7 to 19.7 at two to six, 13.6 to 14.7 from seven; medium\_attn 14.0 at one and 10.8 to 13.2 from two to seven. Panel H, W4-11: PBE 4.02; medium 2.48 at one, 4.65 to 5.45 at two to six, 2.93 to 3.36 from seven; medium\_attn 2.09, 3.10, 5.14, 3.48, 4.13, 3.92, 2.33. Panel I, combined, the verdict column of the tables.
+Row 3 (the combination). Panel G, BH76: PBE 13.7; deep\_3x16 13.7 at one, 16.7 to 19.7 at two to six, 13.6 to 14.7 from seven; deep\_attn\_3x16 14.0 at one and 10.8 to 13.2 from two to seven. Panel H, W4-11: PBE 4.02; deep\_3x16 2.48 at one, 4.65 to 5.45 at two to six, 2.93 to 3.36 from seven; deep\_attn\_3x16 2.09, 3.10, 5.14, 3.48, 4.13, 3.92, 2.33. Panel I, combined, the verdict column of the tables.
 
-G2a, deep\_3x16, the same panels: BH76 energy 21.5, 22.0, 17.5, 17.8, 26.6, 25.9, 14.6, 17.5, 17.6, 16.8 at one to eighteen; W4-11 energy 1.68, 3.05, 3.54, 3.50, 2.97, 3.12, 1.67, 2.10, 1.99, 1.88; combined $\varepsilon_n$ 0.0100 to 0.0116, above PBE in every cell; combined $\mathcal{ED}$ 9.32, 10.54, 9.44, 9.83, 11.16, 11.10, 7.77, 8.78, 8.63, 8.37 against the cell caps 9.46, 9.44, 9.32, 9.34, 9.32, 9.34, 9.49, 9.56, 9.60, 9.62.
+deep0\_3x16, the same panels: BH76 energy 21.5, 22.0, 17.5, 17.8, 26.6, 25.9, 14.6, 17.5, 17.6, 16.8, 21.1 at one to twenty-six; W4-11 energy 1.68, 3.05, 3.54, 3.50, 2.97, 3.12, 1.67, 2.10, 1.99, 1.88, 1.87; combined $\varepsilon_n$ 0.0096 to 0.0116, above PBE in every cell; combined $\mathcal{ED}$ 9.32, 10.54, 9.44, 9.83, 11.16, 11.10, 7.77, 8.78, 8.63, 8.37, 9.38 against the cell caps 9.46, 9.44, 9.32, 9.34, 9.32, 9.34, 9.49, 9.56, 9.60, 9.62, 9.80. The two new cells of deep\_attn\_3x16 (twelve and fifteen molecules): BH76 energy 16.45 and 16.56, W4-11 1.87 and 1.56, combined $\varepsilon_n$ 0.0102 and 0.0096, combined $\mathcal{ED}$ 8.27 and 7.97 against 9.56 and 9.60. deep0\_attn\_3x16 at one and two molecules: BH76 energy 22.38 and 33.73, W4-11 1.15 and 4.10, combined $\varepsilon_n$ 0.0091 and 0.0117, combined $\mathcal{ED}$ 8.89 and 13.14 against 9.46 and 9.44.
 
-\begin{landscape}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best/holdout_by_pool_3x3_eps.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g1_size_val_best_excl_tail/holdout_by_pool_3x3_eps.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g2a_families_core_val_best/holdout_by_pool_3x3_eps.png}\end{center}
-\begin{center}\includegraphics[width=\linewidth,height=0.9\textheight,keepaspectratio]{figures_dfs_step7_dfs6311_grid3_v7g2a_families_core_val_best_excl_tail/holdout_by_pool_3x3_eps.png}\end{center}
-\end{landscape}
+\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/holdout_by_pool_3x3_eps.png}\end{center}
+\begin{center}\includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best_excl_tail/holdout_by_pool_3x3_eps.png}\end{center}
 
 
 \subsection*{5.7 Results per cell}
 
-The two tables below (the per-leg tables are in the full report) are read from \path{holdout_by_pool_3x3_eps.csv} of each group's \path{_val_best} set (the tail-excluded one from the \path{_excl_tail} sibling): E is the WTMAD-2 of the leg in kcal/mol (the one-pool legs collapse to the scaled relative error of Sec. 5.2), eps the per-electron density error of the leg's species, ED the combination under $\gamma = 1084.87$ kcal/mol; the E PBE and eps PBE columns are the leg's pooled PBE values (the same in every row), ED PBE (cell) is PBE's ED on the cell's own slice, and "beats" whether the network's ED is below it. n rxn and n species are the reactions and species of the cell's slice.
+The two tables below (the per-leg tables are in the full report) are read from \path{holdout_by_pool_3x3_eps.csv} of the family \path{_val_best} set (the tail-excluded one from the \path{_excl_tail} sibling): E is the WTMAD-2 of the leg in kcal/mol (the one-pool legs collapse to the scaled relative error of Sec. 5.2), eps the per-electron density error of the leg's species, ED the combination under $\gamma = 1084.87$ kcal/mol; the E PBE and eps PBE columns are the leg's pooled PBE values (the same in every row), ED PBE (cell) is PBE's ED on the cell's own slice, and "beats" whether the network's ED is below it. n rxn and n species are the reactions and species of the cell's slice. Every table carries the 33 finished cells in the display order of the architectures and then the subset size; the run of a cell is that of its architecture in the scope table (the report's tables of Sec. 4.6 carry it as a column). The pooled PBE columns of the tail-excluded table are its own file's, computed without the excluded species (eps PBE 0.00909 against 0.00923).
 
 \begin{landscape}
 \textbf{Combined leg} (both pools).
 
 \begin{footnotesize}
 \begin{longtable}{llllllllllll}
-\toprule Group & Architecture & Subset & n rxn & n species & E NN & E PBE (pool) & eps NN & eps PBE (pool) & ED NN & ED PBE (cell) & beats \\ \midrule \endhead
-G1 & medium & 1 & 177 & 188 & 7.92 & 8.92 & 0.00951 & 0.00923 & 8.96 & 9.46 & yes \\
-G1 & medium & 2 & 177 & 186 & 9.61 & 8.92 & 0.01071 & 0.00923 & 10.52 & 9.44 & no \\
-G1 & medium & 3 & 176 & 184 & 10.67 & 8.92 & 0.01068 & 0.00923 & 11.11 & 9.32 & no \\
-G1 & medium & 4 & 175 & 183 & 11.06 & 8.92 & 0.01182 & 0.00923 & 11.88 & 9.34 & no \\
-G1 & medium & 5 & 176 & 184 & 13.97 & 8.92 & 0.01113 & 0.00923 & 12.96 & 9.32 & no \\
-G1 & medium & 6 & 175 & 183 & 13.51 & 8.92 & 0.01091 & 0.00923 & 12.62 & 9.34 & no \\
-G1 & medium & 7 & 175 & 181 & 6.44 & 8.92 & 0.01017 & 0.00923 & 8.13 & 9.49 & yes \\
-G1 & medium & 12 & 169 & 175 & 7.41 & 8.92 & 0.01047 & 0.00923 & 8.97 & 9.56 & yes \\
-G1 & medium & 15 & 168 & 171 & 6.89 & 8.92 & 0.01004 & 0.00923 & 8.44 & 9.60 & yes \\
-G1 & medium & 18 & 166 & 170 & 6.74 & 8.92 & 0.00999 & 0.00923 & 8.31 & 9.62 & yes \\
-G1 & medium & 26 & 159 & 164 & 8.23 & 8.92 & 0.00973 & 0.00923 & 9.25 & 9.80 & yes \\
-G1 & medium\_attn & 1 & 177 & 188 & 8.26 & 8.92 & 0.00925 & 0.00923 & 9.06 & 9.46 & yes \\
-G1 & medium\_attn & 2 & 177 & 186 & 7.87 & 8.92 & 0.00972 & 0.00923 & 9.01 & 9.44 & yes \\
-G1 & medium\_attn & 3 & 176 & 184 & 7.22 & 8.92 & 0.00981 & 0.00923 & 8.60 & 9.32 & yes \\
-G1 & medium\_attn & 4 & 175 & 183 & 6.09 & 8.92 & 0.01020 & 0.00923 & 7.85 & 9.34 & yes \\
-G1 & medium\_attn & 5 & 176 & 184 & 6.03 & 8.92 & 0.00883 & 0.00923 & 7.40 & 9.32 & yes \\
-G1 & medium\_attn & 6 & 175 & 183 & 6.09 & 8.92 & 0.00973 & 0.00923 & 7.73 & 9.34 & yes \\
-G1 & medium\_attn & 7 & 175 & 181 & 5.94 & 8.92 & 0.00963 & 0.00923 & 7.57 & 9.49 & yes \\
-G2a & deep\_3x16 & 1 & 177 & 188 & 8.18 & 8.92 & 0.00997 & 0.00923 & 9.32 & 9.46 & yes \\
-G2a & deep\_3x16 & 2 & 177 & 186 & 9.16 & 8.92 & 0.01143 & 0.00923 & 10.54 & 9.44 & no \\
-G2a & deep\_3x16 & 3 & 176 & 184 & 7.99 & 8.92 & 0.01062 & 0.00923 & 9.44 & 9.32 & no \\
-G2a & deep\_3x16 & 4 & 175 & 183 & 8.06 & 8.92 & 0.01160 & 0.00923 & 9.83 & 9.34 & no \\
-G2a & deep\_3x16 & 5 & 176 & 184 & 10.48 & 8.92 & 0.01099 & 0.00923 & 11.16 & 9.32 & no \\
-G2a & deep\_3x16 & 6 & 175 & 183 & 10.40 & 8.92 & 0.01097 & 0.00923 & 11.10 & 9.34 & no \\
-G2a & deep\_3x16 & 7 & 175 & 181 & 5.90 & 8.92 & 0.01051 & 0.00923 & 7.77 & 9.49 & yes \\
-G2a & deep\_3x16 & 12 & 169 & 175 & 7.11 & 8.92 & 0.01058 & 0.00923 & 8.78 & 9.56 & yes \\
-G2a & deep\_3x16 & 15 & 168 & 171 & 7.10 & 8.92 & 0.01013 & 0.00923 & 8.63 & 9.60 & yes \\
-G2a & deep\_3x16 & 18 & 166 & 170 & 6.82 & 8.92 & 0.00996 & 0.00923 & 8.37 & 9.62 & yes \\
+\toprule Architecture & Subset & n rxn & n species & E NN & E PBE (pool) & eps NN & eps PBE (pool) & ED NN & ED PBE (cell) & dED & beats \\ \midrule \endhead
+deep\_3x16 & 1 & 177 & 188 & 7.92 & 8.92 & 0.00951 & 0.00923 & 8.96 & 9.46 & \textbf{-0.50} & yes \\
+deep\_3x16 & 2 & 177 & 186 & 9.61 & 8.92 & 0.01071 & 0.00923 & 10.52 & 9.44 & +1.08 & no \\
+deep\_3x16 & 3 & 176 & 184 & 10.67 & 8.92 & 0.01068 & 0.00923 & 11.11 & 9.32 & +1.79 & no \\
+deep\_3x16 & 4 & 175 & 183 & 11.06 & 8.92 & 0.01182 & 0.00923 & 11.88 & 9.34 & +2.53 & no \\
+deep\_3x16 & 5 & 176 & 184 & 13.97 & 8.92 & 0.01113 & 0.00923 & 12.96 & 9.32 & +3.64 & no \\
+deep\_3x16 & 6 & 175 & 183 & 13.51 & 8.92 & 0.01091 & 0.00923 & 12.62 & 9.34 & +3.28 & no \\
+deep\_3x16 & 7 & 175 & 181 & 6.44 & 8.92 & 0.01017 & 0.00923 & 8.13 & 9.49 & \textbf{-1.35} & yes \\
+deep\_3x16 & 12 & 169 & 175 & 7.41 & 8.92 & 0.01047 & 0.00923 & 8.97 & 9.56 & \textbf{-0.59} & yes \\
+deep\_3x16 & 15 & 168 & 171 & 6.89 & 8.92 & 0.01004 & 0.00923 & 8.44 & 9.60 & \textbf{-1.16} & yes \\
+deep\_3x16 & 18 & 166 & 170 & 6.74 & 8.92 & 0.00999 & 0.00923 & 8.31 & 9.62 & \textbf{-1.31} & yes \\
+deep\_3x16 & 26 & 159 & 164 & 8.23 & 8.92 & 0.00973 & 0.00923 & 9.25 & 9.80 & \textbf{-0.55} & yes \\
+deep\_attn\_3x16 & 1 & 177 & 188 & 8.26 & 8.92 & 0.00925 & 0.00923 & 9.06 & 9.46 & \textbf{-0.40} & yes \\
+deep\_attn\_3x16 & 2 & 177 & 186 & 7.87 & 8.92 & 0.00972 & 0.00923 & 9.01 & 9.44 & \textbf{-0.43} & yes \\
+deep\_attn\_3x16 & 3 & 176 & 184 & 7.22 & 8.92 & 0.00981 & 0.00923 & 8.60 & 9.32 & \textbf{-0.72} & yes \\
+deep\_attn\_3x16 & 4 & 175 & 183 & 6.09 & 8.92 & 0.01020 & 0.00923 & 7.85 & 9.34 & \textbf{-1.49} & yes \\
+deep\_attn\_3x16 & 5 & 176 & 184 & 6.03 & 8.92 & 0.00883 & 0.00923 & 7.40 & 9.32 & \textbf{-1.92} & yes \\
+deep\_attn\_3x16 & 6 & 175 & 183 & 6.09 & 8.92 & 0.00973 & 0.00923 & 7.73 & 9.34 & \textbf{-1.61} & yes \\
+deep\_attn\_3x16 & 7 & 175 & 181 & 5.94 & 8.92 & 0.00963 & 0.00923 & 7.57 & 9.49 & \textbf{-1.91} & yes \\
+deep\_attn\_3x16 & 12 & 169 & 175 & 6.61 & 8.92 & 0.01019 & 0.00923 & 8.27 & 9.56 & \textbf{-1.29} & yes \\
+deep\_attn\_3x16 & 15 & 168 & 171 & 6.47 & 8.92 & 0.00956 & 0.00923 & 7.97 & 9.60 & \textbf{-1.63} & yes \\
+deep0\_3x16 & 1 & 177 & 188 & 8.18 & 8.92 & 0.00997 & 0.00923 & 9.32 & 9.46 & \textbf{-0.14} & yes \\
+deep0\_3x16 & 2 & 177 & 186 & 9.16 & 8.92 & 0.01143 & 0.00923 & 10.54 & 9.44 & +1.10 & no \\
+deep0\_3x16 & 3 & 176 & 184 & 7.99 & 8.92 & 0.01062 & 0.00923 & 9.44 & 9.32 & +0.12 & no \\
+deep0\_3x16 & 4 & 175 & 183 & 8.06 & 8.92 & 0.01160 & 0.00923 & 9.83 & 9.34 & +0.48 & no \\
+deep0\_3x16 & 5 & 176 & 184 & 10.48 & 8.92 & 0.01099 & 0.00923 & 11.16 & 9.32 & +1.83 & no \\
+deep0\_3x16 & 6 & 175 & 183 & 10.40 & 8.92 & 0.01097 & 0.00923 & 11.10 & 9.34 & +1.76 & no \\
+deep0\_3x16 & 7 & 175 & 181 & 5.90 & 8.92 & 0.01051 & 0.00923 & 7.77 & 9.49 & \textbf{-1.72} & yes \\
+deep0\_3x16 & 12 & 169 & 175 & 7.11 & 8.92 & 0.01058 & 0.00923 & 8.78 & 9.56 & \textbf{-0.78} & yes \\
+deep0\_3x16 & 15 & 168 & 171 & 7.10 & 8.92 & 0.01013 & 0.00923 & 8.63 & 9.60 & \textbf{-0.97} & yes \\
+deep0\_3x16 & 18 & 166 & 170 & 6.82 & 8.92 & 0.00996 & 0.00923 & 8.37 & 9.62 & \textbf{-1.26} & yes \\
+deep0\_3x16 & 26 & 159 & 164 & 8.52 & 8.92 & 0.00961 & 0.00923 & 9.38 & 9.80 & \textbf{-0.42} & yes \\
+deep0\_attn\_3x16 & 1 & 177 & 188 & 8.11 & 8.92 & 0.00906 & 0.00923 & 8.89 & 9.46 & \textbf{-0.57} & yes \\
+deep0\_attn\_3x16 & 2 & 177 & 186 & 13.64 & 8.92 & 0.01168 & 0.00923 & 13.14 & 9.44 & +3.70 & no \\
 \bottomrule \end{longtable}
 \end{footnotesize}
 \end{landscape}
@@ -589,36 +608,41 @@ G2a & deep\_3x16 & 18 & 166 & 170 & 6.82 & 8.92 & 0.00996 & 0.00923 & 8.37 & 9.6
 \textbf{Combined leg without the recurring tail} (the species named in Sec. 5.8 removed from the density leg).
 
 \begin{footnotesize}
-\begin{longtable}{lllllllll}
-\toprule Group & Architecture & Subset & n species & eps NN & eps PBE (pool) & ED NN & ED PBE (cell) & beats \\ \midrule \endhead
-G1 & medium & 1 & 180 & 0.00886 & 0.00909 & 8.68 & 9.39 & yes \\
-G1 & medium & 2 & 178 & 0.00969 & 0.00909 & 10.04 & 9.37 & no \\
-G1 & medium & 3 & 176 & 0.00959 & 0.00909 & 10.53 & 9.26 & no \\
-G1 & medium & 4 & 175 & 0.01086 & 0.00909 & 11.41 & 9.28 & no \\
-G1 & medium & 5 & 176 & 0.00981 & 0.00909 & 12.08 & 9.26 & no \\
-G1 & medium & 6 & 175 & 0.00964 & 0.00909 & 11.79 & 9.28 & no \\
-G1 & medium & 7 & 173 & 0.00933 & 0.00909 & 7.87 & 9.42 & yes \\
-G1 & medium & 12 & 167 & 0.00947 & 0.00909 & 8.61 & 9.49 & yes \\
-G1 & medium & 15 & 163 & 0.00917 & 0.00909 & 8.14 & 9.53 & yes \\
-G1 & medium & 18 & 162 & 0.00921 & 0.00909 & 8.05 & 9.55 & yes \\
-G1 & medium & 26 & 157 & 0.00876 & 0.00909 & 8.82 & 9.74 & yes \\
-G1 & medium\_attn & 1 & 180 & 0.00858 & 0.00909 & 8.75 & 9.39 & yes \\
-G1 & medium\_attn & 2 & 178 & 0.00846 & 0.00909 & 8.47 & 9.37 & yes \\
-G1 & medium\_attn & 3 & 176 & 0.00936 & 0.00909 & 8.43 & 9.26 & yes \\
-G1 & medium\_attn & 4 & 175 & 0.00929 & 0.00909 & 7.59 & 9.28 & yes \\
-G1 & medium\_attn & 5 & 176 & 0.00785 & 0.00909 & 7.06 & 9.26 & yes \\
-G1 & medium\_attn & 6 & 175 & 0.00859 & 0.00909 & 7.37 & 9.28 & yes \\
-G1 & medium\_attn & 7 & 173 & 0.00852 & 0.00909 & 7.23 & 9.42 & yes \\
-G2a & deep\_3x16 & 1 & 181 & 0.00926 & 0.00908 & 9.02 & 9.39 & yes \\
-G2a & deep\_3x16 & 2 & 179 & 0.01040 & 0.00908 & 10.11 & 9.36 & no \\
-G2a & deep\_3x16 & 3 & 177 & 0.00966 & 0.00908 & 9.07 & 9.25 & yes \\
-G2a & deep\_3x16 & 4 & 176 & 0.01064 & 0.00908 & 9.50 & 9.27 & no \\
-G2a & deep\_3x16 & 5 & 177 & 0.00983 & 0.00908 & 10.57 & 9.25 & no \\
-G2a & deep\_3x16 & 6 & 176 & 0.00984 & 0.00908 & 10.53 & 9.27 & no \\
-G2a & deep\_3x16 & 7 & 174 & 0.00976 & 0.00908 & 7.58 & 9.41 & yes \\
-G2a & deep\_3x16 & 12 & 168 & 0.00957 & 0.00908 & 8.44 & 9.48 & yes \\
-G2a & deep\_3x16 & 15 & 164 & 0.00910 & 0.00908 & 8.26 & 9.52 & yes \\
-G2a & deep\_3x16 & 18 & 163 & 0.00913 & 0.00908 & 8.08 & 9.54 & yes \\
+\begin{longtable}{llllllllllll}
+\toprule Architecture & Subset & n rxn & n species & E NN & E PBE (pool) & eps NN & eps PBE (pool) & ED NN & ED PBE (cell) & dED & beats \\ \midrule \endhead
+deep\_3x16 & 1 & 177 & 180 & 7.92 & 8.92 & 0.00886 & 0.00909 & 8.68 & 9.39 & \textbf{-0.71} & yes \\
+deep\_3x16 & 2 & 177 & 178 & 9.61 & 8.92 & 0.00969 & 0.00909 & 10.04 & 9.37 & +0.67 & no \\
+deep\_3x16 & 3 & 176 & 176 & 10.67 & 8.92 & 0.00959 & 0.00909 & 10.53 & 9.26 & +1.28 & no \\
+deep\_3x16 & 4 & 175 & 175 & 11.06 & 8.92 & 0.01086 & 0.00909 & 11.41 & 9.28 & +2.13 & no \\
+deep\_3x16 & 5 & 176 & 176 & 13.97 & 8.92 & 0.00981 & 0.00909 & 12.08 & 9.26 & +2.83 & no \\
+deep\_3x16 & 6 & 175 & 175 & 13.51 & 8.92 & 0.00964 & 0.00909 & 11.79 & 9.28 & +2.51 & no \\
+deep\_3x16 & 7 & 175 & 173 & 6.44 & 8.92 & 0.00933 & 0.00909 & 7.87 & 9.42 & \textbf{-1.55} & yes \\
+deep\_3x16 & 12 & 169 & 167 & 7.41 & 8.92 & 0.00947 & 0.00909 & 8.61 & 9.49 & \textbf{-0.88} & yes \\
+deep\_3x16 & 15 & 168 & 163 & 6.89 & 8.92 & 0.00917 & 0.00909 & 8.14 & 9.53 & \textbf{-1.38} & yes \\
+deep\_3x16 & 18 & 166 & 162 & 6.74 & 8.92 & 0.00921 & 0.00909 & 8.05 & 9.55 & \textbf{-1.50} & yes \\
+deep\_3x16 & 26 & 159 & 157 & 8.23 & 8.92 & 0.00876 & 0.00909 & 8.82 & 9.74 & \textbf{-0.92} & yes \\
+deep\_attn\_3x16 & 1 & 177 & 180 & 8.26 & 8.92 & 0.00858 & 0.00909 & 8.75 & 9.39 & \textbf{-0.64} & yes \\
+deep\_attn\_3x16 & 2 & 177 & 178 & 7.87 & 8.92 & 0.00846 & 0.00909 & 8.47 & 9.37 & \textbf{-0.90} & yes \\
+deep\_attn\_3x16 & 3 & 176 & 176 & 7.22 & 8.92 & 0.00936 & 0.00909 & 8.43 & 9.26 & \textbf{-0.82} & yes \\
+deep\_attn\_3x16 & 4 & 175 & 175 & 6.09 & 8.92 & 0.00929 & 0.00909 & 7.59 & 9.28 & \textbf{-1.69} & yes \\
+deep\_attn\_3x16 & 5 & 176 & 176 & 6.03 & 8.92 & 0.00785 & 0.00909 & 7.06 & 9.26 & \textbf{-2.19} & yes \\
+deep\_attn\_3x16 & 6 & 175 & 175 & 6.09 & 8.92 & 0.00859 & 0.00909 & 7.37 & 9.28 & \textbf{-1.91} & yes \\
+deep\_attn\_3x16 & 7 & 175 & 173 & 5.94 & 8.92 & 0.00852 & 0.00909 & 7.23 & 9.42 & \textbf{-2.19} & yes \\
+deep\_attn\_3x16 & 12 & 169 & 167 & 6.61 & 8.92 & 0.00895 & 0.00909 & 7.87 & 9.49 & \textbf{-1.62} & yes \\
+deep\_attn\_3x16 & 15 & 168 & 163 & 6.47 & 8.92 & 0.00841 & 0.00909 & 7.57 & 9.53 & \textbf{-1.95} & yes \\
+deep0\_3x16 & 1 & 177 & 180 & 8.18 & 8.92 & 0.00927 & 0.00909 & 9.02 & 9.39 & \textbf{-0.37} & yes \\
+deep0\_3x16 & 2 & 177 & 178 & 9.16 & 8.92 & 0.01041 & 0.00909 & 10.12 & 9.37 & +0.75 & no \\
+deep0\_3x16 & 3 & 176 & 176 & 7.99 & 8.92 & 0.00966 & 0.00909 & 9.07 & 9.26 & \textbf{-0.19} & yes \\
+deep0\_3x16 & 4 & 175 & 175 & 8.06 & 8.92 & 0.01062 & 0.00909 & 9.49 & 9.28 & +0.21 & no \\
+deep0\_3x16 & 5 & 176 & 176 & 10.48 & 8.92 & 0.00982 & 0.00909 & 10.57 & 9.26 & +1.31 & no \\
+deep0\_3x16 & 6 & 175 & 175 & 10.40 & 8.92 & 0.00983 & 0.00909 & 10.53 & 9.28 & +1.26 & no \\
+deep0\_3x16 & 7 & 175 & 173 & 5.90 & 8.92 & 0.00974 & 0.00909 & 7.57 & 9.42 & \textbf{-1.85} & yes \\
+deep0\_3x16 & 12 & 169 & 167 & 7.11 & 8.92 & 0.00956 & 0.00909 & 8.44 & 9.49 & \textbf{-1.05} & yes \\
+deep0\_3x16 & 15 & 168 & 163 & 7.10 & 8.92 & 0.00908 & 0.00909 & 8.26 & 9.53 & \textbf{-1.27} & yes \\
+deep0\_3x16 & 18 & 166 & 162 & 6.82 & 8.92 & 0.00913 & 0.00909 & 8.08 & 9.55 & \textbf{-1.47} & yes \\
+deep0\_3x16 & 26 & 159 & 157 & 8.52 & 8.92 & 0.00847 & 0.00909 & 8.84 & 9.74 & \textbf{-0.90} & yes \\
+deep0\_attn\_3x16 & 1 & 177 & 180 & 8.11 & 8.92 & 0.00844 & 0.00909 & 8.60 & 9.39 & \textbf{-0.79} & yes \\
+deep0\_attn\_3x16 & 2 & 177 & 178 & 13.64 & 8.92 & 0.01047 & 0.00909 & 12.40 & 9.37 & +3.03 & no \\
 \bottomrule \end{longtable}
 \end{footnotesize}
 \end{landscape}
@@ -626,21 +650,21 @@ G2a & deep\_3x16 & 18 & 163 & 0.00913 & 0.00908 & 8.08 & 9.54 & yes \\
 
 \subsection*{5.8 Reading}
 
-\textbf{Energy.} On the 2-subset WTMAD-2 the medium architecture is below PBE (8.92 kcal/mol) at one molecule and at every subset from 7 upward (6.44 to 8.23), and above it at 2 to 6 molecules (9.61 to 13.97); on the plain reaction-energy MAE (Fig. 5.2 of the full report) the same cells read 0.63 and 0.68 to 0.83 of PBE against 1.15 to 1.43. The attention twin is below PBE at every one of its seven cells on WTMAD-2 (5.94 to 8.26), and on the MAE ratio at six of them (3 molecules: 1.24). deep\_3x16 is below PBE on WTMAD-2 at 1, 3, 4 and 7 to 18 (5.90 to 8.18) and above it at 2, 5 and 6 (9.16, 10.48, 10.40). The 2-to-6-molecule rise is common to the three architectures and to both groups. The subsets at those sizes are not nested and are not small-molecule subsets (Sec. 2.4): the 2-point subset is HLi with the OH + N2 barrier, the 3-point subset is two barriers with the Li ionization, and the 4-, 5- and 6-point subsets add CH2, or HLi with the C ionization, or HLi, CH and the C ionization, to the two barriers and the Li ionization; from seven points on, the subsets hold four or more atomization energies. Which property of these subsets produces the rise is not established. From 7 molecules the correction transfers, and the largest subsets do not improve on 7 to 18 (medium at 26: 8.23).
+\textbf{Energy.} On the 2-subset WTMAD-2 the deep\_3x16 architecture is below PBE (8.92 kcal/mol) at one molecule and at every subset from 7 upward (6.44 to 8.23), and above it at 2 to 6 molecules (9.61 to 13.97); on the plain reaction-energy MAE (Fig. 5.2 of the full report) the same cells read 0.64 and 0.67 to 0.81 of PBE against 1.14 to 1.42. The attention twin is below PBE at every one of its nine cells on WTMAD-2 (5.94 to 8.26), and on the MAE ratio at eight of them (3 molecules: 1.23). deep0\_3x16, the same network under the zero-init start, is below PBE on WTMAD-2 at 1, 3, 4 and 7 to 26 (5.90 to 8.52) and above it at 2, 5 and 6 (9.16, 10.48, 10.40); its verdicts agree with deep\_3x16's at every size but 3 and 4, where it sits just below PBE (7.99, 8.06) and deep\_3x16 above (10.67, 11.06). deep0\_attn\_3x16 is below PBE at one molecule (8.11) and above it at two (13.64). The 2-to-6-molecule rise is common to the architectures and to both starts. The subsets at those sizes are not nested and are not small-molecule subsets (Sec. 2.4): the 2-point subset is HLi with the OH + N2 barrier, the 3-point subset is two barriers with the Li ionization, and the 4-, 5- and 6-point subsets add CH2, or HLi with the C ionization, or HLi, CH and the C ionization, to the two barriers and the Li ionization; from seven points on, the subsets hold four or more atomization energies. Which property of these subsets produces the rise is not established. From 7 molecules the correction transfers, and the largest subsets do not improve on 7 to 18 (at 26: deep\_3x16 8.23, deep0\_3x16 8.52).
 
-\textbf{Density.} In DFS units the held-out $\varepsilon_n$ of the networks sits at or above PBE's (0.00923 per electron on the full slice) in every cell but one (medium\_attn at 5 molecules, 0.00883), by 0.2 to 28 percent; the per-species parity (Figs. 5.4 and 5.6 of the full report) shows the bulk of species near the diagonal and a tail well above it. The tail is recurring: eight species for G1 (bn, above 1.5 x PBE in all 18 cells with a median ratio of 6.3; rkt17 2.0; cloo 2.0; bn3pi 2.0; cn 1.9; h2 1.7; rkt06 1.6; cs 1.5) and seven for G2a (bn 6.6, rkt17 2.0, bn3pi 1.9, h2 1.8, cn 1.8, rkt06 1.8, cloo 1.8), computed from \path{eval_holdout_val_best/per_molecule.json} by the rule of Fig. 5.4 of the full report. Without it the networks' $\varepsilon_n$ moves to 0.0079 to 0.0109 against PBE's 0.0091 on the same reduced set, below PBE in medium\_attn at 1, 2, 5, 6 and 7 and in medium at 1 and 26, within 1.5 percent of it in medium at 15 and 18 and in deep\_3x16 at 15 and 18, and above it elsewhere; in the medium column from 7 molecules upward the ratio is 0.96 to 1.04. The tail species are the multireference and open-shell cases (BN and its 3-Pi state, CN, CS, ClOO, the OH + Cl and the H + CH4 transition states, and H2), and they are the species whose three-cycle SCF from the PBE seed is farthest from settled (Sec. 4.2). The 2026-09-07 density record found the comparison asymmetric by protocol (an unconverged network density against the converged PBE one) and could not decide from the pulled data whether the tail belongs to the functionals or to the three-cycle evaluation; the density channel itself trains (Sec. 4.5), and the converged-SCF re-evaluation in flight (Sec. 6) is the direct test.
+\textbf{Density.} In DFS units the held-out $\varepsilon_n$ of the networks sits at or above PBE's (0.00923 per electron on the full slice) in every cell but two (deep\_attn\_3x16 at 5 molecules, 0.00883; deep0\_attn\_3x16 at 1, 0.00906), by 0.2 to 28 percent; the per-species parity (Figs. 5.4 and 5.6 of the full report) shows the bulk of species near the diagonal and a tail well above it. The tail is recurring: over the 33 cells, eight species (H2, RKT06, RKT17, bn, bn3pi, cloo, cn and cs) are above 1.5 x PBE in at least half of the cells carrying them, computed from \path{eval_holdout_val_best/per_molecule.json} by the rule of Fig. 5.4 of the full report; bn is the largest at every size. Without them the networks' $\varepsilon_n$ moves to 0.0079 to 0.0109 against PBE's 0.0091 on the same reduced set, below PBE in deep\_attn\_3x16 at 1, 2, 5, 6, 7, 12 and 15, in deep\_3x16 at 1 and 26, in deep0\_3x16 at 15 and 26 and in deep0\_attn\_3x16 at 1, within 1.5 percent of it in deep\_3x16 at 15 and 18 and in deep0\_3x16 at 18, and above it elsewhere; in the deep\_3x16 column from 7 molecules upward the ratio is 0.96 to 1.04. The tail species are the multireference and open-shell cases (BN and its 3-Pi state, CN, CS, ClOO, the OH + Cl and the H + CH4 transition states, and H2), and they are the species whose three-cycle SCF from the PBE seed is farthest from settled (Sec. 4.2). The 2026-09-07 density record found the comparison asymmetric by protocol (an unconverged network density against the converged PBE one) and could not decide from the pulled data whether the tail belongs to the functionals or to the three-cycle evaluation; the density channel itself trains (Sec. 4.5), and the converged-SCF re-evaluation in flight (Sec. 6) is the direct test.
 
-\textbf{Combined.} On $\mathcal{ED}$ in DFS units, against the cell-slice PBE value: medium is below PBE at 1, 7, 12, 15, 18 and 26 and above it at 2 to 6; medium\_attn is below it at every cell; deep\_3x16 is below it at 1, 7, 12, 15 and 18 and above it at 2 to 6, where at 3 and 4 molecules the small energy margin (7.99 and 8.06 against 8.92) is outweighed by the density leg (0.0106 and 0.0116 against 0.0092). The verdicts are unchanged by removing the tail except deep\_3x16 at 3 molecules, which then moves below PBE (9.07 against 9.25). In every cell below PBE the margin comes from the energy leg: on the decomposition plane (Fig. 5.6 of the full report) each such cell lies to the left of the PBE point, and its density leg is below PBE's only in medium\_attn at 5 molecules. The lowest $\mathcal{ED}$ values are medium\_attn at 5 to 7 molecules (7.40 to 7.73 against 9.32 to 9.49) and deep\_3x16 at 7 (7.77 against 9.49).
+\textbf{Combined.} On $\mathcal{ED}$ in DFS units, against the cell-slice PBE value: deep\_3x16 is below PBE at 1, 7, 12, 15, 18 and 26 and above it at 2 to 6; deep\_attn\_3x16 is below it at every one of its nine cells; deep0\_3x16 is below it at 1, 7, 12, 15, 18 and 26 and above it at 2 to 6, where at 3 and 4 molecules the small energy margin (7.99 and 8.06 against 8.92) is outweighed by the density leg (0.0106 and 0.0116 against 0.0092), so that the two starts of the 3x16 network agree on every verdict; deep0\_attn\_3x16 is below it at 1 (8.89 against 9.46) and above at 2 (13.14 against 9.44). The verdicts are unchanged by removing the tail except deep0\_3x16 at 3 molecules, which then moves below PBE (9.07 against 9.26). In every cell below PBE the margin comes from the energy leg: on the decomposition plane (Fig. 5.6 of the full report) each such cell lies to the left of the PBE point, and its density leg is below PBE's only in deep\_attn\_3x16 at 5 molecules and deep0\_attn\_3x16 at 1. The lowest $\mathcal{ED}$ values are deep\_attn\_3x16 at 5 to 7 molecules (7.40 to 7.73 against 9.32 to 9.49) and deep0\_3x16 at 7 (7.77 against 9.49). The tables of Sec. 5.7 print the difference $\mathcal{ED}_{\rm NN} - \mathcal{ED}_{\rm PBE}$ per cell, the negative values (the network below PBE) in bold.
 
-\textbf{Units and legs.} The verdicts above are the DFS-units ones (the $\varepsilon_n$ leg under the Letter's $\gamma$). Under the self-calibrated grid-RMSE units of Figs. 5.6 and 5.7 of the full report the verdict of medium\_attn at 2 molecules changes (9.30 against 8.92, above PBE), and under the plain-MAE energy leg of Fig. 5.7 of the full report the verdicts of medium\_attn at 2, 3, 5 and 6 differ from the WTMAD-2 ones (Sec. 5.6 of the full report); the medium and deep\_3x16 verdicts are the same under every choice. The cells whose verdict depends on the choice of leg or units are the ones within about 5 percent of PBE.
+\textbf{Units and legs.} The verdicts above are the DFS-units ones (the $\varepsilon_n$ leg under the Letter's $\gamma$). Under the self-calibrated grid-RMSE units of Figs. 5.6 and 5.7 of the full report (\path{holdout_ed_combined.csv}, WTMAD-2 leg) the verdicts differ from the DFS-units ones at deep\_3x16 at 2 molecules (below PBE there), deep\_attn\_3x16 at 2 (above) and deep0\_3x16 at 2 and 3 (below); under the plain-MAE energy leg the verdicts of deep\_attn\_3x16 at 3, 5 and 6 differ from the WTMAD-2 ones (Sec. 5.6 of the full report), and the deep\_3x16, deep0\_3x16 and deep0\_attn\_3x16 verdicts are the DFS-units ones. The cells whose verdict depends on the choice of leg or units are the ones within about 5 percent of PBE.
 
 \section*{6. Pending work and open items}
 
 \begin{itemize}
-\item Cells: medium\_attn at 12 to 26, deep\_attn\_3x16 and deep\_cusp\_3x16 at every subset, the shallow pair at every subset, are queued on the cluster; the figures and tables are regenerated from the same suite as they land.
-\item Meta-GGA group: four certificates pending; the deep\_cusp\_mgga\_3x16 FAIL holds the training array (Sec. 3.6). The decision between dropping the architecture, refitting with more capacity or a higher energy-term weight, and the anchored class follows the four results.
-\item Converged-SCF re-evaluation of the 28 finished cells (the \path{converged} channel, DIIS at $10^{-8}$ Ha) and the CCSD T1 diagnostics for the model-free multireference list: two cluster jobs pending; they produce the \path{_excl_t1} and \path{_excl_unconverged} siblings of every density figure, the model-free counterparts of the \path{_excl_tail} view used here.
-\item The two training arms of the density program on the medium architecture at 7, 12, 15, 18 and 26 molecules: 25 SCF cycles with the current protocol (arm A) and the dpyscf-parity protocol (arm B: no convergence freeze, the executed first-mix index, the randomized atomic/PBE seed mixture, Adam with the plateau schedule and the Letter's L2 and channel weights). Submitted 2026-09-08, no results yet.
+\item Cells: deep\_attn\_3x16 at 18 and 26, deep0\_attn\_3x16 from 3 to 26, deep0\_cusp\_3x16 at every subset, the deep\_2x8 pair at every subset, are queued on the cluster; the figures and tables are regenerated from the same suite as they land.
+\item Meta-GGA group: four certificates pending; the deep0\_cusp\_mgga\_3x16 FAIL holds the training array (Sec. 3.6). The decision between dropping the architecture, refitting with more capacity or a higher energy-term weight, and the anchored class follows the four results.
+\item Converged-SCF re-evaluation of the 33 finished cells (the \path{converged} channel, DIIS at $10^{-8}$ Ha) and the CCSD T1 diagnostics for the model-free multireference list: two cluster jobs pending; they produce the \path{_excl_t1} and \path{_excl_unconverged} siblings of every density figure, the model-free counterparts of the \path{_excl_tail} view used here.
+\item The two training arms of the density program on the deep\_3x16 architecture at 7, 12, 15, 18 and 26 molecules: 25 SCF cycles with the current protocol (arm A) and the dpyscf-parity protocol (arm B: no convergence freeze, the executed first-mix index, the randomized atomic/PBE seed mixture, Adam with the plateau schedule and the Letter's L2 and channel weights). Submitted 2026-09-08, no results yet.
 \item In-sample: the suite's in-sample atomization panels stay excluded until that metric uses the network's own atoms; Figs. 4.1 and 4.5 carry the trained quantities instead.
 \end{itemize}
 \end{document}
