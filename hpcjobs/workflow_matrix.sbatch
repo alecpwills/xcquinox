@@ -9,7 +9,7 @@
 #   sbatch --partition=long-96core-shared --cpus-per-task=96 ...
 #   sbatch --partition=long-28core        --cpus-per-task=28 ...
 #SBATCH --partition=long-40core
-#SBATCH --time=24:00:00
+#SBATCH --time=30:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
@@ -32,7 +32,7 @@
 # writes one row per architecture into a markdown report with a JSON sidecar.
 # Nothing it produces is a physics result.
 #
-# WHY A JOB: 31 architectures x 11 stage subprocesses, every one of them an SCF
+# WHY A JOB: 34 architectures x 11 stage subprocesses, every one of them an SCF
 # at def2-svp. It is not a workstation task. The matrix itself submits nothing
 # and mails nothing -- it runs the stage modules in-process on this one node --
 # so this script is the only thing SLURM sees.
@@ -70,10 +70,10 @@
 # kills any one of them at --timeout-s, so the cap taken as an UPPER BOUND is:
 #
 #     per architecture  11 stages x 1800 s               = 19800 s = 5.5 h
-#     per shard         ceil(16 archs / 4 shards) = 4    -> 4 x 5.5 h = 22.0 h
-#     bound                                                        22.0 h
-#     margin (74 MB reference copy, interpreter starts, slack)  +   2.0 h
-#     request           bound + margin                              24 h
+#     per shard         ceil(17 archs / 4 shards) = 5    -> 5 x 5.5 h = 27.5 h
+#     bound                                                        27.5 h
+#     margin (74 MB reference copy, interpreter starts, slack)  +   2.5 h
+#     request           bound + margin                              30 h
 #
 # The same arithmetic is recomputed AT RUN TIME below from the stage list the
 # installed module reports and from the knobs this job was given, and compared
@@ -84,12 +84,16 @@
 # architecture returns.
 #
 # PARTITION CAP. hpcjobs/SEAWULF_RUNBOOK.md records short-* 4 h, medium-* 12 h,
-# long-28core 2 days and long-96core-shared longer still; it states NO cap for
-# long-40core. Verify it before the first submission --
+# and a 48 h MaxWall on every long-* QOS (40- and 96-core, shared included;
+# sacctmgr, 2026-08-27). Verify it before the first submission --
 #   sinfo -o "%20P %10l" -p long-40core
-# -- and if it caps below 24 h, submit to long-28core (--cpus-per-task=28) or
-# long-96core-shared (--cpus-per-task=96) from the matching login instance. An
-# over-cap request is rejected by sbatch at submission, not after a queue wait.
+# -- and if it caps below 30 h, no other long-* queue helps, since the 48 h is a
+# QOS cap they share: raise MATRIX_BATCHES (each submission then covers fewer
+# architectures and bounds lower) or move to an extended-* partition, whose cap
+# is 7 days. The choice of long-28core (--cpus-per-task=28) or long-96core-shared
+# (--cpus-per-task=96) is about the login instance you submit from, not about the
+# wall. An over-cap request is rejected by sbatch at submission, not after a
+# queue wait.
 #
 # THE PER-STAGE CAP (1800 s) is half the module's own hang detector,
 # DEFAULT_STAGE_TIMEOUT_S = 3600, and equals the per-stage wall the matrix's
@@ -109,16 +113,16 @@
 # genuinely needs longer, raise MATRIX_TIMEOUT_S and the --time request
 # together; the bound below scales with both.
 #
-# 16 architectures per submission, not 31: the registry holds 31, and 31 in one
-# job bounds at ceil(31/4) x 5.5 h = 44 h -- inside the 2-day cap of
-# long-28core, but with no margin and beyond every shorter queue. MATRIX_BATCHES
-# therefore defaults to 2, so the registry is covered by two submissions (16
-# and 15 architectures), each bounded by this request. MATRIX_BATCHES=1 puts
-# all 31 in one job and is REFUSED at this request: raise it
-# (sbatch --time=46:00:00) on a queue that allows it. A single-architecture run
+# 17 architectures per submission, not 34: the registry holds 34, and 34 in one
+# job bounds at ceil(34/4) x 5.5 h = 49.5 h -- beyond the 48 h cap of every
+# long-* queue (only the extended-* partitions, 7-day caps, would take it).
+# MATRIX_BATCHES therefore defaults to 2, so the registry is covered by two
+# submissions (17 and 17 architectures), each bounded by this request.
+# MATRIX_BATCHES=1 puts all 34 in one job and is REFUSED at this request; no
+# long-* queue admits the 49.5 h it needs. A single-architecture run
 # (MATRIX_ARCHS=<name>) bounds at 11 x 1800 s = 5.5 h and takes the whole
 # allocation (shards drop to 1), so submit it with --time=06:00:00 rather than
-# paying the 24 h request in queue time.
+# paying the 30 h request in queue time.
 #
 # ENVIRONMENT KNOBS (all optional; every one is echoed into the log):
 #   MATRIX_ARCHS      'all' (default) or a comma-separated list. A list is

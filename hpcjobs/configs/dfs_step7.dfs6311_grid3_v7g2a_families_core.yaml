@@ -86,7 +86,7 @@
 # =============================================================================
 
 sweep:
-  # GROUP G2a (DESCRIPTOR FAMILIES, GGA CORE TRIO)'s axis: 3 of the 31 architectures of
+  # GROUP G2a (DESCRIPTOR FAMILIES, GGA CORE TRIO)'s axis: 3 of the 34 architectures of
   # `xcquinox.alec.ARCHITECTURES`. Listed in the order expand_grid
   # canonicalizes to (`_canon_axis` = sorted(set(...))), so the arch axis reads
   # in array-task order. With 11 subset sizes the grid is 3 x 1 x 1 x
@@ -96,7 +96,7 @@ sweep:
   #       22-32 are `deep_cusp_3x16`.
   #
   # THE THREE v7 GROUP AXES ARE PAIRWISE DISJOINT and cover 12 of the
-  # registry's 31 architectures. v7 does NOT partition the registry: the
+  # registry's 34 architectures. v7 does NOT partition the registry: the
   # eight architectures of the v6 groups that were not resubmitted (deep,
   # deep_attn, deep_combined_3x16, deep_combined_attn_3x16, deep_dm_3x16,
   # deep_rung35_3x16, deep_rung35_attn_3x16, deep_rung35ms_3x16) are

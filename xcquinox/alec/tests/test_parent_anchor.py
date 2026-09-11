@@ -534,9 +534,11 @@ def test_an_unanchored_meta_gga_network_is_the_committed_forward_bitwise(
     three, and the case asserts that the outputs vary across the rows, so it
     cannot silently go vacuous again.
 
-    Measured: 120 parameter leaves and 30 output arrays over the five
+    Measured: 188 parameter leaves and 48 output arrays over the eight
     registered meta-GGA architectures on both stored records, every one
-    identical under ``np.array_equal``.
+    identical under ``np.array_equal`` (120 and 30 over five before the three
+    width and depth completions of the pure DFS meta-GGA, 2026-09-11: a
+    depth-3 pair carries 20 leaves, a depth-4 pair 24, the attention pair 40).
 
     RED against: any change to the live meta-GGA forward. Driven by
     perturbing the DFS UEG prefactor of the COMMITTED copy by one part in
@@ -585,8 +587,8 @@ def test_an_unanchored_meta_gga_network_is_the_committed_forward_bitwise(
                 old_c(_pack_row_polarized(r, s, z, f)).squeeze()
             )(rho, sigma, zeta, features)))
             n_arrays += 1
-    assert n_leaves == 120, n_leaves
-    assert n_arrays == 30, n_arrays
+    assert n_leaves == 188, n_leaves
+    assert n_arrays == 48, n_arrays
 
 
 @pytest.mark.parametrize("arch_name", ["deep_attn_3x16", "deep_combined_attn_3x16",
@@ -1462,7 +1464,7 @@ def test_metadata_that_states_no_log_transform_loads_into_either_model(
     read exactly as it was: the comparison is made only where the file carries
     the field, so such a directory is accepted by a model of either value.
 
-    23 of the 31 registered architectures set the transform, so a rule that
+    26 of the 34 registered architectures set the transform, so a rule that
     read a missing key as False would refuse those directories to the very
     class that pretrained them.
     """

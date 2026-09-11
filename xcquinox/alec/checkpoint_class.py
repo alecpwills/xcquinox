@@ -73,7 +73,7 @@ refers to. The rest states what wrote the file.
 record written before the field was added carries the other keys and not this
 one, and is read exactly as it was: such a record is accepted by a skeleton of
 either value, and a checkpoint with NO record is the legacy class whatever the
-flag (:func:`is_legacy_class` is the first two fields alone -- 23 of the 31
+flag (:func:`is_legacy_class` is the first two fields alone -- 26 of the 34
 registry architectures set the transform, so folding it into that judgement
 would refuse every unrecorded v3/v4/v5 checkpoint of those architectures to
 the very skeleton that wrote it). What the flag changes, measured at identical

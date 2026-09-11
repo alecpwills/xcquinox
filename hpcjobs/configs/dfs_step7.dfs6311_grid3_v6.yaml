@@ -12,7 +12,7 @@
 # METHOD:
 #
 #   1. SWEEP. Every architecture of `xcquinox.alec.ARCHITECTURES` is on the
-#      arch axis -- 31 names, enumerated below -- against v5's three. The
+#      arch axis -- 34 names, enumerated below -- against v5's three. The
 #      descriptor-free architectures are included deliberately: they do not
 #      meet tol_AE = 1.0 kcal/mol either (spec Section 3.5).
 #   2. PRETRAINING. The `pretrain:` protocol block below turns on the DFS
@@ -72,7 +72,7 @@
 # |                                                                           |
 # | Each group is submitted on its own, into its own run directory, with its  |
 # | own pretraining data root and its own certificate gate; none waits on     |
-# | another. Together they run 220 of the 341 cells below: eleven             |
+# | another. Together they run 220 of the 374 cells below: fourteen           |
 # | architectures are excluded from v6 by the campaign directive (named in    |
 # | the G4 file's header and in the pins' EXCLUDED_FROM_V6 list), and any of  |
 # | them rejoins by one line on a group's axis plus the matching pin line.    |
@@ -102,13 +102,14 @@
 # =============================================================================
 
 sweep:
-  # THE WHOLE REGISTRY: 31 architectures, = len(sorted(xcquinox.alec.
-  # ARCHITECTURES)) enumerated at authoring time (2026-08-24). Listed in the
+  # THE WHOLE REGISTRY: 34 architectures, = len(sorted(xcquinox.alec.
+  # ARCHITECTURES)) enumerated at authoring time (2026-08-24; the three width
+  # and depth completions of the pure DFS meta-GGA added 2026-09-11). Listed in the
   # order expand_grid canonicalizes to (`_canon_axis` = sorted(set(...))), so
   # the arch axis reads in array-task order. With 11 subset sizes the grid is
-  # 31 x 1 x 1 x 11 x 1 = 341 cells: task index = arch_index * 11 +
+  # 34 x 1 x 1 x 11 x 1 = 374 cells: task index = arch_index * 11 +
   # subset_index, i.e. tasks 0-10 are `deep`, 11-21 `deep_3x16`, and so on to
-  # 330-340 `shallow_attn`.
+  # 363-373 `shallow_attn`.
   #
   # A NEW ARCHITECTURE ADDED TO THE REGISTRY MAKES THIS FILE STALE. The pin
   # `test_v6_sweeps_every_registry_architecture` compares this axis against
@@ -131,6 +132,9 @@ sweep:
     - deep_dm_3x16
     - deep_dm_attn
     - deep_mgga_3x16
+    - deep_mgga_3x32
+    - deep_mgga_4x16
+    - deep_mgga_4x32
     - deep_mgga_attn_3x16
     - deep_notransform
     - deep_notransform_3x16
@@ -449,7 +453,7 @@ cluster:
   account: ""
   preflight_time: "12:00:00"
   # Compile-smoke gate: the preflight compiles the heaviest attention cell once
-  # (n_steps=1) on its exclusive node before the 341-task array; a host-OOM
+  # (n_steps=1) on its exclusive node before the 374-task array; a host-OOM
   # there blocks the array via the afterok dep -- one cheap failure instead of
   # hundreds. With TWELVE attention architectures on this axis (v5 had one)
   # "heaviest" is a choice rather than an identification, so the selector
@@ -482,8 +486,8 @@ cluster:
   # the train array is gated afterok on this job.
   pretrain_time: "12:00:00"
   # STATED here although v5 left it unset (v5 had 3 distinct architectures;
-  # v6 has 31). Unset means every distinct architecture pretrains
-  # concurrently, i.e. 31 whole exclusive nodes at once, well past the
+  # v6 has 34). Unset means every distinct architecture pretrains
+  # concurrently, i.e. 34 whole exclusive nodes at once, well past the
   # max_concurrent_tasks: 8 fair-use figure this file states. 4 matches the
   # train array's throttle; the wall above is per task, so throttling costs
   # queue time and nothing else.

@@ -586,7 +586,7 @@ def test_oracle_selector_is_a_valid_k_expression(arch):
 
 @pytest.mark.parametrize("arch", sorted(ARCHITECTURES))
 def test_oracle_selector_matches_this_architecture_and_no_other(arch):
-    """The registry holds 31 names and several are substrings of others
+    """The registry holds 34 names and several are substrings of others
     (``deep`` of ``deep_attn``, ``deep_cusp`` of ``deep_cusp_mgga_3x16``,
     ``medium`` of ``medium_attn``, ``shallow`` of ``shallow_attn``), so a
     bare name would report a sibling architecture's oracles as this one's.
@@ -1350,7 +1350,7 @@ def test_the_oracle_stage_survives_a_broken_module_elsewhere_in_the_tree(
     The oracle stage runs the installed test tree, which the matrix does not
     own: any module in it that fails to import is a collection error, and
     pytest stops the whole session on one. Collected as a directory, the
-    broken module below takes the oracles of all 31 architectures with it;
+    broken module below takes the oracles of all 34 architectures with it;
     collected as the module, the oracles run.
     """
     tree = tmp_path / "checkout"

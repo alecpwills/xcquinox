@@ -102,7 +102,7 @@
 # =============================================================================
 
 sweep:
-  # GROUP G4 (WIDTH/DEPTH ABLATION)'s axis: 2 of the 31 architectures of
+  # GROUP G4 (WIDTH/DEPTH ABLATION)'s axis: 2 of the 34 architectures of
   # `xcquinox.alec.ARCHITECTURES`. Listed in the order expand_grid
   # canonicalizes to (`_canon_axis` = sorted(set(...))), so the arch axis reads
   # in array-task order. With 11 subset sizes the grid is 2 x 1 x 1 x
@@ -110,8 +110,9 @@ sweep:
   # tasks 0-10 are `deep`,
   #       11-21 are `deep_attn`.
   #
-  # THE SIX GROUP AXES ARE PAIRWISE DISJOINT, and together with the eleven
-  # architectures the campaign directive excludes from v6 they cover the
+  # THE SIX GROUP AXES ARE PAIRWISE DISJOINT, and together with the fourteen
+  # architectures outside the groups (eleven excluded by the campaign directive,
+  # three width completions registered on 2026-09-11) they cover the
   # registry exactly. A NEW ARCHITECTURE ADDED TO THE REGISTRY MAKES THE GROUP
   # SET STALE: the pin `test_v6_groups_and_the_exclusions_partition_the_registry`
   # compares the union against sorted(ARCHITECTURES) and goes red naming the

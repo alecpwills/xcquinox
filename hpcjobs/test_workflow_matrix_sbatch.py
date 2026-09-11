@@ -7,7 +7,7 @@ in the header is recomputed from the script's own defaults and the matrix's own
 stage count, so a knob that moves without the request moving is a failure here
 rather than a job killed at its wall with no report. The COMMAND SURFACE: every
 flag the script passes is checked against ``workflow_matrix.main``'s argparse,
-read out of the real parser, because a renamed flag turns a 24 h allocation
+read out of the real parser, because a renamed flag turns a 30 h allocation
 into a usage error. The SHELL BEHAVIOUR: the script is EXECUTED against a stub
 interpreter -- environment defaulting, the batch split, the refusals of a bad
 knob or a missing cached input, and the propagation of the matrix's exit code
@@ -108,7 +108,7 @@ def _long_request(hours) -> dict:
 
     ``SLURM_JOB_END_TIME`` is what the script reads on a compute node, and it
     is the only thing that carries a ``--time`` given at submission: the
-    header directive still says 24 h.
+    header directive still says 30 h.
     """
     return {"SLURM_JOB_END_TIME": str(int(time.time()) + int(hours * 3600))}
 
@@ -1134,10 +1134,10 @@ def test_the_defaults_run_and_state_the_bound_beside_the_request(tmp_path):
     proc, argv, _ = _run_script(tmp_path, archs=_FULL_REGISTRY)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert len(_flag_value(argv, "--archs").split(",")) == 16
-    # ceil(16 / 4) x 11 timed stages x 1800 s against the header's 24 h.
+    # ceil(16 / 4) x 11 timed stages x 1800 s against the header's 30 h.
     assert "wall bound=79200 s (22.0 h)" in proc.stdout
-    assert "wall request=86400 s (24.0 h)" in proc.stdout
-    assert "#SBATCH --time=24:00:00" in proc.stdout
+    assert "wall request=108000 s (30.0 h)" in proc.stdout
+    assert "#SBATCH --time=30:00:00" in proc.stdout
 
 
 @pytest.mark.parametrize("knobs,bound", [
@@ -1149,7 +1149,7 @@ def test_a_knob_that_outruns_the_request_is_refused_with_both_numbers(
     """Finding: neither knob was compared with the wall.
 
     ``MATRIX_BATCHES=1`` puts all 31 architectures in one job and
-    ``MATRIX_SHARDS=1`` runs a batch of 16 serially; both outrun the 24 h
+    ``MATRIX_SHARDS=1`` runs a batch of 16 serially; both outrun the 30 h
     request, and a job killed at its wall writes NO report -- the table is
     written only after the last architecture returns, so the whole allocation
     is lost.
@@ -1159,7 +1159,7 @@ def test_a_knob_that_outruns_the_request_is_refused_with_both_numbers(
     assert proc.returncode == 3, proc.stdout
     assert argv is None
     assert f"wall bound={bound}" in proc.stdout
-    assert "wall request=86400 s (24.0 h)" in proc.stdout
+    assert "wall request=108000 s (30.0 h)" in proc.stdout
     assert "exceeds the wall request" in proc.stdout
 
 

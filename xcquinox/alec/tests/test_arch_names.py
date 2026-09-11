@@ -82,6 +82,10 @@ EXPECTED_DISPLAY = {
     "deep_rung35_mgga_3x16":       "deep0_rung35_mgga_3x16",
     "deep_cusp_mgga_3x16":         "deep0_cusp_mgga_3x16",
     "deep_rung35ms_mgga_3x16":     "deep0_rung35ms_mgga_3x16",
+    # 2026-09-11: the width and depth completions of the pure DFS meta-GGA
+    "deep_mgga_3x32":              "deep0_mgga_3x32",
+    "deep_mgga_4x16":              "deep0_mgga_4x16",
+    "deep_mgga_4x32":              "deep0_mgga_4x32",
 }
 
 #: The two shown names that are also stored keys of OTHER configurations.

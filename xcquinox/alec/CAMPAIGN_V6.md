@@ -14,6 +14,17 @@ open-shell exchange footing (Section 1.2), the pretraining set and objective (Se
 and 2.2), and an enforced per-architecture fidelity certificate (Section 2.3). Those runs
 are retired as quantitative results and remain as the documented failure record.
 
+ERRATUM 2026-09-11 (the registry grew after this document was written). Three width and
+depth completions of the pure DFS meta-GGA -- `deep_mgga_3x32`, `deep_mgga_4x16`,
+`deep_mgga_4x32` -- were registered to measure whether the learned meta-GGA clone's miss of
+the atom certificate is capacity, so `len(ARCHITECTURES)` is 34 rather than the 31 every
+count below records, the rung split is 26 GGA to 8 meta-GGA rather than 26 to 5, and
+`EXCLUDED_FROM_V6` holds 14 names rather than 11. The whole-registry reference file
+enumerates all 34 and expands to 374 cells rather than 341. NOTHING THE CAMPAIGN SUBMITS
+CHANGES: the three carry no campaign cell, the six group axes are untouched, and the
+submitted totals below (20 architectures, 220 cells) stand. The counts in Section 4 are the
+executed checks as they ran, with their logs, and are left as measured.
+
 
 ## 1. Descriptors
 
@@ -790,7 +801,8 @@ installed libxc's constants and regularizations; `SPEC_parent_anchor.md` Section
 architecture's certificate with no exemption before the array is submitted.
 
 Registry-wide, the 31 registered architectures split 26 GGA-rung to 5 meta-GGA-rung through
-`ArchitectureConfig.is_meta_gga` (executed check C1). The campaign sweeps 20 of them --
+`ArchitectureConfig.is_meta_gga` (executed check C1; 34 splitting 26 to 8 since the erratum
+above). The campaign sweeps 20 of them --
 15 GGA-rung and 5 meta-GGA-rung -- in the groups below, for 220 cells; the remaining
 11 are listed in Section 3.5 (executed check C2 verifies that the group lists are
 pairwise disjoint, that their union with the exclusion list is exactly the registry, and
@@ -933,14 +945,17 @@ pairwise disjoint, that the swept set carries 5 meta-GGA and 15 GGA architecture
 the swept set together with the eleven exclusions is exactly `sorted(ARCHITECTURES)`.
 
 NOTE ON THE WHOLE-REGISTRY FILE. `hpcjobs/configs/dfs_step7.dfs6311_grid3_v6.yaml`
-enumerates ALL 31 registry architectures on its `sweep.arch` axis, giving 31 x 11 = 341
-cells (executed check C5), and is pinned against `sorted(ARCHITECTURES)` by
+enumerates ALL registry architectures on its `sweep.arch` axis -- 31 giving 31 x 11 = 341
+cells when check C5 ran, 34 giving 374 since the erratum above -- and is pinned against
+`sorted(ARCHITECTURES)` by
 `test_v6_sweeps_every_registry_architecture` in `xcquinox/alec/tests/test_cluster_examples.py`
 (cited by name rather than by line: that file is under active edit). It is
-the statement of the METHOD, not the submission, and is not submitted at all: the five group
-files above are, and together they run 220 of its 341 cells. Executed check C11 confirms that
-the five group axes are disjoint, that their union is 20 distinct architectures, and that the
-eleven names absent from that union are exactly the exclusion list of Section 3.5.
+the statement of the METHOD, not the submission, and is not submitted at all: the six group
+files above are, and together they run 220 of its cells (of 341 when C5 ran, of 374 since
+the erratum). Executed check C11 confirms that
+the six group axes are disjoint, that their union is 20 distinct architectures, and that the
+eleven names absent from that union are exactly the exclusion list of Section 3.5 (fourteen
+since the erratum, the three width completions carrying no campaign cell).
 
 A leaf-by-leaf comparison of each group file against the whole-registry file (executed check
 C12) measures how far "one protocol" actually goes. Three fields differ everywhere and are

@@ -401,10 +401,23 @@ def assert_closed_shell_record_matches(arch_name, record=None):
     branches below are exercised without an SCF. Returns the one-line report
     of the comparison, naming the branch that ran.
     """
+    if _record_pending(arch_name):
+        pytest.skip(
+            f"{arch_name}: no record in {_FIXTURE.name}; run "
+            f"xcquinox/alec/tests/record_closed_shell_reference.py --arch "
+            f"{arch_name} on the fixture's platform "
+            f"({_fixture_platform()['cpu_model']}) and merge it")
     reference = _reference()[arch_name]
-    archived = _reference(_FIXTURE_AE204537E)[arch_name]
+    # An architecture registered after the ae204537e tree has no archived
+    # record; the comparison then runs two ways, the live record against the
+    # current fixture, and the report says so. The lack of an ARCHIVED record
+    # never skips; only a name listed in ``_AWAITING_RECORD`` and absent from
+    # the CURRENT fixture is skipped, by name, until its record is merged.
+    archived = _reference(_FIXTURE_AE204537E).get(arch_name)
     got = _record(arch_name) if record is None else record
-    assert set(got) == set(reference) == set(archived) == set(RECORD_KEYS)
+    assert set(got) == set(reference) == set(RECORD_KEYS)
+    if archived is not None:
+        assert set(archived) == set(RECORD_KEYS)
     differences = platform_differences()
     if differences:
         return _assert_within_the_cross_platform_floor(
@@ -425,15 +438,28 @@ def assert_closed_shell_record_matches(arch_name, record=None):
                 f"{str(failure).splitlines()[0]})")
 
 
+def _archived_note(archived):
+    """The report's statement of the archived leg: run, or absent for an
+    architecture registered after the ae204537e tree."""
+    if archived is not None:
+        return ""
+    return (f"; {_FIXTURE_AE204537E.name} absent for this architecture "
+            "(registered after that tree), compared against the current "
+            "fixture alone")
+
+
 def _assert_bitwise(arch_name, got, reference, archived):
-    """The three-way equality, on the platform that recorded the fixtures."""
+    """The three-way equality, on the platform that recorded the fixtures;
+    two-way, against the current fixture alone, when ``archived`` is None."""
     for key in _INPUT_PINS:
-        assert got[key] == reference[key] == archived[key], (
+        expected = (reference[key],) if archived is None else (reference[key], archived[key])
+        assert all(got[key] == e for e in expected), (
             f"{arch_name}.{key}: {got[key]!r} != archived {reference[key]!r} "
-            f"/ {archived[key]!r}. The trees did not compute on the same "
-            "record, so nothing can be concluded about the closed-shell code "
-            "path from this run; the reference density matrix or the non-XC "
-            "energy of the precompute has moved."
+            f"/ {archived[key] if archived is not None else 'absent'!r}. The "
+            "trees did not compute on the same record, so nothing can be "
+            "concluded about the closed-shell code path from this run; the "
+            "reference density matrix or the non-XC energy of the precompute "
+            "has moved."
         )
     for key in _CODE_PATH_KEYS:
         assert got[key] == reference[key], (
@@ -442,7 +468,9 @@ def _assert_bitwise(arch_name, got, reference, archived):
             "rho_b makes the three feature blocks the same array -- so any "
             "movement here is an unintended change to the shared code path."
         )
-    if _has_indicator_column(arch_name):
+    if archived is None:
+        pass
+    elif _has_indicator_column(arch_name):
         for key in _CODE_PATH_KEYS:
             assert abs(got[key] - archived[key]) <= _SMOOTH_ALPHA_DELTA[key], (
                 f"{arch_name}.{key}: {got[key]!r} is "
@@ -459,7 +487,8 @@ def _assert_bitwise(arch_name, got, reference, archived):
                 "the shared code path moved."
             )
     return (f"[O3] {arch_name}: {BITWISE}; the running platform reproduces "
-            f"the fixtures' own ({_platform_summary(_live_platform())})")
+            f"the fixtures' own ({_platform_summary(_live_platform())})"
+            f"{_archived_note(archived)}")
 
 
 def _assert_within_the_cross_platform_floor(arch_name, got, reference,
@@ -493,8 +522,10 @@ def _assert_within_the_cross_platform_floor(arch_name, got, reference,
             f"relative) from the {against}'s {expected!r}, beyond the bound "
             f"{bound:.3e}. {reason} {note}")
 
-    for against, expected in (("live fixture", reference["E_non_xc"]),
-                              ("ae204537e fixture", archived["E_non_xc"])):
+    inputs = [("live fixture", reference["E_non_xc"])]
+    if archived is not None:
+        inputs.append(("ae204537e fixture", archived["E_non_xc"]))
+    for against, expected in inputs:
         compare("E_non_xc", expected, _cross_platform_bound(expected), against,
                 "The trees did not compute on the same record -- this is more "
                 "than the machine -- so nothing can be concluded about the "
@@ -515,7 +546,7 @@ def _assert_within_the_cross_platform_floor(arch_name, got, reference,
                 "movement beyond the machine's own is an unintended change to "
                 "the shared code path.")
     indicator = _has_indicator_column(arch_name)
-    for key in _CODE_PATH_KEYS:
+    for key in (_CODE_PATH_KEYS if archived is not None else ()):
         bound = _cross_platform_bound(archived[key])
         if indicator:
             # The smoothing's own footprint, or the machine's, whichever is
@@ -534,7 +565,8 @@ def _assert_within_the_cross_platform_floor(arch_name, got, reference,
     return (f"[O3] {arch_name}: {CROSS_PLATFORM} at "
             f"{CROSS_PLATFORM_REL_TOL:.0e} relative per key; worst "
             f"{relative:.2e} relative ({gap:.3e} on {key} against the "
-            f"{against}); {digest}; {label} {'; '.join(differences)}")
+            f"{against}); {digest}; {label} {'; '.join(differences)}"
+            f"{_archived_note(archived)}")
 
 
 #: Reports already printed in this process. The workflow matrix runs one
@@ -566,7 +598,23 @@ def announce(report, capsys):
 @pytest.mark.parametrize("fixture", [_FIXTURE, _FIXTURE_AE204537E],
                          ids=["smooth_alpha", "ae204537e"])
 def test_the_reference_covers_every_architecture(fixture):
-    assert set(_reference(fixture)) == set(alec.ARCHITECTURES), (
+    """The current fixture carries every registered architecture except the
+    names still awaiting their record (``_AWAITING_RECORD``), and a name
+    listed there that the fixture DOES carry fails here, so the list expires
+    on its own. The archived ae204537e fixture carries every architecture that
+    existed in that tree: the registry minus the ones registered afterwards
+    (``_POST_ARCHIVE_ARCHS``), which that tree cannot have computed and which
+    the comparison holds to the current fixture alone."""
+    expected = set(alec.ARCHITECTURES)
+    if fixture == _FIXTURE_AE204537E:
+        expected -= set(_POST_ARCHIVE_ARCHS)
+    else:
+        recorded = set(_reference(fixture))
+        stale = sorted(name for name in _AWAITING_RECORD if name in recorded)
+        assert not stale, (
+            f"recorded now; remove from _AWAITING_RECORD: {stale}")
+        expected -= set(_AWAITING_RECORD) - recorded
+    assert set(_reference(fixture)) == expected, (
         "the archived reference and the live architecture registry disagree; "
         "regenerate the fixture with record_closed_shell_reference.py"
     )
@@ -651,10 +699,16 @@ def test_the_two_fixtures_differ_only_where_the_indicator_is_present():
     """The live fixture is the ae204537e fixture moved by the smoothing of
     the indicator's lower bound and nothing else: identical on the 26
     architectures without an indicator column (pins included), and on the
-    five with one moved by at most the measured footprint, in every key."""
+    five with one moved by at most the measured footprint, in every key. The
+    comparison runs over the archived fixture's architectures; the ones
+    registered after that tree have no archived record and are held to the
+    current fixture alone."""
     live, archived = _reference(), _reference(_FIXTURE_AE204537E)
+    assert set(archived) == set(live) - set(_POST_ARCHIVE_ARCHS)
+    for arch_name in _POST_ARCHIVE_ARCHS:
+        assert _has_indicator_column(arch_name), arch_name
     moved = []
-    for arch_name in sorted(alec.ARCHITECTURES):
+    for arch_name in sorted(archived):
         for key in _INPUT_PINS:
             assert live[arch_name][key] == archived[arch_name][key], (
                 arch_name, key)
@@ -766,6 +820,119 @@ def test_an_unmatched_fingerprint_takes_the_cross_platform_branch(monkeypatch):
         nudged[key] += 1e-9
         with pytest.raises(AssertionError, match=f"{_PROBE_MGGA_ARCH}.{key}"):
             assert_closed_shell_record_matches(_PROBE_MGGA_ARCH, record=nudged)
+
+
+#: An architecture registered after the ae204537e tree was recorded, so that
+#: fixture carries no record for it: one of the width and depth completions of
+#: the pure DFS meta-GGA (2026-09-11). It carries an indicator column, which is
+#: the archived leg most likely to read a record that is not there.
+_POST_ARCHIVE_ARCH = "deep_mgga_3x32"
+
+#: Every architecture registered after the ae204537e tree was recorded: absent
+#: from that fixture by construction, present in the current one, and compared
+#: two ways. A name added to the registry joins this tuple or the archived
+#: coverage test names it.
+_POST_ARCHIVE_ARCHS = ("deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32")
+
+#: Architectures registered after the current fixture was last recorded,
+#: awaiting their records from the fixture's platform (the recorder command is
+#: in the skip message). A name listed here that the fixture DOES carry fails
+#: the coverage test: remove it from this tuple once its record is merged.
+_AWAITING_RECORD = ("deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32")
+
+
+def _record_pending(arch_name):
+    """Whether ``arch_name`` still waits for its record: listed in
+    ``_AWAITING_RECORD`` and absent from the current fixture."""
+    return arch_name in _AWAITING_RECORD and arch_name not in _reference()
+
+
+def test_an_architecture_absent_from_the_archived_fixture_is_compared_two_ways(
+        monkeypatch):
+    """An architecture that did not exist when the ae204537e tree was recorded
+    has no record in that fixture, and is compared the two ways that remain --
+    the live record against the current fixture -- with the report naming the
+    archived fixture absent.
+
+    Neither alternative is acceptable: reading the missing key raises, and
+    skipping the architecture leaves it uncompared with nothing in the log to
+    say which of the two happened. Both archived legs are covered, since both
+    read the archived record: the indicator-carrying architecture, whose
+    archived comparison is the smoothing's footprint, and one without, whose
+    archived comparison is bitwise equality.
+
+    The last block is what keeps the rule from being satisfied by dropping the
+    archived comparison for everything: an architecture the fixture does carry
+    is still compared three ways, and its report does not say absent.
+    """
+    _pin_platform(monkeypatch)
+    assert comparison_mode() == BITWISE, platform_differences()
+    current = dict(_reference())
+    archived = dict(_reference(_FIXTURE_AE204537E))
+    # The post-archive registration: in the registry and in the current
+    # fixture, absent from the archived one. Its record here is a copy of its
+    # parent's, which makes it a well-formed record of the right keys; what is
+    # under test is the missing archived entry, not the numbers.
+    current.setdefault(_POST_ARCHIVE_ARCH, dict(current[_PROBE_MGGA_ARCH]))
+    archived.pop(_POST_ARCHIVE_ARCH, None)
+    # And an architecture of the archived tree, removed from that fixture
+    # alone, so the leg of the comparison without an indicator column runs the
+    # same way.
+    archived.pop(_PROBE_ARCH)
+    monkeypatch.setitem(_RECORDS_BY_FIXTURE, _FIXTURE, current)
+    monkeypatch.setitem(_RECORDS_BY_FIXTURE, _FIXTURE_AE204537E, archived)
+
+    for arch_name in (_POST_ARCHIVE_ARCH, _PROBE_ARCH):
+        assert arch_name in _reference()
+        assert arch_name not in _reference(_FIXTURE_AE204537E)
+        record = dict(current[arch_name])
+        report = assert_closed_shell_record_matches(arch_name, record=record)
+        assert BITWISE in report, report
+        assert _FIXTURE_AE204537E.name in report and "absent" in report.lower(), (
+            f"{arch_name}: the comparison ran two ways without saying so: "
+            f"{report}")
+        # And the comparison that remains is a real one, key by key.
+        for key in _CODE_PATH_KEYS + ("E_non_xc",):
+            nudged = dict(record)
+            nudged[key] = math.nextafter(nudged[key], math.inf)
+            assert nudged[key] != record[key]
+            with pytest.raises(AssertionError, match=f"{arch_name}.{key}"):
+                assert_closed_shell_record_matches(arch_name, record=nudged)
+
+    # Off the recording platform the same architecture takes the tolerance
+    # branch, which reads the archived record in two more places.
+    monkeypatch.setitem(
+        _PLATFORM_BY_FIXTURE, _FIXTURE,
+        dict(_live_platform(), cpu_model="AMD EPYC 7763 64-Core Processor"))
+    assert comparison_mode() == CROSS_PLATFORM
+    record = dict(current[_POST_ARCHIVE_ARCH])
+    report = assert_closed_shell_record_matches(_POST_ARCHIVE_ARCH,
+                                                record=record)
+    assert CROSS_PLATFORM in report, report
+    assert _FIXTURE_AE204537E.name in report and "absent" in report.lower(), (
+        f"{_POST_ARCHIVE_ARCH}: the tolerance branch ran two ways without "
+        f"saying so: {report}")
+    for key in _CODE_PATH_KEYS + ("E_non_xc",):
+        nudged = dict(record)
+        nudged[key] += 1e-9
+        with pytest.raises(AssertionError,
+                           match=f"{_POST_ARCHIVE_ARCH}.{key}"):
+            assert_closed_shell_record_matches(_POST_ARCHIVE_ARCH,
+                                               record=nudged)
+
+    # An architecture the archived fixture does carry keeps its archived leg,
+    # on both branches and with or without an indicator column.
+    for expected in (CROSS_PLATFORM, BITWISE):
+        if expected == BITWISE:        # back to the recording platform
+            _pin_platform(monkeypatch)
+        assert comparison_mode() == expected
+        for arch_name in (_PROBE_MGGA_ARCH, "medium"):
+            report = assert_closed_shell_record_matches(
+                arch_name, record=_fixture_record(arch_name))
+            assert expected in report, report
+            assert "absent" not in report.lower(), (
+                f"{arch_name} is in both fixtures, so nothing about the "
+                f"comparison is absent: {report}")
 
 
 def test_the_cross_platform_floor_sits_between_the_machine_and_a_change():

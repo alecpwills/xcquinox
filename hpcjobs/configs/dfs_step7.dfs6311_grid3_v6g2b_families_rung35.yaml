@@ -94,7 +94,7 @@
 # =============================================================================
 
 sweep:
-  # GROUP G2b (DESCRIPTOR FAMILIES, RUNG-3.5 TRIO)'s axis: 3 of the 31 architectures of
+  # GROUP G2b (DESCRIPTOR FAMILIES, RUNG-3.5 TRIO)'s axis: 3 of the 34 architectures of
   # `xcquinox.alec.ARCHITECTURES`. Listed in the order expand_grid
   # canonicalizes to (`_canon_axis` = sorted(set(...))), so the arch axis reads
   # in array-task order. With 11 subset sizes the grid is 3 x 1 x 1 x
@@ -103,8 +103,9 @@ sweep:
   #       11-21 are `deep_rung35_attn_3x16`,
   #       22-32 are `deep_rung35ms_3x16`.
   #
-  # THE SIX GROUP AXES ARE PAIRWISE DISJOINT, and together with the eleven
-  # architectures the campaign directive excludes from v6 they cover the
+  # THE SIX GROUP AXES ARE PAIRWISE DISJOINT, and together with the fourteen
+  # architectures outside the groups (eleven excluded by the campaign directive,
+  # three width completions registered on 2026-09-11) they cover the
   # registry exactly. A NEW ARCHITECTURE ADDED TO THE REGISTRY MAKES THE GROUP
   # SET STALE: the pin `test_v6_groups_and_the_exclusions_partition_the_registry`
   # compares the union against sorted(ARCHITECTURES) and goes red naming the

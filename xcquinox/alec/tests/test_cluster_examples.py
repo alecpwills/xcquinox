@@ -433,9 +433,9 @@ def test_the_templates_state_the_v6_value_beside_each_protocol_knob(path):
 # ---------------------------------------------------------------------------
 
 #: The reference configuration: the campaign's statement of the method. It is
-#: not itself submitted -- the five group files below are -- but every property
-#: the groups inherit is asserted on it too, so the six files are pinned as one
-#: family.
+#: not itself submitted -- the six group files below are -- but every property
+#: the groups inherit is asserted on it too, so the seven files are pinned as
+#: one family.
 _V6_REFERENCE = "dfs_step7.dfs6311_grid3_v6.yaml"
 
 
@@ -821,7 +821,7 @@ def test_v6_submits_at_the_login_node_semantic_check():
     refused exactly this combination because ``parents.scan_fx`` / ``scan_fc``
     did not exist yet (SPEC_parent_anchor.md Section 3.8 sequences PBE first,
     SCAN second); both now do, so the rung is no ground for refusal and the
-    whole 31-architecture axis submits.
+    whole 34-architecture axis submits.
 
     The weight refusal does not fire either: under the anchor every network
     EQUALS its parent at initialization, both terms of the objective are zero
@@ -1039,7 +1039,7 @@ def test_v6_train_wall_covers_the_four_channel_inline_eval():
 # are asserted here from the parsed axes rather than from the file names.
 # ---------------------------------------------------------------------------
 
-#: The eleven architectures the campaign directive leaves OUT of v6: the
+#: The fourteen architectures the campaign directive leaves OUT of v6: the
 #: width/depth ablation group carries the baseline descriptors alone, plus or
 #: minus attention, so the descriptor-carrying depth-4 forms, the whole
 #: no-transform family and the rung-3.5-only form are not submitted. They are
@@ -1059,6 +1059,14 @@ EXCLUDED_FROM_V6 = (
     "deep_notransform_attn",
     "deep_notransform_attn_3x16",
     "deep_rung35only_3x16",
+    # 2026-09-11: the width and depth completions of the pure DFS meta-GGA.
+    # They exist to measure whether deep_mgga_3x16's plateau against the atom
+    # certificate is capacity, which is settled on the pretraining certificate
+    # alone; until it is, no campaign cell is spent on them, so they are named
+    # here rather than put on a group's axis.
+    "deep_mgga_3x32",
+    "deep_mgga_4x16",
+    "deep_mgga_4x32",
 )
 
 #: The ladder, in submission order: (file, architecture count, meta-GGA rung?,
@@ -1087,7 +1095,7 @@ _V6_GROUPS = (
 #: The six group files in submission order.
 _V6_GROUP_FILES = tuple(row[0] for row in _V6_GROUPS)
 
-#: The reference and the five groups: the six files that must agree on the
+#: The reference and the six groups: the seven files that must agree on the
 #: identity, the protocol, the certificate, the placeholder and the walls.
 _V6_FILES = (_V6_REFERENCE,) + _V6_GROUP_FILES
 
@@ -1359,10 +1367,10 @@ def test_every_v6_file_carries_the_stony_brook_job_mail(name):
     assert cfg.cluster.mail_type == "BEGIN,END,FAIL", path
 
 
-# --- what makes the five groups a partition of the campaign -----------------
+# --- what makes the six groups a partition of the campaign ------------------
 
 def test_v6_groups_and_the_exclusions_partition_the_registry():
-    """The five group axes are pairwise disjoint, and their union plus
+    """The six group axes are pairwise disjoint, and their union plus
     ``EXCLUDED_FROM_V6`` is ``sorted(ARCHITECTURES)`` exactly.
 
     This is the pin the split exists to be safe under. An architecture in two
@@ -1391,11 +1399,13 @@ def test_v6_groups_and_the_exclusions_partition_the_registry():
                 f"as two results")
     union = set().union(*axes.values())
     excluded = set(EXCLUDED_FROM_V6)
-    assert len(EXCLUDED_FROM_V6) == len(excluded) == 11
+    # 2026-09-11: 11 -> 14 with the three width and depth completions of the
+    # pure DFS meta-GGA, which are probes and carry no campaign cell.
+    assert len(EXCLUDED_FROM_V6) == len(excluded) == 14
     assert not (union & excluded), sorted(union & excluded)
     registry = sorted(ARCHITECTURES)
     assert sorted(union | excluded) == registry, (
-        f"the five group axes and EXCLUDED_FROM_V6 cover "
+        f"the six group axes and EXCLUDED_FROM_V6 cover "
         f"{len(union | excluded)} architectures; the registry carries "
         f"{len(registry)}. Missing from the campaign AND from the exclusion "
         f"list: {sorted(set(registry) - union - excluded)}; unknown to the "
@@ -1451,9 +1461,9 @@ def test_v6_group_cell_count(name):
 
 def test_v6_group_cells_sum_to_the_submitted_campaign():
     """44 + 33 + 33 + 55 + 33 + 22 = 220 cells submitted, out of the
-    reference sweep's 341.
+    reference sweep's 374.
 
-    The 121-cell gap is the eleven excluded architectures at eleven subset
+    The 154-cell gap is the fourteen excluded architectures at eleven subset
     sizes, and it is arithmetic rather than a discrepancy: this asserts the
     three numbers close, so a group axis edited without the exclusion list (or
     the reverse) cannot leave the ladder quietly covering something else.
@@ -1465,8 +1475,8 @@ def test_v6_group_cells_sum_to_the_submitted_campaign():
     assert counts == [44, 33, 33, 55, 33, 22], counts
     assert sum(counts) == 220
     _refpath, ref = _campaign_config(_V6_REFERENCE)
-    assert len(expand_grid(ref)) == 341
-    assert 341 - 220 == len(EXCLUDED_FROM_V6) * _V6_SUBSET_SIZES == 121
+    assert len(expand_grid(ref)) == 374
+    assert 374 - 220 == len(EXCLUDED_FROM_V6) * _V6_SUBSET_SIZES == 154
 
 
 @pytest.mark.parametrize("name", _V6_GROUP_FILES)
@@ -1716,7 +1726,7 @@ def test_v6_reference_names_the_six_group_files_in_order():
 
     It is the file the campaign's method is written in and the one an operator
     reaches for first; before the split it also carried the submission
-    instruction, so it has to say where that moved or it reads as a 341-cell
+    instruction, so it has to say where that moved or it reads as a 374-cell
     submission that is simply never made.
     """
     path, _cfg = _campaign_config(_V6_REFERENCE)
@@ -1729,7 +1739,7 @@ def test_v6_reference_names_the_six_group_files_in_order():
     assert positions == sorted(positions), (
         f"{path} names the group files out of submission order")
     assert "NOT THE SUBMISSION" in text, path
-    assert "220 of the 341 cells" in text, path
+    assert "220 of the 374 cells" in text, path
 
 
 # ===========================================================================

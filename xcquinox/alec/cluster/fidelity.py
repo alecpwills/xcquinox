@@ -510,7 +510,7 @@ def model_class_mismatches(cfg, cert, arch_name=None) -> list:
     CALLER is asking about, as :func:`parent_mismatch` is asked. With no name
     given the certificate's own is used, which is the run's architecture only
     where the caller has separately held it to that (both do, reporting a
-    disagreement as a finding of its own); since 23 of the 31 registered
+    disagreement as a finding of its own); since 26 of the 34 registered
     architectures set the transform, a certificate from another architecture's
     directory agrees on this field more often than not, so the name is worth
     passing.

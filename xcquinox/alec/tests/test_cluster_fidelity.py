@@ -1403,7 +1403,7 @@ def test_the_expected_log_transform_follows_the_caller_s_architecture():
     :func:`parent_mismatch`'s expected parent is.
 
     A certificate from another architecture's directory is refused on its
-    ``arch`` line by both callers, but 23 of the 31 registered architectures
+    ``arch`` line by both callers, but 26 of the 34 registered architectures
     set the transform, so such a document agrees on this field more often than
     not and the model-class report would go quiet about the field it exists to
     state. With the name passed, the comparison is against the architecture

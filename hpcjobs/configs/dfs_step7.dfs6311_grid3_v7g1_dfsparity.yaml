@@ -85,7 +85,7 @@
 # =============================================================================
 
 sweep:
-  # GROUP G1 (SIZE)'s axis: 4 of the 31 architectures of
+  # GROUP G1 (SIZE)'s axis: 4 of the 34 architectures of
   # `xcquinox.alec.ARCHITECTURES`. Listed in the order expand_grid
   # canonicalizes to (`_canon_axis` = sorted(set(...))), so the arch axis reads
   # in array-task order. One architecture x five subset sizes = 5 cells:
@@ -93,7 +93,7 @@ sweep:
   # 7, 12, 15, 18, 26.
   #
   # THE THREE v7 GROUP AXES ARE PAIRWISE DISJOINT and cover 12 of the
-  # registry's 31 architectures. v7 does NOT partition the registry: the
+  # registry's 34 architectures. v7 does NOT partition the registry: the
   # eight architectures of the v6 groups that were not resubmitted (deep,
   # deep_attn, deep_combined_3x16, deep_combined_attn_3x16, deep_dm_3x16,
   # deep_rung35_3x16, deep_rung35_attn_3x16, deep_rung35ms_3x16) are

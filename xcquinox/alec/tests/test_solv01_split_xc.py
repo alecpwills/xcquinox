@@ -407,7 +407,7 @@ _TOL_UKS = 5e-7
 # (rank-preserving rotations), the directions the Roothaan step moves on, so
 # no channel's indicator leaves the physical domain. Oracle O2 runs the probe
 # on all four open-shell atoms of the pools; ``test_spin_scaling_oracles``
-# parametrizes it over 31 architectures x {H, Li, N, O} and the case below is
+# parametrizes it over 34 architectures x {H, Li, N, O} and the case below is
 # the O atom of that set. Residuals at _FD_EPS with the three-block potential
 # and the rotation path, measured through THIS module's
 # ``_assert_uks_fd_consistency`` over the full 124-cell grid, def2-svp, grid
@@ -627,8 +627,10 @@ _UKS_FD_SPECIES = {
 # measured not to cross it on any of the four atoms at def2-svp (the
 # residuals below were taken with no indicator row at all).
 #
-# Measured with the rotation path over the 124 harness cells (31
-# architectures x {H, Li, N, O}, def2-svp, grid level 2): every cell inside
+# Measured with the rotation path over the 124 harness cells the registry then
+# held (31 architectures x {H, Li, N, O}, def2-svp, grid level 2; 34 and 136
+# cells since the width completions of 2026-09-11, which clear _TOL_UKS but
+# were not part of this measurement): every cell inside
 # 6.61e-08 of _TOL_UKS's 5e-7 with the mask removing zero points; on the
 # solver's own Fock pair at grid level 1 (deep_mgga_3x16, the
 # absolute-contribution footing of test_spin_scaling_solver_manual):

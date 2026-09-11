@@ -142,9 +142,15 @@ def test_architecture_config_field_validation(field, value, exc):
 # deep_notransform + deep_notransform_attn for the descriptor ablation sweep.
 # 2026-06-20: bumped to 22 by adding the 8 depth-3/width-16 dfs_step7 twins.
 # 2026-06-28: bumped to 25 by adding the 3 rung-3.5 localized-DM archs.
+# 2026-09-11: bumped to 34 by the width and depth completions of the pure DFS
+# meta-GGA (deep_mgga_3x32, deep_mgga_4x16, deep_mgga_4x32). The 3x16 clone of
+# SCAN plateaus short of the atom certificate; the three completions ask
+# whether that miss is capacity, and they are probes only until it is
+# measured -- so they carry no campaign cell (EXCLUDED_FROM_V6 in
+# test_cluster_examples.py) and differ from deep_mgga_3x16 in shape alone.
 def test_architectures_registry_key_set():
     from xcquinox.alec.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 31
+    assert len(ARCHITECTURES) == 34
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -171,8 +177,46 @@ def test_architectures_registry_key_set():
         # cusp+metagga, and cusp+multishell+metagga (SCAN pretrain, no mesh
         # -- geometry-free mesh nodes cannot define their extra columns).
         "deep_cusp_mgga_3x16", "deep_rung35ms_mgga_3x16",
+        # 2026-09-11: the width and depth completions of the pure DFS meta-GGA
+        # (deep_mgga_3x16 with depth and nodes changed and nothing else), the
+        # capacity question of its plateau against the atom certificate.
+        # Probe-only until measured: excluded from the v6 campaign.
+        "deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
+
+
+# 2026-09-11: the three completions are a capacity experiment, which they are
+# only if capacity is all that separates them from deep_mgga_3x16. The
+# comparison is over every dataclass field rather than the keywords the
+# registry entry spells out, so a flag the entry forgot -- or one added to
+# ArchitectureConfig later with a default the three take and their parent does
+# not -- turns this red instead of being read as capacity.
+def test_width_completions_differ_from_deep_mgga_3x16_in_depth_and_nodes_only():
+    import dataclasses
+    from xcquinox.alec.config import ARCHITECTURES
+    shape = {name: dataclasses.asdict(ARCHITECTURES[name])
+             for name in ("deep_mgga_3x16", "deep_mgga_3x32",
+                          "deep_mgga_4x16", "deep_mgga_4x32")}
+    parent = shape.pop("deep_mgga_3x16")
+    # The parent is pinned too: an equality between four degenerate entries
+    # would say nothing about what they are.
+    assert [d["name"] for d in parent["descriptors"]] == ["metagga"]
+    assert (parent["meta_gga"], parent["depth"], parent["nodes"]) == (True, 3, 16)
+    varies = ("name", "depth", "nodes")
+    rest = {k: v for k, v in parent.items() if k not in varies}
+    expected_shape = {"deep_mgga_3x32": (3, 32), "deep_mgga_4x16": (4, 16),
+                      "deep_mgga_4x32": (4, 32)}
+    for name, entry in sorted(shape.items()):
+        got = (entry["name"], entry["depth"], entry["nodes"])
+        assert got == (name,) + expected_shape[name], (
+            f"{name}: (name, depth, nodes) = {got}, not "
+            f"{(name,) + expected_shape[name]}")
+        other = {k: v for k, v in entry.items() if k not in varies}
+        assert other == rest, (
+            f"{name} differs from deep_mgga_3x16 in more than its shape: "
+            + ", ".join(f"{k}: {other[k]!r} against {rest[k]!r}"
+                        for k in sorted(other) if other[k] != rest[k]))
 
 
 # §13.2 item (13)
@@ -187,7 +231,9 @@ def test_list_architectures_returns_sorted():
     from xcquinox.alec.config import list_architectures
     names = list_architectures()
     assert names == sorted(names)
-    assert len(names) == 31
+    # 2026-09-11: 31 -> 34 with the three width and depth completions of the
+    # pure DFS meta-GGA (probe-only until measured; see the key-set test).
+    assert len(names) == 34
 
 
 # §13.2 item (15)
@@ -398,7 +444,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 31  # +8 (2026-06-20) +3 rung-3.5 (2026-06-28) +3 meta-GGA (2026-07-02) +2 mgga stacks (2026-08-10)
+    assert len(ARCHITECTURES) == 34  # +8 (2026-06-20) +3 rung-3.5 (2026-06-28) +3 meta-GGA (2026-07-02) +2 mgga stacks (2026-08-10) +3 mgga width/depth completions (2026-09-11)
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)

@@ -649,6 +649,27 @@ ARCHITECTURES = {
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True,
                               zero_init_final_layer=True),
+    # Width and depth completions of the pure DFS meta-GGA (2026-09-11). The
+    # learned 3x16 clone of SCAN plateaus short of the atom certificate; these
+    # three, the same in every field but depth and nodes, ask whether that miss
+    # is capacity. Probe-only until measured (EXCLUDED_FROM_V6 in the campaign
+    # tests: they are on the whole-registry reference axis, which states the
+    # method, and on no SUBMITTED group's axis, so they carry no campaign cell).
+    "deep_mgga_3x32":           ArchitectureConfig.from_spec("deep_mgga_3x32",          3, 32,
+                              descriptors=["metagga"], meta_gga=True,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_mgga_4x16":           ArchitectureConfig.from_spec("deep_mgga_4x16",          4, 16,
+                              descriptors=["metagga"], meta_gga=True,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_mgga_4x32":           ArchitectureConfig.from_spec("deep_mgga_4x32",          4, 32,
+                              descriptors=["metagga"], meta_gga=True,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
     "deep_mgga_attn_3x16":      ArchitectureConfig.from_spec("deep_mgga_attn_3x16",     3, 16,
                               attention=True, num_heads=4,
                               descriptors=["metagga"], meta_gga=True,

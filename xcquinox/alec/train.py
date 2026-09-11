@@ -508,7 +508,7 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     WHERE THE RECORD STATES IT, as the trained checkpoints' own record
     compares it (``checkpoint_class.require_matching_log_transform``): every
     ``pretrain_metadata.json`` written before the key carries the two fields
-    above and nothing else, and is read exactly as it was, since 23 of the 31
+    above and nothing else, and is read exactly as it was, since 26 of the 34
     registered architectures set the transform and reading a missing key as
     False would refuse their directories to the class that pretrained them.
     A record that STATES it is held to it. The two sides are read
