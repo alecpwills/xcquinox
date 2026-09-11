@@ -72,7 +72,7 @@ lr_start 1e-3 decaying from 50 to 90 percent of the run (the v7
 configurations), where PretrainSpec defaults to 1e-2 from 20 percent, and a
 table measured at the defaults is a measurement of another optimizer; the
 five schedule flags carry the campaign's values and the table's identity
-records the resolved schedule. It measures six of the campaign's 31 architectures (the six
+records the resolved schedule. It measures six of the campaign's 34 architectures (the six
 largest recorded parent offsets). At the production identity the sweep would
 cost more than the campaign it parameterizes, for a number that is only ever
 a starting point: the weight is dimensionful, so it does not transfer
@@ -100,6 +100,27 @@ Usage (local identity check, seconds):
     python hpcjobs/probe_pretrain_energy_weight.py --smoke \
         --data-dir <tmp>/data --out <tmp>/table.json
 
+Configuration mode (``--config <campaign yaml>``; hpcjobs/probe_mgga_levers.sbatch):
+the identity (basis, grid, density fitting, lock), the run's polarization
+and model block (the descriptor coordinates, the anchor -- which the probe
+refuses), the pretrain block and the data directory are read from the
+configuration through the harness's own resolution
+(``cluster._pretrain.resolve_run_architecture`` and
+``pretrain_spec_from_config``, ``cluster._datagen.datagen_call``), so a cell
+is fitted as that run's pretrain task fits it and against the file that
+run's datagen wrote: a file at another identity is REFUSED rather than
+rebuilt, and an ABSENT one is generated, which is why the swept architectures
+default to the configuration's own ``sweep.arch`` -- the probe's six defaults
+are mostly GGA-rung and would name a PBE-parent file a meta-GGA run never
+wrote, absent rather than stale, and generate it at the production identity.
+The departures from the configuration are ``--archs``, ``--weights``,
+``--n-steps`` and ``--objective-arm``, and nothing else. Each cell is
+then certified by the run's own fidelity certificate, written where the
+pretrain stage writes it (``<cell>/pretrain/<arch>/fidelity_certificate.json``),
+and the verdict of the table is the certificate's rather than the gate
+quantities above: a weight clears when a cell's certificate reads PASS. The
+flags that would restate the identity are refused beside ``--config``.
+
 The table is rewritten after every cell, so a job killed at the wall leaves the
 cells it finished; ``--resume`` reads that table back, carries its rows over
 and measures only the cells missing from it, refusing a table written at a
@@ -116,12 +137,14 @@ an exception escaped the sweep, whose partial table is still written.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import os
 import sys
 import time
 import traceback
+import types
 
 # x64 is required before JAX is imported by anything below: the per-system
 # energies are O(10 Ha) sums whose differences are read at the 1e-6 Ha level.
@@ -183,7 +206,8 @@ POINTWISE_FACTOR = 3.0
 #:
 #: The set is the worst offenders and not a sample because the campaign's
 #: train array depends ``afterok`` on the pretrain ARRAY: one architecture
-#: whose certificate fails blocks all 341 cells, not its own eleven. A weight
+#: whose certificate fails blocks every cell of the reference sweep (341 when the
+#: probe was written, 374 since the registry grew), not its own eleven. A weight
 #: chosen on the small-offset architectures alone would be extrapolated onto
 #: precisely the ones that decide whether anything runs. Six also spans one
 #: member of every descriptor family the campaign carries -- none, cusp,
@@ -320,10 +344,13 @@ def build_parser():
         prog="probe_pretrain_energy_weight",
         description="Sweep pretrain.energy_term_weight and report the "
                     "per-system XC energy error it buys.")
-    p.add_argument("--data-dir", required=True,
-                   help="Root for the generated pretraining data. One "
-                        "subdirectory per (polarization, parent density) "
-                        "pair is created under it and reused across cells.")
+    p.add_argument("--data-dir", default=None,
+                   help="Root for the generated pretraining data; required "
+                        "without --config (one subdirectory per "
+                        "(polarization, parent density) pair is created under "
+                        "it and reused across cells). With --config the run's "
+                        "pretrain.data_dir is the root and this flag is "
+                        "refused.")
     p.add_argument("--out", required=True,
                    help="Path of the JSON table, rewritten after every cell "
                         "so a job killed at the wall keeps what it measured.")
@@ -343,10 +370,12 @@ def build_parser():
                         "Below 3 the generator refuses the degenerate "
                         "open-shell atoms of the set; the sweep never waives "
                         "that refusal.")
-    p.add_argument("--seed", type=int, default=DEFAULT_SEED,
-                   help=f"Network initialization seed (default {DEFAULT_SEED}"
-                        "). One seed for every cell, so the comparison "
-                        "between weights is not a comparison between draws.")
+    p.add_argument("--seed", type=int, default=None,
+                   help=f"Network initialization seed (default {DEFAULT_SEED}; "
+                        "with --config the run's pretrain.seed, and this flag "
+                        "is refused). One seed for every cell, so the "
+                        "comparison between weights is not a comparison "
+                        "between draws.")
     # The schedule the cells are fitted under, passed through so a table
     # measures the fit the campaign runs (its configurations set lr_start 1e-3
     # and lr_decay_start 0.5 where PretrainSpec defaults to 1e-2 and 0.2). An
@@ -364,19 +393,23 @@ def build_parser():
                         "(default: PretrainSpec's, 1.0).")
     p.add_argument("--grad-clip", type=float, default=None,
                    help="Global-norm gradient clip (default: PretrainSpec's).")
-    p.add_argument("--loss-weighting", default="integration",
-                   choices=("integration", "unweighted"),
-                   help="Point-wise reduction (default: integration, which "
-                        "is what the campaign trains with).")
+    p.add_argument("--loss-weighting", default=None,
+                   choices=("integration", "unweighted", "rho_w_sampled"),
+                   help="Point-wise reduction (default integration; with "
+                        "--config the configuration's, or --objective-arm's).")
+    # Both flags default to None so "neither given" is knowable (argparse
+    # seeds a shared destination from the first action added for it); the
+    # non-config resolution then applies DEFAULT_POLARIZED, and --config
+    # refuses either flag.
     polar = p.add_mutually_exclusive_group()
     polar.add_argument("--polarized", dest="polarized", action="store_true",
-                       default=DEFAULT_POLARIZED,
+                       default=None,
                        help="Measure on the polarized correlation objective "
                             "(the zeta-aware cnet and the zeta-carrying data "
                             "file). Default, because every production "
                             "configuration sets use_polarized_correlation.")
     polar.add_argument("--no-polarized", dest="polarized",
-                       action="store_false",
+                       action="store_false", default=None,
                        help="Measure on the unpolarized objective instead.")
     p.add_argument("--resume", action="store_true",
                    help="Read --out back and skip the cells already in it. "
@@ -386,6 +419,30 @@ def build_parser():
                    help="Tiny identity used by the tests and for a local "
                         "plumbing check: two systems at STO-3G on grid level "
                         "1, five steps. Explicit flags still win.")
+    p.add_argument("--config", default=None,
+                   help="A campaign configuration (hpcjobs/configs/*.yaml). "
+                        "The identity (basis, grid, density fitting, lock), "
+                        "the run's polarization and model block, the pretrain "
+                        "block and the data directory are read from it "
+                        "through the harness's own resolution, so a cell is "
+                        "fitted as that run's pretrain task fits it and "
+                        "certified by the run's own certificate, save for "
+                        "--n-steps, --weights and --objective-arm. The flags "
+                        "that would restate the identity are refused with it.")
+    p.add_argument("--objective-arm", choices=("integration",), default=None,
+                   help="With --config: fit under this loss weighting instead "
+                        "of the configuration's. The 2026-09-02 meta-GGA run "
+                        "fitted under integration, where the (r_s, s, alpha) "
+                        "mesh carries its 0.3 share; under the live "
+                        "rho_w_sampled objective the mesh rows carry no weight.")
+    p.add_argument("--descriptor-coordinates", choices=("legacy", "dfs"),
+                   default=None,
+                   help="Without --config: the network's input coordinates, "
+                        "applied as a run's model block applies them ('dfs', "
+                        "what every v7 configuration states, puts "
+                        "ln((alpha+1)/2) in place of the raw indicator). The "
+                        "default is the registry's 'legacy', which every table "
+                        "written before this flag existed was measured under.")
     p.add_argument("--recon-rtol", type=float, default=DEFAULT_RECON_RTOL,
                    help="Relative agreement demanded between the per-system "
                         "reconstruction and every quantity the pretraining "
@@ -435,14 +492,78 @@ def resolved_schedule(args):
     return {**_SPEC_SCHEDULE_DEFAULTS, **schedule_kwargs(args)}
 
 
+#: The flags --config states for itself, each refused beside it: a value given
+#: for one would describe a fit the run does not make.
+_CONFIG_REFUSED = (("--data-dir", "data_dir"), ("--seed", "seed"),
+                   ("--basis", "basis"), ("--grid-level", "grid_level"),
+                   ("--loss-weighting", "loss_weighting"),
+                   ("--polarized/--no-polarized", "polarized"),
+                   ("--descriptor-coordinates", "descriptor_coordinates"),
+                   *((f"--{k.replace('_', '-')}", k) for k in _SCHEDULE_FLAGS))
+
+
+def _resolve_config_mode(args):
+    """--config states the identity: the flags that would restate it are
+    refused, and every resolved field is read off the configuration through
+    the harness's own loader, so a cell is fitted as the run's pretrain task
+    fits it."""
+    for flag, attr in _CONFIG_REFUSED:
+        if getattr(args, attr) is not None:
+            build_parser().error(
+                f"--config states the identity; {flag} is not accepted with it")
+    if args.smoke:
+        build_parser().error(
+            "--config states the identity; --smoke is not accepted with it")
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+
+    cfg = load_grid_config(args.config)
+    pt = cfg.pretrain
+    args.cfg = cfg
+    args.data_dir = pt.data_dir
+    args.basis, args.grid_level = cfg.inputs.basis, int(cfg.inputs.grid_level)
+    args.polarized = bool(getattr(cfg, "use_polarized_correlation", False))
+    args.loss_weighting = args.objective_arm or pt.loss_weighting
+    args.seed = int(pt.seed)
+    args.descriptor_coordinates = str(cfg.model.descriptor_coordinates)
+    for k in _SCHEDULE_FLAGS:
+        setattr(args, k, float(getattr(pt, k, _SPEC_SCHEDULE_DEFAULTS[k])))
+    if args.n_steps is None:
+        args.n_steps = int(pt.n_steps)
+
+
 def parse_args(argv=None):
     """Parse the command line, applying the --smoke identity where the caller
     left a value unset. Returns the namespace with every field resolved, so
     nothing downstream has to know which defaults came from where."""
     args = build_parser().parse_args(argv)
+    args.cfg = None
+    if args.config is not None:
+        _resolve_config_mode(args)
+    else:
+        if args.objective_arm is not None:
+            build_parser().error("--objective-arm needs --config")
+        if args.data_dir is None:
+            build_parser().error("--data-dir is required without --config")
+        if args.seed is None:
+            args.seed = DEFAULT_SEED
+        if args.loss_weighting is None:
+            args.loss_weighting = "integration"
+        if args.polarized is None:
+            args.polarized = DEFAULT_POLARIZED
+        if args.descriptor_coordinates is None:
+            args.descriptor_coordinates = "legacy"
     smoke = bool(args.smoke)
     if args.archs is None:
-        args.archs = SMOKE_ARCHS if smoke else DEFAULT_ARCHS
+        if args.cfg is not None:
+            # The run's OWN axis, never the probe's six defaults. Five of those
+            # are GGA-rung and resolve to the PBE parent: swept against a
+            # meta-GGA configuration they name a file the run never wrote,
+            # which is absent rather than stale, so the refusal above would not
+            # stop it and a full production-identity generation would run
+            # inside the job and land in the campaign's own data directory.
+            args.archs = tuple(args.cfg.sweep.arch)
+        else:
+            args.archs = SMOKE_ARCHS if smoke else DEFAULT_ARCHS
     if args.weights is None:
         args.weights = SMOKE_WEIGHTS if smoke else DEFAULT_WEIGHTS
     if args.n_steps is None:
@@ -484,6 +605,51 @@ def parse_args(argv=None):
             f"--lr-decay-end ({resolved['lr_decay_end']}) must not be below "
             f"--lr-decay-start ({resolved['lr_decay_start']})")
     return args
+
+
+def resolve_architectures(args):
+    """The swept architectures as the cells fit them: through the run's own
+    resolution in configuration mode (polarization, model block); otherwise
+    the registry with the command line's polarization and coordinates applied
+    as a model block. Never anchored: an anchored resolution is refused, since
+    the probe measures what the network learns, and the resolved coordinates
+    must be the ones the identity states."""
+    from xcquinox.alec.config import apply_model_block, get_architecture
+
+    out = []
+    for name in args.archs:
+        arch = get_architecture(name)
+        if args.cfg is not None:
+            from xcquinox.alec.cluster._pretrain import resolve_run_architecture
+            arch = resolve_run_architecture(args.cfg, arch)
+        else:
+            arch = dataclasses.replace(
+                arch, use_polarized_correlation=bool(args.polarized))
+            arch = apply_model_block(arch, types.SimpleNamespace(
+                descriptor_coordinates=args.descriptor_coordinates,
+                parent_anchor=False))
+        if getattr(arch, "parent_anchor", False):
+            raise SystemExit(
+                f"probe_pretrain_energy_weight: {name} resolves anchored under "
+                f"{args.config}; the probe never anchors")
+        if str(arch.descriptor_coordinates) != args.descriptor_coordinates:
+            raise SystemExit(
+                f"probe_pretrain_energy_weight: {name} resolves to "
+                f"{arch.descriptor_coordinates!r} coordinates; the identity "
+                f"states {args.descriptor_coordinates!r}")
+        out.append((name, arch))
+    return out
+
+
+def run_parent(args, arch):
+    """The parent density a cell's file sits on: the configuration's request
+    in configuration mode ('auto' in every v7 file), the probe's own 'auto'
+    otherwise."""
+    from xcquinox.alec.pretrain_data_gen import resolve_parent_density
+
+    requested = (args.cfg.pretrain.parent_density if args.cfg is not None
+                 else "auto")
+    return resolve_parent_density(arch, requested)
 
 
 # --------------------------------------------------------------------------- #
@@ -1185,12 +1351,24 @@ def ensure_data(data_dir, *, polarized, reference_xc, basis, grid_level,
 
 
 def cell_spec(arch, data_path, checkpoint_dir, *, weight, n_steps, seed,
-              loss_weighting, schedule=None):
-    """The PretrainSpec one cell is fitted under: the probe's fixed choices
-    (parent density resolved from the architecture, no validation hold-out)
-    plus the swept weight and the schedule the command line set."""
+              loss_weighting, schedule=None, cfg=None, arm=None):
+    """The PretrainSpec one cell is fitted under.
+
+    With ``cfg`` (configuration mode) the spec is the run's own, through the
+    pretrain stage's factory: the seed, the loss weighting and the schedule
+    are the configuration's, ``arm`` replaces the objective, and the three
+    arguments of those names are not read. Otherwise the probe's fixed
+    choices (parent density resolved from the architecture, no validation
+    hold-out) plus the swept weight and the schedule the command line set.
+    """
     from xcquinox.alec.config import PretrainSpec
 
+    if cfg is not None:
+        from xcquinox.alec.cluster._pretrain import pretrain_spec_from_config
+        overrides = dict(n_steps=int(n_steps), energy_term_weight=float(weight))
+        if arm is not None:
+            overrides["loss_weighting"] = arm
+        return pretrain_spec_from_config(cfg, arch, checkpoint_dir, **overrides)
     return PretrainSpec(arch=arch, data_dir=os.path.dirname(data_path),
                         checkpoint_dir=checkpoint_dir, n_steps=n_steps,
                         seed=seed, loss_weighting=loss_weighting,
@@ -1200,18 +1378,33 @@ def cell_spec(arch, data_path, checkpoint_dir, *, weight, n_steps, seed,
 
 
 def run_cell(arch, arch_name, data_path, work_dir, *, weight, n_steps, seed,
-             loss_weighting, recon_rtol, label, schedule=None):
-    """One (architecture, weight) pretraining, measured. Returns the row."""
+             loss_weighting, recon_rtol, label, schedule=None, cfg=None,
+             arm=None):
+    """One (architecture, weight) pretraining, measured. Returns the row.
+
+    In configuration mode (``cfg``) the cell directory carries the objective,
+    so two arms under one output root cannot collide, and it is laid out as a
+    run directory (``<cell>/pretrain/<arch>``) so the run's own certificate
+    finds the networks where the pretrain stage writes them; the certificate
+    is run after the fit and recorded on the row.
+    """
     import numpy as np
 
     from xcquinox.alec.config import PretrainSpec
     from xcquinox.alec.pretrain import run_pretrain
 
-    checkpoint_dir = os.path.join(work_dir, f"{arch_name}_w{weight:g}")
+    if cfg is not None:
+        from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+        cell_run_dir = os.path.join(
+            work_dir, f"{arch_name}_w{weight:g}_{loss_weighting}")
+        checkpoint_dir = pretrain_checkpoint_dir(cell_run_dir, arch_name)
+    else:
+        cell_run_dir = None
+        checkpoint_dir = os.path.join(work_dir, f"{arch_name}_w{weight:g}")
     os.makedirs(checkpoint_dir, exist_ok=True)
     spec = cell_spec(arch, data_path, checkpoint_dir, weight=weight,
                      n_steps=n_steps, seed=seed, loss_weighting=loss_weighting,
-                     schedule=schedule)
+                     schedule=schedule, cfg=cfg, arm=arm)
 
     started = time.time()
     state = {"last": started}
@@ -1274,7 +1467,94 @@ def run_cell(arch, arch_name, data_path, work_dir, *, weight, n_steps, seed,
         f"atom_max={atom_text} maxAE={ae_text} "
         f"max_all={row['max_dE_xc_mHa']:.4f} mHa on {row['worst_system']} "
         f"wall={wall:.1f}s")
+    if cfg is not None:
+        row["certificate"] = certify_cell(cfg, cell_run_dir, arch_name, label)
     return row
+
+
+def certify_cell(cfg, cell_run_dir, arch_name, label):
+    """The run's fidelity certificate on the cell's networks: 38 systems for
+    a SCAN parent (16 free atoms and 22 atomizations including H2O, N2 and the
+    pool-geometry CH4) under the run's tolerances and aggregation, which the
+    probe's own gate quantities (the pretraining set, a maximum) are not.
+    Written to ``<cell_run_dir>/pretrain/<arch>/fidelity_certificate.json``
+    and read back through the stage's own reader, so the cell's verdict is
+    the statement the campaign gates on. A certificate that RAISES is recorded
+    as verdict ERROR with the exception, so the fit it stands on is kept."""
+    from xcquinox.alec.cluster import fidelity
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+
+    started = time.time()
+    try:
+        fidelity.fidelity_certificate(
+            cfg, cell_run_dir, arch_name,
+            log=lambda line: log(f"[probe] {label} certificate {line}"))
+    except Exception as exc:                                    # noqa: BLE001
+        log(f"[probe] {label} certificate RAISED: {type(exc).__name__}: {exc}")
+        return {"verdict": "ERROR", "reason": f"{type(exc).__name__}: {exc}",
+                "wall_seconds": time.time() - started}
+    status, reason, on_disk = fidelity.read_certificate_status_in(
+        pretrain_checkpoint_dir(cell_run_dir, arch_name))
+    summary = dict((on_disk or {}).get("summary") or {})
+    log(f"[probe] {label} certificate {status}: "
+        f"max_atom={summary.get('max_atom_mHa')} mHa, "
+        f"mean_dAE={summary.get('mean_dAE_kcalmol')} "
+        f"max_dAE={summary.get('max_dAE_kcalmol')} kcal/mol over "
+        f"{summary.get('n_systems')} systems ({time.time() - started:.0f} s)")
+    return {"verdict": status, "reason": reason,
+            "wall_seconds": time.time() - started, **summary}
+
+
+def _certificate_error(row):
+    """Whether a row's certificate reached no verdict. A row whose
+    ``certificate`` is not a mapping (a hand-edited table) carries no verdict
+    either, and is read as such rather than raising inside the resume path."""
+    certificate = row.get("certificate")
+    return (isinstance(certificate, dict)
+            and certificate.get("verdict") == "ERROR")
+
+
+def certificate_verdict(rows):
+    """Configuration mode's recommendation: the certificate decides.
+
+    ``cleared`` when a cell's certificate reads PASS; ``weight`` is the
+    SMALLEST passing weight (ties to the first architecture by name);
+    otherwise the nearest miss (smallest ``max_atom_mHa``) is quoted. A cell
+    whose certificate raised is counted, not judged. ``weight`` and ``reason``
+    keep the table printer's contract.
+    """
+    certified = [r for r in rows if isinstance(r.get("certificate"), dict)
+                 and not _certificate_error(r)]
+    passing = sorted((float(r["weight"]), str(r["arch"])) for r in certified
+                     if r["certificate"].get("verdict") == "PASS")
+
+    def _atom(r):
+        value = r["certificate"].get("max_atom_mHa")
+        return float(value) if value is not None else float("inf")
+
+    nearest = min(certified, key=_atom, default=None)
+    if passing:
+        reason = (f"{len(passing)} cell(s) PASSED the fidelity certificate: "
+                  + ", ".join(f"{a} w={w:g}" for w, a in passing))
+    elif nearest is not None and math.isfinite(_atom(nearest)):
+        reason = (f"no cell passed the fidelity certificate; nearest "
+                  f"{nearest['arch']} w={float(nearest['weight']):g} at "
+                  f"max_atom {_atom(nearest)} mHa")
+    elif nearest is not None:
+        # Certified, but the payload carried no atom maximum to rank on.
+        reason = ("no cell passed the fidelity certificate, and no certificate "
+                  "reported a free-atom maximum to rank the misses by")
+    else:
+        reason = "no cell was certified"
+    return {
+        "rule": "fidelity_certificate", "cleared": bool(passing),
+        "weight": passing[0][0] if passing else None,
+        "passing": [{"arch": a, "weight": w} for w, a in passing],
+        "archs_measured": sorted({str(r["arch"]) for r in rows}),
+        "n_cells_certified": len(certified),
+        "n_certificate_errors": sum(1 for r in rows if _certificate_error(r)),
+        "reason": reason,
+    }
 
 
 #: The identity keys a resumed table has to agree with the requested run on.
@@ -1284,34 +1564,65 @@ def run_cell(arch, arch_name, data_path, work_dir, *, weight, n_steps, seed,
 _RESUME_IDENTITY_KEYS = ("basis", "grid_level", "orientation_lock_strength",
                          "exchange_footing", "dfs_set", "pool_atoms", "atoms",
                          "n_steps", "seed", "loss_weighting", "polarized",
-                         "validation_fraction", "smoke", "schedule")
+                         "validation_fraction", "smoke", "schedule",
+                         "descriptor_coordinates", "run")
 
 #: What a stored table means by a key it does not carry. A table written before
 #: the schedule flags existed was fitted at the spec defaults by construction,
-#: so on --resume it equals a flag-less request and differs from a scheduled one.
-_IDENTITY_DEFAULTS = {"schedule": _SPEC_SCHEDULE_DEFAULTS}
+#: so on --resume it equals a flag-less request and differs from a scheduled
+#: one; one written before the coordinates flag measured the registry's legacy
+#: coordinates; one written before --config existed was fitted against no run.
+_IDENTITY_DEFAULTS = {"schedule": _SPEC_SCHEDULE_DEFAULTS,
+                      "descriptor_coordinates": "legacy", "run": None}
 
 
 def build_identity(args, lock, smoke_atoms):
-    """The identity block: everything a measured row depends on."""
+    """The identity block: everything a measured row depends on. In
+    configuration mode the set, the footing, the hold-out and the run block
+    are read off the configuration; otherwise they are the probe's own."""
+    cfg = args.cfg
+    pt = cfg.pretrain if cfg is not None else None
+    campaign = smoke_atoms is None
     return {
         "basis": args.basis, "grid_level": int(args.grid_level),
         "orientation_lock_strength": float(lock),
-        "exchange_footing": "spin_channel",
-        "dfs_set": smoke_atoms is None, "pool_atoms": smoke_atoms is None,
+        "exchange_footing": (str(pt.exchange_footing) if pt is not None
+                             else "spin_channel"),
+        "dfs_set": bool(pt.dfs_set) if pt is not None else campaign,
+        "pool_atoms": bool(pt.pool_atoms) if pt is not None else campaign,
         # The explicit list is part of what a row MEASURES, so it is part of
         # the identity: a table written before the campaign's list was
         # carried (``atoms: null``, i.e. the two inventories alone, without
         # free Na) is refused on resume rather than merged into one whose
         # rows saw a different set.
-        "atoms": [list(a) for a in (smoke_atoms if smoke_atoms is not None
-                                    else CAMPAIGN_ATOMS)],
+        "atoms": [list(a) for a in (pt.atoms if pt is not None else
+                                    (CAMPAIGN_ATOMS if campaign
+                                     else smoke_atoms))],
         "n_steps": int(args.n_steps), "seed": int(args.seed),
         "loss_weighting": args.loss_weighting,
         "polarized": bool(args.polarized),
-        "validation_fraction": 0.0,
+        "validation_fraction": (float(pt.validation_fraction)
+                                if pt is not None else 0.0),
         "smoke": bool(args.smoke),
         "schedule": resolved_schedule(args),
+        "descriptor_coordinates": args.descriptor_coordinates,
+        "run": None if cfg is None else {
+            "config": os.path.abspath(args.config),
+            "objective_arm": args.objective_arm,
+            "density_fit": bool(cfg.inputs.density_fit),
+            "auxbasis": cfg.inputs.auxbasis,
+            "use_polarized_correlation": bool(
+                getattr(cfg, "use_polarized_correlation", False)),
+            "model": {"parent_anchor": bool(cfg.model.parent_anchor),
+                      "descriptor_coordinates": args.descriptor_coordinates},
+            "parent_density": str(pt.parent_density),
+            "validation_seed": int(pt.validation_seed),
+            "validate_every": int(pt.validate_every),
+            "patience": int(pt.patience),
+            "points_per_system": int(pt.points_per_system),
+            "sampling_seed": int(pt.sampling_seed),
+            "mesh_fraction": float(pt.mesh_fraction),
+        },
         "data_dir": os.path.abspath(args.data_dir),
     }
 
@@ -1351,6 +1662,12 @@ def load_resumable_rows(path, identity):
         key = (str(row.get("arch")), float(row.get("weight", float("nan"))))
         if key in seen:
             continue
+        if _certificate_error(row):
+            # A cell whose certificate never reached a verdict is not a
+            # measured cell: it is re-run rather than carried over. It does not
+            # claim the key either, or an errored row standing ahead of a good
+            # one for the same cell in a hand-merged table would discard both.
+            continue
         seen.add(key)
         kept.append(row)
     return kept
@@ -1360,13 +1677,13 @@ def main(argv=None):
     args = parse_args(argv)
     t0 = time.time()
 
-    import dataclasses
+    from xcquinox.alec.config import list_architectures
+    from xcquinox.alec.pretrain_data_gen import PRETRAIN_ORIENTATION_LOCK_STRENGTH
 
-    from xcquinox.alec.config import get_architecture, list_architectures
-    from xcquinox.alec.pretrain_data_gen import (
-        PRETRAIN_ORIENTATION_LOCK_STRENGTH, resolve_parent_density)
-
-    lock = PRETRAIN_ORIENTATION_LOCK_STRENGTH
+    # The lock is part of the data's identity: the configuration's in
+    # configuration mode, the generator's own otherwise.
+    lock = (args.cfg.inputs.orientation_lock_strength if args.cfg is not None
+            else PRETRAIN_ORIENTATION_LOCK_STRENGTH)
     smoke_atoms = SMOKE_ATOMS if args.smoke else None
     # Refused by name rather than through a bare KeyError: a mistyped
     # architecture is a mistake worth an hour of queue time to make plainly.
@@ -1376,21 +1693,33 @@ def main(argv=None):
             f"probe_pretrain_energy_weight: unknown architecture(s) "
             f"{', '.join(repr(n) for n in unknown)}; the registry holds "
             f"{', '.join(list_architectures())}.")
-    # The run-level polarization flag is patched onto every swept architecture
-    # before anything is read off it, exactly as cluster/_datagen.py's
-    # _swept_architectures and spec_builder do it, so the objective measured
-    # here is the objective the campaign trains.
-    archs = [(name, dataclasses.replace(
-        get_architecture(name),
-        use_polarized_correlation=bool(args.polarized)))
-        for name in args.archs]
+    # The swept architectures as the cells fit them: through the run's own
+    # resolution in configuration mode, otherwise the registry with the
+    # command line's polarization and coordinates applied as a model block.
+    archs = resolve_architectures(args)
     for name, arch in archs:
         _check_rung_consistency(name, arch)
 
     log(f"[probe] identity: basis={args.basis} grid_level={args.grid_level} "
-        f"lock={lock:g} footing=spin_channel polarized={bool(args.polarized)} "
+        f"lock={lock:g} footing="
+        f"{args.cfg.pretrain.exchange_footing if args.cfg is not None else 'spin_channel'} "
+        f"polarized={bool(args.polarized)} "
         f"loss_weighting={args.loss_weighting} n_steps={args.n_steps} "
-        f"seed={args.seed} smoke={bool(args.smoke)}")
+        f"seed={args.seed} coordinates={args.descriptor_coordinates} "
+        f"smoke={bool(args.smoke)}")
+    if args.cfg is not None:
+        pt = args.cfg.pretrain
+        log(f"[probe] config: {os.path.abspath(args.config)} "
+            f"objective_arm={args.objective_arm} "
+            f"density_fit={bool(args.cfg.inputs.density_fit)} "
+            f"auxbasis={args.cfg.inputs.auxbasis} "
+            f"parent_density={pt.parent_density} dfs_set={pt.dfs_set} "
+            f"pool_atoms={pt.pool_atoms} atoms={list(pt.atoms)} "
+            f"validation={pt.validation_fraction}/{pt.validation_seed}/"
+            f"{pt.validate_every}/{pt.patience} "
+            f"points_per_system={pt.points_per_system} "
+            f"sampling_seed={pt.sampling_seed} mesh_fraction={pt.mesh_fraction} "
+            f"anchor={bool(args.cfg.model.parent_anchor)}")
     log("[probe] schedule: " + " ".join(
         f"{k}={v:g}" for k, v in resolved_schedule(args).items())
         + ("" if schedule_kwargs(args) else " (PretrainSpec defaults)"))
@@ -1414,10 +1743,13 @@ def main(argv=None):
         f"{sum(1 for c in cells if c in done)} already measured")
 
     def _write(complete):
-        verdict = recommend(rows, tol_atom_mha=args.tol_atom_mha,
-                            tol_ae_kcal=args.tol_ae_kcal,
-                            margin_fraction=args.margin_fraction,
-                            pointwise_factor=args.pointwise_factor)
+        if args.cfg is not None:
+            verdict = certificate_verdict(rows)
+        else:
+            verdict = recommend(rows, tol_atom_mha=args.tol_atom_mha,
+                                tol_ae_kcal=args.tol_ae_kcal,
+                                margin_fraction=args.margin_fraction,
+                                pointwise_factor=args.pointwise_factor)
         write_table(args.out, {
             "identity": identity,
             # Beside the identity and deliberately NOT part of it: the
@@ -1445,16 +1777,26 @@ def main(argv=None):
         if all((name, float(w)) in done for w in args.weights):
             continue                      # nothing left to measure for it
         polarized = bool(getattr(arch, "use_polarized_correlation", False))
-        parent = resolve_parent_density(arch, "auto")
+        parent = run_parent(args, arch)
         key = (polarized, parent)
         if key in paths:
             continue
         started = time.time()
         log(f"[probe] data: polarized={polarized} parent={parent} ...")
-        paths[key] = ensure_data(
-            args.data_dir, polarized=polarized, reference_xc=parent,
-            basis=args.basis, grid_level=args.grid_level, lock_strength=lock,
-            smoke_atoms=smoke_atoms)
+        if args.cfg is not None:
+            # The run's own file, through the call its datagen stage makes;
+            # a file at another identity is refused, never rebuilt, since the
+            # study reads what the run trained on.
+            from xcquinox.alec.cluster._datagen import datagen_call
+            from xcquinox.alec.pretrain_data_gen import ensure_pretrain_data
+            data_dir, keywords = datagen_call(args.cfg, polarized, parent)
+            paths[key] = ensure_pretrain_data(data_dir, progress=True,
+                                              on_stale="refuse", **keywords)
+        else:
+            paths[key] = ensure_data(
+                args.data_dir, polarized=polarized, reference_xc=parent,
+                basis=args.basis, grid_level=args.grid_level,
+                lock_strength=lock, smoke_atoms=smoke_atoms)
         log(f"[probe] data: {paths[key]} "
             f"({time.time() - started:.1f}s, total {time.time() - t0:.1f}s)")
 
@@ -1466,7 +1808,7 @@ def main(argv=None):
     index = 0
     for name, arch in archs:
         polarized = bool(getattr(arch, "use_polarized_correlation", False))
-        parent = resolve_parent_density(arch, "auto")
+        parent = run_parent(args, arch)
         for weight in args.weights:
             index += 1
             label = f"({index}/{total}) {name} w_E={weight:g}"
@@ -1475,12 +1817,22 @@ def main(argv=None):
                 continue
             log(f"[probe] {label} START (elapsed {time.time() - t0:.1f}s)")
             try:
-                rows.append(run_cell(
+                row = run_cell(
                     arch, name, paths[(polarized, parent)], work_dir,
                     weight=weight, n_steps=args.n_steps, seed=args.seed,
                     loss_weighting=args.loss_weighting,
                     recon_rtol=args.recon_rtol, label=label,
-                    schedule=schedule_kwargs(args)))
+                    schedule=schedule_kwargs(args), cfg=args.cfg,
+                    arm=args.objective_arm)
+                rows.append(row)
+                if _certificate_error(row):
+                    # The fit is kept in the row; the cell is still a failed
+                    # cell, so the sweep exits 1 and names it, and --resume
+                    # re-runs it rather than carrying an unverdicted row.
+                    failures.append({"arch": name, "weight": float(weight),
+                                     "error": row["certificate"]["reason"]})
+                    log(f"[probe] {label} FAILED: certificate "
+                        f"{row['certificate']['reason']}")
             except Exception as exc:                     # noqa: BLE001
                 failures.append({"arch": name, "weight": float(weight),
                                  "error": f"{type(exc).__name__}: {exc}"})

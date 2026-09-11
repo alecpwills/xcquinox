@@ -11,10 +11,25 @@ from __future__ import annotations
 
 import os
 import types
+from pathlib import Path
 
 import pytest
 
 from xcquinox.alec.cluster import _datagen
+
+#: The campaign configuration the factored call is read against: the v7
+#: meta-GGA families group, whose five architectures all sit on one parent
+#: density, so the stage builds exactly one file.
+_MGGA_CONFIG = (Path(__file__).resolve().parents[3] / "hpcjobs" / "configs"
+                / "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml")
+
+
+def _mgga_config():
+    """The campaign configuration file, skipped where the checkout has none."""
+    pytest.importorskip("yaml")
+    if not _MGGA_CONFIG.is_file():
+        pytest.skip(f"no {_MGGA_CONFIG.name} in this checkout")
+    return _MGGA_CONFIG
 
 
 def _ns(**kw):
@@ -569,3 +584,79 @@ def test_every_shipped_configuration_clears_the_datagen_refusal(monkeypatch,
         if cfg.inputs.grid_level >= pdg.COARSE_DEGENERATE_MIN_GRID_LEVEL:
             assert (cfg.inputs.orientation_lock_strength
                     == pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH), path
+
+
+# ---------------------------------------------------------------------------
+# The generation call as a module-level function: the stage and any tool that
+# opens the file it wrote ask for ONE identity
+# ---------------------------------------------------------------------------
+
+def test_datagen_call_is_the_stage_call(monkeypatch, tmp_path):
+    """The call the stage makes IS the factored one, argument for argument.
+
+    A tool that opens the file this stage wrote must derive the file's
+    identity through the same code. A keyword present on one side alone names
+    another file, or -- worse -- rebuilds the run's own under a manifest the
+    run never asked for, at the cost of the reference SCFs and of the
+    comparison the file exists for.
+    """
+    from xcquinox.alec.cluster._datagen import datagen_call
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "resolved_config.yaml").write_text(_mgga_config().read_text())
+    calls = []
+    monkeypatch.setattr(
+        _datagen, "_ensure_pretrain_data",
+        lambda data_dir, **kw: (calls.append((data_dir, kw))
+                                or f"{data_dir}/x.npz"))
+    assert _datagen.main([str(run_dir)]) == 0
+
+    cfg = load_grid_config(str(run_dir / "resolved_config.yaml"))
+    # Every architecture on this axis carries the meta-GGA ingredient and the
+    # run is polarized, so the sweep requires exactly one file.
+    assert len(calls) == 1
+    assert calls[0] == datagen_call(cfg, True, "scan")
+
+
+def test_datagen_call_carries_the_run_identity(monkeypatch):
+    """The keywords are the run's whole identity, each one stated.
+
+    The comparison above cannot see a keyword dropped from both sides at once,
+    so the identity is read off the campaign file here: the basis, the grid,
+    the density fitting, the lock, the set switches, the footing and the
+    parent. The stage's own call raises on a duplicated keyword, and the
+    helper keeps that rather than letting a protocol mapping overwrite the
+    identity silently -- an overwritten basis is a file built at one identity
+    and read as another.
+    """
+    from xcquinox.alec.cluster._datagen import datagen_call
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+
+    cfg = load_grid_config(str(_mgga_config()))
+    data_dir, keywords = datagen_call(cfg, True, "scan")
+    assert data_dir == (
+        "/gpfs/scratch/awills/"
+        "pretrain_data_dfs_6311ppg3df2pd_g3_v7g2_families_mgga")
+    assert keywords == {
+        "basis": "6-311++G(3df,2pd)", "grid_level": 3, "density_fit": True,
+        # auxbasis is deliberately unset in the file and auto-selected from
+        # the orbital basis, so the run's identity states None.
+        "auxbasis": None,
+        "polarized": True, "descriptors": True,
+        "orientation_lock_strength": 3.0e-5,
+        "atoms": (("H", 1), ("Li", 1), ("C", 2), ("N", 3), ("O", 2),
+                  ("F", 1), ("Na", 1)),
+        "dfs_set": True, "pool_atoms": True,
+        "exchange_footing": "spin_channel",
+        "reference_xc": "scan",
+        # No mesh_fraction: the file states the generator's own 0.3. No
+        # waiver: at grid level 3 with the lock on nothing is refused.
+    }
+
+    monkeypatch.setattr(_datagen, "_protocol_keywords",
+                        lambda pt: {"basis": "sto-3g"})
+    with pytest.raises(TypeError) as excinfo:
+        datagen_call(cfg, True, "scan")
+    assert "basis" in str(excinfo.value)

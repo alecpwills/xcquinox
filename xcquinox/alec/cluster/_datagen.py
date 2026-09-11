@@ -222,6 +222,48 @@ def _protocol_keywords(pt):
     return extra
 
 
+def datagen_call(cfg, polarized, reference_xc):
+    """``(data_dir, keywords)`` of the stage's ``ensure_pretrain_data`` call for
+    one ``(polarized, reference_xc)`` file: the run's identity block, the
+    protocol keywords the pretrain block adds (:func:`_protocol_keywords`),
+    the parent when the call is not the historical one, the run's waiver. The
+    stage and the energy-weight probe both call this, so the file the probe
+    opens is the file the run's datagen wrote. A protocol keyword that
+    restates the identity is refused, as the stage's own ``**`` expansion
+    refuses a duplicated keyword, rather than overwriting it silently.
+    """
+    call = dict(_protocol_keywords(cfg.pretrain))
+    # The reference density is named only when the call is not the
+    # historical one, so a pre-protocol configuration reaches the generator
+    # with exactly the keyword set it always did.
+    if call or reference_xc != "pbe":
+        call["reference_xc"] = reference_xc
+    keywords = dict(
+        basis=cfg.inputs.basis,
+        grid_level=cfg.inputs.grid_level,
+        density_fit=cfg.inputs.density_fit,
+        auxbasis=cfg.inputs.auxbasis,
+        polarized=polarized,
+        descriptors=True,
+        # The lock the parent density is computed at is part of the data's
+        # identity: a degenerate atom's rows are a different component of its
+        # manifold under a different lock. Stating the run's value asks the
+        # currency check at the run's own Hamiltonian.
+        orientation_lock_strength=cfg.inputs.orientation_lock_strength,
+    )
+    # The waiver of the generator's irreproducible-degenerate refusal is a
+    # RUN-level statement, passed only when it is granted (False is the
+    # generator's own default).
+    if bool(getattr(cfg.inputs, "allow_irreproducible_degenerate", False)):
+        keywords["allow_irreproducible_degenerate"] = True
+    duplicate = sorted(set(keywords) & set(call))
+    if duplicate:
+        raise TypeError(
+            f"datagen_call: protocol keyword restates the identity: {duplicate}")
+    keywords.update(call)
+    return cfg.pretrain.data_dir, keywords
+
+
 def main(argv=None) -> int:
     """Datagen-job entrypoint. Returns a process exit code (0 = success).
 
@@ -273,7 +315,6 @@ def main(argv=None) -> int:
     # resolved_config.yaml written before the key existed resolves.
     waived = bool(getattr(cfg.inputs, "allow_irreproducible_degenerate",
                           False))
-    waiver = {"allow_irreproducible_degenerate": True} if waived else {}
     _log(
         f"archs={list(cfg.sweep.arch)} -> required: {required} | "
         f"basis={cfg.inputs.basis} grid_level={cfg.inputs.grid_level} "
@@ -303,31 +344,11 @@ def main(argv=None) -> int:
             # call carries an explicit reference_xc='pbe'. The copy is
             # otherwise defensive, and is what keeps a keyword added here
             # under a condition from persisting into the following file.
-            call = dict(extra)
-            # The reference density is named only when the call is not the
-            # historical one, so a pre-protocol configuration reaches the
-            # generator with exactly the keyword set it always did.
-            if call or reference_xc != "pbe":
-                call["reference_xc"] = reference_xc
-            path = _ensure_pretrain_data(
-                data_dir,
-                basis=cfg.inputs.basis,
-                grid_level=cfg.inputs.grid_level,
-                density_fit=cfg.inputs.density_fit,
-                auxbasis=cfg.inputs.auxbasis,
-                polarized=polarized,
-                descriptors=True,
-                # The lock the parent density is computed at is part of the
-                # data's identity: a degenerate atom's rows are a different
-                # component of its manifold under a different lock. The harness
-                # default is the generator's own, but a configuration pinned at
-                # another value (0.0 in the pre-lock campaigns) must regenerate;
-                # stating the run's value asks the currency check at the run's
-                # own Hamiltonian instead of at the generator's.
-                orientation_lock_strength=cfg.inputs.orientation_lock_strength,
-                **waiver,
-                **call,
-            )
+            # The call is built by datagen_call, which the energy-weight probe
+            # calls too, so the identity of the file this stage writes and of
+            # the file that probe opens is stated once.
+            call_dir, keywords = datagen_call(cfg, polarized, reference_xc)
+            path = _ensure_pretrain_data(call_dir, **keywords)
             _log(f"ensured pretrain data (polarized={polarized}, "
                  f"reference_xc={reference_xc}): {path}")
     except Exception as exc:  # noqa: BLE001, fail the stage loudly + non-zero.

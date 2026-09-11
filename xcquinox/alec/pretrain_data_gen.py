@@ -1415,6 +1415,12 @@ def _effective_auxbasis(basis, density_fit, auxbasis):
     return auxbasis if auxbasis is not None else default_auxbasis(basis)
 
 
+class PretrainDataStale(RuntimeError):
+    """A pretraining file exists at the requested path with another identity
+    and the caller asked that it not be rebuilt
+    (``ensure_pretrain_data(..., on_stale="refuse")``)."""
+
+
 def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
                          grid_level=DEFAULT_GRID_LEVEL, polarized=True,
                          descriptors=True, density_fit=False, auxbasis=None,
@@ -1423,7 +1429,8 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
                          exchange_footing="total",
                          mesh_fraction=MESH_WEIGHT_FRACTION,
                          orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
-                         allow_irreproducible_degenerate=False):
+                         allow_irreproducible_degenerate=False,
+                         on_stale="regenerate"):
     """Skip-if-current driver for staged pretrain data.
 
     Returns the canonical ``.npz`` path, (re)generating it ONLY when the file
@@ -1438,7 +1445,16 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
     The irreproducible-degenerate refusal is applied to the requested
     IDENTITY, before the currency check: a file already on disk at an identity
     the generator would refuse to produce must not be served either.
+
+    ``on_stale`` decides what a PRESENT file of another identity gets:
+    ``"regenerate"`` (the default) rebuilds it; ``"refuse"`` raises
+    :class:`PretrainDataStale`, for a caller that expects the file another
+    stage wrote and must read a mismatch as a parity defect rather than pay
+    for a rebuild it never asked for. An absent file generates under either.
     """
+    if on_stale not in ("regenerate", "refuse"):
+        raise ValueError(
+            f"on_stale must be 'regenerate' or 'refuse', got {on_stale!r}")
     _check_generator_arguments(reference_xc, exchange_footing, mesh_fraction)
     eff_aux = _effective_auxbasis(basis, density_fit, auxbasis)
     systems = resolve_pretrain_systems(atoms=atoms, dfs_set=dfs_set,
@@ -1456,6 +1472,15 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
                                 mesh_fraction=mesh_fraction,
                                 orientation_lock_strength=orientation_lock_strength):
         return out_path
+    if on_stale == "refuse" and os.path.isfile(out_path):
+        raise PretrainDataStale(
+            f"{out_path} exists but its manifest is not the requested identity "
+            f"(basis {basis!r}, grid {grid_level}, auxbasis {eff_aux!r}, "
+            f"reference_xc {reference_xc!r}, footing {exchange_footing!r}, "
+            f"mesh {mesh_fraction}, lock {orientation_lock_strength}, "
+            f"{len(systems)} systems); regeneration refused: the caller "
+            "expects the file another stage wrote, and a mismatch is a parity "
+            "defect to be read, not a file to be rebuilt")
     # ``systems`` alone: the generator takes the resolved tuple whenever it is
     # given and ignores ``atoms`` entirely, so passing both stated one input
     # twice and invited the two to disagree.

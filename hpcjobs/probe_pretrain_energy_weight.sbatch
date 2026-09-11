@@ -51,8 +51,9 @@
 # and this set leaves out, deep_attn_3x16, is its smallest offset (4.1) and
 # carries no descriptor deep_3x16 does not. The set is the worst offenders
 # rather than a sample because campaign v6's train array depends afterok on
-# the pretrain ARRAY: ONE architecture whose certificate fails blocks all 341
-# cells, not its own eleven, so a weight measured only where the offsets were
+# the pretrain ARRAY: ONE architecture whose certificate fails blocks every cell of the
+# reference sweep (341 when this was written, 374 since the registry grew), not its own
+# eleven, so a weight measured only where the offsets were
 # small is extrapolated onto exactly the architectures that decide whether the
 # campaign runs at all. Both additions are PBE-parent, so the sweep still
 # generates two data files and the data allowance below is unchanged.
@@ -62,7 +63,7 @@
 # BH76 / W4-11 pools and v6's explicit atom list, 38 systems on the PBE
 # parent and 36 on SCAN -- because a system missing from it is a gate
 # quantity that was never measured. The IDENTITY is REDUCED on purpose:
-# def2-svp / grid level 3, 1000 steps, no validation hold-out, six of the 31
+# def2-svp / grid level 3, 1000 steps, no validation hold-out, six of the 34
 # architectures. At 6-311++G(3df,2pd) the sweep would cost more than the
 # campaign it parameterizes, and the weight is dimensionful, so it does not
 # transfer exactly across a change of basis or grid in any case. The number

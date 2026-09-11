@@ -448,42 +448,23 @@ def prepare_inputs(
         # mixed-rung sweep gets under ``pretrain.parent_density: auto``. The
         # historical call passed the run-level polarization flag alone, which
         # cannot express that split.
-        from xcquinox.alec.cluster._datagen import (_protocol_keywords,
-                                                    _required_data_specs)
-        _extra = _protocol_keywords(cfg.pretrain)
+        from xcquinox.alec.cluster._datagen import _required_data_specs
         # The refusal the generator applies to the requested identity (a
         # spatially degenerate free atom below grid level 3, or with the lock
         # off) precedes the currency check, so the preflight raises on a file
         # that is already on disk and current unless the run's waiver reaches
         # it here too. Stated only where it is granted, for the reason the
         # datagen stage states it only there.
-        _waiver = ({"allow_irreproducible_degenerate": True}
-                   if bool(getattr(cfg.inputs,
-                                   "allow_irreproducible_degenerate", False))
-                   else {})
+        # The call is built by ``_datagen.datagen_call``, the one the datagen
+        # stage makes, so the claim above -- that this stage and that one agree
+        # on the file by construction -- is true by construction rather than by
+        # two transcriptions staying in step. They had already drifted: this
+        # site omitted ``descriptors=True``, which the generator's own default
+        # made harmless and which no test could see.
+        from xcquinox.alec.cluster._datagen import datagen_call
         for _polarized, _reference_xc in _required_data_specs(cfg):
-            _call = dict(_extra)
-            # The reference density is named only when the call is not the
-            # historical one, so a pre-protocol configuration reaches the
-            # generator with exactly the keyword set it always did and its
-            # existing data file stays current.
-            if _call or _reference_xc != "pbe":
-                _call["reference_xc"] = _reference_xc
-            _ensure_pretrain_data(
-                cfg.pretrain.data_dir,
-                basis=cfg.inputs.basis,
-                grid_level=cfg.inputs.grid_level,
-                density_fit=cfg.inputs.density_fit,
-                auxbasis=cfg.inputs.auxbasis,
-                polarized=_polarized,
-                # Part of the identity for the reason the datagen stage states
-                # it: the harness default is the generator's own, but a run
-                # pinned at another lock (0.0 in the pre-lock campaigns) must
-                # not be served the locked file.
-                orientation_lock_strength=cfg.inputs.orientation_lock_strength,
-                **_waiver,
-                **_call,
-            )
+            _data_dir, _keywords = datagen_call(cfg, _polarized, _reference_xc)
+            _ensure_pretrain_data(_data_dir, **_keywords)
 
     # --- 5. stage the held-out VALIDATION slice (WS3, option a) -------------
     # Only when a val_refs_dir is configured AND a run_dir is given (the

@@ -74,7 +74,7 @@ import os
 import sys
 import time
 
-from xcquinox.alec.config import apply_model_block, get_architecture
+from xcquinox.alec.config import PretrainSpec, apply_model_block, get_architecture
 from xcquinox.alec.cluster import fidelity
 from xcquinox.alec.cluster.grid_config import (
     load_grid_config, _canon_axis, pretrain_checkpoint_dir,
@@ -294,6 +294,65 @@ _fidelity_certificate = fidelity.fidelity_certificate
 
 
 # ---------------------------------------------------------------------------
+# The run's resolution of an architecture and its pretrain spec, as module-
+# level functions: one implementation for this stage and for any tool that
+# reproduces one of its fits (the energy-weight probe in configuration mode).
+# ---------------------------------------------------------------------------
+
+def resolve_run_architecture(cfg, arch):
+    """The architecture a run trains: the registry entry with the run's
+    polarization override and its ``model:`` block applied, as spec_builder,
+    the certificate (``fidelity.build_certified_model``) and this stage
+    resolve it."""
+    if getattr(cfg, "use_polarized_correlation", False):
+        arch = dataclasses.replace(arch, use_polarized_correlation=True)
+    model_block = getattr(cfg, "model", None)
+    if model_block is not None:
+        arch = apply_model_block(arch, model_block)
+    return arch
+
+
+def pretrain_spec_from_config(cfg, arch, checkpoint_dir, **overrides):
+    """The ``PretrainSpec`` of a run's ``pretrain:`` block, every field read
+    from the configuration, with the pre-protocol defaults a
+    ``resolved_config.yaml`` written before a knob existed still loads under
+    (which is what the recovery and resubmit paths replay). ``overrides`` are
+    the fields a probe varies (``n_steps``, ``energy_term_weight``,
+    ``loss_weighting``); a name that is not a field is refused rather than
+    dropped."""
+    pt = cfg.pretrain
+    fields = dict(
+        arch=arch,
+        data_dir=pt.data_dir,
+        checkpoint_dir=checkpoint_dir,
+        n_steps=pt.n_steps,
+        lr_start=pt.lr_start,
+        lr_end=pt.lr_end,
+        lr_decay_start=pt.lr_decay_start,
+        grad_clip=pt.grad_clip,
+        seed=pt.seed,
+        loss_weighting=pt.loss_weighting,
+        parent_density=getattr(pt, "parent_density", "pbe"),
+        energy_term_weight=getattr(pt, "energy_term_weight", 0.0),
+        validation_fraction=getattr(pt, "validation_fraction", 0.0),
+        validation_seed=getattr(pt, "validation_seed", 0),
+        validate_every=getattr(pt, "validate_every", 50),
+        patience=getattr(pt, "patience", 0),
+        # Published-schedule tail and rho*w sampling (2026-09-03); the
+        # defaults reproduce every earlier resolved snapshot exactly.
+        lr_decay_end=getattr(pt, "lr_decay_end", 1.0),
+        points_per_system=getattr(pt, "points_per_system", 800),
+        sampling_seed=getattr(pt, "sampling_seed", 0),
+    )
+    unknown = sorted(set(overrides) - set(fields))
+    if unknown:
+        raise ValueError(
+            f"pretrain_spec_from_config: not a PretrainSpec field: {unknown}")
+    fields.update(overrides)
+    return PretrainSpec(**fields)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -364,18 +423,9 @@ def main(argv=None) -> int:
         sys.stdout.flush()
         return 1
 
-    # Match the training-spec arch: when the run enables spin-polarized
-    # correlation, pretrain the spin-polarization-aware cnet so the pretrained
-    # checkpoint's shape matches what training/eval will load.
-    if getattr(cfg, "use_polarized_correlation", False):
-        arch_config = dataclasses.replace(
-            arch_config, use_polarized_correlation=True)
-    # The run's model block (the parent anchor, the descriptor coordinates),
-    # applied as spec_builder applies it, so the pretrained networks are the
-    # class the training specs load.
-    model_block = getattr(cfg, "model", None)
-    if model_block is not None:
-        arch_config = apply_model_block(arch_config, model_block)
+    # The run's polarization and model block, through the one resolution the
+    # certificate and any tool reproducing this fit share.
+    arch_config = resolve_run_architecture(cfg, arch_config)
 
     pt = cfg.pretrain
     # Run-scoped (<run_dir>/pretrain/<arch>) so two runs pretraining the same
@@ -406,34 +456,9 @@ def main(argv=None) -> int:
         return 0
     _log(arch_name, f"pretraining from scratch: {keep_reason}")
 
-    from xcquinox.alec.config import PretrainSpec
-    spec = PretrainSpec(
-        arch=arch_config,
-        data_dir=pt.data_dir,
-        checkpoint_dir=checkpoint_dir,
-        n_steps=pt.n_steps,
-        lr_start=pt.lr_start,
-        lr_end=pt.lr_end,
-        lr_decay_start=pt.lr_decay_start,
-        grad_clip=pt.grad_clip,
-        seed=pt.seed,
-        loss_weighting=pt.loss_weighting,
-        # --- pretraining protocol ------------------------------------------
-        # Read through getattr with the pre-protocol default, so a
-        # resolved_config.yaml written before these knobs existed still loads
-        # here -- which is what the recovery and resubmit paths replay.
-        parent_density=getattr(pt, "parent_density", "pbe"),
-        energy_term_weight=getattr(pt, "energy_term_weight", 0.0),
-        validation_fraction=getattr(pt, "validation_fraction", 0.0),
-        validation_seed=getattr(pt, "validation_seed", 0),
-        validate_every=getattr(pt, "validate_every", 50),
-        patience=getattr(pt, "patience", 0),
-        # Published-schedule tail and rho*w sampling (2026-09-03); the
-        # defaults reproduce every earlier resolved snapshot exactly.
-        lr_decay_end=getattr(pt, "lr_decay_end", 1.0),
-        points_per_system=getattr(pt, "points_per_system", 800),
-        sampling_seed=getattr(pt, "sampling_seed", 0),
-    )
+    # The spec of the run's pretrain block, through the factory any tool that
+    # reproduces this fit reads the block with (pretrain_spec_from_config).
+    spec = pretrain_spec_from_config(cfg, arch_config, checkpoint_dir)
     # Every protocol knob the YAML can set is stated in the run record, so the
     # log says what the job trained with rather than what its defaults are.
     _log(

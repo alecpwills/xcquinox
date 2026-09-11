@@ -153,6 +153,60 @@ def test_ensure_regenerates_only_when_stale(tmp_path, monkeypatch):
     assert calls == ["def2-svp", "def2-tzvp"]
 
 
+def test_ensure_pretrain_data_refuses_a_stale_file_only_when_asked(
+        tmp_path, monkeypatch):
+    """A present file of another identity is refused where the caller says so.
+
+    A stage and a tool that reads that stage's file are in parity only while
+    the file on disk is the one the stage wrote. Rebuilding it under the
+    reader's identity turns a parity defect -- the two disagree about the
+    basis, the grid, the parent or the set -- into a silent regeneration, and
+    what was a statement to read becomes a file to pay for twice. Absence is
+    not staleness: a fresh directory generates under either value, which is
+    what keeps a first run working.
+    """
+    calls = []
+
+    def fake_generate(out_dir, *, basis, grid_level, polarized, descriptors,
+                      density_fit=False, systems=None, atoms=None,
+                      auxbasis=None, cusp_log_transform=True, **kwargs):
+        calls.append(basis)
+        path = os.path.join(out_dir, pdg.pretrain_data_filename(polarized))
+        _touch_npz(path)
+        return path
+
+    monkeypatch.setattr(pdg, "generate_pretrain_data_npz", fake_generate)
+    # Nothing on disk is ever current here, so the branch under test is the
+    # only thing that decides between a rebuild and a refusal.
+    monkeypatch.setattr(pdg, "pretrain_data_is_current", lambda *a, **k: False)
+    # He alone: a closed-shell atom is not spatially degenerate, so the
+    # generator's reproducibility refusal never fires at grid level 1 and
+    # nothing has to be waived.
+    settings = dict(atoms=(("He", 0),), basis="def2-svp", grid_level=1,
+                    polarized=False)
+    target = os.path.join(str(tmp_path), pdg.pretrain_data_filename(False))
+
+    # absent -> generated, whichever value is asked for
+    assert pdg.ensure_pretrain_data(str(tmp_path), on_stale="refuse",
+                                    **settings) == target
+    assert calls == ["def2-svp"]
+    assert os.path.isfile(target)
+
+    # present and stale -> regenerated under the default ...
+    assert pdg.ensure_pretrain_data(str(tmp_path), **settings) == target
+    assert calls == ["def2-svp", "def2-svp"]
+
+    # ... and refused, naming the path, under "refuse"
+    with pytest.raises(pdg.PretrainDataStale) as excinfo:
+        pdg.ensure_pretrain_data(str(tmp_path), on_stale="refuse", **settings)
+    assert target in str(excinfo.value)
+    assert calls == ["def2-svp", "def2-svp"]
+
+    with pytest.raises(ValueError) as excinfo:
+        pdg.ensure_pretrain_data(str(tmp_path), on_stale="x", **settings)
+    assert "on_stale" in str(excinfo.value)
+
+
 # --- physics: DF on the per-atom SCF, DF-off byte-identical -----------------
 
 def test_atom_columns_density_fit_runs():
@@ -188,12 +242,23 @@ def test_atom_columns_density_fit_off_matches_pre_df_path():
 
 @pytest.mark.slow
 def test_generate_writes_basis_tagged_manifest(tmp_path):
-    """A full generation writes a manifest recording the basis it used."""
+    """A full generation writes a manifest recording the basis it used.
+
+    The currency check is asked at the identity the file was generated at:
+    the system list is part of the identity since the manifest keys it, so
+    the one-atom set is stated to the check as it was to the generator (the
+    check's own default is the historical four-atom set, which names another
+    file).
+    """
+    atoms = (("He", 0),)
     path = pdg.generate_pretrain_data_npz(
-        str(tmp_path), atoms=(("He", 0),), basis="def2-svp", grid_level=1,
+        str(tmp_path), atoms=atoms, basis="def2-svp", grid_level=1,
         polarized=False, descriptors=False)
-    assert pdg.pretrain_data_is_current(path, basis="def2-svp", grid_level=1)
+    assert pdg.pretrain_data_is_current(path, basis="def2-svp", grid_level=1,
+                                        atoms=atoms)
     assert not pdg.pretrain_data_is_current(path, basis="def2-tzvp",
+                                            grid_level=1, atoms=atoms)
+    assert not pdg.pretrain_data_is_current(path, basis="def2-svp",
                                             grid_level=1)
 
 

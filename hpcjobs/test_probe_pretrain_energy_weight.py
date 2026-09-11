@@ -117,7 +117,8 @@ def test_the_default_set_holds_the_largest_recorded_parent_offsets():
 
     The certificate gate is "every architecture clears both halves", and the
     train array depends ``afterok`` on the pretrain ARRAY, so a single
-    architecture whose certificate fails blocks all 341 cells of campaign v6
+    architecture whose certificate fails blocks every cell of campaign v6 (341 when
+    this was written, 374 since the registry grew)
     rather than its own eleven. A weight chosen on architectures whose
     pre-certificate offsets were small is then extrapolated onto the ones that
     decide whether anything runs at all.
@@ -2055,3 +2056,531 @@ def test_smoke_metadata_carries_the_schedule(tmp_path):
         md = json.loads(path.read_text())
         recorded = {k: md.get(k) for k in _SCHEDULE_KEYS}
         assert recorded == _CAMPAIGN_SCHEDULE, (str(path), recorded)
+
+
+# --------------------------------------------------------------------------- #
+# Configuration mode: a cell is fitted as the run's own pretrain task fits it
+# and certified by the run's own certificate
+# --------------------------------------------------------------------------- #
+
+#: The data root the campaign file states, read back from the resolution.
+#: The configuration itself is ``_MGGA_CONFIG`` above: the v7 meta-GGA
+#: families group, whose learned clones missed the fidelity certificate.
+_MGGA_DATA_DIR = ("/gpfs/scratch/awills/"
+                  "pretrain_data_dfs_6311ppg3df2pd_g3_v7g2_families_mgga")
+
+#: The identity flags --config states for itself, each with a value to pass.
+#: Stating one beside --config would describe a fit the run does not make,
+#: which is the one thing configuration mode exists to prevent.
+_CONFIG_REFUSED_ARGV = (
+    ("--data-dir", ("--data-dir", "d")),
+    ("--seed", ("--seed", "1")),
+    ("--basis", ("--basis", "sto-3g")),
+    ("--grid-level", ("--grid-level", "1")),
+    ("--loss-weighting", ("--loss-weighting", "unweighted")),
+    ("--polarized", ("--polarized",)),
+    ("--no-polarized", ("--no-polarized",)),
+    ("--smoke", ("--smoke",)),
+    ("--lr-start", ("--lr-start", "0.001")),
+    ("--lr-end", ("--lr-end", "0.00001")),
+    ("--lr-decay-start", ("--lr-decay-start", "0.5")),
+    ("--lr-decay-end", ("--lr-decay-end", "0.9")),
+    ("--grad-clip", ("--grad-clip", "1.0")),
+    ("--descriptor-coordinates", ("--descriptor-coordinates", "dfs")),
+)
+
+
+def _mgga_config():
+    """The campaign configuration file, skipped where the checkout has none."""
+    pytest.importorskip("yaml")
+    if not _MGGA_CONFIG.is_file():
+        pytest.skip(f"no {_MGGA_CONFIG.name} in this checkout")
+    return _MGGA_CONFIG
+
+
+def _smoke_config(tmp_path):
+    """The campaign configuration reduced to a two-system STO-3G identity.
+
+    Only the SIZE of the run is reduced -- the basis, the grid, the density
+    fitting, the set and the step count. The objective, the schedule, the
+    model block, the validation settings and the fidelity block stay the
+    campaign's, so what runs against this file is the campaign's method on two
+    systems rather than a second method that resembles it. The live file
+    carries no ``auxbasis`` key and none is added here, so the loader reads it
+    as None exactly as it does for the campaign.
+    """
+    yaml = pytest.importorskip("yaml")
+    raw = yaml.safe_load(_mgga_config().read_text())
+    raw["inputs"]["basis"] = "sto-3g"
+    raw["inputs"]["grid_level"] = 1
+    raw["inputs"]["density_fit"] = False
+    raw["pretrain"]["data_dir"] = str(tmp_path / "data")
+    raw["pretrain"]["n_steps"] = 5
+    raw["pretrain"]["atoms"] = {"He": 0, "Li": 1}
+    raw["pretrain"]["dfs_set"] = False
+    raw["pretrain"]["pool_atoms"] = False
+    path = tmp_path / "smoke_config.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    return path
+
+
+def test_config_mode_refuses_identity_flags(tmp_path, capsys):
+    """A flag that would restate the run's identity is refused beside --config.
+
+    The configuration IS the identity in this mode: a basis, a seed or a
+    polarization accepted beside it would fit a cell at one identity and
+    certify it against another run's, and the table would say it measured the
+    campaign's fit. The two directions of the pairing are refused as well: an
+    objective arm names a run's objective and needs the run, and without a
+    configuration the data root is still required.
+    """
+    config = str(_mgga_config())
+    out = str(tmp_path / "t.json")
+    for flag, argv in _CONFIG_REFUSED_ARGV:
+        with pytest.raises(SystemExit) as excinfo:
+            pw.parse_args(["--config", config, "--out", out, *argv])
+        assert excinfo.value.code == 2, flag
+        assert flag in capsys.readouterr().err, flag
+
+    with pytest.raises(SystemExit) as excinfo:
+        pw.parse_args(["--data-dir", "d", "--out", out,
+                       "--objective-arm", "integration"])
+    assert excinfo.value.code == 2
+    assert "--config" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit) as excinfo:
+        pw.parse_args(["--out", out])
+    assert excinfo.value.code == 2
+    assert "--data-dir" in capsys.readouterr().err
+
+
+def test_config_mode_identity_is_the_configuration(tmp_path):
+    """Every resolved field is the configuration's, through its own loader.
+
+    A probe that transcribed the identity would measure the transcription: the
+    campaign's schedule, objective, coordinates, set and validation settings
+    are what decide what a cell learns, and each is read here off the file the
+    run is submitted with. The arm and the step count are the only two
+    departures, and they are recorded as departures -- the identity of a run
+    fitted under the other objective differs in the objective and in the arm
+    it names, and in nothing else.
+    """
+    from xcquinox.alec.config import get_architecture
+
+    config = str(_mgga_config())
+    out = str(tmp_path / "t.json")
+    args = pw.parse_args(["--config", config, "--out", out])
+    assert args.basis == "6-311++G(3df,2pd)"
+    assert args.grid_level == 3
+    assert args.polarized is True
+    assert args.loss_weighting == "rho_w_sampled"
+    assert args.seed == 42
+    assert pw.resolved_schedule(args) == {
+        "lr_start": 1.0e-3, "lr_end": 1.0e-5, "lr_decay_start": 0.5,
+        "lr_decay_end": 0.9, "grad_clip": 1.0}
+    assert args.n_steps == 20000
+    assert args.descriptor_coordinates == "dfs"
+    assert args.data_dir == _MGGA_DATA_DIR
+
+    lock = args.cfg.inputs.orientation_lock_strength
+    identity = pw.build_identity(args, lock, None)
+    assert identity["orientation_lock_strength"] == 3.0e-5
+    assert identity["exchange_footing"] == "spin_channel"
+    assert identity["dfs_set"] is True
+    assert identity["pool_atoms"] is True
+    assert identity["atoms"] == [list(a) for a in pw.CAMPAIGN_ATOMS]
+    assert identity["validation_fraction"] == 0.2
+    assert identity["descriptor_coordinates"] == "dfs"
+    assert identity["run"] == {
+        "config": os.path.abspath(config), "objective_arm": None,
+        "density_fit": True, "auxbasis": None,
+        "use_polarized_correlation": True,
+        "model": {"parent_anchor": False, "descriptor_coordinates": "dfs"},
+        "parent_density": "auto", "validation_seed": 0, "validate_every": 50,
+        "patience": 300, "points_per_system": 800, "sampling_seed": 42,
+        "mesh_fraction": 0.3,
+    }
+
+    arm_args = pw.parse_args(["--config", config, "--out", out,
+                              "--objective-arm", "integration"])
+    assert arm_args.loss_weighting == "integration"
+    arm_identity = pw.build_identity(arm_args, lock, None)
+    assert {k for k in identity if identity[k] != arm_identity[k]} == {
+        "loss_weighting", "run"}
+    assert {k for k in identity["run"]
+            if identity["run"][k] != arm_identity["run"][k]} == {
+        "objective_arm"}
+    assert arm_identity["run"]["objective_arm"] == "integration"
+
+    stepped = pw.parse_args(["--config", config, "--out", out,
+                             "--n-steps", "10000"])
+    assert pw.build_identity(stepped, lock, None)["n_steps"] == 10000
+
+    # The spec of one cell: the weight and the step count are the sweep's, the
+    # objective is the arm's, and everything else is the run's -- the seed,
+    # the schedule and the hold-out included, so the three arguments of the
+    # non-configuration signature are not read.
+    spec = pw.cell_spec(get_architecture("deep_mgga_3x16"),
+                        "/nowhere/data.npz", "/nowhere/ckpt", weight=10,
+                        n_steps=7, seed=0, loss_weighting="x", cfg=args.cfg,
+                        arm="integration")
+    assert spec.n_steps == 7
+    assert spec.energy_term_weight == 10.0
+    assert spec.loss_weighting == "integration"
+    assert spec.seed == 42
+    assert spec.lr_decay_start == 0.5
+
+
+def test_resolve_architectures_refuses_an_anchored_resolution(tmp_path):
+    """An anchored resolution stops the sweep by name.
+
+    An anchored network carries the parent's enhancement factor by
+    construction, so a cell fitted under one measures the residual and not
+    what the network learned; the levers under study are exactly what the
+    unanchored class has to supply on its own.
+    """
+    yaml = pytest.importorskip("yaml")
+    raw = yaml.safe_load(_mgga_config().read_text())
+    raw["model"]["parent_anchor"] = True
+    path = tmp_path / "anchored.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+
+    args = pw.parse_args(["--config", str(path), "--out",
+                          str(tmp_path / "t.json"),
+                          "--archs", "deep_mgga_3x16"])
+    with pytest.raises(SystemExit) as excinfo:
+        pw.resolve_architectures(args)
+    assert "deep_mgga_3x16" in str(excinfo.value)
+
+
+def test_resolve_architectures_applies_the_coordinates(tmp_path):
+    """The coordinates and the parent are applied, never assumed.
+
+    The registry's own coordinate set is ``legacy``, and every v7
+    configuration states ``dfs``: a table measured without the run's model
+    block reads the registry's layout and is a measurement of another network.
+    The parent a cell's file sits on is the configuration's request for the
+    same reason -- a run that asks for PBE targets is not certified against
+    SCAN.
+    """
+    yaml = pytest.importorskip("yaml")
+    resolved = pw.resolve_architectures(
+        _args("--archs", "deep_mgga_3x16,deep_3x16",
+              "--descriptor-coordinates", "dfs"))
+    assert [name for name, _arch in resolved] == ["deep_mgga_3x16",
+                                                  "deep_3x16"]
+    assert all(arch.descriptor_coordinates == "dfs" for _n, arch in resolved)
+    assert all(arch.use_polarized_correlation is True
+               for _n, arch in resolved)
+    assert all(not getattr(arch, "parent_anchor", False)
+               for _n, arch in resolved)
+
+    legacy = pw.resolve_architectures(_args("--archs", "deep_mgga_3x16"))
+    assert legacy[0][1].descriptor_coordinates == "legacy"
+    unpolarized = pw.resolve_architectures(
+        _args("--archs", "deep_mgga_3x16", "--no-polarized"))
+    assert unpolarized[0][1].use_polarized_correlation is False
+
+    raw = yaml.safe_load(_mgga_config().read_text())
+    raw["pretrain"]["parent_density"] = "pbe"
+    path = tmp_path / "pbe_parent.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    arch = legacy[0][1]
+    pbe_args = pw.parse_args(["--config", str(path), "--out",
+                              str(tmp_path / "t.json")])
+    assert pw.run_parent(pbe_args, arch) == "pbe"
+    live_args = pw.parse_args(["--config", str(_mgga_config()), "--out",
+                               str(tmp_path / "t2.json")])
+    assert pw.run_parent(live_args, arch) == "scan"
+
+
+def test_config_mode_sweeps_the_runs_own_architectures_by_default(tmp_path):
+    """Unstated, the swept architectures are the configuration's sweep axis.
+
+    The probe's own six defaults are mostly GGA-rung: swept against a meta-GGA
+    configuration they resolve to the PBE parent and name a data file that run
+    never wrote. Such a file is ABSENT rather than stale, so the refusal that
+    protects the run's own file does not stop it, and a full
+    production-identity generation would run inside the job and land in the
+    campaign's shared data directory. The run's axis is the only default that
+    cannot ask for a file the run did not build.
+    """
+    config = str(_mgga_config())
+    args = pw.parse_args(["--config", config, "--out", str(tmp_path / "t.json")])
+    assert list(args.archs) == list(args.cfg.sweep.arch)
+    assert set(args.archs) != set(pw.DEFAULT_ARCHS)
+    # Every one of them resolves to the parent the configuration asks for, so
+    # the data leg opens the file the run's own datagen wrote.
+    for _name, arch in pw.resolve_architectures(args):
+        assert pw.run_parent(args, arch) == "scan"
+    # An explicit list still wins.
+    named = pw.parse_args(["--config", config, "--out", str(tmp_path / "u.json"),
+                           "--archs", "deep_mgga_3x16"])
+    assert list(named.archs) == ["deep_mgga_3x16"]
+
+
+def test_a_cell_without_a_verdict_does_not_claim_its_place_on_resume(tmp_path):
+    """An errored cell is re-run, and does not consume the slot of a good one.
+
+    The rows of a table are deduplicated by cell, and a cell whose certificate
+    never reached a verdict is not a measured cell. Were the errored row to
+    claim the key before being dropped, a good row for the same cell standing
+    behind it -- the shape a hand-merged table leaves -- would be dropped with
+    it and the measurement paid for twice.
+    """
+    identity = pw.build_identity(_args(), 3.0e-5, None)
+    good = dict(_row("deep_3x16", 0.0, 1.0),
+                certificate={"verdict": "PASS", "max_atom_mHa": 0.2})
+    errored = dict(_row("deep_3x16", 0.0, 9.0),
+                   certificate={"verdict": "ERROR", "reason": "RuntimeError: x"})
+    for order, kept in (((good, errored), 1), ((errored, good), 1)):
+        directory = tmp_path / f"order{kept}{order[0] is good}"
+        directory.mkdir()
+        path = _stored(directory, identity, list(order))
+        rows = pw.load_resumable_rows(str(path), identity)
+        assert [r["certificate"]["verdict"] for r in rows] == ["PASS"], order
+    # A certificate field that is not a mapping carries no verdict either, and
+    # is read as such rather than raising inside the resume path.
+    odd = tmp_path / "odd"
+    odd.mkdir()
+    path = _stored(odd, identity,
+                   [dict(_row("deep_3x16", 0.0, 1.0), certificate="broken")])
+    assert len(pw.load_resumable_rows(str(path), identity)) == 1
+
+
+def test_the_coordinates_choices_are_the_registry_set():
+    """The flag's choices are the registry's coordinate set.
+
+    The set is stated at the parser rather than imported, because the import
+    pulls the numeric stack in before argparse runs; this comparison is what
+    keeps the literal from drifting away from the registry it names.
+    """
+    from xcquinox.alec.config import DESCRIPTOR_COORDINATES
+
+    action = next(a for a in pw.build_parser()._actions
+                  if "--descriptor-coordinates" in a.option_strings)
+    assert tuple(action.choices) == tuple(DESCRIPTOR_COORDINATES)
+
+
+def test_old_tables_resume_as_legacy_and_no_run(tmp_path):
+    """A table written before the two keys keeps the meaning it had.
+
+    Every table on disk before the coordinates flag existed measured the
+    registry's legacy layout, and none was written against a run, so the
+    absent keys read as those two statements rather than as a refusal. What
+    the keys then buy is the refusal that matters: rows measured under DFS
+    coordinates, or against a configuration, are not the same measurement and
+    are not merged into one table. A cell whose certificate never reached a
+    verdict is not a measured cell either, and is re-run instead of carried.
+    """
+    flagless = pw.build_identity(_args(), 3.0e-5, None)
+    old = {k: v for k, v in flagless.items()
+           if k not in ("descriptor_coordinates", "run")}
+    path = _stored(tmp_path, old, [_row("deep_3x16", 0.0, 1.0)])
+    assert len(pw.load_resumable_rows(str(path), flagless)) == 1
+
+    dfs = pw.build_identity(_args("--descriptor-coordinates", "dfs"),
+                            3.0e-5, None)
+    with pytest.raises(SystemExit) as excinfo:
+        pw.load_resumable_rows(str(path), dfs)
+    message = str(excinfo.value)
+    assert "descriptor_coordinates" in message
+    assert "absent, read as the default" in message
+
+    config_args = pw.parse_args(["--config", str(_mgga_config()), "--out",
+                                 str(tmp_path / "t.json")])
+    run_identity = pw.build_identity(
+        config_args, config_args.cfg.inputs.orientation_lock_strength, None)
+    with pytest.raises(SystemExit) as excinfo:
+        pw.load_resumable_rows(str(path), run_identity)
+    assert "run" in str(excinfo.value)
+
+    second = tmp_path / "second"
+    second.mkdir()
+    kept = dict(_row("deep_3x16", 0.0, 1.0),
+                certificate={"verdict": "PASS", "max_atom_mHa": 0.2})
+    errored = dict(_row("deep_3x16", 1.0, 1.0),
+                   certificate={"verdict": "ERROR", "reason": "RuntimeError: x"})
+    path = _stored(second, flagless, [kept, errored])
+    resumed = pw.load_resumable_rows(str(path), flagless)
+    assert [r["weight"] for r in resumed] == [0.0]
+
+
+@pytest.mark.slow
+def test_smoke_config_end_to_end(tmp_path):
+    """The real sweep on the real configuration, reduced to two systems.
+
+    This is the statement that the configuration mode fits what the run fits:
+    real pretraining and the real fidelity certificate, read out of the files
+    they leave rather than out of the signature they were called with. The
+    reduction is the identity's size alone -- two free atoms, STO-3G, grid 1,
+    five steps -- and the method the cell runs under is the campaign's, so a
+    field dropped anywhere between the configuration and the optimizer shows
+    up here as the spec default written into the metadata. The certificate's
+    oracle set is not reduced with it: 38 systems on a SCAN parent, which is
+    also what establishes that STO-3G is defined for every oracle atom.
+
+    Run in a subprocess, as the other end-to-end legs are: JAX can abort at
+    interpreter exit on this backend. Slow-marked because the two
+    certificates put it past the line the routine suite keeps: measured
+    143 s on 2026-09-11 (four threads; each probe run about 70 s, of which
+    the five-step fit is 1.7 s and the 38-system certificate 61 s).
+    """
+    config = _smoke_config(tmp_path)
+    env = dict(os.environ)
+    env.update(OMP_NUM_THREADS="4", OPENBLAS_NUM_THREADS="4",
+               MKL_NUM_THREADS="4", JAX_PLATFORMS="cpu",
+               XLA_FLAGS="--xla_cpu_multi_thread_eigen=false")
+    out = tmp_path / "t.json"
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--config", str(config),
+         "--archs", "deep_mgga_3x16", "--weights", "0.1", "--out", str(out)],
+        env=env, capture_output=True, text=True, timeout=1800)
+    # 0 = the certificate passed, 2 = it did not; both are completions, and a
+    # usage line is neither.
+    assert proc.returncode in (0, 2), (
+        f"returncode={proc.returncode}\n"
+        + proc.stdout[-4000:] + proc.stderr[-4000:])
+    assert not [line for line in (proc.stdout + proc.stderr).splitlines()
+                if line.startswith("usage:")], proc.stderr[-4000:]
+
+    # The cell is laid out as a run directory, so the certificate finds the
+    # networks where the pretrain stage writes them, and the objective is in
+    # the cell's name, so the two arms cannot collide under one output root.
+    cell = (tmp_path / "cells" / "deep_mgga_3x16_w0.1_rho_w_sampled"
+            / "pretrain" / "deep_mgga_3x16")
+    md = json.loads((cell / "pretrain_metadata.json").read_text())
+    assert md["descriptor_coordinates"] == "dfs"
+    assert md["loss_weighting"] == "rho_w_sampled"
+    assert md["lr_start"] == 0.001
+    assert md["lr_decay_start"] == 0.5
+    assert md["lr_decay_end"] == 0.9
+    assert md["grad_clip"] == 1.0
+    assert md["use_polarized_correlation"] is True
+    assert md["parent_anchor"] is False
+    assert md["pretrain_steps_requested"] == 5
+    # Recorded from the spec whether or not a hold-out was realizable: two
+    # free atoms realize none, so the fraction and the patience state what was
+    # requested beside an inactive split.
+    assert md["validation"]["fraction"] == 0.2
+    assert md["validation"]["patience"] == 300
+    assert md["validation"]["active"] is False
+    # The sampling record the rho_w_sampled objective writes.
+    assert md["points_per_system"] == 800
+
+    assert (tmp_path / "data" / "pretrain_data_polarized_scan.npz").is_file()
+
+    certificate = json.loads((cell / "fidelity_certificate.json").read_text())
+    assert certificate["verdict"] in ("PASS", "FAIL")
+    assert certificate["summary"]["n_systems"] == 38
+
+    payload = json.loads(out.read_text())
+    assert payload["identity"]["descriptor_coordinates"] == "dfs"
+    assert payload["identity"]["run"]["config"] == str(config)
+    assert payload["recommendation"]["rule"] == "fidelity_certificate"
+    assert len(payload["rows"]) == 1
+    assert (payload["rows"][0]["certificate"]["verdict"]
+            == certificate["verdict"])
+
+    out2 = tmp_path / "t2.json"
+    proc2 = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--config", str(config),
+         "--archs", "deep_mgga_3x16", "--weights", "0.1",
+         "--objective-arm", "integration", "--out", str(out2)],
+        env=env, capture_output=True, text=True, timeout=1800)
+    assert proc2.returncode in (0, 2), (
+        f"returncode={proc2.returncode}\n"
+        + proc2.stdout[-4000:] + proc2.stderr[-4000:])
+    cell2 = (tmp_path / "cells" / "deep_mgga_3x16_w0.1_integration"
+             / "pretrain" / "deep_mgga_3x16")
+    md2 = json.loads((cell2 / "pretrain_metadata.json").read_text())
+    assert md2["loss_weighting"] == "integration"
+
+    payload2 = json.loads(out2.read_text())
+    first, second = payload["identity"], payload2["identity"]
+    assert {k for k in first if first[k] != second[k]} == {"loss_weighting",
+                                                           "run"}
+    assert {k for k in first["run"] if first["run"][k] != second["run"][k]} == {
+        "objective_arm"}
+
+
+def test_a_raising_certificate_keeps_the_fit_and_fails_the_cell(tmp_path,
+                                                                monkeypatch):
+    """A certificate that raises costs the cell, never the fit behind it.
+
+    The certificate runs production-basis SCFs after a pretraining that took
+    hours; an exception escaping it would be caught by the sweep's per-cell
+    guard and the finished fit would be discarded with no row at all. Recorded
+    as a verdict of its own instead: the row keeps the fit and names the
+    exception, the sweep exits on a failed cell, and the recommendation counts
+    the cell as uncertified rather than as a miss.
+    """
+    import numpy as np
+
+    from xcquinox.alec import pretrain as pretrain_module
+    from xcquinox.alec import pretrain_data_gen
+    from xcquinox.alec.cluster import fidelity
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    from xcquinox.alec.config import get_architecture
+
+    config = _smoke_config(tmp_path)
+    cfg = load_grid_config(str(config))
+    data_path = tmp_path / "pretrain_data_polarized_scan.npz"
+    data_path.write_bytes(b"")
+
+    # What the fit records for itself. The energy-term entries are absent
+    # values, so the reconstruction check has nothing to compare and the row
+    # is decided by the certificate alone.
+    metadata = {"final_loss_x": 1.0e-3, "final_loss_c": 2.0e-3,
+                "reference_xc": "scan", "n_systems": 2, "n_rows_x": 8,
+                "n_rows_c": 8, "exchange_footing": "spin_channel",
+                "pretrain_mesh": True, "pretrain_steps": 5,
+                "energy_term_x_final": None, "energy_term_c_final": None,
+                "energy_term_max_abs_dE_mHa": None}
+    fits = []
+
+    def fake_run_pretrain(spec, progress_callback=None):
+        fits.append(spec.checkpoint_dir)
+        os.makedirs(spec.checkpoint_dir, exist_ok=True)
+        for name in ("xnet.eqx", "cnet.eqx"):
+            Path(spec.checkpoint_dir, name).write_bytes(b"")
+        Path(spec.checkpoint_dir, "pretrain_metadata.json").write_text(
+            json.dumps(metadata))
+        return dict(metadata)
+
+    def raising_certificate(*args, **kwargs):
+        raise RuntimeError("no reference SCF here")
+
+    monkeypatch.setattr(pretrain_module, "run_pretrain", fake_run_pretrain)
+    monkeypatch.setattr(fidelity, "fidelity_certificate", raising_certificate)
+    # The written networks are placeholders, so the leg that deserialises them
+    # and re-measures the per-system errors is replaced by errors of its own
+    # shape; what is under test is what happens after the fit, not the fit.
+    monkeypatch.setattr(
+        pw, "per_system_energy_errors",
+        lambda arch, data_path, checkpoint_dir, *, seed: (
+            np.array([1.0e-4, -2.0e-4]), np.array([3.0e-5, 1.0e-5]), None))
+
+    row = pw.run_cell(get_architecture("deep_mgga_3x16"), "deep_mgga_3x16",
+                      str(data_path), str(tmp_path / "cells"), weight=0.1,
+                      n_steps=5, seed=42, loss_weighting="rho_w_sampled",
+                      recon_rtol=pw.DEFAULT_RECON_RTOL, label="(1/1) cell",
+                      cfg=cfg, arm=None)
+    assert len(fits) == 1
+    assert row["certificate"]["verdict"] == "ERROR"
+    assert "no reference SCF here" in row["certificate"]["reason"]
+    assert row["final_loss_x"] == 1.0e-3
+
+    verdict = pw.certificate_verdict([row])
+    assert verdict["n_certificate_errors"] == 1
+    assert verdict["cleared"] is False
+
+    monkeypatch.setattr(pretrain_data_gen, "ensure_pretrain_data",
+                        lambda data_dir, **kw: str(data_path))
+    out = tmp_path / "t.json"
+    assert pw.main(["--config", str(config), "--archs", "deep_mgga_3x16",
+                    "--weights", "0.1", "--out", str(out)]) == 1
+    payload = json.loads(out.read_text())
+    assert [f["arch"] for f in payload["failures"]] == ["deep_mgga_3x16"]
+    assert payload["recommendation"]["n_certificate_errors"] == 1
+    assert payload["recommendation"]["cleared"] is False

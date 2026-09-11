@@ -838,6 +838,31 @@ def test_prepare_inputs_ensures_every_required_file_with_the_protocol_keywords(
         assert kw["grid_level"] == cfg.inputs.grid_level
 
 
+def test_prepare_inputs_makes_the_datagen_stages_own_call(
+        tmp_path, stub_pool, stub_refs, monkeypatch):
+    """The call is the datagen stage's, argument for argument.
+
+    The preflight and that stage agree on the set of files "by construction",
+    which holds only while one construction builds both calls. Two
+    transcriptions had already drifted: this site omitted ``descriptors=True``,
+    which the generator's own default made harmless and which the per-keyword
+    assertions above could not see, since neither side stated it.
+    """
+    from xcquinox.alec.cluster._datagen import datagen_call
+
+    cfg = _protocol_cfg(tmp_path, parent_density="auto", dfs_set=True,
+                        pool_atoms=True, exchange_footing="spin_channel",
+                        mesh_fraction=0.25)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+    calls = _pretrain_calls(monkeypatch)
+
+    prepare_inputs(cfg)
+
+    assert calls == [datagen_call(cfg, True, "pbe"),
+                     datagen_call(cfg, True, "scan")]
+    assert all(kw["descriptors"] is True for _d, kw in calls)
+
+
 def test_prepare_inputs_asks_the_currency_check_at_the_runs_own_lock(
         tmp_path, stub_pool, stub_refs, monkeypatch):
     """The orientation lock is part of the data's identity: a degenerate atom's

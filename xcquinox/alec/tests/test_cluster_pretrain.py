@@ -20,10 +20,12 @@ Coverage:
     renders with no leftover ``${...}``, and the rendered body invokes
     ``python -m xcquinox.alec.cluster._pretrain``.
 """
+import dataclasses
 import importlib.resources
 import json
 import os
 import sys
+from pathlib import Path
 from string import Template
 
 from xcquinox.alec.parallel import PYSCF_POOL_THREADS_MAX
@@ -1286,6 +1288,166 @@ def test_the_keep_check_and_the_run_record_apply_one_comparison():
         assert hasattr(fidelity, name), name
         assert getattr(validate_run, name, None) is getattr(fidelity, name), \
             name
+
+
+# ---------------------------------------------------------------------------
+# The resolution and the spec as module-level functions: one implementation
+# for the stage and for any tool that reproduces one of its fits
+# ---------------------------------------------------------------------------
+
+#: The campaign configuration the factored resolution is read against: the v7
+#: meta-GGA families group, whose sorted sweep axis puts deep_cusp_mgga_3x16
+#: at index 0 and whose pretrain block states every protocol knob.
+_MGGA_CONFIG = (Path(__file__).resolve().parents[3] / "hpcjobs" / "configs"
+                / "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml")
+
+
+def _mgga_config():
+    """The campaign configuration file, skipped where the checkout has none."""
+    pytest.importorskip("yaml")
+    if not _MGGA_CONFIG.is_file():
+        pytest.skip(f"no {_MGGA_CONFIG.name} in this checkout")
+    return _MGGA_CONFIG
+
+
+def _mgga_config_dict():
+    """The campaign configuration as a mapping, for a run dir or an edit."""
+    import yaml
+
+    return yaml.safe_load(_mgga_config().read_text())
+
+
+def test_pretrain_spec_from_config_is_the_stage_spec(tmp_path, monkeypatch):
+    """The spec the stage fits under IS the factory's, field for field.
+
+    A tool that reproduces one of the stage's fits must read the block through
+    the same code: two implementations of "the spec of this run's pretrain
+    block" drift, and the drift leaves no trace -- a fit at another schedule,
+    another objective or another hold-out completes and writes a certificate
+    like any other, and the comparison it was made for is then between two
+    different fits.
+    """
+    from xcquinox.alec.cluster._pretrain import (pretrain_spec_from_config,
+                                                 resolve_run_architecture)
+    from xcquinox.alec.cluster.grid_config import (load_grid_config,
+                                                   pretrain_checkpoint_dir)
+
+    d = tmp_path / "run"
+    d.mkdir()
+    cfg_path = _write_config(str(d), _mgga_config_dict())
+    captured = {}
+
+    def fake_run_pretrain(spec, progress_callback=None):
+        captured["spec"] = spec
+        os.makedirs(spec.checkpoint_dir, exist_ok=True)
+        open(os.path.join(spec.checkpoint_dir, "xnet.eqx"), "wb").close()
+        open(os.path.join(spec.checkpoint_dir, "cnet.eqx"), "wb").close()
+        return {"arch_name": spec.arch.name}
+
+    monkeypatch.setattr(pt, "_run_pretrain", fake_run_pretrain)
+    assert pt.main([str(d), "0"]) == 0
+
+    cfg = load_grid_config(cfg_path)
+    arch = resolve_run_architecture(cfg,
+                                    get_architecture("deep_cusp_mgga_3x16"))
+    expected = pretrain_spec_from_config(
+        cfg, arch, pretrain_checkpoint_dir(str(d), "deep_cusp_mgga_3x16"))
+    assert captured["spec"].arch.name == "deep_cusp_mgga_3x16"
+    assert (dataclasses.asdict(captured["spec"])
+            == dataclasses.asdict(expected))
+
+
+def test_pretrain_spec_from_config_reads_every_field_of_the_block(tmp_path):
+    """Every field the factory fills is read from the configuration.
+
+    The stage calls the factory, so the stage-against-factory comparison above
+    cannot see a field written from a literal on both sides. The values are
+    the campaign file's own, and an override that is not a field of the spec
+    is refused rather than dropped: a varied knob whose name is misspelled
+    would otherwise fit at the configuration's value and be reported as the
+    variation.
+    """
+    from xcquinox.alec.cluster._pretrain import pretrain_spec_from_config
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+
+    cfg = load_grid_config(str(_mgga_config()))
+    arch = get_architecture("deep_mgga_3x16")
+    spec = pretrain_spec_from_config(cfg, arch, "/nowhere/ckpt")
+    assert isinstance(spec, PretrainSpec)
+    assert spec.arch == arch
+    assert spec.checkpoint_dir == "/nowhere/ckpt"
+    assert spec.data_dir == (
+        "/gpfs/scratch/awills/"
+        "pretrain_data_dfs_6311ppg3df2pd_g3_v7g2_families_mgga")
+    assert spec.n_steps == 20000
+    assert spec.lr_start == 1.0e-3
+    assert spec.lr_end == 1.0e-5
+    assert spec.lr_decay_start == 0.5
+    assert spec.lr_decay_end == 0.9
+    assert spec.grad_clip == 1.0
+    assert spec.seed == 42
+    assert spec.loss_weighting == "rho_w_sampled"
+    assert spec.parent_density == "auto"
+    assert spec.energy_term_weight == 0.1
+    assert spec.validation_fraction == 0.2
+    assert spec.validation_seed == 0
+    assert spec.validate_every == 50
+    assert spec.patience == 300
+    assert spec.points_per_system == 800
+    assert spec.sampling_seed == 42
+
+    # Six of the nineteen fields carry a campaign value equal to the spec's own
+    # default, so the assertions above cannot tell a field read from the block
+    # from one written as that literal. The remaining one the harness suites do
+    # not separately pin is the sampling size: it is read here against a
+    # configuration that states a value the spec would never default to.
+    raw = _mgga_config_dict()
+    raw["pretrain"]["points_per_system"] = 137
+    moved = tmp_path / "moved_points"
+    moved.mkdir()
+    moved_cfg = load_grid_config(_write_config(str(moved), raw))
+    assert pretrain_spec_from_config(
+        moved_cfg, arch, "/nowhere/ckpt").points_per_system == 137
+
+    varied = pretrain_spec_from_config(cfg, arch, "/nowhere/ckpt", n_steps=7,
+                                       energy_term_weight=10.0)
+    assert varied.n_steps == 7
+    assert varied.energy_term_weight == 10.0
+    assert varied.loss_weighting == "rho_w_sampled"
+    with pytest.raises(ValueError) as excinfo:
+        pretrain_spec_from_config(cfg, arch, "/nowhere/ckpt", nope=1)
+    assert "nope" in str(excinfo.value)
+
+
+def test_resolve_run_architecture_applies_polarization_and_the_model_block(
+        tmp_path):
+    """The architecture a run trains carries the run's own two statements.
+
+    The run-level polarization flag and the ``model:`` block decide the shape
+    of the correlation network and the coordinates its inputs are posed in; an
+    architecture resolved without them is a different network, and the
+    checkpoint it writes is refused by the loaders it was meant for. The
+    anchored copy is the stage's behaviour, stated here because the resolution
+    is shared and the anchor is not a probe's to apply.
+    """
+    from xcquinox.alec.cluster._pretrain import resolve_run_architecture
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+
+    cfg = load_grid_config(str(_mgga_config()))
+    arch = resolve_run_architecture(cfg, get_architecture("deep_mgga_3x16"))
+    assert arch.use_polarized_correlation is True
+    assert arch.descriptor_coordinates == "dfs"
+    assert arch.parent_anchor is False
+
+    raw = _mgga_config_dict()
+    raw["model"]["parent_anchor"] = True
+    d = tmp_path / "anchored"
+    d.mkdir()
+    anchored_cfg = load_grid_config(_write_config(str(d), raw))
+    anchored_arch = resolve_run_architecture(
+        anchored_cfg, get_architecture("deep_mgga_3x16"))
+    assert anchored_arch.parent_anchor is True
+    assert anchored_arch.descriptor_coordinates == "dfs"
 
 
 if __name__ == "__main__":
