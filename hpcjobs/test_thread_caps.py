@@ -18,6 +18,7 @@ HPCJOBS = Path(__file__).resolve().parent
 #: Standalone scripts whose Python runs PySCF in the job's own process.
 CAPPED_SCRIPTS = (
     "probe_pretrain_energy_weight.sbatch",
+    "probe_mgga_levers.sbatch",
     "dfs6311_scan_pool.sbatch",
     "dfs6311_lockfix_chno_regen.sbatch",
     "dfs6311_pretrained_holdout.sbatch",
