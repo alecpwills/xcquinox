@@ -1957,6 +1957,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "lr_start": spec.lr_start,
         "lr_end": spec.lr_end,
         "lr_decay_start": spec.lr_decay_start,
+        "lr_decay_end": getattr(spec, "lr_decay_end", 1.0),
         "grad_clip": spec.grad_clip,
         "loss_weighting": spec.loss_weighting,
         # The SAVED network's loss, and the last step's beside it.

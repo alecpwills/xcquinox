@@ -184,7 +184,9 @@ ENV_PREFIX=/gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j070
 REPO="${XCQ_REPO:-/gpfs/projects/FernandezGroup/Alec/xcquinox}"
 RUN_ROOT="${EWSWEEP_RUN_ROOT:-/gpfs/scratch/awills/pretrain_energy_weight}"
 DATA_DIR="${EWSWEEP_DATA_DIR:-${RUN_ROOT}/data}"
-OUT="${EWSWEEP_OUT:-${RUN_ROOT}/energy_weight_table.json}"
+# A new table name with the schedule flags: the 2026-08-25 table (energy_weight_table.json)
+# was fitted at PretrainSpec's defaults and --resume refuses to merge the two identities.
+OUT="${EWSWEEP_OUT:-${RUN_ROOT}/energy_weight_table_campaign_schedule.json}"
 LOG="${RUN_ROOT}/probe_${SLURM_JOB_ID:-manual}.log"
 # THIS submission's output alone. $LOG is appended across resubmissions, so it
 # cannot answer "what did the run that just exited print"; the epilogue needs
@@ -275,6 +277,11 @@ python -u hpcjobs/probe_pretrain_energy_weight.py \
     --grid-level 3 \
     --n-steps 1000 \
     --polarized \
+    --lr-start 0.001 \
+    --lr-end 0.00001 \
+    --lr-decay-start 0.5 \
+    --lr-decay-end 0.9 \
+    --grad-clip 1.0 \
     --resume \
     ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} \
     2>&1 | tee -a "$LOG" | tee "$RUN_OUT"

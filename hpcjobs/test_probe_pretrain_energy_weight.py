@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import json
+import re
 import os
 import subprocess
 import sys
@@ -1472,8 +1474,15 @@ def test_the_invocation_carries_the_swept_identity_and_a_log():
                  "--basis def2-svp", "--grid-level 3", "--n-steps 1000",
                  # The production objective, stated rather than defaulted, and
                  # the resume that makes a wall-clock kill recoverable.
-                 "--polarized", "--resume"):
+                 "--polarized", "--resume",
+                 # The campaign's schedule, stated: a table at the spec
+                 # defaults measures another optimizer.
+                 "--lr-start 0.001", "--lr-end 0.00001", "--lr-decay-start 0.5",
+                 "--lr-decay-end 0.9", "--grad-clip 1.0"):
         assert flag in t, flag
+    # A fresh table name: the 2026-08-25 table was fitted at the spec defaults
+    # and --resume refuses to merge the two identities.
+    assert 'OUT="${EWSWEEP_OUT:-${RUN_ROOT}/energy_weight_table_campaign_schedule.json}"' in t
     # The log is a file, and the exit code read is python's, not tee's.
     # Appended, not truncated: a resumed or batched submission adds to the log
     # of the run it continues rather than replacing it.
@@ -1813,3 +1822,236 @@ def test_the_epilogue_reads_this_submissions_output_not_the_appended_log():
     assert 'grep -q "^usage: probe_pretrain_energy_weight" "$RUN_OUT"' in t
     # And the header says 2 carries two meanings, rather than one.
     assert "2 IS TWO OUTCOMES" in t
+
+
+# --------------------------------------------------------------------------- #
+# The pretraining schedule the cells are fitted under
+# --------------------------------------------------------------------------- #
+# The sweep fitted every cell at the PretrainSpec defaults (lr_start 1e-2,
+# lr_decay_start 0.2) while the campaign whose certificate the sweep exists to
+# serve fits at lr_start 1e-3 and lr_decay_start 0.5. A weight measured under
+# one schedule does not recommend a weight for the other, so the five schedule
+# fields are settable from the command line and are part of what a row
+# MEASURES.
+
+#: The schedule fields the command line carries, in the order the helper
+#: reports them, and the PretrainSpec keyword each one sets.
+_SCHEDULE_KEYS = ("lr_start", "lr_end", "lr_decay_start", "lr_decay_end",
+                  "grad_clip")
+
+#: The campaign's pretraining schedule: the live v7 configurations
+#: (dfs6311_grid3_v7g1_size, v7g2a_families_core, v7g2_families_mgga, since
+#: 2b7c7f62b on 2026-09-03) pretrain at lr_start 1e-3, lr_end 1e-5, the decay
+#: from 50 to 90 percent of the run, grad_clip 1.0. The run that failed its
+#: certificates was resolved on 2026-09-02 with lr_decay_end at the spec
+#: default 1.0; the refit runs the live values, so the levers are measured
+#: under them. Pinned against the configuration file below.
+_CAMPAIGN_SCHEDULE_ARGV = ("--lr-start", "0.001", "--lr-end", "0.00001",
+                           "--lr-decay-start", "0.5", "--lr-decay-end", "0.9",
+                           "--grad-clip", "1.0")
+_CAMPAIGN_SCHEDULE = {"lr_start": 1.0e-3, "lr_end": 1.0e-5,
+                      "lr_decay_start": 0.5, "lr_decay_end": 0.9,
+                      "grad_clip": 1.0}
+_MGGA_CONFIG = (_HERE / "configs"
+                / "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml")
+
+
+def test_the_campaign_schedule_is_the_configuration_files():
+    """The values the tests and the wrapper carry are the pretrain block's of the
+    live meta-GGA configuration, not a remembered version of it."""
+    text = _MGGA_CONFIG.read_text()
+    pretrain = text.split("\npretrain:", 1)[1].split("\ntrain:", 1)[0] \
+        if "\npretrain:" in text else text
+    for key, value in _CAMPAIGN_SCHEDULE.items():
+        m = re.search(rf"^\s*{key}:\s*([0-9.e-]+)\s*$", pretrain, re.M)
+        assert m, f"{key} not in the pretrain block of {_MGGA_CONFIG.name}"
+        assert float(m.group(1)) == value, (key, m.group(1))
+
+
+def test_schedule_flags_absent_set_nothing():
+    """A command line that says nothing about the schedule sets nothing.
+
+    The helper reports only the fields the caller asked for, so the cells of a
+    table written before the flags existed and the cells of one written after
+    without them are fitted by the same optimizer, and the tables mean the
+    same thing.
+    """
+    assert pw.schedule_kwargs(_args()) == {}
+
+
+def test_schedule_flags_reach_the_spec_kwargs():
+    """The five flags become the five PretrainSpec keywords, as floats.
+
+    Floats, not ints: ``--lr-end 0.00001`` under an integer type is refused by
+    argparse, and were it accepted it would fit at a learning rate of zero.
+    The key names are checked against the dataclass's own field list, because
+    a keyword PretrainSpec does not take is a TypeError in the first cell --
+    hours into a reservation, with the table still empty.
+    """
+    kwargs = pw.schedule_kwargs(_args(*_CAMPAIGN_SCHEDULE_ARGV))
+    assert kwargs == _CAMPAIGN_SCHEDULE
+    assert all(isinstance(v, float) for v in kwargs.values()), kwargs
+
+    config_src = (_HERE.parent / "xcquinox" / "alec"
+                  / "config.py").read_text()
+    body = config_src.split("class PretrainSpec", 1)[1].split("\nclass ", 1)[0]
+    for key in _SCHEDULE_KEYS:
+        assert f"\n    {key}: float" in body, key
+
+
+def test_a_partial_schedule_leaves_the_rest_to_the_spec():
+    """One flag sets one field. The rest keep the spec's defaults rather than
+    being restated here, so a default changed in one place does not have to be
+    chased into the sweep."""
+    assert pw.schedule_kwargs(_args("--lr-start", "0.001")) == {
+        "lr_start": 1.0e-3}
+
+
+def test_run_cell_accepts_the_schedule():
+    """The cell runner takes the schedule; a run_cell that did not would fit
+    every cell at the defaults while the header and the identity said
+    otherwise."""
+    assert "schedule" in inspect.signature(pw.run_cell).parameters
+
+
+#: PretrainSpec's own schedule defaults (xcquinox/alec/config.py), the values a
+#: cell is fitted under when a flag is absent; the identity records the RESOLVED
+#: schedule, so a flag equal to the default and no flag are the same identity,
+#: and a default changed in the spec later can never make two tables fitted
+#: under different optimizers compare equal.
+_SPEC_SCHEDULE = {"lr_start": 1.0e-2, "lr_end": 1.0e-5, "lr_decay_start": 0.2,
+                  "lr_decay_end": 1.0, "grad_clip": 1.0}
+
+
+def test_the_spec_schedule_defaults_are_the_dataclass_defaults():
+    """The probe's copy of the defaults is pinned to the dataclass itself (by
+    field default, not by source text), so a default moved in config.py fails
+    here rather than silently re-labelling every flag-less table."""
+    import dataclasses
+
+    from xcquinox.alec.config import PretrainSpec
+
+    defaults = {f.name: f.default for f in dataclasses.fields(PretrainSpec)}
+    for key, value in _SPEC_SCHEDULE.items():
+        assert defaults[key] == value, (key, defaults[key])
+    assert pw._SPEC_SCHEDULE_DEFAULTS == _SPEC_SCHEDULE
+
+
+def test_cell_spec_carries_the_schedule_into_the_spec():
+    """The spec a cell is fitted under carries the five schedule fields the
+    command line set, and the dataclass defaults where it set none; the flags
+    reach the optimizer through this spec and nothing else."""
+    from xcquinox.alec.config import get_architecture
+
+    arch = get_architecture("deep_mgga_3x16")
+    spec = pw.cell_spec(arch, "/nowhere/data.npz", "/nowhere/ckpt", weight=1.0,
+                        n_steps=5, seed=42, loss_weighting="integration",
+                        schedule=_CAMPAIGN_SCHEDULE)
+    assert {k: getattr(spec, k) for k in _SCHEDULE_KEYS} == _CAMPAIGN_SCHEDULE
+    assert spec.energy_term_weight == 1.0 and spec.n_steps == 5
+    bare = pw.cell_spec(arch, "/nowhere/data.npz", "/nowhere/ckpt", weight=0.0,
+                        n_steps=5, seed=42, loss_weighting="integration")
+    assert {k: getattr(bare, k) for k in _SCHEDULE_KEYS} == _SPEC_SCHEDULE
+
+
+@pytest.mark.parametrize("argv, fragment", [
+    (("--lr-start", "0"), "--lr-start must be finite and > 0"),
+    (("--lr-end", "nan"), "--lr-end must be finite and > 0"),
+    (("--grad-clip", "-1"), "--grad-clip must be finite and > 0"),
+    (("--lr-decay-start", "1.5"), "--lr-decay-start must be in [0, 1]"),
+    (("--lr-decay-start", "0.5", "--lr-decay-end", "0.3"),
+     "--lr-decay-end (0.3) must not be below --lr-decay-start (0.5)"),
+    (("--lr-decay-end", "0.1"), "must not be below --lr-decay-start (0.2)"),
+])
+def test_schedule_flags_are_refused_at_parse_time(argv, fragment, capsys):
+    """A malformed schedule is refused before the data generation leg, with the
+    same argparse exit the other numeric flags get; the decay-end check reads
+    the resolved pair, so one flag against the spec's default of the other is
+    caught as well."""
+    with pytest.raises(SystemExit) as excinfo:
+        _args(*argv)
+    assert excinfo.value.code == 2
+    assert fragment in capsys.readouterr().err
+
+
+def test_the_identity_records_the_resolved_schedule():
+    """The schedule is part of what a row measures, so it is part of the
+    identity a resumed table has to agree on, and it is the resolved one."""
+    identity = pw.build_identity(_args("--lr-start", "0.001"), 3.0e-5, None)
+    assert identity["schedule"] == dict(_SPEC_SCHEDULE, lr_start=1.0e-3)
+    assert pw.build_identity(_args(), 3.0e-5, None)["schedule"] == _SPEC_SCHEDULE
+    # a flag equal to the default is the same fit as no flag
+    assert (pw.build_identity(_args("--lr-start", "0.01"), 3.0e-5, None)["schedule"]
+            == _SPEC_SCHEDULE)
+    assert "schedule" in pw._RESUME_IDENTITY_KEYS
+
+
+def test_a_table_written_before_the_schedule_key_resumes_at_the_defaults(tmp_path):
+    """Every table on disk before this change was fitted at the spec defaults;
+    on --resume it equals a flag-less request and differs from a scheduled one,
+    rather than being refused for lacking a key it could not have carried."""
+    flagless = pw.build_identity(_args(), 3.0e-5, None)
+    old = {k: v for k, v in flagless.items() if k != "schedule"}
+    path = _stored(tmp_path, old, [_row("deep_3x16", 0.0, 1.0)])
+    rows = pw.load_resumable_rows(str(path), flagless)
+    assert len(rows) == 1
+    scheduled = pw.build_identity(_args(*_CAMPAIGN_SCHEDULE_ARGV), 3.0e-5, None)
+    with pytest.raises(SystemExit) as excinfo:
+        pw.load_resumable_rows(str(path), scheduled)
+    message = str(excinfo.value)
+    assert "schedule" in message
+    # the message states what the comparison used: the defaults, read for the
+    # absent key, not None
+    assert "absent, read as the default" in message
+    assert "'lr_start': 0.01" in message and "'lr_start': 0.001" in message
+
+
+def test_a_resumed_table_with_another_schedule_is_refused(tmp_path):
+    """Rows fitted under two schedules are not one table.
+
+    The refusal is the same one a differing basis gets: the stored identity is
+    reported against the requested one and the run stops, rather than the
+    rows being merged into a table whose recommendation would read across two
+    optimizers.
+    """
+    identity = pw.build_identity(_args(*_CAMPAIGN_SCHEDULE_ARGV), 3.0e-5, None)
+    path = _stored(tmp_path, dict(identity, schedule={}),
+                   [_row("deep_3x16", 0.0, 1.0)])
+    with pytest.raises(SystemExit) as excinfo:
+        pw.load_resumable_rows(str(path), identity)
+    message = str(excinfo.value)
+    assert "schedule" in message
+    assert "lr_start" in message
+
+
+def test_smoke_metadata_carries_the_schedule(tmp_path):
+    """The schedule reaches the optimizer, not merely the signature or the spec.
+
+    The smoke leg is run here, under the campaign schedule, into a temporary
+    directory (about 20 s, the same subprocess form as the end-to-end leg);
+    ``run_pretrain`` records the schedule it fitted under in each cell's
+    ``pretrain_metadata.json``, all five fields, and the table's identity
+    records the resolved schedule. A cell runner that accepted the schedule
+    and dropped any field on the way to the optimizer writes that field's spec
+    default in the metadata while every other check stays green.
+    """
+    env = dict(os.environ)
+    env.update(OMP_NUM_THREADS="4", OPENBLAS_NUM_THREADS="4",
+               MKL_NUM_THREADS="4", JAX_PLATFORMS="cpu",
+               XLA_FLAGS="--xla_cpu_multi_thread_eigen=false")
+    out = tmp_path / "smoke.json"
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--smoke", "--data-dir",
+         str(tmp_path / "data"), "--out", str(out), *_CAMPAIGN_SCHEDULE_ARGV],
+        env=env, capture_output=True, text=True, timeout=900)
+    assert proc.returncode in (0, 2), (
+        f"returncode={proc.returncode}\n" + proc.stdout[-4000:] + proc.stderr[-4000:])
+    payload = json.loads(out.read_text())
+    assert payload["identity"]["schedule"] == _CAMPAIGN_SCHEDULE
+    assert "[probe] schedule: lr_start=0.001" in proc.stdout
+    files = sorted((tmp_path / "cells").glob("**/pretrain_metadata.json"))
+    assert len(files) == 4, files
+    for path in files:
+        md = json.loads(path.read_text())
+        recorded = {k: md.get(k) for k in _SCHEDULE_KEYS}
+        assert recorded == _CAMPAIGN_SCHEDULE, (str(path), recorded)

@@ -66,8 +66,13 @@ missing from the set is a gate quantity that was never measured.
 
 The IDENTITY, by contrast, is REDUCED on purpose. The sweep runs at
 def2-svp / grid level 3, 1000 optimizer steps and no validation hold-out,
-where the campaign runs at 6-311++G(3df,2pd), 2500 steps and a 20 percent
-hold-out, and it measures six of the campaign's 31 architectures (the six
+where the campaign runs at 6-311++G(3df,2pd) and 20000 steps. The SCHEDULE
+is not reduced: the campaign pretrains at
+lr_start 1e-3 decaying from 50 to 90 percent of the run (the v7
+configurations), where PretrainSpec defaults to 1e-2 from 20 percent, and a
+table measured at the defaults is a measurement of another optimizer; the
+five schedule flags carry the campaign's values and the table's identity
+records the resolved schedule. It measures six of the campaign's 31 architectures (the six
 largest recorded parent offsets). At the production identity the sweep would
 cost more than the campaign it parameterizes, for a number that is only ever
 a starting point: the weight is dimensionful, so it does not transfer
@@ -342,6 +347,23 @@ def build_parser():
                    help=f"Network initialization seed (default {DEFAULT_SEED}"
                         "). One seed for every cell, so the comparison "
                         "between weights is not a comparison between draws.")
+    # The schedule the cells are fitted under, passed through so a table
+    # measures the fit the campaign runs (its configurations set lr_start 1e-3
+    # and lr_decay_start 0.5 where PretrainSpec defaults to 1e-2 and 0.2). An
+    # absent flag leaves the spec's default, so every table written before the
+    # flags existed is the same measurement it was.
+    p.add_argument("--lr-start", type=float, default=None,
+                   help="Initial learning rate (default: PretrainSpec's).")
+    p.add_argument("--lr-end", type=float, default=None,
+                   help="Final learning rate (default: PretrainSpec's).")
+    p.add_argument("--lr-decay-start", type=float, default=None,
+                   help="Fraction of the run before the decay starts (default: "
+                        "PretrainSpec's).")
+    p.add_argument("--lr-decay-end", type=float, default=None,
+                   help="Fraction of the run at which the decay reaches lr-end "
+                        "(default: PretrainSpec's, 1.0).")
+    p.add_argument("--grad-clip", type=float, default=None,
+                   help="Global-norm gradient clip (default: PretrainSpec's).")
     p.add_argument("--loss-weighting", default="integration",
                    choices=("integration", "unweighted"),
                    help="Point-wise reduction (default: integration, which "
@@ -387,6 +409,32 @@ def build_parser():
     return p
 
 
+#: The five PretrainSpec schedule fields the command line can set.
+_SCHEDULE_FLAGS = ("lr_start", "lr_end", "lr_decay_start", "lr_decay_end", "grad_clip")
+
+#: PretrainSpec's own defaults for those fields (xcquinox/alec/config.py), the
+#: values a cell is fitted under when a flag is absent. Pinned to the dataclass
+#: source by the test suite. The identity records the schedule RESOLVED against
+#: these, so a flag equal to the default and no flag are one identity, and a
+#: default moved in the spec later cannot make two tables fitted under
+#: different optimizers compare equal.
+_SPEC_SCHEDULE_DEFAULTS = {"lr_start": 1.0e-2, "lr_end": 1.0e-5,
+                           "lr_decay_start": 0.2, "lr_decay_end": 1.0,
+                           "grad_clip": 1.0}
+
+
+def schedule_kwargs(args):
+    """The PretrainSpec schedule fields the command line set; absent flags are
+    left to the spec's defaults so the historical tables keep their meaning."""
+    return {k: float(v) for k in _SCHEDULE_FLAGS
+            if (v := getattr(args, k, None)) is not None}
+
+
+def resolved_schedule(args):
+    """The schedule a cell is fitted under: the spec defaults updated by the flags."""
+    return {**_SPEC_SCHEDULE_DEFAULTS, **schedule_kwargs(args)}
+
+
 def parse_args(argv=None):
     """Parse the command line, applying the --smoke identity where the caller
     left a value unset. Returns the namespace with every field resolved, so
@@ -418,6 +466,23 @@ def parse_args(argv=None):
             build_parser().error(
                 f"--{field.replace('_', '-')} must be finite and > 0, got "
                 f"{value}")
+    # The schedule flags, refused here rather than by PretrainSpec.validate()
+    # inside the first cell, which runs only after the data generation leg.
+    for field in ("lr_start", "lr_end", "grad_clip"):
+        value = getattr(args, field)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            build_parser().error(
+                f"--{field.replace('_', '-')} must be finite and > 0, got {value}")
+    for field in ("lr_decay_start", "lr_decay_end"):
+        value = getattr(args, field)
+        if value is not None and not (0.0 <= value <= 1.0):
+            build_parser().error(
+                f"--{field.replace('_', '-')} must be in [0, 1], got {value}")
+    resolved = resolved_schedule(args)
+    if resolved["lr_decay_end"] < resolved["lr_decay_start"]:
+        build_parser().error(
+            f"--lr-decay-end ({resolved['lr_decay_end']}) must not be below "
+            f"--lr-decay-start ({resolved['lr_decay_start']})")
     return args
 
 
@@ -1119,8 +1184,23 @@ def ensure_data(data_dir, *, polarized, reference_xc, basis, grid_level,
     return ensure_pretrain_data(target_dir, **kwargs)
 
 
+def cell_spec(arch, data_path, checkpoint_dir, *, weight, n_steps, seed,
+              loss_weighting, schedule=None):
+    """The PretrainSpec one cell is fitted under: the probe's fixed choices
+    (parent density resolved from the architecture, no validation hold-out)
+    plus the swept weight and the schedule the command line set."""
+    from xcquinox.alec.config import PretrainSpec
+
+    return PretrainSpec(arch=arch, data_dir=os.path.dirname(data_path),
+                        checkpoint_dir=checkpoint_dir, n_steps=n_steps,
+                        seed=seed, loss_weighting=loss_weighting,
+                        energy_term_weight=float(weight),
+                        parent_density="auto", validation_fraction=0.0,
+                        **(schedule or {}))
+
+
 def run_cell(arch, arch_name, data_path, work_dir, *, weight, n_steps, seed,
-             loss_weighting, recon_rtol, label):
+             loss_weighting, recon_rtol, label, schedule=None):
     """One (architecture, weight) pretraining, measured. Returns the row."""
     import numpy as np
 
@@ -1129,11 +1209,9 @@ def run_cell(arch, arch_name, data_path, work_dir, *, weight, n_steps, seed,
 
     checkpoint_dir = os.path.join(work_dir, f"{arch_name}_w{weight:g}")
     os.makedirs(checkpoint_dir, exist_ok=True)
-    spec = PretrainSpec(arch=arch, data_dir=os.path.dirname(data_path),
-                        checkpoint_dir=checkpoint_dir, n_steps=n_steps,
-                        seed=seed, loss_weighting=loss_weighting,
-                        energy_term_weight=float(weight),
-                        parent_density="auto", validation_fraction=0.0)
+    spec = cell_spec(arch, data_path, checkpoint_dir, weight=weight,
+                     n_steps=n_steps, seed=seed, loss_weighting=loss_weighting,
+                     schedule=schedule)
 
     started = time.time()
     state = {"last": started}
@@ -1206,7 +1284,12 @@ def run_cell(arch, arch_name, data_path, work_dir, *, weight, n_steps, seed,
 _RESUME_IDENTITY_KEYS = ("basis", "grid_level", "orientation_lock_strength",
                          "exchange_footing", "dfs_set", "pool_atoms", "atoms",
                          "n_steps", "seed", "loss_weighting", "polarized",
-                         "validation_fraction", "smoke")
+                         "validation_fraction", "smoke", "schedule")
+
+#: What a stored table means by a key it does not carry. A table written before
+#: the schedule flags existed was fitted at the spec defaults by construction,
+#: so on --resume it equals a flag-less request and differs from a scheduled one.
+_IDENTITY_DEFAULTS = {"schedule": _SPEC_SCHEDULE_DEFAULTS}
 
 
 def build_identity(args, lock, smoke_atoms):
@@ -1228,6 +1311,7 @@ def build_identity(args, lock, smoke_atoms):
         "polarized": bool(args.polarized),
         "validation_fraction": 0.0,
         "smoke": bool(args.smoke),
+        "schedule": resolved_schedule(args),
         "data_dir": os.path.abspath(args.data_dir),
     }
 
@@ -1251,14 +1335,15 @@ def load_resumable_rows(path, identity):
         payload = json.load(handle)
     stored = payload.get("identity") or {}
     differing = [k for k in _RESUME_IDENTITY_KEYS
-                 if stored.get(k) != identity.get(k)]
+                 if stored.get(k, _IDENTITY_DEFAULTS.get(k)) != identity.get(k)]
     if differing:
         raise SystemExit(
             f"probe_pretrain_energy_weight: --resume was given {path!r}, "
             f"whose identity differs from the requested one in "
             f"{', '.join(differing)} ("
-            + "; ".join(f"{k}: stored {stored.get(k)!r} vs requested "
-                        f"{identity.get(k)!r}" for k in differing)
+            + "; ".join(f"{k}: stored {stored.get(k, _IDENTITY_DEFAULTS.get(k))!r}"
+                        f"{'' if k in stored else ' (absent, read as the default)'}"
+                        f" vs requested {identity.get(k)!r}" for k in differing)
             + "). Rows measured at two identities are not one table; point "
               "--out at a new file or drop --resume.")
     kept, seen = [], set()
@@ -1306,6 +1391,9 @@ def main(argv=None):
         f"lock={lock:g} footing=spin_channel polarized={bool(args.polarized)} "
         f"loss_weighting={args.loss_weighting} n_steps={args.n_steps} "
         f"seed={args.seed} smoke={bool(args.smoke)}")
+    log("[probe] schedule: " + " ".join(
+        f"{k}={v:g}" for k, v in resolved_schedule(args).items())
+        + ("" if schedule_kwargs(args) else " (PretrainSpec defaults)"))
     log(f"[probe] archs: {', '.join(args.archs)}")
     log(f"[probe] weights: {', '.join(format(w, 'g') for w in args.weights)}")
     log(f"[probe] gates: max |dE_xc| over atoms <= "
@@ -1391,7 +1479,8 @@ def main(argv=None):
                     arch, name, paths[(polarized, parent)], work_dir,
                     weight=weight, n_steps=args.n_steps, seed=args.seed,
                     loss_weighting=args.loss_weighting,
-                    recon_rtol=args.recon_rtol, label=label))
+                    recon_rtol=args.recon_rtol, label=label,
+                    schedule=schedule_kwargs(args)))
             except Exception as exc:                     # noqa: BLE001
                 failures.append({"arch": name, "weight": float(weight),
                                  "error": f"{type(exc).__name__}: {exc}"})
