@@ -216,10 +216,10 @@ source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
 conda activate "$ENV_PREFIX" || true
 export PYTHONNOUSERSITE=1
 PYBIN="$(command -v python || true)"
-echo "[ewsweep] python=${PYBIN:-none}"
+echo "[ewsweep] host=$(hostname) python=$PYBIN"
 case "$PYBIN" in
   "$ENV_PREFIX"/*) : ;;
-  *) echo "[ewsweep] FATAL: env python not active (got: ${PYBIN:-none})"
+  *) echo "[ewsweep] FATAL: parity env python not active (got: ${PYBIN:-none})"
      exit 1 ;;
 esac
 

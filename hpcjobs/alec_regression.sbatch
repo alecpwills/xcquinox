@@ -30,8 +30,18 @@ set -uo pipefail
 
 REPO=/gpfs/projects/FernandezGroup/Alec/xcquinox
 
+ENV_PREFIX=/gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j070
+# --- conda activation (verified by effect, not by return code) --------------
 source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
-conda activate /gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j070
+conda activate "$ENV_PREFIX" || true
+export PYTHONNOUSERSITE=1
+PYBIN="$(command -v python || true)"
+echo "[${SLURM_JOB_NAME:-job}] host=$(hostname) python=$PYBIN"
+case "$PYBIN" in
+  "$ENV_PREFIX"/*) : ;;
+  *) echo "[${SLURM_JOB_NAME:-job}] FATAL: parity env python not active (got: ${PYBIN:-none})"
+     exit 1 ;;
+esac
 export PYTHONNOUSERSITE=1
 
 # Fail fast if the env cannot even launch pytest -- otherwise every batch

@@ -25,6 +25,18 @@
 # environment (activation by effect, verified by the import probe).
 
 set -uo pipefail
+ENV_PREFIX=/gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j070
+# --- conda activation (verified by effect, not by return code) --------------
+source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+conda activate "$ENV_PREFIX" || true
+export PYTHONNOUSERSITE=1
+PYBIN="$(command -v python || true)"
+echo "[${SLURM_JOB_NAME:-job}] host=$(hostname) python=$PYBIN"
+case "$PYBIN" in
+  "$ENV_PREFIX"/*) : ;;
+  *) echo "[${SLURM_JOB_NAME:-job}] FATAL: parity env python not active (got: ${PYBIN:-none})"
+     exit 1 ;;
+esac
 
 REPO="${XCQ_REPO:-/gpfs/projects/FernandezGroup/Alec/xcquinox}"
 CONFIG="${SEED_CACHE_CONFIG:-${REPO}/hpcjobs/configs/dfs_step7.dfs6311_grid3_v5.yaml}"
