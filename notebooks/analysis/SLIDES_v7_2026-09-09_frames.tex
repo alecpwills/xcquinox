@@ -1,6 +1,9 @@
 % The frames of the results deck, shared by SLIDES_v7_2026-09-09.tex (plain) and
 % SLIDES_v7_2026-09-09_annotated.tex (each slide followed by its notes). \slidenote{...}
 % is defined by the wrapper: empty in the plain deck, a notes frame in the annotated one.
+% \codenote{<title> [<path>:<lines>]}{slides_code/<slug>.txt} follows the notes of the slides
+% that state code: empty in the plain deck, a verbatim frame of the excerpt in the annotated one
+% (the excerpts and these lines come from slide_code_notes.py --write).
 % Citations: [DFS21] Dick and Fernandez-Serra 2021 and the other keys of the last slide;
 % [code: file:line] the repository line that implements the equation.
 
@@ -57,6 +60,13 @@
   \end{itemize}
 \end{frame}
 \slidenote{$n$ is the electron density, $\sigma$ the squared gradient. $k_F$ is the Fermi wave vector of a uniform gas at density $n$; $s$ the reduced (dimensionless) density gradient, the GGA variable; $r_s$ the Wigner-Seitz radius (large where the density is low); $\zeta$ the spin polarization ($0$ closed shell, $\pm 1$ fully polarized); $\phi$ the spin-scaling factor that enters PBE correlation. The coordinates $x_0, x_1, x_s, x_\alpha$ are what the neural networks actually receive: logarithms compress the range of $n^{1/3}$ (which spans many orders of magnitude on a molecular grid) and of $s$, so that the network's inputs are of order one everywhere. $x_s$ behaves as $s^2 \ln(s+1)$ near $s = 0$ and as $\ln s$ at large $s$. The exchange network sees each spin channel separately at twice its density, which is how the exact spin-scaling relation of exchange is built in (next slides); the correlation network sees the total density and the polarization through $x_1$. The density is floored at a small cutoff before any of these variables is formed, so that the vanishing-density tail of the grid produces no infinities.}
+\codenote{k\_F, s and the density floor (exchange network) [xcquinox/alec/networks.py:319--324]}{slides_code/p3_1_k_f_s_and_the_density_floor_exchange_net.txt}
+\codenote{r\_s, k\_F, s (correlation network) [xcquinox/alec/networks.py:589--597]}{slides_code/p3_2_r_s_k_f_s_correlation_network.txt}
+\codenote{the DFS coordinates x\_0, x\_1, x\_s (correlation network) [xcquinox/alec/networks.py:626--654]}{slides_code/p3_3_the_dfs_coordinates_x_0_x_1_x_s_correlat.txt}
+\codenote{the exchange coordinate x\_s [xcquinox/alec/networks.py:341--352]}{slides_code/p3_4_the_exchange_coordinate_x_s.txt}
+\codenote{the log transform and the 1e-5 constant [xcquinox/alec/networks.py:27--34]}{slides_code/p3_5_the_log_transform_and_the_1e_5_constant.txt}
+\codenote{the meta-GGA coordinate ln((alpha + 1)/2) [xcquinox/alec/networks.py:48--80]}{slides_code/p3_6_the_meta_gga_coordinate_ln_alpha_1_2.txt}
+\codenote{the exchange network on the doubled spin channel [xcquinox/alec/oneshot.py:465--537]}{slides_code/p3_7_the_exchange_network_on_the_doubled_spin.txt}
 
 \begin{frame}{1. Model: the extra descriptors}
   \textbf{Iso-orbital indicator} (meta-GGA rung; SCAN's $\alpha$ [SCAN15 Eq. 2; DFS21 Eq. 6; code: metagga.py:8--9]), a contraction of the live density matrix $P$ against the AO gradients, hence self-consistent and differentiable through the SCF:
@@ -79,6 +89,11 @@
   $x_4$ the density-form cusp envelope $e^{-2Zr}$ [Steiner63, after Kato57], $x_5$ the log-compressed bare-nuclear potential. Both are geometric, so the synthetic pre-training mesh (Sec. 3) carries no values for them.
 \end{frame}
 \slidenote{$\tau$ is the (positive) kinetic-energy density of the occupied orbitals $\psi_i$; on a basis set it is a contraction of the one-particle density matrix $P$ with the gradients of the atomic-orbital functions $\chi_\mu$, which is why it can be differentiated through the self-consistent field: it depends on the live density matrix, not on a frozen reference. $\tau_W$ is the von Weizsacker kinetic-energy density, the value of $\tau$ for a single occupied orbital, and $\tau_{\rm unif}$ the value for a uniform gas at the same density. $\alpha$ therefore reads 0 in a single-orbital (one-electron or covalent bond) region, 1 in a uniform-gas-like region, and grows in regions of overlapping closed shells. The lower bound $\alpha \ge 0$ holds exactly for a single occupied orbital but can be violated numerically; a smooth positive part keeps the derivative continuous there, which a hard clip would not. The cusp pair encodes where the nuclei are: $x_4$ is 1 at a nucleus and decays with the density's own cusp envelope (the electron density falls as $e^{-2Zr}$ near a nucleus of charge $Z$, the density counterpart of Kato's wavefunction cusp condition), $x_5$ is a bounded, log-compressed version of the bare nuclear potential summed over all nuclei. Because both depend only on the geometry, the synthetic $(r_s, s, \alpha)$ mesh used to regularize pre-training has no value to give them.}
+\codenote{tau from the live density matrix [xcquinox/alec/metagga.py:115--139]}{slides_code/p4_1_tau_from_the_live_density_matrix.txt}
+\codenote{the smooth positive part [xcquinox/alec/metagga.py:142--152]}{slides_code/p4_2_the_smooth_positive_part.txt}
+\codenote{alpha = (tau - tau\_W) / tau\_unif [xcquinox/alec/metagga.py:163--274]}{slides_code/p4_3_alpha_tau_tau_w_tau_unif.txt}
+\codenote{the alpha descriptor of the network input [xcquinox/alec/descriptors.py:432--472]}{slides_code/p4_4_the_alpha_descriptor_of_the_network_inpu.txt}
+\codenote{the cusp pair x\_4, x\_5 [xcquinox/alec/descriptors.py:225--258]}{slides_code/p4_5_the_cusp_pair_x_4_x_5.txt}
 
 \begin{frame}{1. Model: the functional form}
   \small
@@ -108,6 +123,12 @@
   \]
 \end{frame}
 \slidenote{The functional is written as the local density approximation times an enhancement factor: $E_x = \int n\,\epsilon_x^{\rm LDA}(n) F_x$ for exchange and the same with the PW92 uniform-gas correlation energy per particle for correlation. $F_x = F_c = 1$ is the LDA; PBE, SCAN and the trained networks differ in how $F$ depends on the density variables. The network's raw output $g$ is passed through the bounded map $\mathcal{L}_\lambda$, which sends 0 to 0 and confines $F$ to $(0, \lambda)$; for exchange $\lambda = 1.804$ is the PBE ceiling derived from the Lieb-Oxford bound, for correlation $\lambda = 2$ merely guarantees $F_c \ge 0$ (the upper value is not used). The gate $G$ multiplies the network output by $\tanh^2(s)$, which vanishes where the gradient vanishes, so the uniform electron gas limit $F = 1$ is exact by construction; on the meta-GGA rung the DFS gate adds a term in $x_\alpha$. The exchange energy is assembled from the exact spin-scaling relation of Oliver and Perdew: exchange of a spin-polarized system is the average of the spin-unpolarized functional evaluated at twice each spin density; this is why the exchange network is evaluated per spin channel. The attention variants insert one self-attention block after the first hidden layer: the hidden vector at a grid point is cut into $h$ tokens, each token attends to the others with the standard scaled dot-product formula, and the result is added back (a residual) after a layer normalization. It re-mixes hidden units at one grid point; it does not look at neighbouring points, so the functional stays semilocal.}
+\codenote{the bounded map L\_lambda [xcquinox/alec/networks.py:129--169]}{slides_code/p5_1_the_bounded_map_l_lambda.txt}
+\codenote{the MLP, GELU, the attention block after the first hidden layer, the gate and the output [xcquinox/alec/networks.py:366--405]}{slides_code/p5_2_the_mlp_gelu_the_attention_block_after_t.txt}
+\codenote{the network construction and the zero-initialized last layer [xcquinox/alec/networks.py:283--300]}{slides_code/p5_3_the_network_construction_and_the_zero_in.txt}
+\codenote{the exchange and correlation energy densities (LDA and PW92 factors) [xcquinox/alec/models.py:175--215]}{slides_code/p5_4_the_exchange_and_correlation_energy_dens.txt}
+\codenote{the spin-scaled exchange energy (Oliver and Perdew) [xcquinox/alec/oneshot.py:465--537]}{slides_code/p5_5_the_spin_scaled_exchange_energy_oliver_a.txt}
+\codenote{the self-attention block [xcquinox/net.py:50--136]}{slides_code/p5_6_the_self_attention_block.txt}
 
 \begin{frame}{1. Model: the architectures}
   \begin{center}\scriptsize
@@ -130,6 +151,11 @@
   \end{itemize}
 \end{frame}
 \slidenote{\textbf{The names:} the family word states the initialization of the last layer (deep: Glorot; deep0: zeroed, so pre-training starts from the LDA), then the descriptor and attention tokens, then the size. \textbf{Why deep\_3x16 and deep0\_3x16 look alike:} both are depth 3, width 16 with the same inputs and the same parameter count; the one difference is the start. In deep0\_3x16 the last layer's weights and bias start at zero, so the untrained network returns exactly the LDA ($F = 1$), whereas deep\_3x16 starts from a Glorot initialization. Pre-training then fits both to PBE; the certificate shows both pass (deep\_3x16 mean $|\Delta AE|$ 0.162, deep0\_3x16 0.114 kcal/mol). \textbf{Do the deep networks do worse?} No: deep0\_3x16 and deep\_3x16 are below PBE on the combined objective at the same subset sizes (1, 7, 12, 15, 18, 26) and above it at the same sizes (2 to 6); on energy alone deep0\_3x16 is below PBE at 3 and 4 points where deep\_3x16 is not. The comparison is between two clones of one architecture, which is a replicate rather than an architecture contrast. The descriptor families (cusp, meta-GGA) are the actual architecture axes, and their cells are still queued.}
+\codenote{the architecture record [xcquinox/alec/config.py:103--159]}{slides_code/p6_1_the_architecture_record.txt}
+\codenote{the registry entries medium and medium\_attn (shown deep\_3x16, deep\_attn\_3x16) [xcquinox/alec/config.py:512--515]}{slides_code/p6_2_the_registry_entries_medium_and_medium_a.txt}
+\codenote{the registry entries deep\_3x16, deep\_attn\_3x16, deep\_cusp\_3x16 (shown deep0\_*) [xcquinox/alec/config.py:579--592]}{slides_code/p6_3_the_registry_entries_deep_3x16_deep_attn.txt}
+\codenote{the registry entry deep\_cusp\_mgga\_3x16 [xcquinox/alec/config.py:670--674]}{slides_code/p6_4_the_registry_entry_deep_cusp_mgga_3x16.txt}
+\codenote{from\_spec: the fields an entry sets [xcquinox/alec/config.py:385--470]}{slides_code/p6_5_from_spec_the_fields_an_entry_sets.txt}
 
 % =====================================================================
 \section{2. Training-subset generation}
@@ -161,6 +187,12 @@
   References: atomization energies [HK12] with H2O and C2H2 from [W411]; reaction energies [Goe17, BH76RC]; ionization potentials [NIST]. Code: dfs\_pool.py, training\_points.py:347--420.
 \end{frame}
 \slidenote{\textbf{Point:} one unit of training signal with a reference value: an atomization energy (the energy to break a molecule into its atoms), a reaction energy, or an ionization potential. \textbf{Species:} the molecules and atoms whose self-consistent energies the point's loss needs; an atomization energy needs the molecule and its atoms, but only the H and Li atoms are attached to the point as anchors because those are the atomic densities the DFS training set included; the other free atoms enter through the atom-anchor channel (Sec. 4). The charge and spin in parentheses are the species' total charge and the number of unpaired electrons ($2S$). \textbf{Idx} is the index in the selection ledger; the chosen subsets on the later slide are lists of these indices. The pool reproduces the training set of the DFS Letter: 21 of its 22 G2/97 molecules as atomization energies, the three BH76 barrier reactions and the two ionization potentials; the reference values are the non-relativistic, zero-point-exclusive atomization energies of Haunschild and Klopper (two taken from W4-11), the GMTKN55 BH76RC reaction energies and NIST ionization potentials.}
+\codenote{the 21 atomization points (names, spins, charges, references) [xcquinox/alec/dfs\_pool.py:106--225]}{slides_code/p7_1_the_21_atomization_points_names_spins_ch.txt}
+\codenote{the three BH76 reaction points [xcquinox/alec/dfs\_pool.py:308--397]}{slides_code/p7_2_the_three_bh76_reaction_points.txt}
+\codenote{the two ionization points [xcquinox/alec/dfs\_pool.py:427--466]}{slides_code/p7_3_the_two_ionization_points.txt}
+\codenote{the H and Li anchors [xcquinox/alec/dfs\_pool.py:472--477]}{slides_code/p7_4_the_h_and_li_anchors.txt}
+\codenote{the pool assembly [xcquinox/alec/dfs\_pool.py:547--639]}{slides_code/p7_5_the_pool_assembly.txt}
+\codenote{the 26 points and their species [xcquinox/alec/training\_points.py:347--436]}{slides_code/p7_6_the_26_points_and_their_species.txt}
 
 \begin{frame}{2. Subsets: the descriptor distributions}
   \small
@@ -179,6 +211,12 @@
   \end{center}
 \end{frame}
 \slidenote{The idea of the selection is to pick, for each subset size, the subset of training points whose electron densities look most like the whole pool in the variables a GGA or meta-GGA functional sees. Those variables are $\rho^{1/3}$ (the density, compressed), $s$ (the reduced gradient) and $\alpha$ (the iso-orbital indicator); they are computed once per species from a cheap PBE calculation on a small basis and a coarse grid, at every quadrature point of that species' grid. \textbf{Marginal:} the one-dimensional distribution of one of the three variables. \textbf{Histogram and mass function:} the range of each variable between its 0.1th and 99.9th percentile over the whole pool is cut into 200 equal bins; each grid point adds its quadrature weight to the bin its value falls in, and the histogram is normalized to sum to one, so that it is a probability mass function independent of the number of grid points or of the bin width. \textbf{The figure:} left, the divergence of the chosen subset from the pool against the subset size (total and the three marginal terms, log scale; the full pool has divergence zero and is not drawn on a log axis); right, the three reference mass functions (black) with the subsets at 1, 7 and 26 points overlaid, against the bin index, with the bin's variable value on the upper axis. The first bin dominates each marginal; the reasons are on the next slide.}
+\codenote{the descriptor triple (rho\^{}(1/3), s, alpha) and the clip to [0, 100] [xcquinox/alec/subset\_selection.py:81--119]}{slides_code/p8_1_the_descriptor_triple_rho_1_3_s_alpha_an.txt}
+\codenote{one PBE SCF per species at def2-svp, grid level 1 [xcquinox/alec/subset\_selection.py:375--406]}{slides_code/p8_2_one_pbe_scf_per_species_at_def2_svp_grid.txt}
+\codenote{a point's sample is the concatenation over its species [xcquinox/alec/subset\_selection.py:409--445]}{slides_code/p8_3_a_point_s_sample_is_the_concatenation_ov.txt}
+\codenote{the reference histograms: 200 bins between the 0.1 and 99.9 percentiles [xcquinox/alec/subset\_selection.py:448--469]}{slides_code/p8_4_the_reference_histograms_200_bins_betwee.txt}
+\codenote{binning with the shared edges and the mass function [xcquinox/alec/subset\_selection.py:175--193]}{slides_code/p8_5_binning_with_the_shared_edges_and_the_ma.txt}
+\codenote{binning with the shared edges [xcquinox/alec/subset\_selection.py:248--259]}{slides_code/p8_6_binning_with_the_shared_edges.txt}
 
 \begin{frame}{2. Subsets: the metric and the search [Lin91]}
   \small
@@ -197,6 +235,10 @@
   \end{itemize}
 \end{frame}
 \slidenote{\textbf{Kullback-Leibler divergence} $\mathrm{KL}(P\|Q)$ measures how different a distribution $P$ is from $Q$; it is zero when they coincide and is not symmetric. \textbf{Jensen-Shannon divergence} is its symmetrized, bounded form: each distribution is compared with the average $M$ of the two, so it is symmetric and, with the natural logarithm, lies between 0 and $\ln 2$ per marginal; the three marginals are summed with equal weight, so the total lies between 0 and $3\ln 2 = 2.08$. "Natural logarithm" is what the report's "in nats" meant: a nat is the unit of information when logarithms are natural rather than base 2 (bits); the choice only scales the numbers. The $10^{-12}$ floor avoids $\ln 0$ in empty bins. \textbf{The search} is exhaustive: every subset of size $r$ is scored, using the fact that histograms add over disjoint samples so the per-point histograms are pre-binned once. \textbf{Why the first bin dominates:} the bin edges are linear over the 0.1 to 99.9 percentile range, and on a molecular quadrature grid the low-density tail carries enormous $s$ and $\alpha$ values (the density falls exponentially while its gradient and kinetic terms do not fall as fast), so the range stretches to $10^{10}$ and the whole chemically relevant range of $s$ and $\alpha$ ($s \lesssim 5$, $\alpha \lesssim 10$) falls in bin 0; for $\rho^{1/3}$ the opposite holds: bin 0 covers only $\rho < 9.2\times10^{-5}$ (vacuum), and the valence and core densities occupy the higher bins. The metric therefore compares subsets mainly on how their grids' low-density tails are distributed, which is a property of the selection as it was run and is stated rather than changed here because every trained cell used these subsets. The L2 alternative was computed and stored but no training run used it.}
+\codenote{the probability floor 1e-12 [xcquinox/alec/subset\_selection.py:54--54]}{slides_code/p9_1_the_probability_floor_1e_12.txt}
+\codenote{the Kullback-Leibler term [xcquinox/alec/subset\_selection.py:196--210]}{slides_code/p9_2_the_kullback_leibler_term.txt}
+\codenote{the Jensen-Shannon divergence over the three marginals [xcquinox/alec/subset\_selection.py:213--245]}{slides_code/p9_3_the_jensen_shannon_divergence_over_the_t.txt}
+\codenote{the exhaustive search over C(26, r) [xcquinox/alec/subset\_selection.py:472--688]}{slides_code/p9_4_the_exhaustive_search_over_c_26_r.txt}
 
 \begin{frame}{2. Subsets: the chosen subsets [ledger subset\_index\_log.json; plot\_subset\_jsd.py]}
   \begin{center}\tiny\setlength{\tabcolsep}{2pt}
@@ -248,6 +290,16 @@
   \end{itemize}
 \end{frame}
 \slidenote{Pre-training is not training on reference data: it fits the network so that it \textit{produces} the parent functional, PBE or SCAN, pointwise. The target at each grid point is the parent's enhancement factor minus one (so that a zero network output means "equal to the parent's LDA baseline"), evaluated with libxc on the parent's own self-consistent densities. The systems are the DFS pre-training inventory plus every atom that appears in the benchmark pools, so that the clone is accurate on the atoms the training and held-out reactions use. A synthetic mesh of $(r_s, s, \alpha)$ values, not tied to any molecule, is mixed in at 30 percent of the weight to regularize the fit in regions molecules sample sparsely. The residual is weighted by $|n\,\epsilon_x^{\rm LDA}|$ times the quadrature weight, i.e. by how much each point contributes to the energy. The energy term compares, for each system, the network's exchange-correlation energy with the parent's: an earlier round showed that a clone with the smallest pointwise error could still be tens of kcal/mol off on atomization energies, because small pointwise errors that do not cancel between a molecule and its atoms add up; the term with $w_E = 0.1$ removes that. \textbf{Adam} is the optimizer, 20000 steps with a learning rate decaying linearly from $10^{-3}$ to $10^{-5}$ over the second half; 20 percent of the grid rows are held out and scored every 50 steps, the best snapshot is kept, and the fit stops if 300 checks pass without improvement.}
+\codenote{the pre-training systems: the DFS inventory and the pool atoms [xcquinox/alec/pretrain\_data\_gen.py:334--363]}{slides_code/p11_1_the_pre_training_systems_the_dfs_invento.txt}
+\codenote{the pool atoms [xcquinox/alec/pretrain\_data\_gen.py:214--240]}{slides_code/p11_2_the_pool_atoms.txt}
+\codenote{the exchange rows per spin channel at the doubled density [xcquinox/alec/pretrain\_data\_gen.py:379--479]}{slides_code/p11_3_the_exchange_rows_per_spin_channel_at_th.txt}
+\codenote{the pointwise targets F\_parent - 1 [xcquinox/alec/pretrain\_data\_gen.py:981--1044]}{slides_code/p11_4_the_pointwise_targets_f_parent_1.txt}
+\codenote{the synthetic (r\_s, s, alpha) mesh at 30 percent of the weight [xcquinox/alec/pretrain\_data\_gen.py:1068--1140]}{slides_code/p11_5_the_synthetic_r_s_s_alpha_mesh_at_30_per.txt}
+\codenote{the integration weights abs(n eps\_LDA) w\_grid [xcquinox/alec/pretrain.py:104--167]}{slides_code/p11_6_the_integration_weights_abs_n_eps_lda_w.txt}
+\codenote{the objective: pointwise term plus energy term [xcquinox/alec/pretrain.py:256--341]}{slides_code/p11_7_the_objective_pointwise_term_plus_energy.txt}
+\codenote{the learning-rate schedule [xcquinox/alec/pretrain.py:1133--1208]}{slides_code/p11_8_the_learning_rate_schedule.txt}
+\codenote{Adam with the global-norm clip [xcquinox/alec/pretrain.py:1211--1236]}{slides_code/p11_9_adam_with_the_global_norm_clip.txt}
+\codenote{the loop: validation every validate\_every steps, patience, the best model kept [xcquinox/alec/pretrain.py:740--826]}{slides_code/p11_10_the_loop_validation_every_validate_every.txt}
 
 \begin{frame}{3. Pre-training: the fidelity certificate}
   \small
@@ -277,6 +329,11 @@
   \end{center}
 \end{frame}
 \slidenote{The certificate is the proof that the pre-trained network is the parent functional for the purposes of the training that follows. It is computed at the production basis and grid (6-311++G(3df,2pd), grid level 3), not the pre-training grid, on the parent's frozen densities: for every system the difference of exchange-correlation energies between the clone and the parent, and for every molecule the resulting error in the atomization energy (the molecule's error minus its atoms' errors, since an atomization energy is a difference). The three tolerances are: no free atom more than 1 mHa off (0.63 kcal/mol), the mean atomization-energy error at most 1 kcal/mol, and no single molecule more than 2 kcal/mol off. The two-tier form (mean plus a worst-case backstop) replaced an earlier single 1 kcal/mol maximum, under which one species a few hundredths over the bound held an entire group while the set as a whole was far inside chemical accuracy. \textbf{Table columns:} the pointwise loss is the final value of the pre-training residual for the exchange (X) and correlation (C) networks; the species in parentheses are the molecules above 1 kcal/mol. Every GGA clone passes; the attention variants are the tightest clones. The one meta-GGA clone fails all three criteria; its exchange residual is 40 to 250 times the GGA clones' and its correlation residual 1.5 to 80 times, after the same number of steps, and its atomization errors (14 of 22 molecules above 1 kcal/mol, the eight largest of the same sign) mean the network does not reproduce SCAN well enough to serve as its starting point. The other four meta-GGA architectures' certificates are pending; until they exist the meta-GGA training array does not run.}
+\codenote{dE\_xc per system in mHa [xcquinox/alec/cluster/fidelity.py:1171--1189]}{slides_code/p12_1_de_xc_per_system_in_mha.txt}
+\codenote{dAE = dE\_xc(mol) - sum of the atoms' dE\_xc [xcquinox/alec/cluster/fidelity.py:1411--1460]}{slides_code/p12_2_dae_de_xc_mol_sum_of_the_atoms_de_xc.txt}
+\codenote{the atomization gate: mean and the max backstop [xcquinox/alec/cluster/fidelity.py:1616--1687]}{slides_code/p12_3_the_atomization_gate_mean_and_the_max_ba.txt}
+\codenote{the tolerances 1.0 mHa, 1.0 and 2.0 kcal/mol [xcquinox/alec/cluster/grid\_config.py:290--338]}{slides_code/p12_4_the_tolerances_1_0_mha_1_0_and_2_0_kcal.txt}
+\codenote{the gate that holds the training array [xcquinox/alec/cluster/fidelity.py:292--320]}{slides_code/p12_5_the_gate_that_holds_the_training_array.txt}
 
 \begin{frame}{3. Pre-training: the loss curves}
   \begin{columns}[T]
@@ -340,6 +397,18 @@
   \end{itemize}
 \end{frame}
 \slidenote{This is the actual training step, the only stage that changes the functional away from PBE. \textbf{Group and epoch:} the training data is organized in groups, each a reaction (with its reference energy) or a molecule (with its reference density and potential); one epoch takes one gradient step per group. \textbf{The five channels:} $\mathcal{L}_{\rm rxn}$, the reaction-energy residual: $r_t$ is the reaction energy formed from the network's self-consistent species energies at SCF cycle $t$ (with stoichiometric coefficients $c_i$) minus the reference, and the loss weights the last cycles most (at three cycles the weights are 0, 1/16 and 1), the DFS device that penalizes an SCF that does not settle instead of scoring one arbitrary cycle; the W4-11 atomization energies enter here as reactions "molecule to atoms" using the network's own atomic energies, beside the BH76 barrier heights. $\mathcal{L}_{AE}$, the atom anchors: the free atoms of the subset are held near their exact non-relativistic energies (Chakravorty et al.), as a relative error with the DFS weight 0.01, so that the absolute energy scale is not free to drift. $\mathcal{L}_{IP}$, ionization potentials (cation minus neutral against the reference). $\mathcal{L}_{v_{xc}}$, the exchange-correlation potential matrix compared with a reference potential obtained by inverting the reference density, on the reference density (this channel is not part of the DFS objective). $\mathcal{L}_\rho$, the density: the squared difference between the network's final SCF density and the CCSD reference density on the same grid, divided by the electron count squared so that molecules of different size weigh alike (DFS Eq. 17). The weights 1 and 20 are the Letter's $\lambda_{RE}$ and $\lambda_n$.}
+\codenote{the five channels and their assembly [xcquinox/alec/losses.py:1336--1417]}{slides_code/p15_1_the_five_channels_and_their_assembly.txt}
+\codenote{the fixed channel weights 1, 1, 1, 1, 20 [xcquinox/alec/train.py:1829--1835]}{slides_code/p15_2_the_fixed_channel_weights_1_1_1_1_20.txt}
+\codenote{the reaction residual (BH76 barriers, W4-11 atomizations as reactions) [xcquinox/alec/losses.py:530--578]}{slides_code/p15_3_the_reaction_residual_bh76_barriers_w4_1.txt}
+\codenote{the BH76 channel [xcquinox/alec/losses.py:1282--1310]}{slides_code/p15_4_the_bh76_channel.txt}
+\codenote{the ionization channel [xcquinox/alec/losses.py:581--605]}{slides_code/p15_5_the_ionization_channel.txt}
+\codenote{the atom anchors: relative squared error at weight 0.01 [xcquinox/alec/losses.py:223--243]}{slides_code/p15_6_the_atom_anchors_relative_squared_error.txt}
+\codenote{the atomization channel with the network's own atoms [xcquinox/alec/losses.py:246--273]}{slides_code/p15_7_the_atomization_channel_with_the_network.txt}
+\codenote{the potential channel: the Frobenius residual over n\_AO\^{}2 [xcquinox/alec/losses.py:408--483]}{slides_code/p15_8_the_potential_channel_the_frobenius_resi.txt}
+\codenote{the density channel per electron [xcquinox/alec/losses.py:366--405]}{slides_code/p15_9_the_density_channel_per_electron.txt}
+\codenote{the convergence-tail weights (t/(N-1))\^{}2 [xcquinox/alec/oneshot.py:632--654]}{slides_code/p15_10_the_convergence_tail_weights_t_n_1_2.txt}
+\codenote{one optimizer step per training group per epoch [xcquinox/alec/train.py:2001--2061]}{slides_code/p15_11_one_optimizer_step_per_training_group_pe.txt}
+\codenote{the group's scoped loss [xcquinox/alec/train.py:1919--1965]}{slides_code/p15_12_the_group_s_scoped_loss.txt}
 
 \begin{frame}{4. In-sample: the training losses (deep\_3x16)}
   \begin{center}
@@ -353,6 +422,17 @@
   \end{itemize}
 \end{frame}
 \slidenote{\textbf{The figure} has eight panels for the deep\_3x16 architecture, one curve per subset size (dark: one point, yellow: twenty-six), each a per-epoch mean on a log scale: the total loss, then the five channels at their trained weights (the five add up to the total), the validation reaction-energy error at each 25-epoch check with the chosen (validation-best) epoch starred, and the learning rate. \textbf{The SCF:} the network's energies and densities are self-consistent, but only three Kohn-Sham cycles are run from the converged PBE density, with the DFS linear mixing schedule (the new density is mixed into the old with a weight $a_t$ that decays from 1.3 toward 0.3); gradients flow through all three cycles. Three cycles are enough when the functional is close to PBE and do not converge when it is far from a fixed point, which is one of the reasons the held-out density comparison is asymmetric (Sec. 5); a 25-cycle variant is running. \textbf{AdamW} is the optimizer with decoupled weight decay; the learning rate is held for the first half of the run and decayed linearly over the second. \textbf{What the curves show:} the reaction channel is the one the training reduces by orders of magnitude; the density channel falls modestly and settles within 25 epochs; the potential channel rises for the larger subsets of the plain networks (and falls in the attention cells at 12 and 15), i.e. the potential term and the energy terms pull in different directions once many molecules are supervised. The validation error (reactions not in the training subset) separates the cells into two families: the cells trained on 2 to 6 points start overfitting after 25 epochs (their validation error rises), while the one-point cell and every cell from seven points holds 6 to 11 kcal/mol; the validation-best checkpoint is the epoch with the lowest validation error, so the small cells are read at epoch 25.}
+\codenote{the SCF: three cycles, the DFS mixing schedule, the tail loss [hpcjobs/configs/dfs\_step7.dfs6311\_grid3\_v7g1\_size.yaml:131--140]}{slides_code/p16_1_the_scf_three_cycles_the_dfs_mixing_sche.txt}
+\codenote{the mixing schedule a\_t = 0.3\^{}t + 0.3 [xcquinox/alec/solver.py:303--358]}{slides_code/p16_2_the_mixing_schedule_a_t_0_3_t_0_3.txt}
+\codenote{the PBE seed [xcquinox/alec/solver.py:88--125]}{slides_code/p16_3_the_pbe_seed.txt}
+\codenote{the SCF cycle: the mixed density scored, gradients through every cycle [xcquinox/alec/solver\_manual.py:404--463]}{slides_code/p16_4_the_scf_cycle_the_mixed_density_scored_g.txt}
+\codenote{the cycles as a scan (gradients through every cycle) [xcquinox/alec/solver\_manual.py:263--289]}{slides_code/p16_5_the_cycles_as_a_scan_gradients_through_e.txt}
+\codenote{AdamW, the linear decay over the second half, weight decay, the clip [xcquinox/alec/train.py:112--202]}{slides_code/p16_6_adamw_the_linear_decay_over_the_second_h.txt}
+\codenote{the hyperparameters of the run (200 epochs, 1e-3 to 1e-5, weight decay 1e-4, clip 1.0, validation every 25) [hpcjobs/configs/dfs\_step7.dfs6311\_grid3\_v7g1\_size.yaml:153--183]}{slides_code/p16_7_the_hyperparameters_of_the_run_200_epoch.txt}
+\codenote{the validation slice [xcquinox/alec/train.py:745--817]}{slides_code/p16_8_the_validation_slice.txt}
+\codenote{the validation reaction-energy MAE [xcquinox/alec/train.py:820--862]}{slides_code/p16_9_the_validation_reaction_energy_mae.txt}
+\codenote{the validation-best tracker [xcquinox/alec/train.py:682--742]}{slides_code/p16_10_the_validation_best_tracker.txt}
+\codenote{the validation-best checkpoint among the three saved [xcquinox/alec/train.py:1017--1052]}{slides_code/p16_11_the_validation_best_checkpoint_among_the.txt}
 
 \begin{frame}{4. In-sample: the trained enhancement factors}
   \begin{columns}[T]
@@ -404,6 +484,17 @@
   \end{itemize}
 \end{frame}
 \slidenote{\textbf{Held-out} means reactions and molecules the cell never trained on. The test set is the union of two standard benchmarks, the BH76 barrier heights and the W4-11 atomization energies (from the GMTKN55 collection), with two removals: 35 reactions set aside as the validation slice used only to pick the checkpoint and the cell's own training reactions; what remains is the cell's "slice" (61 BH76 rows, of which three are listed twice by name and four more are permuted-name twins, so the energy legs average 54 barrier identities), and PBE is scored on the same slice so the comparison is like for like. \textbf{WTMAD-2} is GMTKN55's weighted total mean absolute deviation: each benchmark's mean absolute error is divided by that benchmark's mean absolute reference value (so barriers, around 19 kcal/mol, and atomization energies, around 350 kcal/mol, count as relative errors) and scaled by 56.84 kcal/mol, the mean absolute reference value over all of GMTKN55; here only two of GMTKN55's 55 benchmarks are present, so the figures say "2-subset". $\varepsilon_n$ is the DFS density error: the integrated absolute density difference from the CCSD reference density, per electron (Eq. 20 of the Letter); the grid RMSE is the alternative root-mean-square measure the older figures use. $\mathcal{ED}$ (Eq. 21) combines an energy error and a density error as a harmonic mean, with $\gamma$ converting the density error into kcal/mol: in "DFS units" $\gamma$ is the Letter's published slope 1084.87 and the density leg is $\varepsilon_n$; in "self-calibrated units" $\gamma$ is chosen so that PBE's two legs are equal and the density leg is the RMSE. A harmonic mean is dominated by its smaller term, and since every functional here has a density leg near 10 kcal/mol after $\gamma$, differences in $\mathcal{ED}$ come mostly from the energy leg. "Beats PBE" is defined as a lower $\mathcal{ED}$ than PBE on the same slice.}
+\codenote{the full pools (76 BH76, 140 W4-11) before the validation split [xcquinox/alec/full\_benchmark\_pools.py:516--543]}{slides_code/p19_1_the_full_pools_76_bh76_140_w4_11_before.txt}
+\codenote{the validation slice, split by reaction identity [xcquinox/alec/eval\_holdout.py:204--245]}{slides_code/p19_2_the_validation_slice_split_by_reaction_i.txt}
+\codenote{the strict held-out filter [xcquinox/alec/eval\_holdout.py:173--201]}{slides_code/p19_3_the_strict_held_out_filter.txt}
+\codenote{the cell's trained reactions removed [xcquinox/alec/eval\_holdout.py:283--338]}{slides_code/p19_4_the_cell_s_trained_reactions_removed.txt}
+\codenote{the energy legs average one term per reaction identity [xcquinox/alec/eval\_holdout.py:402--442]}{slides_code/p19_5_the_energy_legs_average_one_term_per_rea.txt}
+\codenote{eps\_n per electron [xcquinox/alec/evaluation.py:196--218]}{slides_code/p19_6_eps_n_per_electron.txt}
+\codenote{the grid RMSE [xcquinox/alec/evaluation.py:293--320]}{slides_code/p19_7_the_grid_rmse.txt}
+\codenote{WTMAD-2 with the GMTKN55 scale [notebooks/analysis/make\_ablation\_arch\_figure.py:3824--3857]}{slides_code/p19_8_wtmad_2_with_the_gmtkn55_scale.txt}
+\codenote{the harmonic mean [notebooks/analysis/make\_ablation\_arch\_figure.py:4835--4841]}{slides_code/p19_9_the_harmonic_mean.txt}
+\codenote{the self-calibrated gamma = E\_PBE / D\_PBE [notebooks/analysis/make\_ablation\_arch\_figure.py:4868--4943]}{slides_code/p19_10_the_self_calibrated_gamma_e_pbe_d_pbe.txt}
+\codenote{the DFS gamma 1084.87 [notebooks/analysis/make\_ablation\_arch\_figure.py:4952--4975]}{slides_code/p19_11_the_dfs_gamma_1084_87.txt}
 
 \begin{frame}{5. Held-out: energy and density in DFS units (full set)}
   \begin{center}

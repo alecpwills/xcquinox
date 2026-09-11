@@ -1,0 +1,50 @@
+# xcquinox/alec/cluster/grid_config.py:290-338
+@dataclass(frozen=True)
+class FidelityConfig:
+    """Tolerances for the per-architecture physics certificate.
+
+    Every architecture's pretrained networks must reproduce their parent
+    functional (PBE for a GGA-rung architecture, SCAN for a meta-GGA one) in
+    energy units before the run may train: the certificate
+    (``cluster/fidelity.py``) requires max |dE_xc| over free atoms <=
+    ``tol_atom`` mHa AND, on the atomization energies, the aggregate selected
+    by ``tol_AE_aggregate`` -- ``"max"`` (the original rule) gates
+    max |dAE| <= ``tol_AE`` kcal/mol; ``"mae"`` (2026-09-03) gates
+    mean |dAE| <= ``tol_AE`` AND max |dAE| <= ``tol_AE_max_backstop``, all on
+    frozen parent densities at the run's identity. The two-tier form exists
+    because the max over ~23 correlated atomizations is a high-variance order
+    statistic: a single species a few hundredths over the bound held a whole
+    group's training, while the set-level fidelity (mean 0.1-0.3 kcal/mol on
+    the 2026-09-02 cloning fits) was far inside chemical accuracy. The
+    backstop keeps a worst-case ceiling so a set measure can never green-stamp
+    one badly wrong species (a lone 4.6 kcal/mol offset at n=23 has MAE 0.30),
+    and every certificate records the per-species offsets plus the list of
+    species above 1.0 kcal/mol regardless of the aggregate.
+
+    The defaults are the program's binding decision (1.0 kcal/mol and 1.0
+    mHa, aggregate ``"max"``, backstop 2.0 -- the same 2.0 that is this
+    validator's own loosening ceiling). ``validate_grid_semantics`` refuses
+    any of the three tolerances above 2.0 unless ``override_reason`` is
+    non-empty, so a run can only be loosened deliberately and with the reason
+    on the record: the string is copied into every certificate the run writes.
+    """
+    tol_AE: float = 1.0          # kcal/mol, atomization-energy offset
+    tol_atom: float = 1.0        # mHa, free-atom E_xc offset
+    # How tol_AE is applied over the atomization set: "max" (each species
+    # individually) or "mae" (the set mean, with tol_AE_max_backstop as the
+    # per-species ceiling). The backstop key may only be written when the
+    # aggregate is "mae"; under "max" it is inert and its presence is refused.
+    tol_AE_aggregate: str = "max"
+    tol_AE_max_backstop: float = 2.0   # kcal/mol, per-species ceiling under "mae"
+    override_reason: str | None = None
+    # When False the certificate is still computed and written with its TRUE
+    # verdict, but the ON-NODE gates (the pretrain worker's exit code, the
+    # train task, the preflight sweep) log the verdict and continue instead of
+    # refusing. Permitted only with a non-empty ``override_reason``. It exists
+    # for the per-architecture workflow-verification matrix, whose short
+    # pretraining runs cannot meet the tolerance yet must exercise the train
+    # and eval wiring with the physics on record. The RECORD layers
+    # (``validate_run``, ``merge_v4_arms``, the figure loaders) ignore this
+    # field and require PASS regardless, so a non-enforcing run can never
+    # become a quantitative result.
+    enforce: bool = True

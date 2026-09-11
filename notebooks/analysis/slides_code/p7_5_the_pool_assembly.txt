@@ -1,0 +1,94 @@
+# xcquinox/alec/dfs_pool.py:547-639
+def build_dfs_pool() -> dict:
+    """Assemble the 28-entry Dick 2021 training pool.
+
+    Returns dict with keys:
+      ae_molecules       : 21 ASE Atoms (the AE-residual targets;
+                            this is the SELECTION POOL for select_subset).
+                           Each Atoms carries the following info-dict
+                           entries used by step-7's training driver:
+                             - "dfs_hill"   : Hill formula key (str)
+                             - "ae_kcalmol"  : AE reference (float, kcal/mol)
+                             - "ae_source"   : citation string (str)
+                             - "ae_name"     : human-readable name (str)
+                             - "spin"        : ground-state 2S (PySCF convention)
+                             - "charge"      : net charge (default 0)
+                             - "spin_source" : citation for spin assignment
+                          See module-level DFS_AE_DATA for sources.
+      bh76_reactions     : 3 reaction-spec dicts (each carries
+                           ``species_spins`` / ``species_charges`` maps)
+      ip13_pairs         : 2 IP-spec dicts (each with neutral/cation
+                           spin + charge)
+      atom_refs          : 2 ASE Atoms (H, Li) carrying at.info["spin"]
+                           and ["charge"]
+      n_total            : 28
+    """
+    traj_path = _g297_traj_path()
+    traj = read(str(traj_path), ":")
+
+    # NOTE (latent fragility): this map is LAST-WINS by Hill formula -- when two
+    # traj entries share a formula (CH2 has a singlet at idx 105 and a triplet at
+    # idx 106), the entry appearing last in g2_97.traj overwrites the earlier one,
+    # so the CH2 GEOMETRY selected here is traj-order-dependent. The spin and AE
+    # target are taken from DFS_AE_DATA (authoritative), so the energy target is
+    # correct regardless of which geometry wins; only the geometry pick is
+    # order-sensitive (reordering the traj could silently swap singlet for triplet).
+    by_hill: dict = {a.get_chemical_formula(): a for a in traj}
+
+    ae_atoms: list = []
+    missing: list = []
+    for entry in DFS_AE_DATA:
+        hill = entry["hill"]
+        if hill in by_hill:
+            a = by_hill[hill].copy()
+            a.info["dfs_hill"] = hill
+            # Attach the published AE reference (kcal/mol) plus the
+            # human-readable name and source citation.  Step-7's loss
+            # driver reads `at.info["ae_kcalmol"]`; the source string is
+            # for downstream provenance / sanity-check tests.
+            a.info["ae_kcalmol"] = float(entry["ae_kcalmol"])
+            a.info["ae_source"] = entry["source"]
+            a.info["ae_name"] = entry["name"]
+            # Spin / charge metadata (PySCF convention: spin = 2S = N_α - N_β).
+            # Required by every SCF call downstream (see
+            # subset_selection._ase_atoms_to_pyscf_mol which reads
+            # at.info["spin"] / ["charge"] verbatim).
+            a.info["spin"] = int(entry["spin"])
+            a.info["charge"] = int(entry.get("charge", 0))
+            a.info["spin_source"] = entry.get("spin_source", "")
+            ae_atoms.append(a)
+        else:
+            missing.append(hill)
+    if missing:
+        raise RuntimeError(
+            f"Dick AE pool: {len(missing)} formulas missing from g2_97.traj: {missing}.\n"
+            f"Available Hill formulas in g2_97.traj: {sorted(by_hill.keys())}"
+        )
+
+    atom_refs: list = []
+    for ref in DFS_ATOM_REFS:
+        sym = ref["sym"]
+        if sym in by_hill:
+            a = by_hill[sym].copy()
+        else:
+            a = Atoms(sym, positions=[(0.0, 0.0, 0.0)])
+        # Always set explicit spin/charge from the canonical ref entry
+        # (NIST ASD ground-state).  Even when g2_97.traj happens to carry
+        # an Atoms for the bare atom, it has no spin info, so we set it
+        # here unconditionally.
+        a.info["spin"] = int(ref["spin"])
+        a.info["charge"] = int(ref.get("charge", 0))
+        a.info["spin_source"] = ref.get("spin_source", "")
+        a.info["name"] = sym
+        atom_refs.append(a)
+
+    return {
+        "ae_molecules": ae_atoms,
+        "bh76_reactions": DFS_BH76_REACTIONS,
+        "ip13_pairs": DFS_IP13_PAIRS,
+        "atom_refs": atom_refs,
+        "n_total": (
+            len(ae_atoms) + len(DFS_BH76_REACTIONS)
+            + len(DFS_IP13_PAIRS) + len(atom_refs)
+        ),
+    }

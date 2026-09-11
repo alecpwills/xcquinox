@@ -1,0 +1,91 @@
+# xcquinox/alec/training_points.py:347-436
+def build_dfs_pool_points(
+    bh76_mode: str = "reaction_energy",
+    ae_as_reactions: bool = False,
+) -> list[TrainingPoint]:
+    """Return the flat list of 26 = 21 AE + 3 BH76 + 2 IP13 training points
+    that ``select_subset`` should pick from.
+
+    Each point carries (a) its participating species INCLUDING atom anchors
+    needed for that point (design choice b), and (b) its kind-specific
+    metadata for the corresponding loss channel.
+
+    Parameters
+    ----------
+    ae_as_reactions : bool, default False
+        When True, the 21 AE points are built in PREDICTED-ATOM reaction
+        form (:func:`_ae_reaction_point_from_atoms`, ``bh76``-kind) instead
+        of the fixed-anchor AE form; point names (and thus subset-ledger
+        resolution) are identical either way.
+    bh76_mode : {'reaction_energy', 'barrier_height'}, default 'reaction_energy'
+        Selects what the 3 BH76 training points are trained against.
+
+        - ``'reaction_energy'`` (DEFAULT, "dick default"), BH76 points
+          carry the true reaction energy ΔE (GMTKN55-BH76RC) as
+          ``e_rxn_ref``. The BH76 loss term computes
+          ``Σ coeffs·E = E(products) - E(reactants)``, so the reference
+          MUST be a reaction energy. This DEVIATES from Dick &
+          Fernandez-Serra 2021, whose SI (Sec. I) used barrier heights
+          (see the dfs_pool.py deviation note).
+        - ``'barrier_height'``, the Letter's quantity: BH76 points build
+          species = reactants + the staged transition state (``ts_species``
+          resolved from the tracked ``bh76_full_pool.json``) with coeffs
+          ``(-1, ..., +1)``, so ``Σ coeffs·E = E(TS) - E(reactants)`` is a
+          true forward barrier trained against ``barrier_ref``
+          (GMTKN55-BH76).
+
+    Raises
+    ------
+    ValueError
+        If ``bh76_mode`` is not a recognized value, or barrier mode is
+        selected for a reaction dict without a staged transition state.
+    """
+    if bh76_mode not in BH76_MODES:
+        raise ValueError(
+            f"Unknown bh76_mode {bh76_mode!r}; expected one of {BH76_MODES}."
+        )
+    from ase.io import read as _ase_read
+    from .dfs_pool import _g297_traj_path
+    pool = build_dfs_pool()
+    # BH76 reactants/products may be molecules NOT in the AE pool (CH3, CH4,
+    # HF, etc.); load the full g2_97 trajectory so we can resolve them.
+    g297 = _ase_read(str(_g297_traj_path()), ":")
+    atoms_by_name: dict = {a.get_chemical_formula(): a for a in g297}
+    # AE pool entries take precedence (they have richer info attached).
+    for a in pool["ae_molecules"]:
+        atoms_by_name[a.info.get("dfs_hill", a.get_chemical_formula())] = a
+    points: list[TrainingPoint] = []
+    for compound in pool["ae_molecules"]:
+        points.append(_ae_reaction_point_from_atoms(compound)
+                      if ae_as_reactions else _ae_point_from_atoms(compound))
+    for rxn in DFS_BH76_REACTIONS:
+        points.append(
+            _bh76_point_from_dict(
+                rxn, atoms_by_name=atoms_by_name, bh76_mode=bh76_mode
+            )
+        )
+    for pair in DFS_IP13_PAIRS:
+        points.append(_ip13_point_from_dict(pair))
+    return points
+
+
+def species_union_from_points(
+    points: Sequence[TrainingPoint],
+) -> list[Atoms]:
+    """Return the deduplicated union of species across the chosen points.
+
+    Dedupe key = (name, charge, spin). This is the ``spec.molecules``
+    list: every entry comes from one of the chosen points; nothing is
+    forcibly added.
+    """
+    seen: dict[tuple, Atoms] = {}
+    for tp in points:
+        for s in tp.species:
+            key = (
+                s.info["name"],
+                int(s.info.get("charge", 0)),
+                int(s.info.get("spin", 0)),
+            )
+            if key not in seen:
+                seen[key] = s
+    return list(seen.values())

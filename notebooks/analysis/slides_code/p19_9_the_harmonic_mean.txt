@@ -1,0 +1,8 @@
+# notebooks/analysis/make_ablation_arch_figure.py:4835-4841
+def _harmonic_mean(a: float, b: float) -> float:
+    """``2/(1/a + 1/b)``; 0.0 when either input is non-positive or non-finite
+    (the guard of dfs_demo's ``combined_energy_density`` -- a leg at or below
+    zero has no harmonic-mean meaning and would otherwise divide by zero)."""
+    if not (_is_num(a) and _is_num(b)) or a <= 0.0 or b <= 0.0:
+        return 0.0
+    return 2.0 / (1.0 / a + 1.0 / b)

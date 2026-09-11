@@ -1,0 +1,20 @@
+# xcquinox/alec/cluster/fidelity.py:1171-1189
+    return {
+        "name": mol_spec.name,
+        "spin": int(mol_spec.spin),
+        "charge": int(mol_spec.charge),
+        "is_atom": is_atom_system(mol_spec),
+        "n_grid": n_grid,
+        "reference_xc": got_reference,
+        "reference_scf_converged": scf_converged,
+        "reference_scf_cycles": scf_cycles,
+        "orientation_lock_strength": float(orientation_lock_strength),
+        "E_xc_nn": e_xc_nn,
+        "E_xc_parent": e_xc_parent,
+        "E_xc_parent_numint": e_xc_parent_numint,
+        "E_xc_parent_record": e_xc_parent_record,
+        "parent_grid_diff_Ha": e_xc_parent - e_xc_parent_numint,
+        "parent_record_diff_Ha": e_xc_parent - e_xc_parent_record,
+        "dE_xc_mHa": (e_xc_nn - e_xc_parent) * HA_TO_MHA,
+        "duration_s": time.time() - t0,
+    }

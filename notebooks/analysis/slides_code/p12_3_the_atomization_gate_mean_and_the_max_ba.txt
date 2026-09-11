@@ -1,0 +1,73 @@
+# xcquinox/alec/cluster/fidelity.py:1616-1687
+def _ae_gate_terms(per_atomization, fid_cfg):
+    """The atomization-energy gate, applied to recorded per-species offsets.
+
+    Returns ``{"max", "mean", "rmse", "species_over_1_kcalmol", "reasons"}``.
+    Rows whose ``dAE_kcalmol`` is ``None`` (a non-finite measurement, nulled
+    at record time) are excluded from the statistics -- such rows always come
+    with their own failure reason from the measurement pass, so nothing is
+    silently dropped. Under ``tol_AE_aggregate == "max"`` the reason text is
+    byte-identical to the original single-tier gate; under ``"mae"`` the mean
+    is gated at ``tol_AE`` and the max at ``tol_AE_max_backstop``, and either
+    or both reasons can fire. Shared verbatim by the fresh certificate writer
+    and :func:`regate_certificate_payload` so the gate cannot drift between
+    a first verdict and an in-place re-verdict.
+    """
+    values, non_finite_names = [], []
+    for r in per_atomization:
+        # An error-marked row never contributes to the statistics, even in
+        # the (writer-unreachable) case where it carries a finite value
+        # beside its error text: its failure is recorded by the error
+        # itself, not by the number.
+        if (not isinstance(r, dict) or "error" in r
+                or r.get("dAE_kcalmol") is None):
+            continue
+        value = abs(float(r["dAE_kcalmol"]))
+        if math.isfinite(value):
+            values.append((str(r.get("name")), value))
+        else:
+            non_finite_names.append(str(r.get("name")))
+    reasons = []
+    if non_finite_names:
+        # A raw NaN passes an ``is not None`` filter and satisfies neither
+        # sense of any ordinary comparison, so an unguarded gate would return
+        # nan statistics with NO reasons -- a silent PASS input. Named and
+        # failed here instead; the statistics below come from the finite
+        # rows alone.
+        reasons.append(
+            f"a non-finite dAE_kcalmol is recorded for "
+            f"{len(non_finite_names)} system(s): "
+            + ", ".join(non_finite_names)
+            + " -- NaN satisfies no tolerance, so the gate fails before any "
+            "comparison")
+    if not values:
+        return {"max": None, "mean": None, "rmse": None,
+                "species_over_1_kcalmol": [],
+                "reasons": reasons + [
+                    "no atomization offset could be formed, so "
+                    "tol_AE is untested"]}
+    tol_ae = float(fid_cfg.tol_AE)
+    aggregate = str(getattr(fid_cfg, "tol_AE_aggregate", "max"))
+    backstop = float(getattr(fid_cfg, "tol_AE_max_backstop", 2.0))
+    devs = [v for _name, v in values]
+    max_ae = max(devs)
+    mean_ae = sum(devs) / len(devs)
+    rmse_ae = math.sqrt(sum(v * v for v in devs) / len(devs))
+    species_over = [name for name, v in values if v > SPECIES_FLAG_KCALMOL]
+    if aggregate == "mae":
+        if mean_ae > tol_ae:
+            reasons.append(
+                f"mean |dAE| {mean_ae!r} kcal/mol exceeds tol_AE "
+                f"{tol_ae!r} kcal/mol (aggregate 'mae')")
+        if max_ae > backstop:
+            reasons.append(
+                f"max |dAE| {max_ae!r} kcal/mol exceeds tol_AE_max_backstop "
+                f"{backstop!r} kcal/mol")
+    elif max_ae > tol_ae:
+        # repr: the shortest digit string that round-trips, so a one-ulp
+        # excess never prints as equal to the tolerance it exceeds.
+        reasons.append(
+            f"max |dAE| {max_ae!r} kcal/mol exceeds tol_AE "
+            f"{tol_ae!r} kcal/mol")
+    return {"max": max_ae, "mean": mean_ae, "rmse": rmse_ae,
+            "species_over_1_kcalmol": species_over, "reasons": reasons}

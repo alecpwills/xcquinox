@@ -1,0 +1,62 @@
+# xcquinox/alec/train.py:682-742
+class _BestValidationTracker:
+    """Tracks the model snapshot at the minimum HELD-OUT VALIDATION metric
+    (lower = better, e.g. reaction-energy MAE in kcal/mol) and drives in-loop
+    early-stop. WS3 (2026-06-20): the over-capacity DFS nets overfit the tiny
+    training subset, so we periodically score a disjoint validation slice and
+    keep the validation-best snapshot, stopping once it stops improving.
+
+    Distinct from :class:`_BestModelTracker` (which minimizes the TRAINING loss,
+    a quantity that keeps dropping as the net overfits): this minimizes a
+    GENERALIZATION metric, so its best snapshot is the one that generalizes best,
+    not merely the lowest train loss.
+
+    ``update(metric, model)`` records one validation check (the metric is the
+    val MAE; ``model`` is the live snapshot, JAX arrays are immutable so the
+    reference snapshots the current params). Non-finite metrics are IGNORED:
+    they update neither the best snapshot nor the no-improvement streak (a NaN
+    val score is a transient, not evidence of non-improvement).
+
+    ``should_stop(patience, min_delta)`` returns True once the last ``patience``
+    consecutive FINITE checks each failed to improve the running best by more
+    than ``min_delta`` (the streak is computed from the recorded finite-metric
+    history, so ``min_delta`` lives entirely in ``should_stop`` and a single
+    tracker can be probed at different thresholds). ``patience <= 0`` => never
+    stops (the documented no-op).
+    """
+
+    def __init__(self):
+        self.best_mae = float("inf")
+        self.best_model = None
+        # Finite val metrics in arrival order; the no-improvement streak that
+        # drives early-stop is derived from this (using should_stop's min_delta),
+        # NOT stored, so min_delta is a should_stop-only concern.
+        self._finite_metrics: list = []
+
+    def update(self, metric: float, model) -> None:
+        m = float(metric)
+        if not np.isfinite(m):
+            return                       # transient NaN/inf: ignore entirely
+        self._finite_metrics.append(m)
+        # The best SNAPSHOT is the numerically-lowest val metric seen so far
+        # (the best-generalizing model), even when the last drop was tiny.
+        if m < self.best_mae:
+            self.best_mae = m
+            self.best_model = model
+
+    def should_stop(self, patience: int, min_delta: float = 0.0) -> bool:
+        if int(patience) <= 0:
+            return False                 # no-op: early-stop disabled
+        patience = int(patience)
+        md = float(min_delta)
+        # No-improvement streak: count trailing finite checks that each failed to
+        # beat the best-so-far (over the prefix BEFORE that check) by > min_delta.
+        streak = 0
+        for i in range(len(self._finite_metrics) - 1, 0, -1):
+            best_prefix = min(self._finite_metrics[:i])
+            if self._finite_metrics[i] < best_prefix - md:
+                break                    # this check improved -> streak ends
+            streak += 1
+            if streak >= patience:
+                return True
+        return False

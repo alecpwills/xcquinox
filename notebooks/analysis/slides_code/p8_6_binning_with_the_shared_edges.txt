@@ -1,0 +1,13 @@
+# xcquinox/alec/subset_selection.py:248-259
+def _bin_with_edges(arrs: dict, edges: dict) -> dict:
+    """Bin descriptors using fixed pre-computed LINEAR edges; returns 3 histograms.
+
+    Bins the raw descriptor values (no log10). ``density=True`` is retained, but
+    the metrics PMF-normalize, so the binwidth factor cancels regardless.
+    """
+    out = {}
+    w = arrs.get("weights")
+    for k in _DESCRIPTOR_KEYS:
+        h, _ = np.histogram(arrs[k], bins=edges[k], weights=w, density=True)
+        out[k] = h
+    return out

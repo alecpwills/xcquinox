@@ -1,0 +1,27 @@
+# xcquinox/alec/pretrain.py:1211-1236
+def _build_optimizer(
+    *,
+    lr_start: float,
+    lr_end: float,
+    n_steps: int,
+    lr_decay_start: float,
+    grad_clip: float,
+    lr_decay_end: float = 1.0,
+) -> optax.GradientTransformation:
+    """Build canonical optimizer chain for pretraining.
+
+    Chain order: clip_by_global_norm -> adam(lr_schedule).
+    LR schedule: :func:`_lr_schedule` (optional constant warmup, linear
+    decay over the configured window, optional constant tail at the floor).
+    """
+    lr_schedule = _lr_schedule(
+        lr_start=lr_start,
+        lr_end=lr_end,
+        n_steps=n_steps,
+        lr_decay_start=lr_decay_start,
+        lr_decay_end=lr_decay_end,
+    )
+    return optax.chain(
+        optax.clip_by_global_norm(grad_clip),
+        optax.adam(learning_rate=lr_schedule),
+    )

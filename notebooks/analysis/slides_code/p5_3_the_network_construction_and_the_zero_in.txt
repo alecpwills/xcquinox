@@ -1,0 +1,19 @@
+# xcquinox/alec/networks.py:283-300
+        self.net = eqx.nn.MLP(
+            in_size=in_size, out_size=1, depth=depth, width_size=nodes,
+            activation=jax.nn.gelu, key=keys[0],
+        )
+        # Zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1 at init,
+        # ensuring the untrained network returns F_x=1 -- Slater/LDA exchange (the
+        # uniform-gas limit, since F multiplies lda_x in models.py), NOT PBE.
+        if zero_init_final_layer:
+            self.net = eqx.tree_at(
+                lambda m: (m.layers[-1].weight, m.layers[-1].bias),
+                self.net,
+                replace=(jnp.zeros_like(self.net.layers[-1].weight),
+                         jnp.zeros_like(self.net.layers[-1].bias)))
+        self.attention = (
+            _xnet.SelfAttentionBlock(hidden_size=nodes, num_heads=num_heads, key=keys[1])
+            if use_self_attention else None
+        )
+        self.lobf = _AlecLOB(limit=lob_lim) if lob_lim is not None else None

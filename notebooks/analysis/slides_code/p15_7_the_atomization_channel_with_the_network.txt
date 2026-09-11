@@ -1,0 +1,29 @@
+# xcquinox/alec/losses.py:246-273
+def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies,
+               step_w2=None):
+    """A-family: relative squared AE error per compound.
+
+    AE is computed via `_ae_from_atoms` so the anchor dict is the same
+    one that AtomizationEnergyMetric consumes at evaluation time.
+
+    The relative normalization uses a scale-aware floor
+    ``max(tgt**2, _DELTA_TGT_FLOOR_HA2)`` (mirroring `_delta_losses`)
+    rather than the additive ``tgt**2 + 1e-8``: a near-zero AE target
+    would otherwise inflate that compound's loss/gradient without bound
+    (dfs_step7 forensics: Na2's 0.0273 Ha target inflated its channel
+    ~1340x vs CO2-class targets, pegging the grad clip and dominating
+    training). The floor guards the tgt->0 singularity; cross-compound
+    gradient equalization proper comes from the reaction-form AE channel
+    (absolute residuals), not from this floor.
+    """
+    terms = []
+    for i in compound_idx:
+        ae = _ae_from_atoms(E_nn[i], comp_dicts[i], atom_energies)
+        tgt = targets[mol_names[i]]
+        sq = (ae - tgt) ** 2
+        if step_w2 is not None:
+            # tail mode: ae is a (T,) SCF trajectory -> DFS weighted-MSE over
+            # the step axis before the relative normalization.
+            sq = jnp.mean(step_w2 * sq)
+        terms.append(sq / jnp.maximum(tgt ** 2, _DELTA_TGT_FLOOR_HA2))
+    return jnp.mean(jnp.stack(terms))

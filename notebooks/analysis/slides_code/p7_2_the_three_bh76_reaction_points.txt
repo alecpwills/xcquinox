@@ -1,0 +1,91 @@
+# xcquinox/alec/dfs_pool.py:308-397
+DFS_BH76_REACTIONS = [
+    {
+        "name": "OH+N2_to_H+N2O",
+        "reactants": ["HO", "N2"],
+        "products": ["H", "N2O"],
+        "coeffs": [-1.0, -1.0, +1.0, +1.0],
+        # Forward barrier OH+N2 -> n2ohts: GMTKN55 BH76/.res 'oh n2 n2ohts'
+        # = 82.6 kcal/mol (= json row bh76_oh_n2_to_n2ohts). Minnesota REF1
+        # provenance: Vr of NHTBH38 #1 (H+N2O -> OH+N2, Vf=17.13, Vr=82.27).
+        "barrier_ref": 82.6,  # kcal/mol, forward barrier (GMTKN55-BH76)
+        # Reaction energy ΔE of OH+N2 -> H+N2O = +64.91 kcal/mol, taken directly
+        # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'h n2o -> oh n2' = -64.91,
+        # reversed). [GMTKN55 fwd - rev = 82.6 - 17.7 = 64.9 for reference.]
+        "reaction_energy_ref": 64.91,  # kcal/mol (GMTKN55-BH76RC)
+        # Staged TS for bh76_mode="barrier_height" (bh76_full_pool.json).
+        "ts_species": "n2ohts",
+        "species_spins":   {"HO": 1, "N2": 0, "H": 1, "N2O": 0},
+        "species_charges": {"HO": 0, "N2": 0, "H": 0, "N2O": 0},
+        "source": (
+            "GMTKN55-BH76 (BH76/.res 'oh n2 n2ohts') forward barrier "
+            "= 82.6 kcal/mol; Minnesota provenance: NHTBH38/08 entry 1 "
+            "(H+N2O -> OH+N2), Vr (REF1) = 82.27 kcal/mol, Zheng, Zhao, "
+            "Truhlar JCTC 5, 808 (2009)."
+        ),
+        "spin_source": (
+            "NIST ASD H I (²S, spin=1); NIST CCCBDB OH (X²Π, 1), "
+            "N2 (X¹Σg+, 0), N2O (X¹Σ+, 0)."
+        ),
+    },
+    {
+        "name": "OH+CH3_to_O+CH4",
+        "reactants": ["HO", "CH3"],
+        "products": ["O", "CH4"],
+        "coeffs": [-1.0, -1.0, +1.0, +1.0],
+        # Forward barrier OH+CH3 -> RKT11: GMTKN55 BH76/.res 'oh ch3 RKT11'
+        # = 8.9 kcal/mol (= json row bh76_oh_ch3_to_RKT11). Minnesota REF1
+        # provenance: Vr of HTBH38 19-20 (O+CH4 -> OH+CH3, Vf=13.47, Vr=7.90).
+        "barrier_ref": 8.9,  # kcal/mol, forward barrier (GMTKN55-BH76)
+        # Reaction energy ΔE of OH+CH3 -> O+CH4 = -5.44 kcal/mol, taken directly
+        # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'O CH4 -> oh ch3' = +5.44,
+        # reversed). [GMTKN55 fwd - rev = 8.9 - 14.4 = -5.5 for reference.]
+        "reaction_energy_ref": -5.44,  # kcal/mol (GMTKN55-BH76RC)
+        # Staged TS for bh76_mode="barrier_height" (bh76_full_pool.json).
+        "ts_species": "RKT11",
+        "species_spins":   {"HO": 1, "CH3": 1, "O": 2, "CH4": 0},
+        "species_charges": {"HO": 0, "CH3": 0, "O": 0, "CH4": 0},
+        "source": (
+            "GMTKN55-BH76 (BH76/.res 'oh ch3 RKT11') forward barrier "
+            "= 8.9 kcal/mol; Minnesota provenance: HTBH38/08 entry 19-20 "
+            "(O+CH4 -> OH+CH3), Vr (REF1) = 7.90 kcal/mol, Zheng, Zhao, "
+            "Truhlar JCTC 5, 808 (2009)."
+        ),
+        "spin_source": (
+            "NIST ASD O I (³P, spin=2); NIST CCCBDB OH (X²Π, 1), "
+            "CH3 (X²A2'', 1), CH4 (X¹A1, 0)."
+        ),
+    },
+    {
+        "name": "HF+F_to_H+F2",
+        # NOTE: ASE's get_chemical_formula() / Atoms.get_chemical_formula()
+        # returns "HF" for H-F (not "FH") despite Hill ordering.  The
+        # MoleculeSpec.name set by the step-7 notebook builder uses Hill
+        # formula consistently, so reactant species are keyed as "HF".
+        "reactants": ["HF", "F"],
+        "products": ["H", "F2"],
+        "coeffs": [-1.0, -1.0, +1.0, +1.0],
+        # Forward barrier HF+F -> hf2ts: GMTKN55 BH76/.res 'hf f hf2ts'
+        # = 104.8 kcal/mol (= json row bh76_hf_f_to_hf2ts). Minnesota REF1
+        # provenance: Vr of NHTBH38 #5 (H+F2 -> HF+F, Vf=2.27, Vr=105.80).
+        "barrier_ref": 104.8,  # kcal/mol, forward barrier (GMTKN55-BH76)
+        # Reaction energy ΔE of HF+F -> H+F2 = +103.28 kcal/mol, taken directly
+        # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'h f2 -> hf f' = -103.28,
+        # reversed). [GMTKN55 fwd - rev = 104.8 - 1.5 = +103.3 for reference.]
+        "reaction_energy_ref": 103.28,  # kcal/mol (GMTKN55-BH76RC)
+        # Staged TS for bh76_mode="barrier_height" (bh76_full_pool.json).
+        "ts_species": "hf2ts",
+        "species_spins":   {"HF": 0, "F": 1, "H": 1, "F2": 0},
+        "species_charges": {"HF": 0, "F": 0, "H": 0, "F2": 0},
+        "source": (
+            "GMTKN55-BH76 (BH76/.res 'hf f hf2ts') forward barrier "
+            "= 104.8 kcal/mol; Minnesota provenance: NHTBH38/08 entry 5 "
+            "(H+F2 -> HF+F), Vr (REF1) = 105.80 kcal/mol, Zheng, Zhao, "
+            "Truhlar JCTC 5, 808 (2009)."
+        ),
+        "spin_source": (
+            "NIST ASD H I (²S, spin=1), F I (²P°, spin=1); "
+            "NIST CCCBDB HF (X¹Σ+, 0), F2 (X¹Σg+, 0)."
+        ),
+    },
+]

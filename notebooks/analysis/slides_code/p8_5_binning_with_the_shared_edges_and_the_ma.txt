@@ -1,0 +1,20 @@
+# xcquinox/alec/subset_selection.py:175-193
+def _to_pmf(h: np.ndarray) -> np.ndarray:
+    """Normalize a non-negative histogram to a probability MASS function.
+
+    Lin's JSD (Lin 1991, IEEE Trans. Inf. Theory 37, 145) is defined on
+    PMFs that SUM to 1, not probability densities (which integrate to 1
+    via the bin width, so their raw sum is bin-width-dependent and their
+    individual values can exceed 1). We divide by the total mass so the
+    result sums to 1; this also makes the divergence invariant to a
+    uniform rescale (e.g. differing per-descriptor bin widths). A
+    descriptor whose grid points all fall outside the histogram range has
+    zero total mass; we return an all-zero vector for it. Callers
+    (:func:`metric_jsd`, :func:`_metric_jsd_batch`) detect a zero-mass
+    CANDIDATE marginal directly and treat it as maximally divergent
+    (``+inf``) so it is never selected, ``_kl`` itself does not flag it.
+    """
+    total = float(np.sum(h))
+    if total <= 0.0:
+        return np.zeros_like(h, dtype=np.float64)
+    return np.asarray(h, dtype=np.float64) / total

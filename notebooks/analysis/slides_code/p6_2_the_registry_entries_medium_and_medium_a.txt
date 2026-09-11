@@ -1,0 +1,5 @@
+# xcquinox/alec/config.py:512-515
+    "shallow":             ArchitectureConfig(name="shallow",      depth=2, nodes=8),
+    "shallow_attn":        ArchitectureConfig(name="shallow_attn", depth=2, nodes=8,  attention=True, num_heads=2),
+    "medium":              ArchitectureConfig(name="medium",       depth=3, nodes=16),
+    "medium_attn":         ArchitectureConfig(name="medium_attn",  depth=3, nodes=16, attention=True, num_heads=4),

@@ -1,0 +1,74 @@
+# xcquinox/alec/pretrain_data_gen.py:1068-1140
+MESH_RS = (0.1, 0.3, 0.7, 1.5, 3.0, 5.0, 10.0)
+MESH_S = (0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0)
+MESH_ALPHA = (0.0, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0)
+#: The mesh's share of the TOTAL integration weight. Stated and recorded in the
+#: manifest rather than left emergent: the atomic rows carry physical quadrature
+#: weights, the mesh rows carry none, so their relative influence on the
+#: pretrain loss is a deliberate choice. 0.3 gives the alpha axis real pull
+#: without letting a synthetic mesh outvote the physical densities.
+MESH_WEIGHT_FRACTION = 0.3
+
+
+def _mesh_columns(*, rs_grid=MESH_RS, s_grid=MESH_S, alpha_grid=MESH_ALPHA):
+    """SCAN Fx/Fc on a regular ``(r_s, s, alpha)`` mesh.
+
+    Returns the same column dict shape as :func:`_atom_columns` (minus the
+    descriptor extras, which a mesh point has no geometry to define): ``rho``,
+    ``sigma``, ``Fx_scan``, ``Fc_scan``, ``metagga``, ``weights`` (unnormalized;
+    the caller rescales them to :data:`MESH_WEIGHT_FRACTION`).
+
+    Each node is realized as a physical ``(rho, sigma, tau)`` triple --
+    ``rho = 3/(4 pi r_s^3)``, ``sigma = (s * 2 k_F rho)^2``,
+    ``tau = alpha * tau_unif + tau_W`` -- so the mesh's alpha column is produced
+    by ``metagga.compute_alpha`` from the same triple the SCF would see. The
+    targets come from the SAME ``eval_xc("SCAN,")`` / ``eval_xc(",SCAN")`` calls
+    the atomic path uses, so mesh and atomic rows are the same quantity.
+    """
+    from pyscf import dft as _dft
+
+    from xcquinox.alec.metagga import compute_alpha
+
+    rs = np.asarray(rs_grid, dtype=float)[:, None, None]
+    s = np.asarray(s_grid, dtype=float)[None, :, None]
+    al = np.asarray(alpha_grid, dtype=float)[None, None, :]
+    rs, s, al = np.broadcast_arrays(rs, s, al)
+    rs, s, al = rs.ravel(), s.ravel(), al.ravel()
+
+    rho = 3.0 / (4.0 * np.pi * rs ** 3)
+    k_f = (3.0 * np.pi ** 2 * rho) ** (1.0 / 3.0)
+    sigma = (s * 2.0 * k_f * rho) ** 2
+    tau_w = sigma / (8.0 * rho)
+    tau_unif = 0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0) * rho ** (5.0 / 3.0)
+    tau = al * tau_unif + tau_w
+
+    ni = _dft.numint.NumInt()
+    grad = np.sqrt(sigma)
+    zeros = np.zeros_like(rho)
+    mgga = np.vstack([rho, grad, zeros, zeros, zeros, tau])
+    gga = np.vstack([rho, grad, zeros, zeros])
+    ex_scan = ni.eval_xc("SCAN,", mgga, spin=0)[0]
+    ec_scan = ni.eval_xc(",SCAN", mgga, spin=0)[0]
+    ex_lda = ni.eval_xc("LDA_X,", rho, spin=0)[0]
+    ec_lda = ni.eval_xc(",LDA_C_PW", rho, spin=0)[0]
+    ex_safe = np.where(np.abs(ex_lda) > 1e-12, ex_lda, 1e-12)
+    ec_safe = np.where(np.abs(ec_lda) > 1e-12, ec_lda, 1e-12)
+    del gga
+
+    # alpha recomputed through the SHARED helper (not reused from `al`) so a
+    # divergence between this mesh and the SCF descriptor would show up here.
+    alpha_col = np.asarray(compute_alpha(
+        jnp.asarray(rho), jnp.asarray(sigma), jnp.asarray(tau)))
+    return {
+        "rho": rho,
+        "sigma": sigma,
+        "Fx_scan": np.clip(ex_scan / ex_safe - 1.0, -5.0, 5.0),
+        "Fc_scan": np.clip(ec_scan / ec_safe - 1.0, -5.0, 5.0),
+        "metagga": alpha_col.reshape(-1, 1),
+        "weights": np.ones_like(rho),
+        # COVERAGE LIMIT: the synthetic mesh sits entirely at zeta = 0, so
+        # it determines the alpha axis only at zero polarization; a
+        # polarized correlation net's zeta x alpha coupling is constrained
+        # by the physical rows alone.
+        "zeta": np.zeros_like(rho),
+    }

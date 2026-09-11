@@ -1,0 +1,50 @@
+# xcquinox/alec/losses.py:530-578
+def _rxn_residual_term(
+    e_nn: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    e_rxn_ref: jnp.ndarray,
+    relative: bool = False,
+    step_w2: jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    """Squared residual of a generic reaction energy / barrier height.
+
+    e_nn   : ``(n_species,)`` NN total energies for each species in the
+             reaction, OR ``(n_species, T)`` per-SCF-step trajectories when the
+             DFS tail loss is on (``step_w2`` provided).
+    coeffs : (n_species,) signed stoichiometric coefficients (negative for
+             reactants, positive for products)
+    e_rxn_ref : scalar reference reaction-energy or barrier-height value
+    step_w2 : ``(T,)`` per-step DFS weights squared, or ``None`` for the
+             byte-identical final-step-only scalar form. When set, the per-step
+             reaction-energy residual is reduced as DFS's ``mean(w^2 r^2)``
+             over the tail, directly penalizing a non-converging SCF.
+
+    Returns: ``(E_rxn_NN - E_rxn_ref)^2``; when ``relative`` is set, the
+    relative form ``(.)^2 / (e_rxn_ref^2 + 1e-8)``: matching the AE/vxc/rho
+    channels' normalization so that under ``loss_metric='relative'`` ALL five
+    GradNorm channels measure the same dimensionless quantity (otherwise the
+    BH76 channel would be absolute Ha^2 while the others are relative).
+
+    Used by the BH76 task channel of L5_gradnorm_vxc_step7. In Dick &
+    Fernandez-Serra PRB 104 L161109 (2021) the 0.01 factor is lambda_E,
+    the weight on total energies L_E; BH76/atomization energies enter L_RE
+    at weight 1 and density L_n at weight 20. Channel weighting depends on
+    the update scheme: under ``update_scheme="batched"`` GradNorm (Chen et
+    al. 2018, arXiv:1711.02257; alpha=1.5 default) discovers task weights
+    adaptively, but the production per-molecule scheme (the cluster
+    default) ignores the balancer and applies the fixed density-dominant
+    weights {AE 1, BH76 1, IP13 1, vxc 1, rho 20}
+    (train._DEFAULT_CHANNEL_WEIGHTS) -- the Letter's 1/20 structure. See
+    notebooks/analysis/LOSS_PRIMER.md.
+    """
+    if step_w2 is None:
+        e_rxn = jnp.sum(coeffs * e_nn)
+        sq = (e_rxn - e_rxn_ref) ** 2
+    else:
+        # e_nn: (n_species, T) -> per-step reaction energy (T,), then DFS
+        # weighted mean-squared residual over the SCF tail.
+        e_rxn = jnp.sum(coeffs[:, None] * e_nn, axis=0)
+        sq = jnp.mean(step_w2 * (e_rxn - e_rxn_ref) ** 2)
+    if relative:
+        return sq / (e_rxn_ref ** 2 + 1e-8)
+    return sq

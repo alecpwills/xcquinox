@@ -1,0 +1,24 @@
+# xcquinox/alec/evaluation.py:196-218
+def density_eps_terms(rho, rho_ref, w):
+    """DFS Letter Eq. 20 per-species density-error ingredients.
+
+    ``eps = sum_i(w_i |rho - rho_ref|_i) / N_e`` with ``N_e = sum_i(w_i *
+    rho_ref_i)`` -- the quadrature electron count of the REFERENCE density,
+    the same N_e convention as this package's density loss
+    (``losses._grid_term`` with ``per_electron=True``, which realizes the
+    Letter's Eq. 17 normalization; the vendored dpyscf instead counts
+    neutral-atom Z, which is wrong for ions -- the quadrature count is
+    charge-correct by construction). Using the identical quadrature for
+    numerator and N_e makes eps a pure ratio of two integrals on the same
+    grid, so grid-truncation error partially cancels.
+    Returns ``(eps, n_electrons, grid_weight_sum)`` as floats; eps degrades
+    to NaN when the quadrature N_e is non-positive (unphysical input)."""
+    rho = jnp.asarray(rho)
+    rho_ref = jnp.asarray(rho_ref)
+    w = jnp.asarray(w)
+    n_e = float(jnp.sum(w * rho_ref))
+    wsum = float(jnp.sum(w))
+    if n_e <= 0.0:
+        return float("nan"), n_e, wsum
+    eps = float(jnp.sum(w * jnp.abs(rho - rho_ref)) / n_e)
+    return eps, n_e, wsum

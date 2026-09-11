@@ -1,0 +1,12 @@
+# xcquinox/alec/metagga.py:142-152
+def smooth_positive_part(x, width):
+    """``(x + sqrt(x^2 + width^2)) / 2``: a C-infinity positive part.
+
+    Equals ``max(x, 0)`` up to ``width^2 / (4 |x|)`` for ``|x| >> width``, is
+    ``width / 2`` at ``x = 0`` with slope ``1/2`` there, is strictly positive
+    everywhere, and obeys ``p(x) - p(-x) = x`` exactly, so a central difference
+    across ``x = 0`` reproduces its derivative. Homogeneous of degree one in
+    ``(x, width)`` together, which is what makes the indicator's smoothing
+    scale-invariant when the width is a multiple of ``tau_unif``.
+    """
+    return 0.5 * (x + jnp.sqrt(x * x + width * width))

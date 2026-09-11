@@ -1,0 +1,32 @@
+# hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_size.yaml:153-183
+hyperparams:
+  # Byte-inherited from v5 (lines 63-92). 200 epochs: enough for full_3 with
+  # the LR schedule (decay starts at 50% = step 100, reaches lr_end by 200),
+  # with in-loop validation early-stop as the safety net. NOT 150: the
+  # early-stop guard (patience >= n_checks-1, with n_checks = n_steps //
+  # validate_every) trips at 150 (6 checks, patience 5); 200 gives 8 checks so
+  # patience 5 is non-degenerate and early-stop can fire.
+  n_steps: 200
+  lr_start: 0.001
+  lr_end: 0.00001
+  lr_decay_start: 0.5
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  density_per_electron: true
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  seed: 42
+  weight_decay: 0.0001
+  val_frac: 0.2
+  validate_every: 25
+  patience: 5
+  early_stop_min_delta: 0.1
+  checkpoint_every: 10
+  # Shape padding: one common (n_ao, n_grid, naux) target over the whole batch so
+  # the de-fused per-molecule kernels collapse to one compile per spin-type instead
+  # of one per molecule -- at this basis/grid the per-molecule compile count drove
+  # the process mapping count into the vm.max_map_count ceiling. Results-neutral
+  # input pass (see xcquinox.alec.padding).
+  pad_group_to_common_shape: true

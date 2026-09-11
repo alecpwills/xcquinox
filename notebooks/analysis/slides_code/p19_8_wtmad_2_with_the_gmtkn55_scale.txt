@@ -1,0 +1,35 @@
+# notebooks/analysis/make_ablation_arch_figure.py:3824-3857
+_GMTKN55_SCALE = 56.84  # kcal/mol, global mean |dE| over GMTKN55 (Goerigk 2017)
+
+
+def _dedup_rows_by_name(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One row per reaction name (PBE de is spec-invariant), so a pooled PBE
+    baseline isn't multiply-counted across specs."""
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        nm = r.get("name")
+        if nm in seen:
+            continue
+        seen.add(nm)
+        out.append(r)
+    return out
+
+
+def _wtmad2_over_pools(pool_rows: Dict[str, List[Tuple[float, float]]],
+                       scale: float) -> Optional[float]:
+    """WTMAD-2 = (scale/N_total) * sum_i N_i * MAD_i/|ref|_i over the pool buckets,
+    each bucket a list of (|err|, |ref|). None if a bucket has zero |ref| mean or
+    nothing finite."""
+    n_total = sum(len(v) for v in pool_rows.values())
+    if n_total == 0:
+        return None
+    acc = 0.0
+    for vals in pool_rows.values():
+        n_i = len(vals)
+        absref_i = sum(rf for _, rf in vals) / n_i
+        if absref_i <= 0:
+            return None
+        mad_i = sum(e for e, _ in vals) / n_i
+        acc += n_i * mad_i / absref_i
+    return scale / n_total * acc

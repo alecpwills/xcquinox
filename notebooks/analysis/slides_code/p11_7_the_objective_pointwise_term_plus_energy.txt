@@ -1,0 +1,87 @@
+# xcquinox/alec/pretrain.py:256-341
+class _PretrainLoss(eqx.Module):
+    """Pretraining objective: point-wise enhancement-factor residual plus an
+    optional per-system energy term.
+
+    Networks return the enhancement factor F; targets are stored as ``F - 1``,
+    so ``pred - 1`` aligns with ``ref_F``. ``weights=None`` gives the plain
+    mean of squared residuals; a 1-D ``weights`` aligned with the rows gives
+    the integration-weighted reduction
+    ``sum(w r^2) / (sum(w) + 1e-12)``.
+
+    The energy term is
+
+        w_E * (1 / N_sys) sum_s ( sum_{i in s} w_i e_LDA_i F^NN_i - E_s )^2
+
+    in Hartree^2, with ``E_s`` the parent's own value of the same quadrature
+    (``pretrain_data_gen._system_energy_targets``). It exists because the
+    point-wise residual alone does not bound a system's energy: measured across
+    seven architectures, the one with the LOWEST exchange residual carried the
+    LARGEST atomization-energy offset from its parent. The mean over systems
+    rather than the sum keeps the term's magnitude independent of how many
+    systems the set holds, so ``w_E`` means the same thing for a four-atom file
+    and a thirty-seven-system one. Rows belonging to no system -- the synthetic
+    (r_s, s, alpha) mesh -- carry zero weight and the sink segment index
+    ``n_systems``, which is asked of ``segment_sum`` and then dropped.
+
+    At ``energy_weight == 0`` the term is not evaluated at all, so the returned
+    value is the pre-existing loss bit for bit; that short circuit is the
+    reason the reduction is written twice.
+    """
+    weights: jnp.ndarray | None = None
+    energy_row_weight: jnp.ndarray | None = None
+    energy_segment: jnp.ndarray | None = None
+    energy_target: jnp.ndarray | None = None
+    energy_weight: float = eqx.field(static=True, default=0.0)
+    n_systems: int = eqx.field(static=True, default=0)
+
+    def _system_energies(self, pred):
+        """The network's per-system XC energy from its row-wise output ``pred``.
+
+        The sink segment ``n_systems`` collects the rows belonging to no
+        system and is dropped.
+        """
+        return jax.ops.segment_sum(
+            self.energy_row_weight * pred, self.energy_segment,
+            num_segments=self.n_systems + 1)[:self.n_systems]
+
+    def system_energy_errors(self, model, descriptors):
+        """Per-system ``E_xc^NN - E_xc^parent`` in Hartree, or ``None``.
+
+        The signed per-system errors behind the energy term, for a record that
+        must state a MAXIMUM rather than a mean: the Section 3.3 certificate
+        bounds ``max_s |dE_xc,s|``, and a mean of squares cannot be inverted
+        into one. Kept separate from :meth:`parts` so the optimized path's
+        expression is untouched.
+        """
+        if self.energy_target is None:
+            return None
+        pred = jax.vmap(model)(descriptors).squeeze()
+        return self._system_energies(pred) - self.energy_target
+
+    def parts(self, model, descriptors, ref_F):
+        """``(pointwise, energy)`` -- the two terms, the second unweighted."""
+        pred = jax.vmap(model)(descriptors).squeeze()
+        shifted = pred - 1.0
+        residual_sq = (shifted - ref_F) ** 2
+        if self.weights is None:
+            pointwise = jnp.mean(residual_sq)
+        else:
+            w = self.weights
+            pointwise = jnp.sum(w * residual_sq) / (jnp.sum(w) + 1e-12)
+        if self.energy_target is None:
+            return pointwise, jnp.zeros_like(pointwise)
+        delta = self._system_energies(pred) - self.energy_target
+        return pointwise, jnp.sum(delta * delta) / self.n_systems
+
+    def __call__(self, model, descriptors, ref_F):
+        if self.energy_weight == 0.0 or self.energy_target is None:
+            pred = jax.vmap(model)(descriptors).squeeze()
+            pred = pred - 1.0
+            residual_sq = (pred - ref_F) ** 2
+            if self.weights is None:
+                return jnp.mean(residual_sq)
+            w = self.weights
+            return jnp.sum(w * residual_sq) / (jnp.sum(w) + 1e-12)
+        pointwise, energy = self.parts(model, descriptors, ref_F)
+        return pointwise + self.energy_weight * energy

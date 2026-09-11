@@ -1,0 +1,58 @@
+# xcquinox/alec/config.py:103-159
+@dataclass(frozen=True)
+class ArchitectureConfig:
+    """Stores descriptor and constraint specifications (registry-name strings
+    plus kwargs dicts), not live instances. Descriptor and constraint instances
+    are materialized only when a model is constructed."""
+    name: str
+    depth: int
+    nodes: int
+    attention: bool = False
+    num_heads: int = 1
+    descriptors: tuple[FeatureSpec, ...] = ()
+    x_constraints: tuple[FeatureSpec, ...] = ()
+    c_constraints: tuple[FeatureSpec, ...] = ()
+    double_lob_clamp_allowed: bool = False
+    # when True, the correlation network takes a spin-polarization input
+    # feature (x1) and the model uses the zeta-dependent PW92 baseline (Dick &
+    # Fernández-Serra 2021). Default False = unpolarized correlation (existing
+    # behavior; checkpoints compatible). True is a NEW checkpoint family (cnet
+    # input width +1) requiring retrain + re-pretrain.
+    use_polarized_correlation: bool = False
+
+    # Physics-correction flags (each is a NEW checkpoint family). Defaults
+    # preserve byte-identical deserialization of old checkpoints; new registry
+    # entries and cluster runs explicitly set True to opt in.
+    #
+    # dm_entropy_intensive: True divides the Shannon entropy by ln(max(n_occ, 2))
+    # so dm_entropy is size-intensive (Dick & Fernández-Serra 2021 style). False
+    # keeps the size-extensive ln(n_occ) form.
+    dm_entropy_intensive: bool = False
+    # descriptor_log_transform: True applies the Dick XCDiff
+    # (1 - exp(-x²)) · log(x + 1) transform to s (XNet input) and rs+s (CNet
+    # input), and to weighted_Z (CuspDescriptor feature 1). False feeds raw
+    # values.
+    descriptor_log_transform: bool = False
+    # zero_init_final_layer: True zeros the final MLP layer's weight + bias at
+    # construction so Fx = Fc = 1 exactly at init (the LDA/PW92 limit -- F=1
+    # multiplies lda_x + PW92, NOT PBE). False keeps
+    # Glorot init (gives Fx mean ~+2.65e-4 off 1).
+    zero_init_final_layer: bool = False
+    # meta_gga: DFS-faithful meta-GGA (PRB 104 L161109 Eq. 12-13). True switches the
+    # X/C UEG gate to (x2 + tanh^2(x3)) (x3 = ln((alpha+1)/2)) and the exchange
+    # Lieb-Oxford ceiling to 1.174; requires a "metagga" descriptor (which supplies
+    # the iso-orbital alpha). A NEW checkpoint family. Default False -> unchanged.
+    meta_gga: bool = False
+    # parent_anchor: True anchors both enhancement networks to the
+    # architecture's parent functional (PBE on the GGA rungs, SCAN on the
+    # meta-GGA rungs) in the pre-image of the networks' bounded map, so the
+    # model equals its parent at initialization pointwise
+    # (SPEC_parent_anchor.md Sections 3.2 to 3.4). Part of the architecture
+    # identity: the networks' parameter shapes do not change, so a checkpoint
+    # written under one anchor state is refused by a model of the other on
+    # the strength of the record beside it (pretrain_metadata.json, the
+    # certificate, the run's resolved configuration). Implies
+    # zero_init_final_layer (``anchored`` sets both); requires a
+    # polarization-aware correlation network. Default False = every model
+    # built before the anchor existed, byte for byte.
+    parent_anchor: bool = False

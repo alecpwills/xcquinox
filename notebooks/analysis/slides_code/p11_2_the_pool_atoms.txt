@@ -1,0 +1,28 @@
+# xcquinox/alec/pretrain_data_gen.py:214-240
+def pool_atom_systems():
+    """Every single-atom species of the BH76 and W4-11 pools, de-duplicated.
+
+    Fourteen distinct (symbol, charge, 2S) triples: the twelve neutral elements
+    the two pools span -- Al, B, Be, C, Cl, F, H, N, O, P, S, Si, with their
+    Hund's-rule ground-state spins -- plus the two closed-shell anions F- and
+    Cl-, which are reactants of BH76 barrier heights and therefore systems the
+    Section 3.3 certificate bounds at tol_atom. All of them are free atoms at
+    the origin, so the geometry is the pool's own.
+
+    Read from the committed pool JSON through ``full_benchmark_pools`` rather
+    than transcribed, so a pool edit propagates here.
+    """
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+    mol_specs, _reactions = load_full_held_out_pools()
+    seen = {}
+    for ms in mol_specs.values():
+        composition = dict(ms.atom_composition)
+        if sum(composition.values()) != 1:
+            continue
+        seen.setdefault((str(next(iter(composition))), int(ms.charge),
+                         int(ms.spin)), None)
+    return tuple(
+        PretrainSystem(name=_system_name(symbol, charge),
+                       atom=f"{symbol} 0 0 0", charge=charge, spin=spin)
+        for symbol, charge, spin in sorted(seen)
+    )

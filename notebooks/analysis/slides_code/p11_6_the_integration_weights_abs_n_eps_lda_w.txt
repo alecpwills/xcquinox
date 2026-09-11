@@ -1,0 +1,65 @@
+# xcquinox/alec/pretrain.py:104-167
+def _compute_integration_weights(rho, grid_weights=None):
+    """Return ``(w_x, w_c)`` integration weights for pretraining.
+
+    Weight convention: the per-point weight is the
+    FIRST power (linear) of ``|ρ_i · ε_LDA_i|``, optionally multiplied by
+    the Becke-Lebedev quadrature weight ``w_grid_i``.  The resulting loss
+    is a ``|ρ · ε_LDA|``-magnitude-weighted mean of the squared per-point
+    enhancement-factor residual::
+
+        L = Σ_i w_i · (F_nn_i - F_ref_i)²  /  Σ_i w_i
+            where w_i = |ρ_i · ε_LDA_i|   (or  |ρ_i · ε_LDA_i| · w_grid_i
+                                             when grid_weights is supplied).
+
+    This is NOT the squared integrated XC-energy residual.  A true
+    integrated-energy L2 loss would require the square of the energy-density
+    weight, i.e.  ``w_i = (ρ_i · ε_LDA_i · w_grid_i)²``.  The linear form
+    was retained because it is the established convention in the codebase
+    (all prior pretrain runs used it) and existing tests pin this behavior.
+    The ``|ρ · ε_LDA|`` factor still steers gradient attention toward
+    energetically important regions without the large dynamic range that the
+    squared form would introduce.
+
+    When ``grid_weights`` is supplied the weights incorporate the quadrature
+    measure ``dr_i``, improving the energy-density calibration relative to the
+    unweighted form.  When ``grid_weights`` is ``None`` the loss reverts to
+    the legacy ``|ρ ε_LDA|``-weighted mean per sample; ``run_pretrain`` emits
+    a ``RuntimeWarning`` in that case and records
+    ``integration_weights_complete=False`` in the pretrain metadata.
+
+    Parameters
+    ----------
+    rho : jnp.ndarray
+        Electron density at grid points, shape ``(N,)``.
+    grid_weights : jnp.ndarray | None
+        Becke-Lebedev quadrature weights ``dr_i`` per grid point, shape
+        ``(N,)``.  When supplied the per-point weight becomes
+        ``|ρ ε_LDA| · w_grid``.  When ``None`` (legacy / pre-fix behavior)
+        the ``dr_i`` factor is omitted; callers should expect the
+        ``RuntimeWarning`` from ``run_pretrain``.
+
+    Returns
+    -------
+    (w_x, w_c) : tuple of jnp.ndarray, each shape ``(N,)``
+        Non-negative integration weights for the exchange and correlation
+        networks respectively.
+    """
+    rho_safe = jnp.maximum(rho, _RHO_FLOOR_INTEGRATION)
+    eps_x_lda = lda_x(rho_safe)
+    # The correlation weight intentionally uses the unpolarized PW92 baseline on
+    # the total density even when training a spin-polarization-aware (polarized)
+    # cnet: the integration weights are a grid-importance measure on the total
+    # density, and spin polarization enters the model via the zeta descriptor
+    # column, not the loss weighting. (The Fc targets in pretrain_data_gen use
+    # spin-resolved libxc for open-shell atoms; that asymmetry is intentional,
+    # not a baseline bug.)
+    eps_c_lda = pw92c_unpolarized_scalar(rho_safe)
+    w_x = jnp.abs(rho_safe * eps_x_lda)
+    w_c = jnp.abs(rho_safe * eps_c_lda)
+    if grid_weights is not None:
+        gw = jnp.asarray(grid_weights)
+        w_x = w_x * gw
+        w_c = w_c * gw
+    return jnp.broadcast_to(w_x, rho_safe.shape), \
+           jnp.broadcast_to(w_c, rho_safe.shape)

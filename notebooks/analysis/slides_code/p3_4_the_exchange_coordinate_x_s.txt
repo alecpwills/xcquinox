@@ -1,0 +1,13 @@
+# xcquinox/alec/networks.py:341-352
+        if self.descriptor_coordinates == "dfs":
+            # DFS coordinates, dpyscfl net.py get_descriptors, spin-scaling
+            # branch (the exchange network's): x_s = (1 - exp(-s^2)) ln(s + 1)
+            # of the doubled channel (lines 195-198; PRB 104 L161109 eq. 9).
+            # The exchange MLP reads x_s alone at the GGA level (get_scf line
+            # 745, X_L(n_input=1, use=[1])) and x_s with x_alpha at the
+            # meta-GGA level (line 750, use=[1, 2]; x_alpha below).
+            s_mlp = _dfs_log_transform(s)
+        elif self.descriptor_log_transform:
+            s_mlp = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
+        else:
+            s_mlp = s

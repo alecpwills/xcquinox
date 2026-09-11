@@ -1,0 +1,11 @@
+# hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_size.yaml:131-140
+solvers:
+  full_3:
+    mode: FULL
+    max_cycles: 3
+    feature_policy: REASSEMBLE
+    mixer_name: decaying_linear
+    mixer_kwargs: {base: 0.3, floor: 0.3}
+    scf_loss_use_tail: true
+    scf_loss_tail: 10
+    scf_loss_weight_power: 2.0

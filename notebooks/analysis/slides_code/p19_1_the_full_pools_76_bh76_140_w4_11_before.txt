@@ -1,0 +1,29 @@
+# xcquinox/alec/full_benchmark_pools.py:516-543
+def load_full_held_out_pools(
+    basis: str = "def2-svp",
+    grid_level: int | None = 1,
+    refs_dir: str | os.PathLike | None = None,
+) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
+    """Convenience: union of BH76 + W4-11.
+
+    Species dicts merge by name (e.g. ``h``, ``c``, ``o``, ``n``, ``f`` appear
+    in both sets, same MoleculeSpec for both). Reactions concatenate (BH76
+    first, then W4-11). Total: 76 + 140 = 216 reactions over 214 unique
+    species (79 BH76 + 152 W4-11, 17 overlap). ``refs_dir`` semantics as
+    :func:`load_full_bh76`.
+    """
+    bh76_mols, bh76_rxns = load_full_bh76(basis=basis, grid_level=grid_level,
+                                          refs_dir=refs_dir)
+    w411_mols, w411_rxns = load_full_w411(basis=basis, grid_level=grid_level,
+                                          refs_dir=refs_dir)
+    merged_mols: Dict[str, MoleculeSpec] = dict(bh76_mols)
+    for sp_name, ms in w411_mols.items():
+        if sp_name in merged_mols:
+            # When the same species appears in both sets the geometries may
+            # differ marginally (different GMTKN55 source dirs). Keep the
+            # BH76 version, it covers the barrier-height species set which
+            # matters most for the eval comparison. Document the conflict
+            # at debug-print level for the operator.
+            continue
+        merged_mols[sp_name] = ms
+    return merged_mols, list(bh76_rxns) + list(w411_rxns)

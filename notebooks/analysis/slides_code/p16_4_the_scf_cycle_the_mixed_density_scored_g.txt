@@ -1,0 +1,61 @@
+# xcquinox/alec/solver_manual.py:404-463
+    def body(state, _):
+        D_cur = state.density_matrix
+        features, rho_cur, sigma_cur, nabla_rho_cur = _features_and_rho(D_cur)
+        vxc_nn = _vxc_with_feature_response(
+            D_cur, rho_cur, sigma_cur, features, nabla_rho_cur)
+        J_cycle = _j_for_cycle(D_cur)
+        F = h_core + J_cycle + vxc_nn
+        D_new = _diagonalize_roothaan(F, S, nocc)
+        new_mixer_state, D_mixed = mixer.step(state.mixer_state, D_cur, D_new)
+        # Compute E_new as a consistent functional of D_mixed: recompute
+        # features / rho / sigma from D_mixed, and rebuild J from D_mixed
+        # (FIXED_J mode preserves J_pinned via _j_for_cycle).
+        features_mix, rho_mix, sigma_mix, _nabla_rho_mix = _features_and_rho(D_mixed)
+        J_mix = _j_for_cycle(D_mixed)
+        E_new = _compute_total_energy(
+            model, D_mixed, rho_mix, sigma_mix, features_mix,
+            grid_weights, h_core, J_mix, e_nuc,
+        )
+        is_conv = criterion.is_converged_from_energies(state.energy, E_new)
+        latched = state.converged
+        # The convergence freeze: with freeze_on_convergence the state stops
+        # advancing once converged (every campaign through v7); without it every
+        # cycle runs, as dpyscf's loop does, and only the flag below latches.
+        already = latched if config.freeze_on_convergence else jnp.bool_(False)
+        D_out = jnp.where(already, state.density_matrix, D_mixed)
+        E_out = jnp.where(already, state.energy, E_new)
+        cycles_inc = jnp.where(already, state.cycles_run, state.cycles_run + jnp.int32(1))
+        # Freeze the mixer state once the scan has entered the ``already``
+        # branch: otherwise emitting ``new_mixer_state`` would advance
+        # ``step_index`` (and any history-tracking fields, e.g. DIIS Fock
+        # buffers) on every post-convergence cycle. The leaf-wise ``where``
+        # keeps the frozen mixer state pytree-shape-compatible with the new one.
+        frozen_mixer_state = jax.tree_util.tree_map(
+            lambda old, new: jnp.where(already, old, new),
+            state.mixer_state, new_mixer_state,
+        )
+        next_state = SCFCycleState(
+            density_matrix=D_out,
+            energy=E_out,
+            mixer_state=frozen_mixer_state,
+            converged=latched | is_conv,
+            cycles_run=cycles_inc,
+        )
+        return next_state, E_out
+
+    final_state, energy_trace = _iterate_scf(config, body, init_state, forward_only)
+
+    if policy == FeaturePolicy.FROZEN:
+        features_final = features_initial
+    else:
+        features_final, _, _, _ = _features_and_rho(final_state.density_matrix)
+
+    return SCFResult(
+        density_matrix=final_state.density_matrix,
+        total_energy=final_state.energy,
+        cycles_run=final_state.cycles_run,
+        converged=final_state.converged,
+        features_used=features_final,
+        energy_trace=energy_trace,
+    )

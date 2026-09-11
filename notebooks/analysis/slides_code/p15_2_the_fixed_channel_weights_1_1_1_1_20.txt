@@ -1,0 +1,8 @@
+# xcquinox/alec/train.py:1829-1835
+_DEFAULT_CHANNEL_WEIGHTS = {
+    "loss_AE": 1.0,
+    "loss_BH76": 1.0,
+    "loss_IP13": 1.0,
+    "loss_vxc": 1.0,
+    "loss_rho": 20.0,
+}

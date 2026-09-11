@@ -1,0 +1,26 @@
+# xcquinox/alec/metagga.py:115-139
+def compute_tau_from_dm(ao_grad, dm) -> jnp.ndarray:
+    """Total positive kinetic-energy density ``tau(r)`` from the live DM.
+
+    Parameters
+    ----------
+    ao_grad : array, shape (3, N, nao)
+        AO gradients on the grid ``[d/dx, d/dy, d/dz] chi_mu(r_g)`` -- i.e. the
+        ``[1:4]`` slice of PySCF ``eval_ao(deriv=1)``. A constant (DM-independent)
+        precompute, never differentiated.
+    dm : array, shape (nao, nao) or (2, nao, nao)
+        The live density matrix. A 2-D ``dm`` is the total (RKS) DM; a 3-D ``dm``
+        is the spin-resolved UKS ``[P_alpha, P_beta]`` and is summed to the total
+        ``P = P_alpha + P_beta`` (the iso-orbital tau is a total-density quantity).
+
+    Returns
+    -------
+    array, shape (N,)
+        ``tau(r) = 1/2 sum_d sum_{mu nu} (d_d chi_mu) P_{mu nu} (d_d chi_nu)``.
+        Linear in ``dm`` (``ao_grad`` is constant) => differentiable through the SCF.
+    """
+    ag = jnp.asarray(ao_grad)          # (3, N, nao)
+    dm = jnp.asarray(dm)
+    p_total = dm if dm.ndim == 2 else dm[0] + dm[1]
+    # tau(g) = 1/2 sum_d sum_ij ag[d,g,i] P_ij ag[d,g,j]
+    return 0.5 * jnp.einsum("dgi,ij,dgj->g", ag, p_total, ag)

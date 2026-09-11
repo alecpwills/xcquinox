@@ -1,0 +1,42 @@
+# xcquinox/alec/models.py:175-215
+    def eval_exc(self, rho, sigma, features, zeta=0.0):
+        """Returns rho * epsilon_xc (energy density), shape (N,).
+        Fx/Fc use raw rho; lda_x/pw92c and prefactor use rho_safe.
+
+        At tail points (rho < ``_NN_TAIL_THRESHOLD``) the network inputs are
+        sanitized to (rho=1, sigma=1) to avoid the sqrt(sigma)-derivative
+        divergence in the networks' reduced-gradient transform; the network
+        outputs at these points are then masked to the LDA/PW92 limit
+        (Fx=Fc=1), and since ``rho_safe`` -> 0 at the tail, the energy
+        contribution is negligible. This keeps both forward and backward
+        (jax.grad) values finite for open-shell atoms where one spin channel
+        has rho=sigma=0 identically (e.g., beta channel of H spin=1).
+
+        ``zeta`` (spin polarization) is forwarded to the correlation
+        piece; ignored by a non-polarized cnet, defaults to 0 (RKS).
+        """
+        ex_density, ec_density = self._exc_pieces(rho, sigma, features, zeta=zeta)
+        return ex_density + ec_density
+
+    def eval_ex(self, rho, sigma, features):
+        """Exchange-only energy density rho * eps_x (batched, shape (N,)).
+
+        Exact split of ``eval_exc`` (eval_ex + eval_ec == eval_exc pointwise).
+        Used by the UKS energy/potential to spin-scale the exchange piece
+        (Oliver & Perdew, PRA 20, 397 (1979)). See ``_exc_pieces``.
+        """
+        ex_density, _ = self._exc_pieces(rho, sigma, features)
+        return ex_density
+
+    def eval_ec(self, rho, sigma, features, zeta=0.0):
+        """Correlation-only energy density rho * eps_c (batched, shape (N,)).
+
+        Exact split of ``eval_exc``. In UKS this is evaluated on the TOTAL
+        density with the per-grid spin polarization ``zeta``: a
+        polarization-aware cnet feeds zeta to both the x1 feature and the
+        spin-polarized PW92 baseline (von Barth & Hedin 1972; PW92 1992). For a
+        non-polarized cnet, zeta is ignored (zeta=0 unpolarized PW92). See
+        ``_exc_pieces``.
+        """
+        _, ec_density = self._exc_pieces(rho, sigma, features, zeta=zeta)
+        return ec_density

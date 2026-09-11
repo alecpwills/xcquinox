@@ -1,0 +1,30 @@
+# xcquinox/alec/losses.py:1282-1310
+    def _bh76_channel(self, E_nn, relative=False, step_w2=None) -> jnp.ndarray:
+        """Mean of squared reaction-energy residuals across BH76 reactions.
+
+        E_NN_total values are looked up from the all-species `E_nn` vector
+        by name via `mol_names`. A reaction with `e_rxn_ref=None` is
+        skipped (treated as missing reference). If no usable reactions
+        remain, returns 0.0 (so the channel contributes nothing under
+        GradNorm without crashing). ``relative`` selects the dimensionless
+        normalization so this channel is consistent with the others under
+        ``loss_metric='relative'``.
+        """
+        if not self.bh76_reactions:
+            return jnp.array(0.0)
+        name_to_idx = {n: i for i, n in enumerate(self.mol_names)}
+        terms = []
+        for (_rname, reactants, products, coeffs, e_ref) in self.bh76_reactions:
+            if e_ref is None:
+                continue
+            species = (*reactants, *products)
+            idx = jnp.array([name_to_idx[s] for s in species])
+            e_species = E_nn[idx]
+            coeffs_arr = jnp.array(coeffs)
+            terms.append(_rxn_residual_term(
+                e_species, coeffs_arr, jnp.array(e_ref), relative=relative,
+                step_w2=step_w2,
+            ))
+        if not terms:
+            return jnp.array(0.0)
+        return jnp.mean(jnp.stack(terms))

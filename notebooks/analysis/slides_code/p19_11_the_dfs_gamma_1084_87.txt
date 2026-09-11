@@ -1,0 +1,25 @@
+# notebooks/analysis/make_ablation_arch_figure.py:4952-4975
+_DFS_GAMMA_KCAL = 1084.87
+
+# DFS-paper notation (PRB 104, L161109): the combined energy-density metric
+# is the CALLIGRAPHIC ED -- generic form (main text, "we propose a metric
+# ED"), and ED_{|n|} when its density leg is the Eq. 20 per-electron L1
+# eps_{|n|} (Eq. 21, Table I, Fig. 2's ylabel). Figure text uses the
+# paper's symbols; CSV column names keep their ASCII schema.
+_ED_SYM = r"$\mathcal{ED}$"
+_ED_N_SYM = r"$\mathcal{ED}_{|n|}$"
+_EPS_N_SYM = r"$\varepsilon_{|n|}$"
+_EPS_N_EQ = r"$\varepsilon_{|n|} = \frac{1}{N_e}\int|n - n_{ref}|$"
+
+
+def gamma_zero_intercept(pairs) -> float:
+    """Zero-intercept least-squares slope of W on eps over ``(eps, W)`` pairs:
+    ``gamma = sum(eps*W) / sum(eps^2)`` -- the Letter's Fig. 3 regression
+    procedure. NaN when no pair has a positive eps."""
+    num = 0.0
+    den = 0.0
+    for eps, wt in pairs:
+        if _is_num(eps) and _is_num(wt) and eps > 0.0:
+            num += eps * wt
+            den += eps * eps
+    return num / den if den > 0.0 else float("nan")

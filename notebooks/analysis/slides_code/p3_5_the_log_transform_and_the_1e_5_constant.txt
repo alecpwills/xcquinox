@@ -1,0 +1,9 @@
+# xcquinox/alec/networks.py:27-34
+_DFS_LOG_EPS = 1e-5
+
+
+def _dfs_log_transform(x):
+    """``(1 - exp(-x^2)) ln(x + 1)``: the DFS reduced-gradient coordinate
+    (dpyscfl net.py lines 198 and 204 with ``s_gam = 1``, line 40; Dick and
+    Fernandez-Serra, PRB 104, L161109 (2021), eq. 9)."""
+    return (1.0 - jnp.exp(-x * x)) * jnp.log(x + 1.0)

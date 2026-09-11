@@ -1,0 +1,10 @@
+# xcquinox/alec/networks.py:589-597
+        rho = jnp.maximum(rho, self.lower_rho_cutoff)
+        sigma = jnp.maximum(sigma, 0.0)
+
+        rs = (3 / (4 * jnp.pi * rho)) ** (1 / 3)
+        k_F = (3 * jnp.pi**2 * rho) ** (1 / 3)
+        s = jnp.sqrt(sigma) / (2 * k_F * rho)
+
+        rs = jnp.atleast_1d(rs).flatten()
+        s = jnp.atleast_1d(s).flatten()

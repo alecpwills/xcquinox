@@ -1,0 +1,74 @@
+# xcquinox/alec/train.py:745-817
+def _build_validation_data(spec):
+    """Build ``(val_mol_data, val_reactions)`` for the in-loop held-out
+    validation, or ``(None, None)`` when validation is DISABLED. WS3.
+
+    Disabled (returns ``(None, None)``, the byte-identical no-op) when
+    ``spec.validate_every <= 0`` OR no ``validation_molecules`` OR no
+    ``validation_reactions_path``. Otherwise precompute density-only MoleculeData
+    for each ``validation_molecules`` entry via the SAME
+    :func:`precompute_fixed_density_data` path the training batch uses (matching
+    descriptor signature + DF/auxbasis from the spec's solver_config), and load
+    the val reaction dicts from the JSON at ``validation_reactions_path``.
+
+    Module-level so :func:`_run_per_molecule_loop` can call it through a
+    monkeypatchable seam (tests stub it to avoid PySCF).
+    """
+    if int(getattr(spec, "validate_every", 0)) <= 0:
+        return (None, None)
+    val_mols = tuple(getattr(spec, "validation_molecules", ()) or ())
+    rxn_path = getattr(spec, "validation_reactions_path", None)
+    if not val_mols or not rxn_path:
+        return (None, None)
+
+    # Descriptor + DF/auxbasis signature mirrors _build_batch so the val SCF
+    # inputs match what the model consumes.
+    required = set()
+    for d in spec.arch.materialize_descriptors():
+        required |= set(d.required_mol_keys)
+    sc = spec.loss_kwargs_dict.get("solver_config") or spec.solver_config
+    density_fit = False
+    if isinstance(sc, SolverConfig) and sc.mode == SolverMode.FULL:
+        density_fit = bool(getattr(sc, "density_fit", False))
+        required.add("cderi" if density_fit else "eri")
+    auxbasis = getattr(sc, "auxbasis", None) if density_fit else None
+    orientation_lock_strength = getattr(sc, "orientation_lock_strength", 0.0)
+    required_keys = tuple(required)
+
+    seed_source = getattr(sc, "seed_source", "pbe")
+    seed_cache_dir = getattr(sc, "seed_cache_dir", None)
+    seed_density_fit = bool(getattr(sc, "density_fit", False))
+    if seed_source == "scan":
+        # Coverage gate BEFORE the loop: val species are pool species whose
+        # SCAN seeds the pool cache must already hold (generation never
+        # applies to val identities), so a wrong/incomplete cache dir fails
+        # loud up front, not mid-training.
+        from xcquinox.alec.data import missing_seed_cache_files
+        cache_root = seed_cache_dir or os.environ.get(
+            "XCQUINOX_SEED_CACHE_DIR")
+        missing = (missing_seed_cache_files(
+            val_mols, seed_cache_dir=cache_root,
+            density_fit=seed_density_fit,
+            orientation_lock_strength=orientation_lock_strength)
+            if cache_root else [m.name for m in val_mols])
+        if missing:
+            raise RuntimeError(
+                "validation slice is missing cached SCAN seeds for "
+                f"{missing} under {cache_root!r} -- point seed_cache_dir at "
+                "the scan-pool cache (its _intermediates/ holds the pool "
+                "species) before training a scan-seeded spec")
+    val_mol_data = {
+        m.name: precompute_fixed_density_data(
+            m, required_keys=required_keys,
+            descriptors=spec.arch.materialize_descriptors(),
+            auxbasis=auxbasis,
+            orientation_lock_strength=orientation_lock_strength,
+            seed_source=seed_source,
+            seed_cache_dir=seed_cache_dir,
+            seed_density_fit=seed_density_fit,
+        )
+        for m in val_mols
+    }
+    with open(rxn_path) as f:
+        val_reactions = json.load(f)
+    return (val_mol_data, val_reactions)

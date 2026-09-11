@@ -1,0 +1,65 @@
+# xcquinox/alec/pretrain_data_gen.py:981-1044
+def _x_block_lda(block):
+    """``rho eps_x^LDA`` for one exchange block, in the block's own convention.
+
+    A closed-shell system's exchange block IS its total-density block, which
+    already carries the libxc-derived ``e_lda_x`` (a spin=0 call there, so the
+    unpolarized LDA at the total density). An open shell's per-channel block
+    carries no LDA column: its denominator is the analytic unpolarized LDA at
+    the DOUBLED density ``2 rho_sigma``, a function of the stored ``rho``
+    alone, and the expression here is the one :func:`spin_channel_exchange_rows`
+    divided by (its floor and clip are inactive on every kept row, where
+    ``rho > 1e-10`` puts ``|eps_x^LDA|`` above 3e-4). One expression serves the
+    per-system target and the stored ``e_lda_x_x`` column, so the loss
+    multiplies the network's enhancement factor by the same floating-point
+    number the target was built from.
+    """
+    if "e_lda_x" in block:
+        return np.asarray(block["e_lda_x"])
+    rho = np.asarray(block["rho"])
+    return rho * (_LDA_X_C * np.cbrt(rho))
+
+
+def _system_energy_targets(cols, x_cols):
+    """Per-system parent energies in Hartree: ``(e_x, e_c, e_x_scan, e_c_scan)``.
+
+    Each is the ROW QUADRATURE over the rows this file stores,
+    ``sum_i w_i e_LDA_i (1 + F_i)``, not libxc's full-grid integral. That
+    choice is what makes the per-system energy term measure the fit and nothing
+    else: the network's own energy on the same rows is
+    ``sum_i w_i e_LDA_i F^NN_i``, so the residual vanishes exactly when the
+    network reproduces the stored enhancement factors. The two integrals differ
+    only by the rows the density floor drops and by the +-5 clip on the stored
+    ratio, and the floor is the model's own tail threshold
+    (``models._NN_TAIL_THRESHOLD`` = 1e-10), below which the model clamps F to 1
+    and the network cannot move the energy at all -- the dropped rows are
+    exactly the rows pretraining could not have fitted. Measured against libxc
+    on the same density: zero on the O atom at def2-SVP / grid level 1 (pyscf's
+    pruning leaves no point under the floor), 4.8e-12 Ha on OH/STO-3G level 0,
+    <= 3.3e-11 Ha on N and H2O at def2-SVP level 1 -- six orders of magnitude
+    under the certificate's tol_atom = 1.0 mHa. Summed by rung the targets
+    reproduce the record's ``E_xc_pbe`` and, with ``E_non_xc``, its total SCF
+    energy to the same floors.
+
+    ``x_cols`` is the per-channel exchange block of
+    :func:`spin_channel_exchange_rows`, or ``None`` when the exchange rows ARE
+    the total-density rows (a closed-shell system, or the ``"total"`` footing).
+    Its LDA denominator comes from :func:`_x_block_lda`. The correlation
+    targets always come from the total-density rows: correlation is
+    spin-interpolated rather than spin-scaled.
+    """
+    if x_cols is None:
+        e_x = float(np.sum(cols["weights"] * cols["e_lda_x"]
+                           * (1.0 + cols["Fx"])))
+        e_x_scan = float(np.sum(cols["weights"] * cols["e_lda_x"]
+                                * (1.0 + cols["Fx_scan"])))
+    else:
+        e_lda_x = _x_block_lda(x_cols)
+        e_x = float(np.sum(x_cols["weights"] * e_lda_x
+                           * (1.0 + x_cols["Fx"])))
+        e_x_scan = float(np.sum(x_cols["weights"] * e_lda_x
+                                * (1.0 + x_cols["Fx_scan"])))
+    e_c = float(np.sum(cols["weights"] * cols["e_lda_c"] * (1.0 + cols["Fc"])))
+    e_c_scan = float(np.sum(cols["weights"] * cols["e_lda_c"]
+                            * (1.0 + cols["Fc_scan"])))
+    return e_x, e_c, e_x_scan, e_c_scan

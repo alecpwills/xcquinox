@@ -1,0 +1,24 @@
+# xcquinox/alec/oneshot.py:632-654
+def scf_tail_window(n_cycles, tail, power):
+    """DFS convergence-tail window for an ``n_cycles``-step SCF, generalized to
+    any N (the fix to DFS's ``skip = max(5, N-10)`` which underflows to an
+    empty slice for small N).
+
+    Returns ``(skip, weights)`` where ``weights`` (a numpy array, host-static
+    so it is jit-safe) are the per-step quadratic weights ``(i/(N-1))**power``
+    over the KEPT tail steps ``[skip:]``. The tail keeps the last
+    ``min(N, tail)`` steps, so ``skip = max(0, N - tail) <= N - 1`` and at
+    least one step is always kept. At ``N == 25, tail == 10, power == 2`` this
+    reproduces DFS exactly (skip 15, last 10, weights ~0.39..1.0).
+    """
+    n = int(n_cycles)
+    t = max(1, int(tail))
+    p = float(power)
+    tail_len = min(n, t)
+    skip = n - tail_len
+    if n <= 1:
+        # ``linspace(0,1,1)**p == [0.0]`` would zero out the only step.
+        w_full = np.ones(max(n, 1), dtype=float)
+    else:
+        w_full = np.linspace(0.0, 1.0, n) ** p
+    return skip, w_full[skip:]

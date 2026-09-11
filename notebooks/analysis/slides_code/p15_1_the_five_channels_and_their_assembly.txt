@@ -1,0 +1,83 @@
+# xcquinox/alec/losses.py:1336-1417
+    def compute_components(self, model, batch, relative=False):
+        """Return the 5 GradNorm task channels as a dict.
+
+        Keys are the GradNorm task channels:
+          loss_AE, loss_BH76, loss_IP13, loss_vxc, loss_rho
+        """
+        if not self.mol_names:
+            raise RuntimeError(
+                "L5GradnormVxcStep7 was constructed in smoke-test mode; "
+                "compute_components requires a real `molecules` set."
+            )
+        atom_idx = dict(self.atom_mol_idx)
+        # Restrict `_atomic_reg` to the user-specified atom set when
+        # `regularize_atom_syms` is configured (e.g., the Dick 2021 SI §II
+        # H/Li set). When None, regularize every single-atom MoleculeSpec
+        # (kept for back-compat).
+        if self.regularize_atom_syms is not None:
+            allowed = set(self.regularize_atom_syms)
+            atom_idx = {sym: i for sym, i in atom_idx.items() if sym in allowed}
+        mol_data = batch["mol_data"]
+        targets = batch["targets"]
+        atom_energies = batch["atom_energies"]
+        N = len(self.mol_names)
+        comp_dicts = tuple(dict(c) for c in self.compositions)
+        # DFS tail loss: when enabled, score a quadratic-weighted window of the
+        # SCF-energy TAIL (E_nn is then (N, T)) so the energy channels penalize
+        # a non-converging SCF rather than one arbitrary final cycle. step_w2 is
+        # None when disabled -> the scalar (N,) path, byte-identical to before.
+        step_w = scf_loss_tail_weights(self.solver_config)
+        if step_w is not None:
+            E_nn = _compute_energy_trajectories(
+                model, mol_data, N, solver_config=self.solver_config
+            )
+            step_w2 = step_w ** 2
+        else:
+            E_nn = _compute_energies(
+                model, mol_data, N, solver_config=self.solver_config
+            )
+            step_w2 = None
+        # AE channel: relative squared AE residual + atomic regularization,
+        # mirroring AtomizationLoss but bundled into a single channel for
+        # GradNorm. atomic_reg is folded into the AE channel because it is
+        # a regularizer of the AE quantity, not an independent task.
+        # Empty compound_idx -> AE-fitting term is 0 (BH76- / IP13-only
+        # subsets); atomic_reg may still be nonzero if any Dick atom is
+        # in atom_idx.
+        if self.compound_idx:
+            loss_ae = _ae_losses(
+                E_nn, self.compound_idx, comp_dicts,
+                self.mol_names, targets, atom_energies, step_w2=step_w2,
+            )
+        else:
+            loss_ae = jnp.array(0.0)
+        atomic_reg = self.w_atomic * _atomic_reg(
+            E_nn, atom_idx, atom_energies, step_w2=step_w2,
+        )
+        loss_ae_total = loss_ae + atomic_reg
+
+        # BH76 + IP13 channels: reaction / IP residuals (Dick 2021 SI II).
+        # Pass `relative` so all 5 GradNorm channels share one metric under
+        # loss_metric='relative' (else BH76/IP13 stay absolute Ha^2 while
+        # AE/vxc/rho are relative, inconsistent quantities into GradNorm).
+        loss_bh76 = self._bh76_channel(E_nn, relative=relative, step_w2=step_w2)
+        loss_ip13 = self._ip13_channel(E_nn, relative=relative, step_w2=step_w2)
+
+        # vxc + rho channels: existing alec mechanisms.
+        iter_idx = self._iter_idx_for_aux_channels()
+        loss_vxc = self.vxc_weight * _vxc_term(
+            model, mol_data, iter_idx, relative=relative,
+        )
+        loss_rho = self.density_weight * _grid_term(
+            model, mol_data, iter_idx, solver_config=self.solver_config,
+            relative=relative, per_electron=self.density_per_electron,
+        )
+
+        return {
+            "loss_AE": loss_ae_total,
+            "loss_BH76": loss_bh76,
+            "loss_IP13": loss_ip13,
+            "loss_vxc": loss_vxc,
+            "loss_rho": loss_rho,
+        }

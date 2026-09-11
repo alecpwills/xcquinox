@@ -1,0 +1,30 @@
+# xcquinox/alec/eval_holdout.py:173-201
+def filter_reactions(
+    reactions: Sequence[Dict[str, Any]],
+    training_names: Sequence[str],
+    *,
+    strict: bool = False,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Partition ``reactions`` into ``(kept, dropped)``.
+
+    Loose mode (default, ``strict=False``): every reaction is kept and
+    each gains an ``"in_sample_overlap"`` key listing the overlapping
+    species (empty list when held-out). Strict mode (``strict=True``): a
+    reaction with ANY species in ``training_names`` is dropped. ``training_names``
+    MUST be MOLECULE-level -- build it via :func:`training_molecule_names`, which
+    excludes single ATOMS. Otherwise shared reference atoms (h, c, n, o, ...)
+    count as overlap and drop nearly the ENTIRE atomization held-out set: every
+    W4-11/BH76 atomization shares atoms with any non-empty training set, so
+    strict atom-disjointness is unachievable (this was a real bug -- training on
+    6 reactions dropped ~135/140 W4-11 reactions purely on shared atoms).
+    """
+    training = set(training_names)
+    kept: List[Dict[str, Any]] = []
+    dropped: List[Dict[str, Any]] = []
+    for rxn in reactions:
+        has_overlap, overlap = reaction_overlap(rxn, training)
+        if has_overlap and strict:
+            dropped.append({**rxn, "in_sample_overlap": overlap})
+        else:
+            kept.append({**rxn, "in_sample_overlap": overlap})
+    return kept, dropped

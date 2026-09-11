@@ -1,0 +1,51 @@
+# xcquinox/alec/cluster/fidelity.py:1411-1460
+    per_atomization = []
+    for mol_spec in systems:
+        if is_atom_system(mol_spec) or mol_spec.name not in ok:
+            continue
+        atom_terms = []
+        missing = None
+        unusable = (mol_spec.name
+                    if ok[mol_spec.name]["dE_xc_mHa"] is None else None)
+        for symbol, count in mol_spec.atom_composition:
+            atom_name = atom_system_name(symbol, 0)
+            if atom_name not in ok:
+                missing = atom_name
+                break
+            if ok[atom_name]["dE_xc_mHa"] is None:
+                unusable = unusable or atom_name
+                continue
+            atom_terms.append(int(count) * ok[atom_name]["dE_xc_mHa"])
+        if missing is not None:
+            per_atomization.append({
+                "name": mol_spec.name, "dAE_kcalmol": None,
+                "error": f"free atom {missing} is missing from the oracle set"})
+            continue
+        if unusable is not None:
+            # A nulled (non-finite) dE_xc cannot enter the fold; the
+            # non-finite reason already names the offending system.
+            per_atomization.append({
+                "name": mol_spec.name, "dAE_kcalmol": None,
+                "error": f"dE_xc of {unusable} is not finite"})
+            continue
+        d_ae_mha = ok[mol_spec.name]["dE_xc_mHa"] - sum(atom_terms)
+        d_ae_kcal = d_ae_mha / HA_TO_MHA * HA_TO_KCAL
+        if not math.isfinite(d_ae_kcal):
+            non_finite.append((mol_spec.name, ["dAE_kcalmol"]))
+            per_atomization.append({
+                "name": mol_spec.name, "dAE_kcalmol": None,
+                "error": "the atomization offset is not finite"})
+            continue
+        per_atomization.append({
+            "name": mol_spec.name,
+            "dAE_kcalmol": d_ae_kcal})
+
+    # A nulled non-finite value never enters a max() or a comparison.
+    atom_dev = [abs(r["dE_xc_mHa"]) for r in ok.values()
+                if r["is_atom"] and r["dE_xc_mHa"] is not None]
+    n_atomizations = sum(1 for r in per_atomization
+                         if r.get("dAE_kcalmol") is not None)
+    grid_dev = [abs(r["parent_grid_diff_Ha"]) for r in ok.values()
+                if r["parent_grid_diff_Ha"] is not None]
+    record_dev = [abs(r["parent_record_diff_Ha"]) for r in ok.values()
+                  if r["parent_record_diff_Ha"] is not None]

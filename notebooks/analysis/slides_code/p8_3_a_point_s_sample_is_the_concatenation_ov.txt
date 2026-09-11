@@ -1,0 +1,38 @@
+# xcquinox/alec/subset_selection.py:409-445
+def concatenate_point_descriptors(points, species_descriptors: dict[tuple, dict]) -> list[dict]:
+    """For each TrainingPoint, concatenate descriptors across its species
+    (design choice "a": full union of grid points across participating
+    species; reactions weigh more proportional to grid-point count).
+
+    Returns a list parallel to ``points`` whose i-th entry is the same
+    shape as one ``extract_descriptors`` output (rho_third / s / alpha /
+    weights), ready to feed into :func:`build_reference_histograms` /
+    :func:`select_subset`.
+    """
+    out: list[dict] = []
+    for tp in points:
+        cat = {k: [] for k in _DESCRIPTOR_KEYS}
+        cat_w: list = []
+        for sp in tp.species:
+            name = sp.info.get("name") or sp.info.get("dfs_hill") or sp.get_chemical_formula()
+            charge = int(sp.info.get("charge", 0))
+            spin = int(sp.info.get("spin", 0))
+            key = (name, charge, spin)
+            if key not in species_descriptors:
+                raise KeyError(
+                    f"concatenate_point_descriptors: TrainingPoint {tp.name!r} "
+                    f"references species {key} not in species_descriptors. Run "
+                    f"extract_descriptors_for_species() over the union of "
+                    f"every point's species first."
+                )
+            d = species_descriptors[key]
+            for k in _DESCRIPTOR_KEYS:
+                cat[k].append(d[k])
+            cat_w.append(d.get("weights", np.ones_like(d["rho_third"])))
+        out.append({
+            "rho_third": np.concatenate(cat["rho_third"]),
+            "s":         np.concatenate(cat["s"]),
+            "alpha":     np.concatenate(cat["alpha"]),
+            "weights":   np.concatenate(cat_w),
+        })
+    return out

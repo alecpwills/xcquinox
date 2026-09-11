@@ -1,0 +1,23 @@
+# xcquinox/alec/subset_selection.py:448-469
+def build_reference_histograms(pool):
+    """Concatenate descriptor arrays across the full candidate pool, build
+    the 3 reference 200-bin LINEAR-edge histograms (per-feature [0.1, 99.9]
+    percentile range; metrics PMF-normalize), and return the edges used so
+    that candidate-subset histograms align."""
+    cat: dict = {k: [] for k in _DESCRIPTOR_KEYS}
+    cat_w: list = []
+    for arrs in pool:
+        for k in _DESCRIPTOR_KEYS:
+            cat[k].append(arrs[k])
+        cat_w.append(arrs.get("weights", np.ones_like(arrs["rho_third"])))
+    full = {k: np.concatenate(cat[k]) for k in _DESCRIPTOR_KEYS}
+    full["weights"] = np.concatenate(cat_w)
+    edges = {}
+    for k in _DESCRIPTOR_KEYS:
+        # Linear-scale edges on the RAW descriptor (no log10): [0.1, 99.9]
+        # percentile range per feature clips outliers and gives cross-feature
+        # comparability; uniform-width bins within the range.
+        lo, hi = np.percentile(full[k], [0.1, 99.9])
+        edges[k] = np.linspace(lo, hi, NBINS + 1)
+    h_ref = _bin_with_edges(full, edges)
+    return h_ref, edges

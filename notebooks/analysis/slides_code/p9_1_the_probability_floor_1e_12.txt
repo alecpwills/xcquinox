@@ -1,0 +1,2 @@
+# xcquinox/alec/subset_selection.py:54-54
+KL_PROB_CLIP = 1e-12

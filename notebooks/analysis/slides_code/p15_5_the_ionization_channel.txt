@@ -1,0 +1,26 @@
+# xcquinox/alec/losses.py:581-605
+def _ip_residual_term(
+    e_cation: jnp.ndarray,
+    e_neutral: jnp.ndarray,
+    ip_ref: jnp.ndarray,
+    relative: bool = False,
+    step_w2: jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    """Squared residual of an ionization potential. IP = E_cation - E_neutral.
+
+    When ``relative`` is set, the relative form ``(.)^2 / (ip_ref^2 + 1e-8)``,
+    consistent with the other channels under ``loss_metric='relative'``.
+    ``step_w2`` (``(T,)``) enables the DFS tail form: ``e_cation``/``e_neutral``
+    are ``(T,)`` SCF trajectories and the residual is reduced as
+    ``mean(w^2 r^2)`` over the tail; ``None`` -> byte-identical scalar form.
+
+    Used by the IP13 task channel of L5_gradnorm_vxc_step7.
+    """
+    resid = e_cation - e_neutral - ip_ref
+    if step_w2 is None:
+        sq = resid ** 2
+    else:
+        sq = jnp.mean(step_w2 * resid ** 2)
+    if relative:
+        return sq / (ip_ref ** 2 + 1e-8)
+    return sq

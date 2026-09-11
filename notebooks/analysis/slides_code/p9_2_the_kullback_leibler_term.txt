@@ -1,0 +1,16 @@
+# xcquinox/alec/subset_selection.py:196-210
+def _kl(p: np.ndarray, q: np.ndarray) -> float:
+    """Kullback-Leibler divergence in nats between two PMFs.
+
+    Probabilities are lower-floored at KL_PROB_CLIP to avoid log(0); there
+    is NO upper clip, a PMF entry never exceeds 1 once normalized, so
+    upper-clipping would distort legitimate (density) peaks. Inputs are
+    normalized to PMFs (sum=1) before the divergence so the result is the
+    genuine KL divergence bounded such that the resulting JSD lies in
+    [0, ln 2].
+    """
+    p_pmf = _to_pmf(p)
+    q_pmf = _to_pmf(q)
+    p_c = np.maximum(p_pmf, KL_PROB_CLIP)
+    q_c = np.maximum(q_pmf, KL_PROB_CLIP)
+    return float(np.sum(p_c * (np.log(p_c) - np.log(q_c))))

@@ -1,0 +1,7 @@
+# xcquinox/alec/dfs_pool.py:472-477
+DFS_ATOM_REFS = [
+    {"sym": "H",  "spin": 1, "charge": 0,
+     "spin_source": "NIST ASD H I (²S) ground state"},
+    {"sym": "Li", "spin": 1, "charge": 0,
+     "spin_source": "NIST ASD Li I (²S) ground state"},
+]

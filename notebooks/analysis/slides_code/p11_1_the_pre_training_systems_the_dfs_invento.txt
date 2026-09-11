@@ -1,0 +1,31 @@
+# xcquinox/alec/pretrain_data_gen.py:334-363
+def resolve_pretrain_systems(*, atoms=None, dfs_set=False, pool_atoms=False,
+                             reference_xc="pbe"):
+    """The ordered, de-duplicated pretraining set.
+
+    Order is DFS inventory, then pool atoms, then the explicit ``atoms`` list,
+    with the first occurrence of a (geometry, charge, spin) winning. ``atoms`` of
+    ``None`` means the historical four-atom default when neither inventory is
+    requested and NOTHING when one is: the set Section 7 binds is stated exactly
+    ("the DFS pretraining set in its entirety, plus every atom of the BH76 /
+    W4-11 pools"), and He belongs to neither.
+    """
+    if atoms is None:
+        atoms = () if (dfs_set or pool_atoms) else DEFAULT_PRETRAIN_ATOMS
+    ordered = []
+    if dfs_set:
+        ordered.extend(_dfs_pretrain_records(
+            dfs_level_for_reference_xc(reference_xc)))
+    if pool_atoms:
+        ordered.extend(pool_atom_systems())
+    ordered.extend(atoms)
+    out = []
+    seen = set()
+    for entry in ordered:
+        system = normalize_system(entry)
+        key = (_geometry_key(system.atom), int(system.charge), int(system.spin))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(system)
+    return tuple(out)

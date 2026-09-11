@@ -1,0 +1,57 @@
+# xcquinox/alec/eval_holdout.py:283-338
+def trained_reaction_exclusion(training_spec, pool_specs
+                               ) -> Tuple[set, Dict[str, Tuple[str, ...]]]:
+    """``(identity set, species key map)`` of the spec's VERBATIM supervised
+    reactions -- the reaction-form training points recorded in
+    ``loss_kwargs["bh76_reactions"]`` (the AE-as-reactions and the trained
+    barrier reactions; IP13 pairs are not reactions in the held-out pools).
+
+    Held-out exclusion is by verbatim supervised reaction, not by species
+    membership: a test reaction merely CONTAINING a trained molecule is a
+    genuine generalization target, while the trained reaction itself (e.g.
+    the ``w411_*_atomization`` twin of a trained AE molecule, under the
+    pool's naming) was a training target and must leave the reported set.
+    Identities are canonical (composition/charge/spin with geometric isomer
+    classes), so cross-vocabulary and permuted-name twins coincide. The key
+    map covers pool AND trained names so callers can key pool reactions with
+    the same vocabulary. ``(set(), {})`` when the spec records no reaction
+    points."""
+    from xcquinox.alec.species_matching import (canonical_species_keys,
+                                                reaction_identity_keys)
+    lk: Dict[str, Any] = {}
+    # TrainingSpec exposes ``loss_kwargs_dict`` as a PROPERTY (attribute
+    # access yields the dict directly); test stubs may model it as a method;
+    # raw ``loss_kwargs`` may be a dict or the spec's tuple-of-pairs form.
+    got = getattr(training_spec, "loss_kwargs_dict", None)
+    if isinstance(got, dict):
+        lk = got
+    elif callable(got):
+        lk = got() or {}
+    else:
+        raw = getattr(training_spec, "loss_kwargs", None)
+        if isinstance(raw, dict):
+            lk = raw
+        elif raw:
+            try:
+                lk = dict(raw)
+            except (TypeError, ValueError):
+                lk = {}
+    entries = []
+    trained_names: set = set()
+    for r in (lk.get("bh76_reactions") or []):
+        get = (r.get if isinstance(r, dict)
+               else lambda k, d=None, s=r: getattr(s, k, d))
+        e = {"reactants": [str(x) for x in (get("reactants") or [])],
+             "products": [str(x) for x in (get("products") or [])],
+             "coeffs": list(get("coeffs") or [])}
+        if not e["reactants"] or not e["products"]:
+            continue
+        entries.append(e)
+        trained_names.update(e["reactants"] + e["products"])
+    if not entries:
+        return set(), {}
+    key_map = canonical_species_keys(pool_specs, sorted(trained_names))
+    identities: set = set()
+    for e in entries:
+        identities.update(reaction_identity_keys(e, key_map))
+    return identities, key_map

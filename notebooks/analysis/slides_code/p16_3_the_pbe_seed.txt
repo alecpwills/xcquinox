@@ -1,0 +1,39 @@
+# xcquinox/alec/solver.py:88-125
+    # SCF. "pbe" (default) -> the converged PBE dm from precompute
+    # (byte-identical to the pre-seeding protocol); "scan" -> a converged
+    # SCAN dm loaded from the seed cache at the run identity (basis, grid,
+    # DF, orientation lock); "minao" -> the functional-free superposition
+    # guess (cold start; eval diagnostics). The supply layer
+    # (data.precompute_fixed_density_data) is the single dispatch point;
+    # the solver consumes mol_data["dm_seed"] unconditionally.
+    seed_source: str = "pbe"
+    # Root directory of the SCAN seed cache (its ``_intermediates/`` holds
+    # the per-species npz files written by external_refs.run_scf_with_cache).
+    # None -> the XCQUINOX_SEED_CACHE_DIR environment fallback; "scan" with
+    # both unset fails loud at supply time.
+    seed_cache_dir: str | None = None
+
+    def __post_init__(self):
+        if self.max_cycles < 0:
+            raise ValueError(f"max_cycles must be >= 0, got {self.max_cycles}")
+        if self.conv_tol <= 0:
+            raise ValueError(f"conv_tol must be > 0, got {self.conv_tol}")
+        if self.scf_loss_tail < 1:
+            raise ValueError(
+                f"scf_loss_tail must be >= 1, got {self.scf_loss_tail}"
+            )
+        if self.scf_loss_weight_power < 0:
+            raise ValueError(
+                "scf_loss_weight_power must be >= 0, got "
+                f"{self.scf_loss_weight_power}"
+            )
+        if self.orientation_lock_strength < 0:
+            raise ValueError(
+                "orientation_lock_strength must be >= 0, got "
+                f"{self.orientation_lock_strength}"
+            )
+        if self.seed_source not in ("pbe", "scan", "minao"):
+            raise ValueError(
+                "seed_source must be one of 'pbe'/'scan'/'minao', got "
+                f"{self.seed_source!r}"
+            )

@@ -1,0 +1,88 @@
+# xcquinox/net.py:50-136
+class SelfAttentionBlock(eqx.Module):
+    """Scaled dot-product multi-head self-attention, Pre-LN.
+
+    The input is a single hidden vector x in R^H produced by an MLP layer
+    (single grid point; sequence length = 1). The block treats the H
+    hidden units as `num_heads` tokens of dim `head_dim = H // num_heads`
+    and performs attention ACROSS THE HEAD AXIS. The (H_h, H_h) attention
+    matrix is the canonical scaled dot product Q @ K.T / sqrt(head_dim)
+    softmaxed along the key axis.
+
+    Math: Vaswani et al. 2017 (https://arxiv.org/abs/1706.03762)
+        §3.2.1 eq. (1):  Attention(Q, K, V) = softmax(QK^T / sqrt(d_k)) V
+        §3.2.2 eq. (2):  MultiHead(Q, K, V) = Concat(head_1,...,head_h) W^O
+    Pre-LN convention: Xiong et al. 2020 (https://arxiv.org/abs/2002.04745)
+        §3 eq. (3):       x_{l+1} = x_l + F(LN(x_l))   (where F is the entire
+                                                       attention sublayer
+                                                       including W^O).
+
+    Implementation note: the packed `Linear(H, H)` + reshape-to-heads
+    factorization is mathematically equivalent to per-head Linear(H, head_dim)
+    plus concat (Vaswani §3.2.2). Reshape order is C-order (numpy default),
+    so head `i` occupies channels `[i*head_dim, (i+1)*head_dim)` of the
+    post-projection vector; the back-reshape after `attn @ v` inverts the
+    same permutation.
+
+    IMPORTANT: do NOT override `head_dim` directly via `eqx.tree_at`. It
+    is derived from `hidden_size // num_heads` and the reshape arithmetic
+    in `_compute_scores` and `__call__` depends on this invariant. To
+    change attention dimensionality, construct a new block with the
+    desired `(hidden_size, num_heads)` pair.
+    """
+    query_proj:  eqx.nn.Linear
+    key_proj:    eqx.nn.Linear
+    value_proj:  eqx.nn.Linear
+    output_proj: eqx.nn.Linear
+    norm:        eqx.nn.LayerNorm
+    num_heads:   int = eqx.field(static=True)
+    head_dim:    int = eqx.field(static=True)
+    hidden_size: int = eqx.field(static=True)
+
+    def __init__(self, hidden_size: int, num_heads: int = 1,
+                 key: jax.random.PRNGKey = None):
+        if key is None:
+            key = jax.random.PRNGKey(0)
+        if hidden_size % num_heads != 0:
+            raise ValueError(
+                f"hidden_size ({hidden_size}) must be divisible by "
+                f"num_heads ({num_heads})"
+            )
+        head_dim = hidden_size // num_heads
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+        keys = jax.random.split(key, 4)
+        self.query_proj  = eqx.nn.Linear(hidden_size, hidden_size, key=keys[0])
+        self.key_proj    = eqx.nn.Linear(hidden_size, hidden_size, key=keys[1])
+        self.value_proj  = eqx.nn.Linear(hidden_size, hidden_size, key=keys[2])
+        self.output_proj = eqx.nn.Linear(hidden_size, hidden_size, key=keys[3])
+        self.norm        = eqx.nn.LayerNorm(hidden_size)
+
+    def _compute_scores(self, x):
+        """Return (q, k, v, scores) for direct unit-test inspection.
+
+        Factored out so tests can verify shapes / scale / softmax-axis
+        without monkeypatching `jax.nn.softmax` (which is JIT-unsafe).
+        """
+        x_n = self.norm(x)
+        q = self.query_proj(x_n).reshape(self.num_heads, self.head_dim)
+        k = self.key_proj(x_n).reshape(self.num_heads, self.head_dim)
+        v = self.value_proj(x_n).reshape(self.num_heads, self.head_dim)
+        scores = (q @ k.T) / jnp.sqrt(self.head_dim)
+        return q, k, v, scores
+
+    def __call__(self, x):
+        """Apply Pre-LN multi-head scaled-dot-product self-attention.
+
+        :param x: Input features of shape (hidden_size,)
+        :type x: jnp.ndarray
+        :return: Attention-transformed features of shape (hidden_size,)
+        :rtype: jnp.ndarray
+        """
+        residual = x
+        _, _, v, scores = self._compute_scores(x)
+        attn = jax.nn.softmax(scores, axis=-1)
+        out = (attn @ v).reshape(self.hidden_size)
+        out = self.output_proj(out)
+        return out + residual

@@ -1,0 +1,28 @@
+# xcquinox/alec/solver_manual.py:263-289
+def _iterate_scf(config: SolverConfig, body, init_state, forward_only: bool):
+    """Drive the per-cycle SCF ``body`` for ``config.max_cycles`` cycles.
+
+    ``forward_only=False`` (TRAINING, default): ``jax.lax.scan`` -- byte-identical
+    to before, with optional ``jax.checkpoint`` of the body for a smaller
+    reverse-mode tape.
+
+    ``forward_only=True`` (EVAL): a plain Python loop over the SAME ``body``. XLA
+    then never fuses the whole per-cycle SCF into one giant module, so the
+    multi-minute, RAM-heavy big-basis ``jit__step`` compile -- recompiled for every
+    distinct molecule shape -- never happens; each sub-op (``compute_vxc_nn``
+    ``@eqx.filter_jit``, the J einsum, ``eigh``, the mixer) compiles small and is
+    reused across cycles / same-shape molecules. Numerically identical to the scan
+    (same ``body``, same post-convergence ``jnp.where(already, ...)`` freeze, same
+    stacked energy trace). Valid ONLY because eval never differentiates -- a Python
+    loop under ``jax.grad`` would build exactly the reverse tape we are avoiding, so
+    this path must never be taken in a grad context.
+    """
+    if forward_only:
+        state = init_state
+        trace = []
+        for _ in range(config.max_cycles):
+            state, e_out = body(state, None)
+            trace.append(e_out)
+        return state, jnp.stack(trace)
+    scan_body = jax.checkpoint(body) if config.scf_grad_checkpoint else body
+    return jax.lax.scan(scan_body, init_state, None, length=config.max_cycles)

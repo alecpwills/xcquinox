@@ -1,0 +1,62 @@
+# xcquinox/alec/train.py:2001-2061
+def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
+    """DFS/dpyscf-style stochastic loop: each epoch shuffles the per-target
+    groups and takes ONE optimizer step per group with fixed channel weights.
+    ``spec.n_steps`` is the number of EPOCHS; total updates = n_steps*n_groups.
+    """
+    t0 = time.time()
+    relative = spec.loss_metric == "relative"
+    # Fill omitted channels from the density-dominant defaults (see
+    # _effective_channel_weights): a PARTIAL channel_weights dict overrides ONLY
+    # the channels it names; previously a partial dict bypassed the defaults and
+    # omitted channels fell back to 1.0 (silently de-emphasizing loss_rho).
+    cw = _effective_channel_weights(spec.channel_weights_dict)
+    # Opt-in shape padding: one common target over ALL molecules so every group's
+    # per-molecule kernels share one JIT signature per spin-type (see padding.py).
+    pad_target = (common_pad_target(batch["mol_data"])
+                  if getattr(spec, "pad_group_to_common_shape", False) else None)
+    groups = _training_groups(spec)
+    n_groups = len(groups)
+    n_epochs = spec.n_steps
+    total_updates = max(1, n_epochs * n_groups)
+
+    optimizer = build_optimizer(
+        lr_start=spec.lr_start, lr_end=spec.lr_end,
+        n_steps=total_updates, lr_decay_start=spec.lr_decay_start,
+        grad_clip=spec.grad_clip,
+        weight_decay=spec.weight_decay,
+        optimizer=getattr(spec, "optimizer", "adamw_linear"),
+    )
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    plateau = None
+    if getattr(spec, "optimizer", "adamw_linear") == "adam_plateau":
+        plateau = _PlateauController(
+            patience=spec.plateau_patience, factor=spec.plateau_factor,
+            min_lr=spec.lr_end, lr=spec.lr_start)
+    progress_hook = _adapt_progress_callback(
+        progress_callback, arch=spec.arch.name, phase="train")
+
+    # WS5: periodic-resume checkpointing. checkpoint_every<=0 (default) => the
+    # whole mechanism is OFF and the loop below is byte-identical to pre-WS5.
+    checkpoint_every = int(getattr(spec, "checkpoint_every", 0))
+    resume_enabled = checkpoint_every > 0
+    checkpoint_dir = spec.checkpoint_dir
+
+    def _step(model, opt_state, gbatch, gloss):
+        # De-fused value-and-gradient: identical (loss, grads) to the fused
+        # eqx.filter_value_and_grad(scalar_loss) but each molecule's SCF compiles
+        # at per-molecule size, so the 6-311++G(3df,2pd)+grid3 groups no longer
+        # exhaust host RAM at LLVM codegen time. NOT wrapped in a single
+        # filter_jit -- the group-wide fusion is exactly what is removed; the
+        # utility jits per molecule internally (see xcquinox.alec.defused_grad),
+        # and is loss-agnostic (any AlecLoss, via the shared energy-stack hook).
+        (loss_val, comps), grads = defused_value_and_grad(
+            gloss, model, gbatch, cw, relative, pad_target=pad_target)
+        updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
+        model = eqx.apply_updates(model, updates)
+        return model, opt_state, loss_val, comps, grads
+
+    prepared = [
+        (g["label"], *_build_group_loss_and_batch(spec, g, batch))
+        for g in groups
+    ]

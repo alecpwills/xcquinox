@@ -1,0 +1,33 @@
+# xcquinox/alec/subset_selection.py:375-406
+def extract_descriptors_for_species(
+    species,
+    *,
+    basis: str = "def2-svp",
+    grid_level: int = 1,
+    cache_dir,
+) -> dict[tuple, dict]:
+    """Extract per-species descriptors and cache by ``(name, charge, spin)``.
+
+    Returns a dict keyed by ``(name, charge, spin)`` whose values are the
+    same descriptor dicts produced by :func:`extract_descriptors`. Used as
+    the building block for multi-species TrainingPoints, each point's
+    candidate descriptors are then assembled by concatenating its
+    species' entries from this dict.
+    """
+    out: dict[tuple, dict] = {}
+    seen: set[tuple] = set()
+    for at in species:
+        name = at.info.get("name") or at.info.get("dfs_hill") or at.get_chemical_formula()
+        charge = int(at.info.get("charge", 0))
+        spin = int(at.info.get("spin", 0))
+        key = (name, charge, spin)
+        if key in seen:
+            continue
+        seen.add(key)
+        # Use a name+charge+spin-stable cache filename: dedupes across
+        # points that share an atom anchor.
+        idx = f"{name.replace('+','plus').replace('/', '_')}_c{charge}_s{spin}"
+        out[key] = extract_descriptors(
+            at, idx=idx, basis=basis, grid_level=grid_level, cache_dir=cache_dir
+        )
+    return out

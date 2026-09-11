@@ -1,0 +1,35 @@
+# xcquinox/alec/descriptors.py:225-258
+@register_descriptor("cusp")
+class CuspDescriptor(Descriptor):
+    """Nuclear cusp proximity (2 features per grid point).
+
+    Both features are bounded for network-friendly inputs:
+      * Column 0 ``cusp_factor = exp(-2 Z_nearest r_min)`` ∈ [0, 1], where
+        Z_nearest is the charge of the nearest nucleus and r_min is the
+        distance to it. This is a heuristic proximity feature motivated by
+        the electron-nucleus cusp condition. Kato (*Commun. Pure Appl.
+        Math.* 10, 151 (1957)) fixes the wavefunction cusp
+        ``(∂⟨ψ⟩/∂r)|_{r=0} = -Z·ψ(0)``; the corresponding spherically-averaged
+        density relation ``(∂⟨ρ⟩/∂r)|_{r=0} = -2Z·ρ(0)`` is due to Steiner
+        (*J. Chem. Phys.* 39, 2365 (1963)). The exponential decay here
+        approximates the resulting density-form Slater envelope ``exp(-2 Z r)``
+        (the density ρ=|ψ|² decays at twice the ``exp(-Z r)`` wavefunction
+        rate) rather than enforcing the condition exactly.
+      * Column 1 (``log_transform=True``):
+        ``tanh(log(Σ_A Z_A / r_A) / 5)`` ∈ (-1, 1), log-compressed
+        nuclear-attraction-like weight (Dick & Fernández-Serra XCDiff
+        convention). With ``log_transform=False``, the same input is fed
+        through ``tanh(Σ_A Z_A / r_A / 5)`` (no log).
+
+    See ``xcquinox.features.compute_cusp_descriptor`` for the precise
+    definitions and the dynamic-range argument for the /5 scaling.
+    """
+    n_features: int = eqx.field(default=2, static=True)
+    # When True, apply the Dick XCDiff log compression to feature 1. When
+    # False, feed the raw weighted-Z value through tanh only (old
+    # checkpoints unpickle to this).
+    log_transform: bool = eqx.field(default=False, static=True)
+    required_mol_keys: ClassVar[tuple[str, ...]] = ("cusp_features",)
+
+    def compute(self, mol_data):
+        return mol_data["cusp_features"]

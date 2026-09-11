@@ -1,0 +1,77 @@
+# xcquinox/alec/pretrain.py:1133-1208
+def _lr_schedule(
+    *,
+    lr_start: float,
+    lr_end: float,
+    n_steps: int,
+    lr_decay_start: float,
+    lr_decay_end: float = 1.0,
+):
+    """The pretraining LR schedule as a callable ``step -> lr``.
+
+    Constant ``lr_start`` until ``int(lr_decay_start * n_steps)``, linear
+    decay to ``lr_end`` over the window ending at
+    ``int(lr_decay_end * n_steps)``, then constant ``lr_end`` to the last
+    step. ``lr_decay_end = 1.0`` reproduces the pre-2026-09-03 shape exactly
+    (decay reaching ``lr_end`` at the final step, no constant tail);
+    ``lr_decay_start 0.5`` with ``lr_decay_end 0.9`` is the published
+    cloning schedule (arXiv:2605.10331 Sect. II.2: constant 1e-3, "linear
+    decay to 1e-5 between 50% and 90% of the total number of optimization
+    steps, and a final constant phase") -- before this knob the harness LR
+    at 90% of steps was 2.08e-4, 20.8x the published 1e-5, with no polish
+    phase at the floor.
+    """
+    decay_start_step = int(lr_decay_start * n_steps)
+    decay_end_step = int(lr_decay_end * n_steps)
+    decay_steps = decay_end_step - decay_start_step
+
+    if lr_decay_start > 0 and decay_steps > 0:
+        schedules = [
+            optax.constant_schedule(lr_start),
+            optax.linear_schedule(
+                init_value=lr_start,
+                end_value=lr_end,
+                transition_steps=decay_steps,
+            ),
+        ]
+        boundaries = [decay_start_step]
+        if decay_end_step < n_steps:
+            schedules.append(optax.constant_schedule(lr_end))
+            boundaries.append(decay_end_step)
+        return optax.join_schedules(schedules=schedules,
+                                    boundaries=boundaries)
+    if decay_steps > 0 and decay_end_step < n_steps:
+        # No warmup (decay from step 0) but a constant tail after the window.
+        return optax.join_schedules(
+            schedules=[
+                optax.linear_schedule(
+                    init_value=lr_start,
+                    end_value=lr_end,
+                    transition_steps=decay_steps,
+                ),
+                optax.constant_schedule(lr_end),
+            ],
+            boundaries=[decay_end_step],
+        )
+    if decay_steps == 0 and lr_decay_end < 1.0:
+        # An explicitly EMPTY window (lr_decay_start == lr_decay_end < 1):
+        # the documented shape degenerates to a step function -- constant
+        # lr_start to the boundary, constant lr_end after. Falling through
+        # to the legacy branch here would silently run a FULL-LENGTH linear
+        # decay from step 0, which is neither shape.
+        return optax.join_schedules(
+            schedules=[
+                optax.constant_schedule(lr_start),
+                optax.constant_schedule(lr_end),
+            ],
+            boundaries=[max(decay_start_step, 0)],
+        )
+    # Legacy fallthrough (lr_decay_end == 1.0 with an empty or zero-start
+    # window): a full-length linear decay, preserved bit-for-bit because
+    # every pre-2026-09-03 schedule with lr_decay_start in {0, 1} was built
+    # from exactly this expression.
+    return optax.linear_schedule(
+        init_value=lr_start,
+        end_value=lr_end,
+        transition_steps=n_steps,
+    )

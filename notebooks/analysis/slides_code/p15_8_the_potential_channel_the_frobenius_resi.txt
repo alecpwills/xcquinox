@@ -1,0 +1,77 @@
+# xcquinox/alec/losses.py:408-483
+def _vxc_term(model, mol_data, iter_idx, relative=False):
+    """V_xc matching: Frobenius^2 of (V_xc^NN - V_xc^ref).
+
+    Normalized by n_ao^2 (absolute) or ||V_xc^ref||_F^2 (relative).
+    Skips molecules where vxc_ref is None.
+
+    Supports both RKS references (shape ``(n_ao, n_ao)``) and UKS references
+    (shape ``(2, n_ao, n_ao)``). For UKS, the NN's spin-resolved V_xc is
+    constructed via :func:`_uks_spin_resolved_vxc` with the per-channel feature
+    blocks of diag(P_sigma, P_sigma), and the squared error is summed across
+    both spin channels.
+    """
+    terms = []
+    n_skipped = 0
+    n_total = 0
+    for i in iter_idx:
+        n_total += 1
+        vxc_ref = mol_data[i]["vxc_ref"]
+        if vxc_ref is None:
+            n_skipped += 1
+            continue
+        vxc_ref_arr = jnp.asarray(vxc_ref)
+        features = assemble_descriptor_features(model.descriptors, mol_data[i])
+
+        if vxc_ref_arr.ndim == 3:  # UKS: (2, n_ao, n_ao)
+            # Exchange channels take the block of their own doubled density
+            # diag(P_sigma, P_sigma); correlation takes the total block.
+            vxc_nn_a, vxc_nn_b = _uks_spin_resolved_vxc(
+                model, mol_data[i],
+                assemble_descriptor_features(model.descriptors, mol_data[i],
+                                             spin_channel=0),
+                assemble_descriptor_features(model.descriptors, mol_data[i],
+                                             spin_channel=1),
+                features,
+            )
+            err = jnp.sum((vxc_nn_a - vxc_ref_arr[0]) ** 2) \
+                + jnp.sum((vxc_nn_b - vxc_ref_arr[1]) ** 2)
+            if relative:
+                err = err / (jnp.sum(vxc_ref_arr ** 2) + 1e-8)
+            else:
+                # Physical AO count when the batch was shape-padded (the
+                # padded vxc_ref block is zero, so only the denominator
+                # would otherwise change): padding must not rescale the loss.
+                n_ao = mol_data[i].get("n_ao_unpadded")
+                if n_ao is None:
+                    n_ao = vxc_ref_arr.shape[-1]
+                # Two spin channels -> normalize by 2 * n_ao^2.
+                err = err / (2 * n_ao * n_ao)
+        else:  # RKS: (n_ao, n_ao)
+            vxc_nn = compute_vxc_nn(
+                model,
+                mol_data[i]["rho_grid"],
+                mol_data[i]["sigma_grid"],
+                features,
+                mol_data[i]["ao_grid"],
+                mol_data[i]["grid_weights"],
+                nabla_rho=mol_data[i].get("nabla_rho_grid"),
+                ao_grad=mol_data[i].get("ao_grid_deriv"),
+            )
+            err = jnp.sum((vxc_nn - vxc_ref_arr) ** 2)
+            if relative:
+                err = err / (jnp.sum(vxc_ref_arr ** 2) + 1e-8)
+            else:
+                n_ao = mol_data[i].get("n_ao_unpadded")
+                if n_ao is None:
+                    n_ao = vxc_ref_arr.shape[-1]
+                err = err / (n_ao * n_ao)
+        terms.append(err)
+    if n_skipped:
+        warnings.warn(
+            f"_vxc_term: {n_skipped} of {n_total} mol(s) had "
+            f"vxc_ref=None and were skipped; vxc channel may be zero.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)

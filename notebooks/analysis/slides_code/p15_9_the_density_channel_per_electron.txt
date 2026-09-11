@@ -1,0 +1,41 @@
+# xcquinox/alec/losses.py:366-405
+def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
+               per_electron=False):
+    """Grid density matching: weighted L2, normalized absolutely or relatively.
+
+    ``per_electron=True`` (absolute mode only) divides the weighted-L2
+    integral by N_e^2 with N_e = sum_g w_g rho_ref(g), making the channel
+    INTENSIVE so large/many-electron species cannot dominate a multi-species
+    loss by size alone. This is the dpyscf density-loss normalization
+    (Dick & Fernandez-Serra 2021, og_dpyscf/ogdpyscf/losses.py:62:
+    ``drho = sqrt(sum((rho-rho_ref)^2 w) / n_elec^2)``, then MSE vs 0 ==
+    ``sum w (drho)^2 / N^2``); deviation: dpyscf normalizes per spin channel
+    by N_sigma^2 (og_dpyscf/ogdpyscf/losses.py:70-73), we carry a spin-summed
+    density so the total N_e^2 is used.
+    """
+    terms = []
+    n_skipped = 0
+    n_total = 0
+    for i in iter_idx:
+        n_total += 1
+        rho_ref = mol_data[i]["rho_ref_grid"]
+        if rho_ref is None:
+            n_skipped += 1
+            continue
+        rho_nn = grid_density_for_loss(model, mol_data[i], solver_config)
+        w = mol_data[i]["grid_weights"]
+        err = jnp.sum(w * (rho_nn - rho_ref) ** 2)
+        if relative:
+            err = err / (jnp.sum(w * rho_ref ** 2) + 1e-8)
+        elif per_electron:
+            n_e = jnp.sum(w * rho_ref)
+            err = err / (n_e ** 2 + 1e-8)
+        terms.append(err)
+    if n_skipped:
+        warnings.warn(
+            f"_grid_term: {n_skipped} of {n_total} mol(s) had "
+            f"rho_ref_grid=None and were skipped; rho channel may be zero.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)

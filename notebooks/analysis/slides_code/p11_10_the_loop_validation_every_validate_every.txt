@@ -1,0 +1,88 @@
+# xcquinox/alec/pretrain.py:740-826
+    @eqx.filter_jit
+    def _evaluate(m, loss, desc, ref):
+        return loss.parts(m, desc, ref)
+
+    losses, history = [], []
+    best_value, best_step, best_model = float("inf"), 0, model
+    stale, stopped_early = 0, False
+    snapshot_best = _SNAPSHOT_SEED_LOSS
+    if validating:
+        # Step 0: the INCOMING model is a candidate. Under a parent anchor
+        # the initialization is the exact pointwise optimum of the fitted
+        # objective (measured loss_x[0] = 2.7e-32 on the v6 G1 anchored
+        # fits, argmin 0 on all eight trajectories), and a schedule that
+        # first scores at step `validate_every` made it structurally
+        # unselectable -- every shipped anchored checkpoint was 1e5-1e18x
+        # worse in the objective than the network the stage received.
+        pointwise, energy = _evaluate(model, loss_val, desc_val, ref_val)
+        pointwise, energy = float(pointwise), float(energy)
+        monitored = pointwise if w_e == 0.0 else pointwise + w_e * energy
+        history.append((0, pointwise, energy, monitored))
+        if monitored < best_value:
+            best_value, best_step, best_model = monitored, 0, model
+            if checkpoint_path is not None:
+                eqx.tree_serialise_leaves(checkpoint_path, model)
+        print(f"[pretrain] validation at step 0/{n_steps} (initialization): "
+              f"held-out pointwise {pointwise:.6e}, energy {energy:.6e}, "
+              f"{monitor} {monitored:.6e}", flush=True)
+    for step in range(1, n_steps + 1):
+        # The model this step is about to move: the trainer serialises the
+        # network whose loss the step reports, not the one the step produces.
+        scored_model = model
+        model, opt_state, value = _step(model, opt_state, loss_train,
+                                        desc_train, ref_train)
+        losses.append(float(value))
+        if progress_callback is not None:
+            try:
+                progress_callback(step, n_steps, losses[-1])
+            except Exception:  # noqa: BLE001 - a logging callback never stops a fit
+                pass
+        if _snapshot_due(step - 1, n_steps, serialize_every, losses[-1],
+                         snapshot_best) and snapshot_dir is not None:
+            eqx.tree_serialise_leaves(
+                os.path.join(snapshot_dir, f"xc.eqx.{step - 1}"),
+                scored_model)
+            snapshot_best = losses[-1]
+        if not validating:
+            continue
+        if step % every and step != n_steps:
+            continue
+        pointwise, energy = _evaluate(model, loss_val, desc_val, ref_val)
+        pointwise, energy = float(pointwise), float(energy)
+        monitored = pointwise if w_e == 0.0 else pointwise + w_e * energy
+        history.append((step, pointwise, energy, monitored))
+        if monitored < best_value:
+            best_value, best_step, best_model, stale = (monitored, step,
+                                                        model, 0)
+            if checkpoint_path is not None:
+                eqx.tree_serialise_leaves(checkpoint_path, model)
+        else:
+            stale += 1
+            if patience > 0 and stale >= patience:
+                stopped_early = True
+        print(f"[pretrain] validation at step {step}/{n_steps}: train "
+              f"{losses[-1]:.6e}, held-out pointwise {pointwise:.6e}, energy "
+              f"{energy:.6e}, {monitor} {monitored:.6e}; best {best_value:.6e} "
+              f"at step {best_step}"
+              + (f"; no improvement for {stale} validation(s), stopping"
+                 if stopped_early else ""), flush=True)
+        if stopped_early:
+            break
+    if not validating:
+        # Nothing was scored, so the result is the last model, exactly as the
+        # trainer returned it. `best_value` stays None rather than inf: there
+        # is no best, and a number here would invite a comparison.
+        best_model, best_step, best_value = model, len(losses), None
+    # ``monitor`` of None is the unvalidated mode's marker; no separate flag,
+    # because run_pretrain records the per-network entry only when a split ran
+    # and a constant-true key would say nothing there.
+    record = {"monitor": monitor if validating else None,
+              "best_step": best_step,
+              "best_value": best_value, "stopped_early": stopped_early,
+              "steps_run": len(losses),
+              "n_rows_train": int(jnp.asarray(desc_train).shape[0]),
+              "n_rows_val": (0 if not validating
+                             else int(jnp.asarray(desc_val).shape[0])),
+              "history": history}
+    return best_model, losses, record

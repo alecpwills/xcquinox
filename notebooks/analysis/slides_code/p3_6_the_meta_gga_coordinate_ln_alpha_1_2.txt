@@ -1,0 +1,34 @@
+# xcquinox/alec/networks.py:48-80
+def _dfs_indicator_coordinate(alpha_raw):
+    """``ln((alpha + 1)/2)`` of the RAW iso-orbital indicator (dpyscfl net.py
+    line 220; PRB 104 L161109 eq. 10): the meta-GGA MLP coordinate under the
+    DFS coordinates, bounded away from the logarithm's singularity.
+
+    For any N-representable density ``tau_W <= tau`` pointwise (the von
+    Weizsacker bound, Cauchy-Schwarz on the orbitals), so ``alpha = (tau -
+    tau_W)/tau_unif >= 0`` and SCAN defines its switching function on
+    ``[0, inf)`` (Sun, Ruzsinszky, Perdew, PRL 115, 036402 (2015), Eq. 2). A
+    substantially negative raw indicator can only come from an unphysical
+    density -- the ``decaying_linear`` mixer's step-0 coefficient 1.3 takes
+    the density matrix outside the positive-semidefinite cone, and ``tau <
+    tau_W`` follows in the far tail of a doubled spin channel -- and there
+    the logarithm was undefined below ``alpha = -1``: every meta-GGA
+    architecture returned NaN at SCF cycle 1 on open-shell species
+    (2026-09-04; test_metagga_indicator_domain reproduces it on LiH, Li and
+    OH). The indicator is floored at ``_DFS_INDICATOR_FLOOR`` before the
+    logarithm: the identity in value and gradient for every ``alpha_raw``
+    above the floor -- which is every physical row, floating-point residues
+    of the one-orbital limit included, so every pretraining row, certificate
+    and figure slice is unchanged bit for bit and the smooth positive part
+    of ``metagga.compute_alpha`` keeps its differentiability through
+    ``alpha = 0`` -- and the finite floor value with a zero gradient below
+    it. The two-branch ``where`` keeps the gradient finite through
+    ``_raw_indicator``'s inverse, whose derivative grows as the stored
+    column shrinks.
+    """
+    alpha = jnp.asarray(alpha_raw)
+    floor = _DFS_INDICATOR_FLOOR
+    on_domain = alpha >= floor
+    safe = jnp.where(on_domain, alpha, floor)
+    return jnp.where(on_domain, jnp.log((safe + 1.0) / 2.0),
+                     jnp.log((floor + 1.0) / 2.0) + 0.0 * safe)

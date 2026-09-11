@@ -1,0 +1,29 @@
+# xcquinox/alec/evaluation.py:293-320
+        w = mol_data["grid_weights"]
+        diff = rho_nn - rho_ref
+        # Grid-weight-AVERAGED RMSE / L1: sqrt(sum w*(dn)^2 / sum w) and
+        # sum w*|dn| / sum w -- the figure suite's self-calibrated scale.
+        # The DFS per-electron density error eps_{|n|} = (1/N_e) *
+        # integral|rho_nn - rho_ref| (Letter Eq.20) is emitted ALONGSIDE as
+        # density_eps_l1 (+ the model-free PBE twin), with N_e the quadrature
+        # integral of the reference density, so the Letter's gamma applies to
+        # it dimensionally. n_electrons / grid_weight_sum make any other
+        # normalization reconstructible offline.
+        rmse = float(jnp.sqrt(jnp.sum(w * diff ** 2) / jnp.sum(w)))
+        l1 = float(jnp.sum(w * jnp.abs(diff)) / jnp.sum(w))
+        rmse_pbe, l1_pbe = pbe_density_errors(mol_data)
+        eps_nn, n_e, wsum = density_eps_terms(rho_nn, rho_ref, w)
+        eps_pbe, _, _ = pbe_density_eps(mol_data)
+        return {
+            "density_rmse": rmse,
+            "density_l1": l1,
+            # model-free PBE-vs-CCSD baseline on the same grid/weights, so
+            # in-sample per_molecule.json carries the comparison directly
+            "density_rmse_pbe": rmse_pbe,
+            "density_l1_pbe": l1_pbe,
+            "density_eps_l1": eps_nn,
+            "density_eps_l1_pbe": eps_pbe,
+            "n_electrons": n_e,
+            "grid_weight_sum": wsum,
+            "ref_density_method": mol_data.get("ref_density_method"),
+        }

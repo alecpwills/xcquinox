@@ -1,0 +1,92 @@
+# xcquinox/alec/train.py:112-202
+def build_optimizer(
+    *,
+    lr_start: float,
+    lr_end: float,
+    n_steps: int,
+    lr_decay_start: float,
+    grad_clip: float,
+    weight_decay: float = 0.0,
+    optimizer: str = "adamw_linear",
+) -> optax.GradientTransformation:
+    """Build canonical optimizer chain for training.
+
+    Chain order: clip_by_global_norm -> adamw(lr_schedule, weight_decay) for
+    ``optimizer="adamw_linear"``; for ``"adam_plateau"`` (dpyscf's, 2026-09-08)
+    clip_by_global_norm -> add_decayed_weights(weight_decay) -> adam at a
+    constant injected rate, so the SAME ``weight_decay`` key is DECOUPLED under
+    the first and COUPLED (torch Adam(weight_decay=...)) under the second, and
+    the decay term sits outside the clip in the second.
+    ``weight_decay`` is DECOUPLED L2 (adamw); the default 0.0 makes adamw
+    byte-identical to the former adam, so existing (decay-free) runs are
+    unchanged. A positive value regularizes the (over-capacity) nets -- the
+    DFS-pool generalization gap was traced (2026-06-20) partly to training
+    with no weight decay while DFS uses it (og_dpyscf/scripts/train.py:47,289).
+
+    DFS parity note: the production ``weight_decay`` (``1e-4`` in the cluster
+    YAML) is two orders of magnitude larger than DFS's L2 regularization of
+    ``1e-6`` (SI), and ``adamw`` applies DECOUPLED weight decay whereas DFS
+    regularizes with coupled Adam-L2. Both the 100x magnitude and the
+    coupled->decoupled change are intentional regularization choices beyond
+    DFS (the adam->adamw switch is the generalization-gap fix of HISTORY
+    Phase 10), not accidental parity breaks.
+
+    LR schedule: a constant-LR warmup for the first ``lr_decay_start`` fraction
+    of ``n_steps`` THEN linear decay to ``lr_end``, but ONLY when
+    ``lr_decay_start > 0``. With the common ``lr_decay_start = 0`` there is no
+    warmup: it is pure linear decay from ``lr_start`` to ``lr_end`` over all
+    ``n_steps``.
+
+    Parameters
+    ----------
+    lr_start : float
+        Initial learning rate.
+    lr_end : float
+        Final learning rate after decay.
+    n_steps : int
+        Total number of training steps.
+    lr_decay_start : float
+        Fraction of n_steps before decay begins (0 = immediate decay).
+    grad_clip : float
+        Global norm clipping threshold.
+    """
+    if optimizer == "adam_plateau":
+        # dpyscf's optimizer (scripts/train.py: torch.optim.Adam(lr, weight_decay=l2)
+        # under ReduceLROnPlateau): COUPLED L2, the decay entering the gradient
+        # before Adam's moments (add_decayed_weights ahead of adam), at a rate the
+        # plateau controller rewrites through inject_hyperparams; the linear
+        # schedule and lr_decay_start are inert here (2026-09-08).
+        return optax.chain(
+            optax.clip_by_global_norm(grad_clip),
+            optax.add_decayed_weights(weight_decay),
+            optax.inject_hyperparams(optax.adam)(learning_rate=lr_start),
+        )
+    if optimizer != "adamw_linear":
+        raise ValueError(
+            f"optimizer must be 'adamw_linear' or 'adam_plateau', got {optimizer!r}")
+    decay_start_step = int(lr_decay_start * n_steps)
+    decay_steps = n_steps - decay_start_step
+
+    if lr_decay_start > 0 and decay_steps > 0:
+        lr_schedule = optax.join_schedules(
+            schedules=[
+                optax.constant_schedule(lr_start),
+                optax.linear_schedule(
+                    init_value=lr_start,
+                    end_value=lr_end,
+                    transition_steps=decay_steps,
+                ),
+            ],
+            boundaries=[decay_start_step],
+        )
+    else:
+        lr_schedule = optax.linear_schedule(
+            init_value=lr_start,
+            end_value=lr_end,
+            transition_steps=n_steps,
+        )
+
+    return optax.chain(
+        optax.clip_by_global_norm(grad_clip),
+        optax.adamw(learning_rate=lr_schedule, weight_decay=weight_decay),
+    )

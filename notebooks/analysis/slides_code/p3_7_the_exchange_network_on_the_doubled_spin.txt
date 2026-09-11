@@ -1,0 +1,74 @@
+# xcquinox/alec/oneshot.py:465-537
+def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
+                         sigma_tot, features_a, features_b, features_tot,
+                         grid_weights):
+    """Integrated UKS XC energy using the SOLV-01 split (exchange spin-scaled,
+    correlation on the total density).
+
+        E_xc = 1/2 sum_g w_g [eps_x(2 rho_a, 4 sigma_aa, f_a)
+                              + eps_x(2 rho_b, 4 sigma_bb, f_b)]
+             +     sum_g w_g  eps_c(rho_tot, sigma_tot, f_tot)
+
+    where eps_x = model.eval_ex, eps_c = model.eval_ec (the exact split of
+    eval_exc with identical tail masking). Exchange spin-scaling: Oliver and
+    Perdew, Phys. Rev. A 20, 397 (1979). Correlation on the TOTAL density:
+    von Barth and Hedin, J. Phys. C 5, 1629 (1972); Perdew and Wang, Phys. Rev.
+    B 45, 13244 (1992). This is the energy whose functional derivative is the
+    split V_xc built by ``_uks_spin_resolved_vxc`` / the manual solver (the
+    finite-difference consistency test guards this).
+
+    EXACT SPIN SCALING FOR DESCRIPTOR FEATURES. The relation above is an
+    identity for an F_x of any ingredient set, provided each channel is
+    evaluated on the FICTITIOUS SPIN-UNPOLARIZED SYSTEM the relation refers to:
+    the symmetric doubled density ``diag(P_sigma, P_sigma)``, with density
+    ``2 rho_sigma``, gradient invariant ``4 sigma_sigma_sigma`` and
+    kinetic-energy density ``2 tau_sigma``. ``features_sigma`` is that system's
+    descriptor block, so the meta-GGA indicator is
+    ``alpha(2 rho_sigma, 4 sigma_sigma_sigma, 2 tau_sigma)``, the rung-3.5
+    single and multishell occupancies are the channel's occupancy in BOTH spin
+    slots (alpha-major-then-spin column order preserved), and the density-matrix
+    statistics are those of ``diag(P_sigma, P_sigma)``; the nuclear-cusp
+    proximity feature is geometry-only and identical in all three blocks.
+    Correlation is spin-interpolated rather than spin-scaled, so it keeps the
+    total density and ``features_tot``.
+
+    Callers build the three blocks with
+    ``descriptors.assemble_descriptor_features(..., spin_channel=0 / 1 / None)``
+    on precomputed data, or with ``solver.make_uks_feature_fns`` on a live
+    density matrix. Passing one block three times is the CLOSED-SHELL case and
+    nothing else: at ``rho_a = rho_b`` the three blocks are identical, so RKS
+    and every closed-shell UKS number is unchanged byte for byte.
+
+    When the cnet is spin-polarization-aware (``cnet.use_spin_polarization``),
+    correlation is evaluated with the real zeta = (rho_a-rho_b)/rho_tot and the
+    zeta-dependent PW92 baseline (Dick and Fernandez-Serra, Phys. Rev. B 104,
+    L161109 (2021)); this is the energy whose per-spin functional derivative
+    ``compute_vc_polarized_per_spin`` builds. Flag False keeps the zeta=0
+    total-density correlation. ``rho_tot = rho_a + rho_b`` is implied by
+    ``sigma_tot``.
+    """
+    rho_tot = rho_a + rho_b
+    ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, features_a)
+    ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, features_b)
+    # Explicit attribute read instead of getattr(..., False) silent fallback.
+    # A polarized model.eqx that loses use_spin_polarization during
+    # (de)serialization would silently drop zeta on the open-shell path,
+    # making polarized vs unpolarized indistinguishable at eval. Raises
+    # AttributeError if the cnet lacks the attribute entirely (legacy
+    # hand-built cnet, not normal flow).
+    if not hasattr(model.cnet, "use_spin_polarization"):
+        raise AttributeError(
+            "model.cnet has no `use_spin_polarization` attribute. This "
+            "indicates a model built outside the standard "
+            "AlecGGA_CNet / create_network_pair path; the silent-False "
+            "fallback was removed 2026-05-29 to surface this class of bug "
+            "instead of degrading polarized eval."
+        )
+    if model.cnet.use_spin_polarization:
+        ec = model.eval_ec(rho_tot, sigma_tot, features_tot,
+                           zeta=uks_zeta(rho_a, rho_b))
+    else:
+        ec = model.eval_ec(rho_tot, sigma_tot, features_tot)
+    E_x = 0.5 * jnp.sum(grid_weights * (ex_a + ex_b))
+    E_c = jnp.sum(grid_weights * ec)
+    return E_x + E_c

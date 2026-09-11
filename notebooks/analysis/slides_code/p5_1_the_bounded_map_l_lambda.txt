@@ -1,0 +1,42 @@
+# xcquinox/alec/networks.py:129-169
+class _AlecLOB(eqx.Module):
+    """Output-range squash with limit marked static.
+
+    Re-implements library xcquinox.net.LOB with limit as eqx.field(static=True)
+    so gradient descent cannot modify the physical constant.
+
+    When used for the exchange path (limit=1.804 = 1 + kappa_PBE) the
+    functional form coincides with a local Lieb-Oxford-style ceiling on F_x
+    (Lieb & Oxford 1981; PBE 1996 eq. 14).  Dick & Fernández-Serra (PRB 104
+    L161109, 2021) use 1.174 for the exchange ceiling.
+
+    When used for the correlation path (limit=2.0) the purpose is
+    NON-NEGATIVITY of F_c, not a Lieb-Oxford bound.  The I₂(x) transform in
+    Dick (2021) eq. (13) maps the network pre-activation through a symmetric
+    sigmoid so that F_c ∈ [0, 2]; the upper value 2 is an incidental
+    byproduct of the symmetric form, NOT a Lieb-Oxford constraint (the
+    Lieb-Oxford theorem bounds the total E_xc, never F_c alone)."""
+    limit: float = eqx.field(static=True)
+
+    def __init__(self, limit: float):
+        if not isinstance(limit, (int, float)) or isinstance(limit, bool):
+            raise TypeError(
+                f"_AlecLOB.limit must be a plain Python int/float "
+                f"(got {type(limit).__name__})."
+            )
+        if not math.isfinite(limit):
+            raise ValueError(
+                f"_AlecLOB.limit must be finite (got {limit}); "
+                f"float('inf')/float('nan') would produce NaN in the "
+                f"forward pass via log(limit - 1)."
+            )
+        if limit <= 1.0:
+            raise ValueError(
+                f"_AlecLOB.limit must be > 1.0 (got {limit}); "
+                f"the log(limit - 1) term requires a positive argument."
+            )
+        self.limit = limit
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        # Matches xcquinox/net.py:40 (LOB.__call__) exactly.
+        return self.limit * jax.nn.sigmoid(x - jnp.log(self.limit - 1.0)) - 1.0

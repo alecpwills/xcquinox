@@ -1,0 +1,41 @@
+# xcquinox/alec/networks.py:366-405
+        if self.meta_gga:
+            # DFS Eq. 12 meta-GGA UEG-recovery prefactor (x2 + tanh^2(x3)): x2 =
+            # log-transformed s, x3 = ln((alpha+1)/2). alpha is the descriptor
+            # column at metagga_alpha_index (also an MLP input via `extras`), so it
+            # is used in BOTH the gate and the MLP -- the DFS exchange (s, alpha).
+            # DEVIATION from DFS Eq. 10/12: the MLP receives RAW clamped alpha (the
+            # descriptor column), whereas DFS feeds the network the log-transformed
+            # x3 = ln((alpha+1)/2); here x3 enters only through this gate, never as
+            # an MLP input. Documented, not changed (feeding x3 to the MLP would
+            # invalidate existing checkpoints).
+            alpha = jnp.atleast_1d(features).flatten()[self.metagga_alpha_index]
+            x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
+            x3 = jnp.log((alpha + 1.0) / 2.0)
+            tanhterm = jnp.atleast_1d(x2).flatten() + jnp.tanh(x3) ** 2
+        else:
+            tanhterm = jnp.tanh(s) ** 2
+
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
+        gated = tanhterm * netterm
+        if self.parent is not None:
+            f_parent = parent_fx(self.parent, rho, sigma, alpha_raw)
+            if raw:
+                return (f_parent + gated).squeeze()
+            z_parent = lob_preimage(f_parent, self.lobf.limit)
+            return 1 + self.lobf(z_parent + gated).squeeze()
+        if self.lobf is not None:
+            lobterm = self.lobf(gated)
+            return 1 + lobterm.squeeze()
+        return 1 + gated.squeeze()

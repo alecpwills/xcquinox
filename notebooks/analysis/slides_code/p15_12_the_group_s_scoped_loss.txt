@@ -1,0 +1,48 @@
+# xcquinox/alec/train.py:1919-1965
+def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
+    """Scoped loss + sub-batch for one group. Channels are RAW (vxc/density
+    pre-weights forced to 1.0), the outer fixed ``channel_weights`` are the
+    sole weighting control in per-molecule mode."""
+    name_to_idx = {m.name: i for i, m in enumerate(spec.molecules)}
+    species = group["species"]
+    sub_mol_data = tuple(batch["mol_data"][name_to_idx[s.name]] for s in species)
+
+    lk = dict(spec.loss_kwargs_dict)
+    lk["vxc_weight"] = 1.0
+    lk["density_weight"] = 1.0
+    lk["bh76_reactions"] = list(group["bh76"])
+    lk["ip13_pairs"] = list(group["ip13"])
+    lk["solver_config"] = (spec.loss_kwargs_dict.get("solver_config")
+                           or spec.solver_config)
+    # Scope the atom-anchor allowlist to atoms actually present in this group.
+    group_atom_syms = {
+        next(iter(dict(s.atom_composition)))
+        for s in species if sum(dict(s.atom_composition).values()) == 1
+    }
+    # A CONFIGURED allowlist scopes to the group and an empty scope must
+    # STAY empty: None means "regularize every single-atom MoleculeSpec"
+    # (losses back-compat), which silently anchored every atom in groups
+    # whose atoms miss the allowlist. Only an UNCONFIGURED run (no
+    # allowlist at all) keeps the regularize-everything default.
+    run_reg = spec.loss_kwargs_dict.get("regularize_atom_syms")
+    if run_reg is None:
+        lk["regularize_atom_syms"] = None
+    else:
+        lk["regularize_atom_syms"] = tuple(
+            s for s in run_reg if s in group_atom_syms)
+    present = {s.name for s in species}
+    if lk.get("aux_only_names"):
+        lk["aux_only_names"] = tuple(a for a in lk["aux_only_names"]
+                                     if a in present)
+    lk.pop("pbe_anchor_weight", None)
+    lk.pop("pbe_anchor_sample", None)
+
+    sub_loss = make_loss(spec.loss_name, molecules=species, **lk)
+    sub_targets = {s.name: batch["targets"][s.name]
+                   for s in species if s.name in batch["targets"]}
+    sub_batch = {
+        "mol_data": sub_mol_data,
+        "targets": sub_targets,
+        "atom_energies": batch["atom_energies"],
+    }
+    return sub_loss, sub_batch

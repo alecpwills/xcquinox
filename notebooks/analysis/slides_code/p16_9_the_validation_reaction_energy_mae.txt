@@ -1,0 +1,44 @@
+# xcquinox/alec/train.py:820-862
+def _validation_reaction_mae(model, val_mol_data, val_reactions,
+                             solver_config=None, *, energy_fn=None) -> float:
+    """In-loop held-out VALIDATION reaction-energy MAE (kcal/mol). WS3.
+
+    For every species in ``val_mol_data`` compute a total energy via
+    ``oneshot.total_energy_for_solver`` with ``forward_only=True`` -- the same
+    solver-MODE dispatch as the training loss (FULL re-runs the SCF, ONESHOT/
+    FIXED_J use the fixed-density functional) but a forward-only pass: validation
+    needs no gradient, so it must not compile the differentiable fused-scan kernel
+    (the converged energy is identical). Then aggregate per-reaction errors against
+    ``reaction_energy_ref`` with :func:`eval_holdout.reaction_mae_kcalmol`. A
+    species whose energy is non-finite drops its reaction; with no finite
+    reactions the MAE is NaN (the tracker ignores it).
+
+    ``energy_fn(model, mol_data)`` is an injectable seam: the default is
+    ``total_energy_for_solver`` bound to ``solver_config``; tests pass a stub so
+    the pure MAE assembly runs with NO PySCF. Returns a Python float.
+    """
+    from xcquinox.alec.eval_holdout import reaction_mae_kcalmol
+    if energy_fn is None:
+        from xcquinox.alec.oneshot import total_energy_for_solver
+
+        def energy_fn(m, md):
+            # forward_only=True: validation is a forward energy eval (no gradient),
+            # so it must NOT trace the differentiable fused-scan SCF kernel. That
+            # second large compile -- over the held-out shapes, on top of the
+            # resident training kernels -- is what exhausted host RAM at the
+            # validate_every boundary on the 6-311++G(3df,2pd)+grid3 run. Every
+            # other energy-eval path (eval_holdout, evaluation) passes
+            # forward_only=True for the same reason; the converged energy is
+            # identical, only the reverse-mode scan is skipped.
+            return float(total_energy_for_solver(m, md,
+                                                 solver_config=solver_config,
+                                                 forward_only=True))
+    energies_ha: dict = {}
+    for name, md in val_mol_data.items():
+        try:
+            e = float(energy_fn(model, md))
+        except Exception:  # noqa: BLE001 -- a diverged species drops its reaction
+            e = float("nan")
+        energies_ha[name] = e if math.isfinite(e) else float("nan")
+    mae, _n_used, _n_nan = reaction_mae_kcalmol(energies_ha, val_reactions)
+    return float(mae)

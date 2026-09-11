@@ -1,0 +1,22 @@
+# xcquinox/alec/losses.py:223-243
+def _atomic_reg(E_nn, atom_mol_idx_dict, atom_energies, step_w2=None):
+    """Weak atomic regularization toward the caller-supplied atom anchor dict.
+
+    Returns the MEAN squared relative error over the anchored atoms so the
+    channel scale is independent of how many atoms are in the batch, matching
+    the other mean-reduced channels (_ae_losses, _vxc_term, _grid_term).
+
+    ``step_w2`` (the DFS per-SCF-step weights squared, shape ``(T,)``) enables
+    the tail-weighted form: ``E_nn`` rows are then ``(T,)`` SCF-energy
+    trajectories and each atom's squared error is reduced over the step axis as
+    ``mean(step_w2 * diff^2)``. ``None`` -> the byte-identical scalar form.
+    """
+    if not atom_mol_idx_dict:
+        return jnp.array(0.0)
+    terms = []
+    for Z in atom_mol_idx_dict:
+        diff_sq = (E_nn[atom_mol_idx_dict[Z]] - atom_energies[Z]) ** 2
+        if step_w2 is not None:
+            diff_sq = jnp.mean(step_w2 * diff_sq)
+        terms.append(diff_sq / (atom_energies[Z] ** 2 + 1e-8))
+    return jnp.mean(jnp.stack(terms))

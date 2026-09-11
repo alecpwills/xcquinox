@@ -1,0 +1,77 @@
+# notebooks/analysis/make_ablation_arch_figure.py:4868-4943
+def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
+                        e_pbe: float,
+                        density_by_cell: Dict[Tuple[str, int], float],
+                        d_pbe: float,
+                        e_scan: Optional[float] = None,
+                        d_scan: Optional[float] = None,
+                        e_pbe_by_cell: Optional[
+                            Dict[Tuple[str, int], float]] = None,
+                        d_pbe_by_cell: Optional[
+                            Dict[Tuple[str, int], float]] = None,
+                        e_scan_by_cell: Optional[
+                            Dict[Tuple[str, int], float]] = None,
+                        d_scan_by_cell: Optional[
+                            Dict[Tuple[str, int], float]] = None
+                        ) -> Dict[str, Any]:
+    """DFS Eq. 21 ED per (arch, subset_size) cell (kcal/mol), NN vs PBE.
+
+    ``gamma = e_pbe / d_pbe`` (self-calibrated; see the section note above for
+    why the Letter's fixed 1084.87 kcal/mol cannot be used here), so
+    ``ed_pbe == e_pbe`` by construction and every cell's
+    ``ED = 2/(1/E + 1/(gamma*D))`` shares the PBE kcal/mol scale. Only cells
+    with a finite value in BOTH maps are emitted -- callers surface the
+    excluded cells via ``_ed_exclusion_note``. Raises ValueError on
+    non-finite/non-positive anchors (no silent NaN ED).
+
+    ``e_scan`` / ``d_scan`` add the meta-GGA comparator: ``ed_scan`` is the SAME
+    harmonic mean under the SAME gamma, so it is on the cells' scale and can be
+    drawn as a second reference. Unlike ``ed_pbe`` it is NOT equal to its energy
+    leg -- gamma is calibrated on PBE, not on SCAN, so SCAN's density leg moves
+    it. ``None`` when either SCAN leg is missing, so the figures omit the line.
+
+    ``e_pbe_by_cell`` / ``d_pbe_by_cell`` supply CELL-MATCHED PBE reductions
+    (PBE over exactly the reactions/species each cell scored): the per-cell
+    ``beats_pbe`` verdict is then judged against ``ed_pbe_cell`` (stored on
+    the cell, under the same gamma) instead of the pooled anchor, which over-
+    or under-states PBE on cells whose scored subset differs from the union.
+    ``e_scan_by_cell`` / ``d_scan_by_cell`` are the SCAN twins behind
+    ``beats_scan`` / ``ed_scan_cell`` -- the pooled SCAN comparator carries
+    the same misgrading (on the current data it understates SCAN on every
+    cell's surviving set).
+    """
+    if not (_is_num(e_pbe) and e_pbe > 0.0):
+        raise ValueError(
+            f"PBE energy anchor must be finite and positive, got {e_pbe!r}")
+    if not (_is_num(d_pbe) and d_pbe > 0.0):
+        raise ValueError(
+            f"PBE density anchor must be finite and positive, got {d_pbe!r}")
+    gamma = float(e_pbe) / float(d_pbe)
+    ed_pbe = _harmonic_mean(float(e_pbe), gamma * float(d_pbe))
+    ed_scan = None
+    if (_is_num(e_scan) and float(e_scan) > 0.0
+            and _is_num(d_scan) and float(d_scan) > 0.0):
+        ed_scan = _harmonic_mean(float(e_scan), gamma * float(d_scan))
+    cells: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    for cell, e in energy_by_cell.items():
+        d = density_by_cell.get(cell)
+        if not (_is_num(e) and _is_num(d)):
+            continue
+        ed = _harmonic_mean(float(e), gamma * float(d))
+        anchor, ed_pbe_cell = _cell_pbe_ed(cell, gamma, ed_pbe,
+                                           e_pbe_by_cell, d_pbe_by_cell)
+        s_anchor, ed_scan_cell = _cell_pbe_ed(cell, gamma, ed_scan,
+                                              e_scan_by_cell, d_scan_by_cell)
+        cells[cell] = {"E": float(e), "D": float(d),
+                       "gammaD": gamma * float(d), "ED": ed,
+                       "beats_pbe": bool(ed < anchor),
+                       "ed_pbe_cell": ed_pbe_cell,
+                       "ed_scan_cell": ed_scan_cell,
+                       "beats_scan": (bool(ed < s_anchor)
+                                      if s_anchor is not None else None)}
+    return {"gamma": gamma, "gamma_mode": "self_calibrated",
+            "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
+            "ed_pbe": ed_pbe,
+            "e_scan": (float(e_scan) if _is_num(e_scan) else None),
+            "d_scan": (float(d_scan) if _is_num(d_scan) else None),
+            "ed_scan": ed_scan, "cells": cells}

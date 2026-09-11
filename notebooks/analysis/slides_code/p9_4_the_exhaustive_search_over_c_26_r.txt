@@ -1,0 +1,218 @@
+# xcquinox/alec/subset_selection.py:472-688
+def select_subset(
+    pool,
+    edges: dict,
+    h_ref: dict,
+    *,
+    r: int,
+    metric: str,
+    fixed_indices: tuple = (),
+    progress: bool = True,
+    progress_desc: str | None = None,
+    return_all: bool = False,
+    distribution_path: str | None = None,
+    descriptor_weights: dict | None = None,
+):
+    """Exhaustively enumerate all C(npool, r) subsets and return the
+    indices of the size-r combination that minimizes the chosen metric.
+
+    Parameters
+    ----------
+    pool : list of per-species descriptor-array dicts
+    edges : pre-built bin edges from build_reference_histograms
+    h_ref : reference 3-histogram tuple from build_reference_histograms
+    r : target subset size
+    metric : "l2" or "jsd"
+    fixed_indices : pool indices that must be present in every candidate
+        subset. The chosen subset has exactly r entries TOTAL including
+        the fixed ones.
+    progress : when True (default), wraps the combinatorial enumeration in
+        a tqdm.auto progress bar so long-running r (e.g. r=14 over 28
+        gives ~40M combinations) gives the operator live ETA / it/s.
+        Set False for unit tests or callers that handle their own bar.
+    progress_desc : optional override for the tqdm description label.
+        Defaults to ``"select_subset r={r} {metric}"``.
+    """
+    if metric == "l2":
+        m_batch = _metric_l2_batch
+    elif metric == "jsd":
+        m_batch = _metric_jsd_batch
+    else:
+        raise ValueError(f"unknown metric: {metric!r}")
+    # Bind per-descriptor weights (default equal => behavior-preserving).
+    # Validate up front so a bad key fails loudly before the long enumeration.
+    _weights = _resolve_descriptor_weights(descriptor_weights)
+    import functools as _functools
+    m_batch = _functools.partial(m_batch, weights=_weights)
+
+    npool = len(pool)
+    if r > npool:
+        raise ValueError(f"r={r} exceeds pool size {npool}")
+    if r < len(fixed_indices):
+        raise ValueError(f"r={r} smaller than fixed_indices count {len(fixed_indices)}")
+
+    fixed_set = set(fixed_indices)
+    free_indices = [i for i in range(npool) if i not in fixed_set]
+    free_r = r - len(fixed_indices)
+
+    from math import comb as _comb
+    n_combos = _comb(len(free_indices), free_r)
+
+    # Cache-read-back: when return_all=True and distribution_path is set
+    # AND the file already exists, trust it and return without re-running
+    # the C(npool, r) enumeration (which can be ~40M combinations for
+    # r=14 over npool=28). The caller invalidates by deleting the file
+    # (same pattern as the SCF/CCSD caches in external_refs.py).
+    # We sanity-check the cache's shape against the requested (r, n_combos)
+    # so a mismatch (e.g., pool size or r changed) raises loudly rather
+    # than returning stale results silently.
+    if return_all and distribution_path is not None:
+        from pathlib import Path as _Path
+        _dp = _Path(distribution_path)
+        if _dp.is_file():
+            with np.load(_dp) as z:
+                vals = np.asarray(z["vals"])
+                idx_array = np.asarray(z["indices"])
+                best_combo_arr = np.asarray(z["best_combo"])
+                best_val_arr = np.asarray(z["best_val"])
+            if vals.shape != (n_combos,) or idx_array.shape != (n_combos, r):
+                raise ValueError(
+                    f"select_subset: cached distribution at {_dp} has shape "
+                    f"vals={vals.shape}, indices={idx_array.shape} but the "
+                    f"requested r={r} with this pool gives n_combos={n_combos} "
+                    f"and per-row width={r}. Pool size, r, or fixed_indices "
+                    f"likely changed, delete the cache file to force a re-run."
+                )
+            best_combo = tuple(int(i) for i in best_combo_arr)
+            best_val = float(best_val_arr)
+            return best_combo, best_val, vals, idx_array
+
+    if return_all:
+        vals = np.empty(n_combos, dtype=np.float64)
+        idx_array = np.empty((n_combos, r), dtype=np.int64)
+
+    # Pre-bin pool entries ONCE so the inner combo loop only has to sum
+    # weight-counts across r entries (cheap) rather than re-binning the
+    # concatenation of r descriptor arrays per combo (expensive).  At
+    # r=12 over npool=26 this drops the per-combo cost from ~µs of bin
+    # work + Python overhead to a vectorized fancy-index + sum, taking
+    # the C(26,12)=9.66M-combo enumeration from ~hours to ~seconds.
+    per_key_counts, W_in_range = _prebin_pool(pool, edges)
+    bin_widths = {k: np.diff(edges[k]) for k in _DESCRIPTOR_KEYS}
+
+    fixed_arr = np.asarray(sorted(fixed_set), dtype=np.int64)
+    has_fixed = fixed_arr.size > 0
+
+    # Batch size: trades Python overhead vs peak memory.  Each batch
+    # allocates ~(BATCH * NBINS * 8 * 3 keys) bytes of float64 = ~150 MB
+    # at BATCH=32768 with NBINS=200.  Tunable via STEP7_SUBSET_BATCH env.
+    _batch_size = int(os.environ.get("STEP7_SUBSET_BATCH", "32768"))
+    _batch_size = max(1, min(_batch_size, max(1, n_combos)))
+
+    if progress:
+        from tqdm.auto import tqdm
+        pbar = tqdm(
+            total=n_combos,
+            desc=progress_desc or f"select_subset r={r} {metric}",
+            leave=False,
+            dynamic_ncols=True,
+            mininterval=0.5,
+            unit="combo",
+        )
+    else:
+        pbar = None
+
+    best_val = float("inf")
+    best_combo: tuple = ()
+    combo_iter = combinations(free_indices, free_r)
+    base_idx = 0
+    from itertools import islice as _islice
+    while True:
+        batch = list(_islice(combo_iter, _batch_size))
+        if not batch:
+            break
+        # Build full-combo array of shape (b, r): prepend fixed indices,
+        # then keep them sorted (downstream consumers expect sorted tuples).
+        free_batch = np.asarray(batch, dtype=np.int64)            # (b, free_r)
+        b = free_batch.shape[0]
+        if has_fixed:
+            full_batch = np.empty((b, r), dtype=np.int64)
+            full_batch[:, : fixed_arr.size] = fixed_arr[None, :]
+            full_batch[:, fixed_arr.size:] = free_batch
+            full_batch.sort(axis=1)
+        else:
+            full_batch = free_batch                               # already sorted ascending
+        # Build candidate density histograms via BLAS matmul.  A naive
+        # fancy index ``per_key_counts[k][full_batch, :]`` materializes
+        # a (b, r, NBINS) intermediate (≈630 MB at b=32k, r=12, NBINS=200)
+        # whose sum-over-r is bandwidth-bound.  Replace it with a dense
+        # one-hot indicator ``M[i, j] = 1 if j in combo_i`` (shape
+        # (b, npool)) and a matrix multiply ``M @ per_key_counts[k]``
+        # (shape (b, NBINS)).  np.matmul dispatches to BLAS gemm, hitting
+        # 50-100× the throughput of the fancy-index path.
+        M = np.zeros((b, npool), dtype=np.float64)
+        np.put_along_axis(M, full_batch, 1.0, axis=1)
+        h_cand_batch = {}
+        empty_in_range = np.zeros(b, dtype=bool)
+        for key in _DESCRIPTOR_KEYS:
+            counts_combo = M @ per_key_counts[key]                # (b, NBINS)
+            W_combo_k = M @ W_in_range[key]                       # (b,)
+            # a combo whose grid points ALL fell outside the
+            # histogram range for some descriptor has zero in-range weight
+            # and is degenerate (empty candidate). Flag it for
+            # disqualification rather than dividing by a fudged W=1.0,
+            # which previously made an empty candidate score a
+            # misleadingly-moderate ~0.5*ln2 JSD. We still compute a
+            # finite (all-zero) histogram here to keep the metric
+            # vectorized, then overwrite the score with +inf below.
+            empty_in_range |= (W_combo_k <= 0.0)
+            W_safe = np.where(W_combo_k > 0.0, W_combo_k, 1.0)
+            h_cand_batch[key] = counts_combo / (W_safe[:, None] * bin_widths[key][None, :])
+        vals_batch = m_batch(h_ref, h_cand_batch)                 # (b,)
+        # Disqualify empty-in-range candidates: maximally divergent so the
+        # argmin never picks them. Applies to both metrics.
+        if empty_in_range.any():
+            vals_batch = np.where(empty_in_range, np.inf, vals_batch)
+        if return_all:
+            vals[base_idx: base_idx + b] = vals_batch
+            idx_array[base_idx: base_idx + b, :] = full_batch
+        # Best update: pick the argmin within the batch and compare.
+        local_best = int(np.argmin(vals_batch))
+        if vals_batch[local_best] < best_val:
+            best_val = float(vals_batch[local_best])
+            best_combo = tuple(int(x) for x in full_batch[local_best])
+        base_idx += b
+        if pbar is not None:
+            pbar.update(b)
+    if pbar is not None:
+        pbar.close()
+
+    if return_all and distribution_path is not None:
+        # Atomic write: tempfile + os.replace so an interrupted enumeration
+        # cannot leave a half-written cache. Long enumerations (~40M
+        # combos for r=14, npool=28) are precisely the case where Ctrl-C
+        # is likely; a partial write would be silently mis-loaded by the
+        # cache-read-back path on a subsequent invocation.
+        import os as _os
+        import tempfile as _tf
+        from pathlib import Path as _Path
+        _dp = _Path(distribution_path)
+        out_dir = str(_dp.parent if _dp.parent != _Path("") else _Path("."))
+        fd, tmp_name = _tf.mkstemp(dir=out_dir, suffix=".npz")
+        try:
+            _os.close(fd)
+            np.savez_compressed(
+                tmp_name,
+                vals=vals, indices=idx_array,
+                best_combo=np.array(best_combo),
+                best_val=np.array(best_val),
+            )
+            _os.replace(tmp_name, str(_dp))
+        finally:
+            if _os.path.exists(tmp_name):
+                _os.unlink(tmp_name)
+
+    if return_all:
+        return best_combo, best_val, vals, idx_array
+
+    return best_combo, best_val

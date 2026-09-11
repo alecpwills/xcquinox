@@ -1,0 +1,37 @@
+# xcquinox/alec/train.py:1017-1052
+def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
+                    val_best_model=None, extra_metadata=None) -> dict:
+    """Save model.eqx (final), losses.npy, aux_log, train_metadata.json. If a
+    best-loss snapshot is given, ALSO write model_best.eqx side-by-side (the
+    final model.eqx is still written) so eval can opt into the pre-instability
+    checkpoint.
+
+    WS3: ``val_best_model`` (the minimum held-out-validation snapshot) is written
+    to ``model_val_best.eqx`` when present, and ``extra_metadata`` (e.g.
+    ``early_stopped`` / ``epochs_run`` / ``val_best_mae``) is merged into
+    train_metadata.json. Both default to no-op so non-validating runs are
+    byte-identical."""
+    os.makedirs(spec.checkpoint_dir, exist_ok=True)
+
+    model_path = os.path.join(spec.checkpoint_dir, "model.eqx")
+    _serialise_trained_model(model_path, model, spec.arch)
+    if best_model is not None:
+        _serialise_trained_model(
+            os.path.join(spec.checkpoint_dir, "model_best.eqx"), best_model,
+            spec.arch)
+    if val_best_model is not None:
+        _serialise_trained_model(
+            os.path.join(spec.checkpoint_dir, "model_val_best.eqx"),
+            val_best_model, spec.arch)
+
+    losses_np = np.array(losses, dtype=np.float64)
+    np.save(os.path.join(spec.checkpoint_dir, "losses.npy"), losses_np)
+
+    aux_path = os.path.join(spec.checkpoint_dir, "aux_log.pkl")
+    with open(aux_path, "wb") as f:
+        pickle.dump(aux_log, f, protocol=4)
+
+    loss_kwargs_ser = {
+        k: v.describe() if isinstance(v, SolverConfig) else v
+        for k, v in spec.loss_kwargs_dict.items()
+    }
