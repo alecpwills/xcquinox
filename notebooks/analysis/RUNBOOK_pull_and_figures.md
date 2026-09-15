@@ -488,6 +488,15 @@ python notebooks/analysis/md_to_tex.py notebooks/analysis/REPORT_v7_2026-09-09.m
 python notebooks/analysis/md_to_tex.py notebooks/analysis/SUMMARY_v7_2026-09-09.md --date 2026-09-09 --pdf
 ```
 
+Before the build, the per-cell tables between the documents' marker lines are
+regenerated from the family CSVs and, for the two training-log tables of the report's
+Sec. 4.6, from the view's `aux_log.pkl` files through the suite's own collector
+(`--view` names the family view directory the figures were rendered from):
+
+```bash
+python notebooks/analysis/report_tables.py --view <view> --splice notebooks/analysis/REPORT_v7_2026-09-09.md notebooks/analysis/SUMMARY_v7_2026-09-09.md
+```
+
 The title defaults to the markdown's `#` heading (`--title` overrides it); the
 `.tex` is written beside the markdown, the figure paths in the markdown are
 relative to that directory, and `--pdf` runs xelatex twice there and removes
@@ -562,9 +571,17 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite --domain dfs_step
 ```
 
 The suite then renders `figures_<alias>_converged` and `figures_<alias>_converged_val_best`
-beside the warm sets, the `_excl_t1` siblings from the pulled T1 table, and the
-`_excl_unconverged` siblings of the converged views. A converged channel keeps every species
-with its `scf_converged` flag; the collector prints the unconverged count per spec.
+beside the warm sets, the `_excl_t1` siblings from the pulled T1 table (the merge writes the
+view's `t1_diagnostics.json` from the first contributing run's table, a later run's table
+having to agree with it on every shared species and the threshold and adding the species only
+it names; the marker line of `MERGED_RUNS.txt` records `t1: carried`, `t1: agrees with
+<category>` (`, adds N species` when it extends the table), `t1: skipped (no cells)` or
+`t1: none` per run, 2026-09-15), and the `_excl_unconverged` siblings of the converged
+views. A converged channel keeps every species with its `scf_converged` flag; the collector
+prints the unconverged count per spec. A cell of a run listed with a protocol tag is filed by
+every per-architecture figure, `trained_fx_fc.py` included, under its tagged shown name
+(`trained_fx_fc_deep_3x16 [25 cycles].png`), and the curves CSV carries the tag in its
+`protocol` column beside the shown `arch`.
 At partial coverage the suite runs on whatever cells have landed and
 skips the basis comparison until two bases carry cells. The optimized
 enhancement factors are a separate script, one call per checkpoint channel

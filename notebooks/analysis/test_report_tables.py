@@ -106,7 +106,10 @@ def _row(**kw) -> str:
     unknown = set(kw) - set(FIELDS)
     assert not unknown, f"the fixture names fields the real header does not carry: {unknown}"
     values.update({k: str(v) for k, v in kw.items()})
-    return ",".join(values[name] for name in FIELDS)
+    # the suite writes its CSVs with csv.writer, which quotes a value carrying a
+    # comma (a two-tag shown name, ``deep_3x16 [25 cycles, anchored]``)
+    return ",".join(f'"{values[name]}"' if "," in values[name] else values[name]
+                    for name in FIELDS)
 
 
 # the four held-out cells of every leg: deep_3x16 is the shown name whose stored key is
@@ -689,3 +692,332 @@ def test_a_verdict_that_disagrees_with_the_cell_values_is_refused(tmp_path):
     csv_path.write_text("\n".join(lines) + "\n")
     with pytest.raises(ValueError, match="beats_pbe"):
         mf.holdout_table(csv_path, "bh76")
+
+
+# ---------------------------------------------------------------------------
+# T4: the training-log tables of Sec. 4.6, generated from the view (2026-09-15)
+#
+# ``training_losses`` and ``validation_checks`` read the cells' ``aux_log.pkl``
+# through the figure suite's own collector on the merged family view: the
+# first and last five-epoch means of the total and of every weighted channel,
+# and the validation checks in epoch order with the validation-best epoch as
+# the completed-epoch count at the check. The rows are the cells the family
+# CSV carries (the evaluated set every other table prints), named as the
+# suite names them. The fixture is a view with four manifest cells in three
+# categories: one with a log of eight epochs at one update each and three
+# validation checks written out of epoch order, one tagged cell with a
+# three-epoch log and no check, one evaluated cell without a log, one queued
+# cell the family CSV does not carry; so the run column, the window means,
+# the epoch order and count, the tag, the absent-log row and the evaluated
+# set are each pinned.
+# ---------------------------------------------------------------------------
+
+_CHANNELS = ("loss_AE", "loss_BH76", "loss_IP13", "loss_vxc", "loss_rho")
+_WEIGHTS = {"loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0, "loss_vxc": 1.0,
+            "loss_rho": 20.0}
+TRAINING_HEADER = ("| Run | Architecture | Subset | Epochs | total first/last | AE first/last | "
+                   "reactions first/last | IP13 first/last | V_xc first/last | rho first/last |")
+VALIDATION_HEADER = ("| Run | Architecture | Subset | Epochs | "
+                     "Validation MAE at each 25-epoch check (kcal/mol) | Validation-best epoch |")
+
+
+def _aux(epoch):
+    """The components of the one update of ``epoch``: AE = 1 + e, reactions = 10 + e,
+    IP13 = 0.5, V_xc = 2e, rho = 0.1 (e + 1); with the density weight 20 the total is
+    13.5 + 6e. Over epochs 0-4 the means are AE 3, reactions 12, IP13 0.5, V_xc 4, rho
+    (weighted) 6, total 25.5; over epochs 3-7 AE 6, reactions 15, IP13 0.5, V_xc 10, rho 12,
+    total 43.5; over epochs 0-2 AE 2, reactions 11, IP13 0.5, V_xc 2, rho 4, total 19.5."""
+    return {"loss_AE": 1.0 + epoch, "loss_BH76": 10.0 + epoch, "loss_IP13": 0.5,
+            "loss_vxc": 2.0 * epoch, "loss_rho": 0.1 * (epoch + 1)}
+
+
+def _update(epoch, *, with_total=True):
+    aux = _aux(epoch)
+    row = {"step": epoch, "epoch": epoch, "group": "group_0", "aux": aux,
+           "update_scheme": "per_molecule"}
+    if with_total:
+        row["loss"] = float(sum(_WEIGHTS[k] * aux[k] for k in _CHANNELS))
+    return row
+
+
+def _check(epoch, mae):
+    """A ``__validation__`` row; ``epoch`` is the log's 0-based key."""
+    return {"step": epoch, "epoch": epoch, "group": "__validation__",
+            "val_mae_kcalmol": mae, "update_scheme": "per_molecule"}
+
+
+def _write_log(spec_dir, rows, weights=None):
+    import json
+    import pickle
+    with (Path(spec_dir) / "aux_log.pkl").open("wb") as f:
+        pickle.dump(list(rows), f, protocol=4)
+    if weights is not None:
+        (Path(spec_dir) / "train_metadata.json").write_text(
+            json.dumps({"effective_channel_weights": weights}))
+
+
+_VIEW_SPECS = [
+    {"index": 0, "cell": {"arch": "medium", "subset_size": 7},
+     "category": "dfs6311_grid3_v7g1_size"},
+    {"index": 1, "cell": {"arch": "deep_3x16", "subset_size": 12},
+     "category": "dfs6311_grid3_v7g2a_families_core"},
+    {"index": 2, "cell": {"arch": "medium", "subset_size": 7, "protocol": "25 cycles"},
+     "category": "dfs6311_grid3_v7g1_c25"},
+    # running: a two-epoch log, no evaluation yet, so not in the family CSV
+    {"index": 3, "cell": {"arch": "medium", "subset_size": 26},
+     "category": "dfs6311_grid3_v7g1_size"},
+    # malformed: no subset size; skipped with a printed line
+    {"index": 4, "cell": {"arch": "medium"}, "category": "dfs6311_grid3_v7g1_size"},
+]
+
+
+def _view_fixture(tmp_path, *, parent_anchor=False):
+    import json
+    view = Path(tmp_path) / "run_20260908T153908Z"
+    ck = view / "checkpoints"
+    ck.mkdir(parents=True)
+    (view / "manifest.json").write_text(
+        json.dumps({"n_specs": len(_VIEW_SPECS), "specs": _VIEW_SPECS}))
+    if parent_anchor:
+        (view / "resolved_config.yaml").write_text("model:\n  parent_anchor: true\n")
+    for spec in _VIEW_SPECS:
+        (ck / f"spec_{spec['index']:04d}").mkdir()
+    rows = [_update(e) for e in range(8)]
+    # written out of epoch order on purpose; the best check (log epoch 4, the
+    # fifth completed epoch) is neither the first nor the last
+    rows += [_check(e, m) for e, m in ((2, 9.4), (6, 8.4), (4, 8.2))]
+    _write_log(ck / "spec_0000", rows, _WEIGHTS)
+    _write_log(ck / "spec_0002", [_update(e) for e in range(3)])
+    _write_log(ck / "spec_0003", [_update(e) for e in range(2)])
+    return view
+
+
+# the evaluated cells of the view, as the family CSV names them
+_VIEW_CELLS = [("deep_3x16", "medium", 7, 58, 66, 58),
+               ("deep_3x16 [25 cycles]", "medium", 7, 58, 66, 58),
+               ("deep0_3x16", "deep_3x16", 12, 57, 64, 57)]
+_VIEW_CELLS_ANCHORED = [(a + " [anchored]" if "[" not in a else a[:-1] + ", anchored]",
+                         s, ss, n1, n2, n3) for a, s, ss, n1, n2, n3 in _VIEW_CELLS]
+
+
+def _view_family_dirs(tmp_path, *, anchored=False):
+    """The family directory (and its tail-excluded sibling) whose CSVs carry the
+    view's three evaluated cells."""
+    cells = _VIEW_CELLS_ANCHORED if anchored else _VIEW_CELLS
+    fam = Path(tmp_path) / "figures_view_family_val_best"
+    excl = Path(tmp_path) / "figures_view_family_val_best_excl_tail"
+    for d, shift in ((fam, 0.0), (excl, _EXCL_SHIFT)):
+        d.mkdir(exist_ok=True)
+        (d / "holdout_by_pool_3x3_eps.csv").write_text(
+            _csv_text(cells, _HOLDOUT_NUMBERS, shift))
+        (d / "insample_by_pool_3x3_eps.csv").write_text(
+            _csv_text(cells, _INSAMPLE_NUMBERS, shift))
+    return fam, excl
+
+
+def _one_cell_view(tmp_path, rows, name="run_one"):
+    import json
+    view = Path(tmp_path) / name
+    (view / "checkpoints" / "spec_0000").mkdir(parents=True)
+    (view / "manifest.json").write_text(
+        json.dumps({"n_specs": 1, "specs": [_VIEW_SPECS[0]]}))
+    _write_log(view / "checkpoints" / "spec_0000", rows, _WEIGHTS)
+    return view
+
+
+_TRAINING_ROW_0 = ("| size | deep_3x16 | 7 | 8 | 2.55e+1 / 4.35e+1 | 3.00e+0 / 6.00e+0 | "
+                   "1.20e+1 / 1.50e+1 | 5.00e-1 / 5.00e-1 | 4.00e+0 / 1.00e+1 | 6.00e+0 / 1.20e+1 |")
+_TRAINING_ROW_2 = ("| 25-cycle arm | deep_3x16 [25 cycles] | 7 | 3 | 1.95e+1 / 1.95e+1 | "
+                   "2.00e+0 / 2.00e+0 | 1.10e+1 / 1.10e+1 | 5.00e-1 / 5.00e-1 | "
+                   "2.00e+0 / 2.00e+0 | 4.00e+0 / 4.00e+0 |")
+_TRAINING_ROW_1 = "| families | deep0_3x16 | 12 | -- | -- | -- | -- | -- | -- | -- |"
+# the running cell's two epochs: AE 1.5, reactions 10.5, IP13 0.5, V_xc 1, rho 3, total 16.5
+_TRAINING_ROW_3 = ("| size | deep_3x16 | 26 | 2 | 1.65e+1 / 1.65e+1 | 1.50e+0 / 1.50e+0 | "
+                   "1.05e+1 / 1.05e+1 | 5.00e-1 / 5.00e-1 | 1.00e+0 / 1.00e+0 | 3.00e+0 / 3.00e+0 |")
+_VALIDATION_ROW_0 = "| size | deep_3x16 | 7 | 8 | 9.4, 8.2, 8.4 | 5 |"
+_VALIDATION_ROW_2 = "| 25-cycle arm | deep_3x16 [25 cycles] | 7 | 3 | -- | -- |"
+_VALIDATION_ROW_1 = "| families | deep0_3x16 | 12 | -- | -- | -- |"
+
+
+def test_training_losses_rows_are_the_first_and_last_five_epoch_means(tmp_path):
+    """The window means of every weighted channel and of the total, the run
+    label of the cell's category, the tagged shown name, and the display order
+    (the tagged cell after its untagged architecture, deep0_3x16 last)."""
+    mod = _load_script()
+    fam, _excl = _view_family_dirs(tmp_path)
+    lines = _table_lines(mod.training_losses_table(_view_fixture(tmp_path),
+                                                    family_dir=fam))
+    assert lines[0] == TRAINING_HEADER
+    assert lines[1].startswith("|---|")
+    assert lines[2] == _TRAINING_ROW_0
+    assert lines[3] == _TRAINING_ROW_2
+    assert len(lines) == 5
+
+
+def test_validation_checks_list_every_check_in_epoch_order_and_the_best(tmp_path):
+    mod = _load_script()
+    fam, _excl = _view_family_dirs(tmp_path)
+    lines = _table_lines(mod.validation_checks_table(_view_fixture(tmp_path),
+                                                      family_dir=fam))
+    assert lines[0] == VALIDATION_HEADER
+    assert lines[2] == _VALIDATION_ROW_0
+    assert lines[3] == _VALIDATION_ROW_2
+    assert len(lines) == 5
+
+
+def test_a_cell_without_a_log_is_listed_as_absent_not_dropped(tmp_path):
+    mod = _load_script()
+    fam, _excl = _view_family_dirs(tmp_path)
+    view = _view_fixture(tmp_path)
+    assert _table_lines(mod.training_losses_table(view, family_dir=fam))[4] == \
+        _TRAINING_ROW_1
+    assert _table_lines(mod.validation_checks_table(view, family_dir=fam))[4] == \
+        _VALIDATION_ROW_1
+
+
+def test_the_training_tables_cover_the_family_csvs_cells_only(tmp_path, capsys):
+    """The running cell (a log, no evaluation) is in the manifest and not in
+    the family CSV: with the family directory it is left out, as every other
+    table leaves it out, and the console names it; without one every manifest
+    cell prints. The malformed spec is skipped either way, with its line."""
+    mod = _load_script()
+    fam, _excl = _view_family_dirs(tmp_path)
+    view = _view_fixture(tmp_path)
+    kept = _table_lines(mod.training_losses_table(view, family_dir=fam))
+    assert len(kept) == 5 and _TRAINING_ROW_3 not in kept
+    out = capsys.readouterr().out
+    assert "[tables] 1 logged spec(s) not tabulated" in out and "[3]" in out, out
+    assert "[tables] view spec 4: no architecture or subset size" in out, out
+    every = _table_lines(mod.training_losses_table(view))
+    # the display order: every untagged subset of an architecture, then its
+    # tagged cells, then the next architecture
+    assert len(every) == 6
+    assert every[3] == _TRAINING_ROW_3 and every[4] == _TRAINING_ROW_2 and \
+        every[5] == _TRAINING_ROW_1
+    assert not any(_cells(ln)[2] == "" for ln in every[2:]), "the malformed spec"
+    out = capsys.readouterr().out
+    assert "logged spec(s) not tabulated" not in out and "view spec 4" in out, out
+    assert mod.family_cells(fam) == {("deep_3x16", 7), ("deep_3x16 [25 cycles]", 7),
+                                     ("deep0_3x16", 12)}
+
+
+def test_an_empty_family_csv_is_refused_by_name(tmp_path):
+    """A header-only CSV would splice empty tables: refused, naming the file."""
+    mod = _load_script()
+    fam = Path(tmp_path) / "empty_family"
+    fam.mkdir()
+    (fam / "holdout_by_pool_3x3_eps.csv").write_text(HEADER + "\n")
+    with pytest.raises(ValueError) as exc:
+        mod.family_cells(fam)
+    assert "holdout_by_pool_3x3_eps.csv" in str(exc.value)
+    with pytest.raises(ValueError):
+        mod.training_losses_table(_view_fixture(tmp_path), family_dir=fam)
+
+
+def test_the_validation_best_epoch_is_the_completed_count_and_the_earliest_on_a_tie(
+        tmp_path):
+    """The log's epoch key is 0-based (a check at log epoch 49 is the 50th
+    completed epoch, the number the report's prose and Epochs column use); on a
+    tie the earliest check is the checkpoint the figures read."""
+    mod = _load_script()
+    rows = [_update(e) for e in range(80)]
+    rows += [_check(e, m) for e, m in ((24, 9.4), (49, 8.24), (74, 8.4))]
+    lines = _table_lines(mod.validation_checks_table(_one_cell_view(tmp_path, rows)))
+    assert lines[2] == "| size | deep_3x16 | 7 | 80 | 9.4, 8.2, 8.4 | 50 |"
+    rows = [_update(e) for e in range(8)]
+    rows += [_check(e, m) for e, m in ((2, 9.4), (6, 8.2), (4, 8.2))]
+    lines = _table_lines(mod.validation_checks_table(_one_cell_view(tmp_path, rows,
+                                                                    "run_tie")))
+    assert lines[2] == "| size | deep_3x16 | 7 | 8 | 9.4, 8.2, 8.2 | 5 |"
+
+
+def test_a_log_without_totals_reads_absent_not_nan(tmp_path):
+    """Rows without a total (a mean of nothing) and a total that overflowed
+    (an infinite mean) both read as absent, never as nan or inf."""
+    mod = _load_script()
+    rows = [_update(e, with_total=False) for e in range(8)]
+    lines = _table_lines(mod.training_losses_table(_one_cell_view(tmp_path, rows)))
+    assert lines[2].startswith("| size | deep_3x16 | 7 | 8 | -- / -- | 3.00e+0 / 6.00e+0 |"), \
+        lines[2]
+    assert "nan" not in lines[2]
+    rows = [_update(e) for e in range(8)]
+    rows[0]["loss"] = float("inf")            # the first window only
+    lines = _table_lines(mod.training_losses_table(_one_cell_view(tmp_path, rows,
+                                                                  "run_inf")))
+    assert lines[2].startswith("| size | deep_3x16 | 7 | 8 | -- / 4.35e+1 | 3.00e+0 / 6.00e+0 |"), \
+        lines[2]
+    assert "inf" not in lines[2]
+
+
+def test_an_anchored_views_cells_carry_the_suites_tag(tmp_path):
+    """A view whose run states ``parent_anchor: true`` is shown ``[anchored]`` by
+    the suite; the tables name its cells the same way, through the suite's own
+    manifest boundary, the tagged arm's cell reading ``[25 cycles, anchored]``."""
+    mod = _load_script()
+    fam, _excl = _view_family_dirs(tmp_path, anchored=True)
+    view = _view_fixture(tmp_path, parent_anchor=True)
+    lines = _table_lines(mod.training_losses_table(view, family_dir=fam))
+    # the style module's display order: an architecture's tagged names sort
+    # after its untagged one and among themselves by tag, alphabetically, so
+    # the two-tag arm's cell precedes the run's own here
+    assert [_cells(ln)[1] for ln in lines[2:]] == [
+        "deep_3x16 [25 cycles, anchored]", "deep_3x16 [anchored]",
+        "deep0_3x16 [anchored]"]
+    assert lines[2].startswith("| 25-cycle arm | deep_3x16 [25 cycles, anchored] | 7 | 3 |")
+    assert lines[3].startswith("| size | deep_3x16 [anchored] | 7 | 8 | 2.55e+1 / 4.35e+1 |")
+
+
+def test_the_suite_is_loaded_once_and_a_failed_load_leaves_no_entry(tmp_path,
+                                                                     monkeypatch):
+    mod = _load_script()
+    suite = mod._suite()
+    assert mod._suite() is suite
+    # a stale entry that is not the suite is replaced, not returned
+    import types
+    monkeypatch.setitem(sys.modules, "make_ablation_arch_figure",
+                        types.ModuleType("make_ablation_arch_figure"))
+    assert callable(mod._suite().collect_training_channel_losses)
+    # a load that raises leaves no half-built module behind
+    bad = Path(tmp_path) / "suite"
+    bad.mkdir()
+    (bad / "make_ablation_arch_figure.py").write_text("raise RuntimeError('boom')\n")
+    monkeypatch.delitem(sys.modules, "make_ablation_arch_figure", raising=False)
+    monkeypatch.setattr(mod, "_HERE", bad)
+    with pytest.raises(RuntimeError):
+        mod._suite()
+    assert "make_ablation_arch_figure" not in sys.modules
+
+
+def test_the_view_is_required_only_when_a_document_carries_a_training_table(tmp_path,
+                                                                             capsys):
+    mod = _load_script()
+    fam, excl = _view_family_dirs(tmp_path)
+    doc_a, doc_b = _documents(tmp_path)
+    # the CSV tables alone: no view needed, as before
+    assert not mod.main(["--family-dir", str(fam), "--excl-dir", str(excl),
+                         "--splice", str(doc_a), str(doc_b)])
+    doc_c = Path(tmp_path) / "REPORT_training.md"
+    doc_c.write_text("# t\n\n" + _marked("training_losses") + "\n"
+                     + _marked("validation_checks"))
+    with pytest.raises(SystemExit):
+        mod.main(["--family-dir", str(fam), "--excl-dir", str(excl), "--splice", str(doc_c)])
+    err = capsys.readouterr().err
+    assert "--view" in err and doc_c.name in err, err
+    assert "PLACEHOLDER" in doc_c.read_text(), "a refused run writes nothing"
+    # one marker alone needs the view as well
+    doc_d = Path(tmp_path) / "SUMMARY_training.md"
+    doc_d.write_text("# s\n\n" + _marked("validation_checks"))
+    with pytest.raises(SystemExit):
+        mod.main(["--family-dir", str(fam), "--excl-dir", str(excl), "--splice", str(doc_d)])
+    assert doc_d.name in capsys.readouterr().err
+    view = _view_fixture(tmp_path)
+    assert not mod.main(["--family-dir", str(fam), "--excl-dir", str(excl),
+                         "--view", str(view), "--splice", str(doc_c), str(doc_d)])
+    out = doc_c.read_text()
+    assert "PLACEHOLDER" not in out
+    assert _TRAINING_ROW_0 in _block_of(out, "training_losses")
+    assert _VALIDATION_ROW_0 in _block_of(out, "validation_checks")
+    assert _TRAINING_ROW_3 not in out
+    assert _VALIDATION_ROW_0 in _block_of(doc_d.read_text(), "validation_checks")
+    printed = capsys.readouterr().out
+    assert "training_losses (3 rows)" in printed and "validation_checks (3 rows)" in printed

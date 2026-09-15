@@ -113,7 +113,7 @@ MANIFEST: Tuple[Entry, ...] = (
           "xcquinox/alec/config.py", 579, 592,
           ("zero_init_final_layer=True", "num_heads=4", )),
     Entry(6, 4, "the registry entry deep_cusp_mgga_3x16",
-          "xcquinox/alec/config.py", 670, 674,
+          "xcquinox/alec/config.py", 691, 695,
           ("deep_cusp_mgga_3x16", )),
     Entry(6, 5, "from_spec: the fields an entry sets",
           "xcquinox/alec/config.py", 385, 470,

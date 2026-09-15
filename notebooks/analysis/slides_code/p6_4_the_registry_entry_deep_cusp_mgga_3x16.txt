@@ -1,4 +1,4 @@
-# xcquinox/alec/config.py:670-674
+# xcquinox/alec/config.py:691-695
     "deep_cusp_mgga_3x16":      ArchitectureConfig.from_spec("deep_cusp_mgga_3x16",     3, 16,
                               descriptors=["cusp", "metagga"], meta_gga=True,
                               dm_entropy_intensive=True,
