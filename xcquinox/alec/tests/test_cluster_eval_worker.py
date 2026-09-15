@@ -1034,3 +1034,85 @@ def test_non_empty_post_split_reaction_set_still_evaluates(run_dir, monkeypatch,
     assert not os.path.exists(os.path.join(chan, "failure.json"))
     with open(os.path.join(chan, "eval_metadata.json")) as f:
         assert json.load(f)["n_reactions"] == 1
+
+
+# ---------------------------------------------------------------------------
+# A channel directory holds the output of its last pass only (2026-09-15)
+# ---------------------------------------------------------------------------
+
+def test_run_held_out_eval_clears_the_earlier_pass_outputs(run_dir, monkeypatch):
+    """A channel directory holds the output of the last pass that ENDED. A pass
+    run again over a written channel (the repair job re-evaluating a cell whose
+    tables were NaN throughout, 2026-09-15) removes the earlier failure record
+    and slice mark when it starts and, when it fails, the earlier tables and
+    stamp before it writes its own failure.json, so the cell reads as
+    unevaluated instead of keeping the tables it was meant to replace (its own
+    slice mark, when it slices, survives its failure: the sliced-channel tests
+    above); a succeeding re-run leaves no earlier failure.json beside its
+    tables; and a pass killed mid-way (a scheduler signal, not an exception the
+    pass handles) leaves the earlier tables and stamp standing, because hours
+    of a valid evaluation must not be lost to a kill of its replacement."""
+    from types import SimpleNamespace
+    spec = _full_mode_spec()
+    ckpt_dir = _write_model(run_dir, 0)
+    cfg = SimpleNamespace(cluster=SimpleNamespace(eval_workers=1),
+                          held_out_strict=False)
+
+    import xcquinox.alec.eval_holdout as eh
+    import xcquinox.alec.full_benchmark_pools as fbp
+    monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
+    monkeypatch.setattr(fbp, "load_full_held_out_pools",
+                        lambda basis=None, grid_level=None: ({}, []))
+    monkeypatch.setattr(ev, "_held_out_basis_grid",
+                        lambda cfg: ("sto-3g", 1))
+    model_path = os.path.join(ckpt_dir, "model.eqx")
+    chan = os.path.join(ckpt_dir, "eval_holdout")
+    os.makedirs(chan)
+    assert set(ev.PASS_OUTPUTS) == {
+        "test_set.csv", "per_molecule.json", "per_reaction.json",
+        "eval_metadata.json", "sliced_eval.json", "failure.json"}
+
+    def _stale_all():
+        for name in ev.PASS_OUTPUTS:
+            with open(os.path.join(chan, name), "w") as f:
+                f.write("stale")
+
+    # a pass killed while it runs keeps the earlier tables and stamp, drops
+    # the earlier failure record and slice mark, and writes no failure
+    # record of its own
+    _stale_all()
+
+    def _killed(ts, mp):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(eh, "load_trained_model", _killed)
+    with pytest.raises(KeyboardInterrupt):
+        ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir, model_path, spec,
+                              holdout_subdir="eval_holdout", channel=None)
+    assert sorted(os.listdir(chan)) == [
+        "eval_metadata.json", "per_molecule.json", "per_reaction.json",
+        "test_set.csv"]
+    monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
+
+    # a failing pass ends with its failure.json alone
+    _stale_all()
+
+    def _boom(**kw):
+        raise RuntimeError("synthetic eval failure")
+    monkeypatch.setattr(eh, "run_full_holdout_eval", _boom)
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir, model_path, spec,
+                          holdout_subdir="eval_holdout", channel=None)
+    assert sorted(os.listdir(chan)) == ["failure.json"]
+    with open(os.path.join(chan, "failure.json")) as f:
+        assert json.load(f)["exception_message"] == "synthetic eval failure"
+
+    # a succeeding pass ends with its tables and stamp, no failure.json
+    def _ok(**kw):
+        with open(os.path.join(kw["out_dir"], "per_reaction.json"), "w") as f:
+            f.write("[]")
+        return {"n_reactions": 0, "n_species": 0, "n_dropped_nan": 0,
+                "n_dropped_overlap": 0}
+    monkeypatch.setattr(eh, "run_full_holdout_eval", _ok)
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir, model_path, spec,
+                          holdout_subdir="eval_holdout", channel=None)
+    assert sorted(os.listdir(chan)) == ["eval_metadata.json",
+                                        "per_reaction.json"]

@@ -270,3 +270,52 @@ def test_generate_one_stamps_and_regenerates_on_df_mismatch(tmp_path,
     assert len(calls) > n_calls
     with np.load(tmp_path / "H2O.npz", allow_pickle=False) as z:
         assert bool(z["density_fit_used"]) is True
+
+
+def test_the_final_npz_writer_refuses_a_key_outside_its_declared_set(tmp_path):
+    """Every key a final reference npz may carry is declared in ``NPZ_KEYS``, the
+    set the loader's whitelist is checked against; a key written without being
+    declared would be a reference no evaluation reads (2026-09-15), so the one
+    writer of final files, the atomic save itself, refuses it."""
+    ok = tmp_path / "ok.npz"
+    br._atomic_savez(ok, rho_ref_grid=np.zeros(3),
+                     t1_diagnostic=np.array(0.01), ccsd_converged=np.array(True))
+    with np.load(ok, allow_pickle=False) as z:
+        assert set(z.files) == {"rho_ref_grid", "t1_diagnostic",
+                                "ccsd_converged"}
+    with pytest.raises(RuntimeError, match="bogus"):
+        br._atomic_savez(tmp_path / "bad.npz", rho_ref_grid=np.zeros(3),
+                         bogus=np.zeros(1))
+    assert not (tmp_path / "bad.npz").exists()
+    assert not list(tmp_path.glob("tmp*.npz"))
+
+
+def test_the_t1_backfill_refuses_to_carry_an_undeclared_key_forward(
+        tmp_path, monkeypatch):
+    """The backfill branch rewrites a complete file with every existing array
+    plus the T1 key; a file carrying a key the writer does not declare is
+    refused rather than copied forward (the branch that rewrote every
+    reference on 2026-09-11 and 2026-09-12)."""
+    calls = []
+    _fake_stages(monkeypatch, calls)
+    ms = _ms()
+    final = tmp_path / "H2O.npz"
+    assert br.generate_one(ms, out_dir=tmp_path, basis="def2-svp",
+                           grid_level=2) == "OK"
+    with np.load(final, allow_pickle=False) as z:
+        arrays = {k: np.array(z[k]) for k in z.files}
+    np.savez_compressed(final, bogus=np.zeros(1), **arrays)
+
+    def fake_ccsd_t1(spec, atoms, *, scf_payload, cache_dir, basis, grid_level,
+                     density_fit=False, auxbasis=None,
+                     orientation_lock_strength=0.0, require_t1=False):
+        return {"rho_ref_grid": np.array([1.0, 2.0, 3.0, 4.0]),
+                "grid_weights": np.ones(4), "ao_grid": np.zeros((4, 2)),
+                "dm_ao": np.eye(2), "t1_diagnostic": 0.021}
+    monkeypatch.setattr(br, "run_ccsd_with_cache", fake_ccsd_t1)
+    with pytest.raises(RuntimeError, match="bogus"):
+        br.generate_one(ms, out_dir=tmp_path, basis="def2-svp", grid_level=2,
+                        t1_backfill=True)
+    with np.load(final, allow_pickle=False) as z:
+        assert "t1_diagnostic" not in z.files
+        assert "bogus" in z.files

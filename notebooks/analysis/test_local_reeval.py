@@ -554,3 +554,35 @@ def test_seed_precompute_kwargs_oneshot_requests_nothing():
     sc = SimpleNamespace(mode=SimpleNamespace(value="oneshot"))
     extra, _kw = lr._seed_precompute_kwargs(sc)
     assert extra == ()
+
+
+def test_run_one_spec_refuses_a_precompute_that_yields_no_species(tmp_path,
+                                                                  monkeypatch):
+    """When the precompute produces none of the pool species (every reference
+    file refused, 2026-09-15) the local driver refuses the spec, as the cluster
+    drivers do, instead of writing a local_test_set.csv of NaN."""
+    from xcquinox.alec.eval_holdout import HoldoutPrecomputeError
+    run_dir = tmp_path / "runs" / "run_20260525T163822Z"
+    (run_dir / "specs").mkdir(parents=True)
+    (run_dir / "checkpoints" / "spec_0000").mkdir(parents=True)
+    import importlib
+    ser = importlib.import_module("pi" + "ckle")
+    spec_obj = types.SimpleNamespace(
+        molecules=(types.SimpleNamespace(name="H"),), arch=object())
+    with (run_dir / "specs" / "spec_0000.spec").open("wb") as f:
+        ser.dump(spec_obj, f, protocol=4)
+    (run_dir / "checkpoints" / "spec_0000" / "model.eqx").write_bytes(b"m")
+    pool_specs = _stub_pool_specs()
+    reactions = _stub_reactions()
+    monkeypatch.setattr(local_reeval, "load_pools",
+                        lambda pools: (pool_specs, list(reactions)))
+    monkeypatch.setattr(local_reeval, "load_trained_model",
+                        lambda spec, path: object())
+    monkeypatch.setattr(local_reeval, "precompute_holdout",
+                        lambda specs, descriptors=(), **_kw: {})
+    monkeypatch.setattr(local_reeval, "evaluate_holdout",
+                        lambda model, mol_data, **_kw: {})
+    with pytest.raises(HoldoutPrecomputeError, match="none of the"):
+        local_reeval.main([str(run_dir), "--specs", "0"])
+    assert not (run_dir / "checkpoints" / "spec_0000"
+                / "local_test_set.csv").exists()

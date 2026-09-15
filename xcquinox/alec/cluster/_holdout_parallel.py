@@ -159,6 +159,10 @@ def run_holdout_with_escalation(
 
     energies, pbe_energies, mol_records = eval_holdout.merge_holdout_shards(
         shard_payloads)
+    # No tier precomputed a single species (every reference file refused,
+    # 2026-09-15): refused here, at the whole-pool boundary, before any table
+    # is written; a species lost in every tier stays a named drop below.
+    eval_holdout.require_precomputed_species(mol_records, full_specs)
     # Every tier (workers + the serial sweep) has now had a go; a species still
     # non-finite is accepted with its last payload, but is NAMED so the operator
     # sees it instead of a silent NaN column in per_molecule.json.

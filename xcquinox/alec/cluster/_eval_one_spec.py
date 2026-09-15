@@ -354,6 +354,38 @@ def _test_slice_reactions(reactions, training_spec):
     return test
 
 
+#: What one held-out pass writes into its channel directory: the three tables
+#: and the stamp on success, the slice mark when a slice is named, the failure
+#: record on an exception. A channel directory holds the output of the last
+#: pass that ENDED (2026-09-15). When a pass starts it removes the earlier
+#: pass's failure record and slice mark (it rewrites the mark itself, before
+#: any energy is computed, when it slices); when it fails it removes the
+#: tables and the stamp before writing its own ``failure.json``, so a
+#: re-evaluation that fails cannot leave the tables it was meant to replace
+#: standing as an evaluated cell, while its own slice mark stays, as the mark
+#: of a failed sliced evaluation must; a pass that succeeds overwrites the
+#: tables and the stamp and leaves no earlier ``failure.json`` beside them.
+#: The tables are never removed when a pass starts: a pass killed mid-way by
+#: the scheduler leaves the earlier tables and stamp as they were (the stamp
+#: carries the slice, so a sliced channel stays refused), since hours of a
+#: valid evaluation must not be lost to a kill of its replacement. The
+#: ``_shards`` scratch is not listed: the parallel driver consumes only the
+#: shard files its own invocation writes.
+_CLEARED_AT_START = ("failure.json", "sliced_eval.json")
+_CLEARED_ON_FAILURE = ("test_set.csv", "per_molecule.json",
+                       "per_reaction.json", "eval_metadata.json")
+PASS_OUTPUTS = _CLEARED_ON_FAILURE + _CLEARED_AT_START
+
+
+def _clear_pass_outputs(holdout_dir, names) -> None:
+    """Remove the named outputs of an earlier pass from ``holdout_dir`` (a
+    channel directory that does not exist yet is left alone)."""
+    for name in names:
+        path = os.path.join(str(holdout_dir), name)
+        if os.path.isfile(path):
+            os.unlink(path)
+
+
 def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                        training_spec, holdout_subdir="eval_holdout",
                        channel=None) -> None:
@@ -394,6 +426,9 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         from xcquinox.alec.parallel import detect_available_cpus
 
         holdout_dir = _Path(checkpoint_dir) / holdout_subdir
+        # an earlier pass's failure record and slice mark do not outlive this
+        # pass's start; its tables do, until this pass ends (PASS_OUTPUTS)
+        _clear_pass_outputs(holdout_dir, _CLEARED_AT_START)
         model_name = os.path.basename(model_path)
         _log(idx, f"starting full-pool held-out eval (BH76 + W4-11) "
                   f"[{model_name} -> {holdout_subdir}]")
@@ -512,6 +547,10 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         from pathlib import Path as _Path
         holdout_dir = _Path(checkpoint_dir) / holdout_subdir
         holdout_dir.mkdir(parents=True, exist_ok=True)
+        # the failed pass's record stands with its slice mark alone: no table
+        # of an earlier pass (or a partial one of this pass) beside it reads
+        # as an evaluated cell
+        _clear_pass_outputs(holdout_dir, _CLEARED_ON_FAILURE)
         with (holdout_dir / "failure.json").open("w") as f:
             json.dump({
                 "kind": "held_out_eval_failure",

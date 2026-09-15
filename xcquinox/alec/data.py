@@ -64,6 +64,13 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     # SolverConfig; the demo threads one shared constant to ref-gen + eval so
     # they match. Tolerated here so the loader does not reject a locked ref.
     "orientation_lock_strength",
+    # The CCSD T1 diagnostic the benchmark-references backfill (2026-09-07,
+    # benchmark_refs) stores beside the density; read into the run-level
+    # t1_diagnostics.json by write_t1_diagnostics, informational to this
+    # loader. It was absent from this set until 2026-09-15: every held-out
+    # evaluation run after the backfill refused every reference file and
+    # wrote tables of NaN (two cells of the v7 campaign).
+    "t1_diagnostic",
     # CCSD-convergence provenance stamp (True by construction where present:
     # external_refs._require_ccsd_converged refuses an unconverged solve
     # before any write). Absent on refs generated before the check.
@@ -104,7 +111,7 @@ def _load_external_data(
         present = set(npz.files)
         unknown = present - _ALLOWED_EXTERNAL_KEYS
         if unknown:
-            raise ValueError(
+            raise ExternalDataSchemaError(
                 f"external_data .npz for {mol_name!r} contains unknown "
                 f"keys {sorted(unknown)}; allowed keys: "
                 f"{sorted(_ALLOWED_EXTERNAL_KEYS)}"
@@ -336,6 +343,18 @@ class MoleculeData(TypedDict, total=True):
 
 _PRECOMPUTE_CACHE: dict = {}
 _PRECOMPUTE_CACHE_ENABLED: bool = True
+
+
+class ExternalDataSchemaError(ValueError):
+    """A reference ``.npz`` carries a key this loader does not know.
+
+    A property of the reference SET, not of one species: the files are written
+    by one generator, so one unknown key means every file of that generation is
+    unreadable here (the writer and the loader disagree). Raised at the first
+    such file so a held-out evaluation stops instead of dropping species one by
+    one and writing tables of NaN (2026-09-15). A ``ValueError`` still, for the
+    callers that catch that.
+    """
 
 
 class ReferenceSCFNotConverged(RuntimeError):

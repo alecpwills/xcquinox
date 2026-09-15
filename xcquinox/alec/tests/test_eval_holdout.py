@@ -1334,3 +1334,85 @@ def test_assert_channel_not_sliced_refuses_a_marker_with_an_empty_slice(
     with pytest.raises(eh.SlicedChannelError) as exc:
         eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
     assert "unknown" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# A reference-set schema error and an empty precompute are refused (2026-09-15)
+# ---------------------------------------------------------------------------
+
+def test_precompute_holdout_raises_on_a_reference_schema_error(monkeypatch):
+    """A reference file the loader refuses (an unknown key) is a schema error of
+    the whole reference set, not a per-species failure: the precompute stops at
+    the first such species instead of dropping every species and evaluating on
+    none (the NaN tables of 2026-09-15)."""
+    import xcquinox.alec as alec
+    from types import SimpleNamespace
+    from xcquinox.alec import eval_holdout as eh
+    from xcquinox.alec.data import ExternalDataSchemaError
+
+    def _refuse(spec, **kw):
+        raise ExternalDataSchemaError(
+            f"external_data .npz for {spec.name!r} contains unknown keys ['t1_diagnostic']")
+    monkeypatch.setattr(alec, "precompute_fixed_density_data", _refuse)
+    specs = {"h2o": SimpleNamespace(name="h2o"), "bn": SimpleNamespace(name="bn")}
+    with pytest.raises(ExternalDataSchemaError, match="t1_diagnostic"):
+        eh.precompute_holdout(specs)
+
+
+def test_precompute_holdout_still_skips_a_species_that_fails_numerically(monkeypatch):
+    """A per-species failure (an SCF that does not converge) is dropped with its
+    line, as before; only the schema error stops the sweep."""
+    import xcquinox.alec as alec
+    from types import SimpleNamespace
+    from xcquinox.alec import eval_holdout as eh
+
+    def _fail_bn(spec, **kw):
+        if spec.name == "bn":
+            raise RuntimeError("SCF did not converge")
+        return {"name": spec.name}
+    monkeypatch.setattr(alec, "precompute_fixed_density_data", _fail_bn)
+    specs = {"h2o": SimpleNamespace(name="h2o"), "bn": SimpleNamespace(name="bn")}
+    assert set(eh.precompute_holdout(specs)) == {"h2o"}
+
+
+def test_require_precomputed_species_counts_the_request():
+    """The refusal names the request size; a partial precompute and an empty
+    request pass (the per-species drops the tables record stay tolerated)."""
+    with pytest.raises(eh.HoldoutPrecomputeError, match="none of the 2"):
+        eh.require_precomputed_species([], {"h2o": object(), "bn": object()})
+    eh.require_precomputed_species([{"molecule": "h2o"}],
+                                   {"h2o": object(), "bn": object()})
+    eh.require_precomputed_species([], {})
+
+
+def test_an_evaluation_with_no_precomputed_species_is_refused(tmp_path, monkeypatch):
+    """When every requested species failed to precompute there is nothing to
+    evaluate: the whole-pool driver refuses with the count before any table is
+    written, instead of writing tables of NaN that read as an evaluated cell (a
+    cell of the v7 25-cycle arm on 2026-09-15, after the precompute had refused
+    every reference file)."""
+    monkeypatch.setattr(eh, "precompute_holdout", lambda specs, **kw: {})
+    monkeypatch.setattr(eh, "evaluate_holdout", lambda model, md, **kw: {})
+    mol_specs = {"h2": _FakeMol("h2"), "h": _FakeMol("h")}
+    out_dir = tmp_path / "eval_holdout"
+    with pytest.raises(eh.HoldoutPrecomputeError, match="none of the 2"):
+        run_full_holdout_eval(_FakeSpec(), object(), mol_specs, [], out_dir)
+    assert not (out_dir / "per_reaction.json").exists()
+    assert not (out_dir / "test_set.csv").exists()
+
+
+def test_a_leftover_species_whose_precompute_yields_nothing_is_not_refused(
+        monkeypatch):
+    """The per-molecule stage is what the parallel driver's serial leftover tier
+    calls on the species the worker tiers left behind, routinely one stubborn
+    species: an empty precompute there is that species' drop, not the pool's,
+    and raises nothing. The refusal belongs to the whole-pool drivers alone; a
+    raise here would turn one lost species into a serial re-run of the whole
+    pool through the orchestrator's fallback."""
+    monkeypatch.setattr(eh, "precompute_holdout", lambda specs, **kw: {})
+    monkeypatch.setattr(eh, "evaluate_holdout", lambda model, md, **kw: {})
+    per = eh.compute_holdout_per_molecule(_FakeSpec(), object(),
+                                          {"c2": _FakeMol("c2")})
+    assert per["energies"] == {}
+    assert per["mol_records"] == []
+    assert per["n_species"] == 0

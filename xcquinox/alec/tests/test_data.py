@@ -2669,3 +2669,50 @@ def test_precompute_memo_keys_on_the_minao_flag():
     plain_again = precompute_fixed_density_data(h_atom())
     assert plain_again is plain
     clear_precompute_cache()
+
+
+# ---------------------------------------------------------------------------
+# The benchmark references' T1 key and the loader's schema error (2026-09-15)
+# ---------------------------------------------------------------------------
+
+def test_load_external_data_accepts_the_t1_diagnostic_key(tmp_path):
+    """The CCSD T1 diagnostic the benchmark-references backfill stores beside the
+    density (2026-09-07) is an allowed, informational key: a backfilled reference
+    loads. With the key absent from the set, every held-out evaluation run after
+    the backfill refused every reference file and wrote NaN tables (2026-09-15)."""
+    from xcquinox.alec.data import _ALLOWED_EXTERNAL_KEYS, _load_external_data
+    assert "t1_diagnostic" in _ALLOWED_EXTERNAL_KEYS
+    path = str(tmp_path / "t1.npz")
+    np.savez(path, rho_ref_grid=np.zeros(5), t1_diagnostic=np.array(0.031))
+    got = _load_external_data(
+        path, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
+        vxc_pbe_shape=(2, 2), mol_name="H2",
+    )
+    assert got[1] is not None  # rho_ref_grid loaded
+
+
+def test_every_key_the_benchmark_writer_stores_is_allowed_by_the_loader():
+    """The reference writer declares every key it may store (``NPZ_KEYS``: the
+    density block, the CCSD-convergence stamp, the T1 diagnostic) and refuses to
+    write outside that set; the loader's whitelist must cover it. A key the
+    writer adds without the loader is a reference no evaluation reads (the T1
+    key, from the backfill of 2026-09-07 to 2026-09-15)."""
+    from xcquinox.alec import benchmark_refs
+    from xcquinox.alec.data import _ALLOWED_EXTERNAL_KEYS
+    assert benchmark_refs._DENSITY_NPZ_KEYS <= benchmark_refs.NPZ_KEYS
+    assert {"ccsd_converged", "t1_diagnostic"} <= benchmark_refs.NPZ_KEYS
+    assert benchmark_refs.NPZ_KEYS <= _ALLOWED_EXTERNAL_KEYS
+
+
+def test_unknown_keys_raise_the_schema_error(tmp_path):
+    """An unknown key is a schema error of the reference set, a ValueError subclass
+    a caller can tell from a per-species numerical failure."""
+    from xcquinox.alec.data import ExternalDataSchemaError, _load_external_data
+    assert issubclass(ExternalDataSchemaError, ValueError)
+    path = str(tmp_path / "bad.npz")
+    np.savez(path, rho_ref_grid=np.zeros(5), bogus=np.zeros(3))
+    with pytest.raises(ExternalDataSchemaError, match="unknown keys"):
+        _load_external_data(
+            path, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
+            vxc_pbe_shape=(2, 2), mol_name="H2",
+        )

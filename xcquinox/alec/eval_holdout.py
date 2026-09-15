@@ -646,6 +646,32 @@ def make_per_reaction_records(
 # Side-effectful: PBE precompute + NN forward
 # ---------------------------------------------------------------------------
 
+class HoldoutPrecomputeError(RuntimeError):
+    """The held-out precompute produced no species: nothing to evaluate."""
+
+
+def require_precomputed_species(precomputed, requested) -> None:
+    """Refuse a whole-pool evaluation whose precompute produced none of the
+    requested species: written out, its tables would read as an evaluated
+    cell whose every reaction is NaN (a cell of the v7 25-cycle arm on
+    2026-09-15, after the precompute had refused every reference file).
+    ``precomputed`` and ``requested`` are sized containers (the per-molecule
+    records and the species specs). The check belongs to the drivers that
+    evaluate a whole pool (:func:`run_full_holdout_eval`, the parallel
+    orchestrator, the local re-evaluation script), never to the per-molecule
+    stage: the orchestrator's serial leftover tier calls that stage on the
+    species the worker tiers left behind, routinely one stubborn species, and
+    an empty precompute there is that species' drop, not the pool's. The
+    per-species drops the tables record stay tolerated; only a total loss is
+    refused."""
+    if len(requested) and not len(precomputed):
+        raise HoldoutPrecomputeError(
+            f"the held-out precompute produced none of the {len(requested)} "
+            "requested species (every one failed; the FAILED lines above name "
+            "the reasons): the evaluation is refused rather than written as "
+            "tables of NaN")
+
+
 def precompute_holdout(
     mol_specs: Dict[str, Any],
     descriptors: Sequence[Any] = (),
@@ -687,6 +713,11 @@ def precompute_holdout(
                 orientation_lock_strength=orientation_lock_strength,
                 seed_source=seed_source, seed_cache_dir=seed_cache_dir,
                 seed_density_fit=seed_density_fit)
+        except alec.data.ExternalDataSchemaError:
+            # one reference the loader cannot read means the whole set is
+            # written by another schema: stop here, named, instead of
+            # dropping every species and evaluating on none (2026-09-15)
+            raise
         except Exception as exc:  # noqa: BLE001
             print(f"  [precompute {i}/{n}] {name}: FAILED ({exc})",
                   flush=True)
@@ -1214,6 +1245,7 @@ def run_full_holdout_eval(
         strict = os.environ.get("XCQUINOX_HELDOUT_STRICT") == "1"
     per = compute_holdout_per_molecule(
         training_spec, model, mol_specs, mol_data=mol_data)
+    require_precomputed_species(per["mol_records"], mol_specs)
     excl, key_map = trained_reaction_exclusion(training_spec, mol_specs)
     return _finalize_holdout_outputs(
         reactions, per["energies"], per["pbe_energies"], per["mol_records"],

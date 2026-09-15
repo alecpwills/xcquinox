@@ -90,6 +90,7 @@ from xcquinox.alec.eval_holdout import (  # noqa: E402
     evaluate_holdout,
     arch_polarized_flag,
     load_trained_model,
+    require_precomputed_species,
 )
 from xcquinox.alec.eval_holdout import (  # noqa: E402
     write_test_set_csv as _write_test_set_csv,
@@ -351,6 +352,9 @@ def run_one_spec(
     mol_data = precompute_holdout(
         pool_specs, descriptors=descriptors,
         required_keys=extra_required, **seed_kwargs)
+    # a precompute that produced no species is refused, as the cluster
+    # drivers refuse it, rather than written as a table of NaN (2026-09-15)
+    require_precomputed_species(mol_data, pool_specs)
 
     # 2026-05-29: pass training_spec.solver_config so eval matches the
     # training V_xc / density supervision domain (full_3 → 3-iter SCF;

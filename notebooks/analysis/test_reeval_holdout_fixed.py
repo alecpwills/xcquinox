@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import pytest
+
 _HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location(
     "reeval_holdout_fixed", _HERE / "reeval_holdout_fixed.py")
@@ -36,6 +38,27 @@ def _make_run(root: Path, trained=(0, 1, 2), untrained=(3,)) -> Path:
         if i in trained:
             (sd / "model.eqx").write_bytes(b"x")
     return run_dir
+
+
+def test_real_eval_fn_refuses_a_precompute_that_yields_no_species(tmp_path,
+                                                                    monkeypatch):
+    """The driver's real evaluation seam is ``run_full_holdout_eval``: a shared
+    precompute that produced none of the pool species is refused there
+    (2026-09-15) and the refusal reaches ``run``, which records the spec as
+    failed, instead of a NaN table being stamped as re-evaluated."""
+    import xcquinox.alec.eval_holdout as eh
+    from types import SimpleNamespace
+    monkeypatch.setattr(eh, "evaluate_holdout", lambda model, md, **kw: {})
+    spec = SimpleNamespace(
+        molecules=(),
+        arch=SimpleNamespace(use_polarized_correlation=False,
+                             materialize_descriptors=lambda: ()),
+        solver_config=SimpleNamespace(
+            mode=SimpleNamespace(value="full", name="FULL")))
+    with pytest.raises(eh.HoldoutPrecomputeError, match="none of the 1"):
+        rh._real_eval_fn(spec, object(), {"h": object()}, [],
+                         tmp_path / "eval_holdout", mol_data={})
+    assert not (tmp_path / "eval_holdout" / "per_reaction.json").exists()
 
 
 def _stub_inject(calls: list, precompute_calls: Optional[list] = None):

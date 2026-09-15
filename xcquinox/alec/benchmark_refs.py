@@ -71,6 +71,16 @@ _DENSITY_NPZ_KEYS: frozenset = frozenset(
      "ref_density_method", "grid_level_used", "basis_used",
      "orientation_lock_strength", "density_fit_used"})
 
+#: Every key a final reference npz may carry: the density block above plus
+#: the two optional stamps (the CCSD-convergence provenance and the T1
+#: diagnostic). The loader's whitelist (data._ALLOWED_EXTERNAL_KEYS) must
+#: cover this set, and _atomic_savez refuses a key outside it, so a key added
+#: to the writer without being declared here fails at write time rather than
+#: as a reference no evaluation reads: the T1 key, stored by the backfill of
+#: 2026-09-07 and absent from the loader's set until 2026-09-15, made every
+#: held-out evaluation run after the backfill refuse every reference file.
+NPZ_KEYS: frozenset = _DENSITY_NPZ_KEYS | {"ccsd_converged", "t1_diagnostic"}
+
 
 def _mol_spec_to_atoms(ms: MoleculeSpec):
     """Inverse of ``spec_builder.atoms_to_pyscf_str``: parse the pyscf atom
@@ -97,9 +107,19 @@ def _atomic_savez(path, **arrays) -> None:
     """Atomic + durable npz write: tempfile -> fsync file -> ``os.replace``
     -> fsync dir, mirroring ``run_scf_with_cache`` (EXTREF-04). An
     interrupted write can never leave a partial final npz that a later
-    run would treat as a complete reference."""
+    run would treat as a complete reference. The one writer of final
+    reference files, and it refuses any key outside ``NPZ_KEYS`` (the set
+    the loader's whitelist is held to), so no write path can carry an
+    undeclared key into a reference."""
     import tempfile
 
+    undeclared = sorted(set(arrays) - NPZ_KEYS)
+    if undeclared:
+        raise RuntimeError(
+            f"refusing to write {Path(path).name}: keys {undeclared} are not "
+            f"declared in benchmark_refs.NPZ_KEYS (declared: "
+            f"{sorted(NPZ_KEYS)}); a key the loader does not know makes the "
+            "file unreadable to every held-out evaluation")
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), suffix=".npz")

@@ -903,3 +903,49 @@ def test_escalation_passes_aliased_training_names_to_finalize(
     assert "hcn" in names_cf, (
         f"pool alias 'hcn' of trained 'CHN' missing from the annotation "
         f"names: {sorted(names_cf)}")
+
+
+# ---------------------------------------------------------------------------
+# A pool with no precomputed species is refused at the whole-pool boundary
+# (2026-09-15)
+# ---------------------------------------------------------------------------
+
+def _empty_serial(training_spec, model, subset):
+    return {"energies": {}, "pbe_energies": {}, "mol_records": []}
+
+
+def test_escalation_refuses_a_pool_with_no_precomputed_species(tmp_path,
+                                                                monkeypatch):
+    """Every worker tier fails and the serial sweep precomputes nothing (every
+    reference file refused, 2026-09-15): the pass is refused before any table is
+    written, instead of finishing as tables of NaN that read as an evaluated
+    cell."""
+    from xcquinox.alec.cluster import _holdout_parallel as hp
+    full_specs = {n: object() for n in ("a", "b", "c")}
+    monkeypatch.setattr(par, "run_workers",
+                        _make_fake_run_workers(lambda call_no, names: False))
+    monkeypatch.setattr(eh, "compute_holdout_per_molecule", _empty_serial)
+    out_dir = tmp_path / "eval_holdout"
+    with pytest.raises(eh.HoldoutPrecomputeError, match="none of the 3"):
+        hp.run_holdout_with_escalation(
+            "/run", 0, _FakeSpec(), object(), [], full_specs, out_dir,
+            basis="def2-svp", grid_level=1, n_workers_top=4, total_cpus=4)
+    assert not (out_dir / "per_reaction.json").exists()
+    assert not (out_dir / "test_set.csv").exists()
+
+
+def test_escalation_keeps_a_pool_that_lost_one_species(tmp_path, monkeypatch):
+    """One species lost in every tier and precomputing nothing in the serial
+    sweep (the shape-mismatch c2 of the v3 runs) is a drop, as before: the pool
+    finishes without it and nothing is refused."""
+    from xcquinox.alec.cluster import _holdout_parallel as hp
+    full_specs = {n: object() for n in ("a", "b", "c")}
+    monkeypatch.setattr(par, "run_workers", _make_fake_run_workers(
+        lambda call_no, names: names != ["c"]))
+    monkeypatch.setattr(eh, "compute_holdout_per_molecule", _empty_serial)
+    out_dir = tmp_path / "eval_holdout"
+    summary = hp.run_holdout_with_escalation(
+        "/run", 0, _FakeSpec(), object(), [], full_specs, out_dir,
+        basis="def2-svp", grid_level=1, n_workers_top=4, total_cpus=4)
+    assert _molecules_in_per_molecule_json(out_dir) == {"a", "b"}
+    assert summary["n_species"] == 3
