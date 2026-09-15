@@ -182,12 +182,13 @@ def discover_pulled_categories(local_root: Path) -> Dict[str, Path]:
     return {cat: rd for cat, (_, rd) in out.items()}
 
 
-def _run_protocol_tag(run_dir: Path) -> Optional[str]:
+def run_protocol_tag(run_dir: Path) -> Optional[str]:
     """The run-level protocol tag: ``"anchored"`` when the run's
     ``resolved_config.yaml`` states ``parent_anchor: true`` (the v6 runs; the
     anchor zeroes the last layer at run time, so the registry key alone would
     misname the network), else ``None``. Line-parsed, as the other readers of
-    that file are."""
+    that file are. Public: every figure script that names a run's cells reads
+    the tag through this one function (``trained_fx_fc.py`` does)."""
     cfg = run_dir / "resolved_config.yaml"
     if not cfg.is_file():
         return None
@@ -201,6 +202,21 @@ def _run_protocol_tag(run_dir: Path) -> Optional[str]:
                 return "anchored"
             return None
     return None
+
+
+#: the name the module's own callers and tests used before the function was
+#: published (2026-09-15); one implementation
+_run_protocol_tag = run_protocol_tag
+
+
+def cell_protocol(cell: Dict[str, Any], run_tag: Optional[str]) -> Optional[str]:
+    """The protocol tag a cell is shown under: the cell's own (a merged family
+    view writes an arm's training protocol into the cell, ``"25 cycles"``)
+    and the run's (``"anchored"``, :func:`_run_protocol_tag`), joined with a
+    comma; ``None`` when the cell carries neither. The one composition every
+    figure script applies, so a cell has one shown name everywhere."""
+    tags = [t for t in (cell.get("protocol"), run_tag) if t]
+    return ", ".join(str(t) for t in tags) if tags else None
 
 
 def _read_manifest_cells(run_dir: Path) -> Dict[int, Dict[str, Any]]:
@@ -231,10 +247,9 @@ def _read_manifest_cells(run_dir: Path) -> Dict[int, Dict[str, Any]]:
             cell = dict(cell)
             stored = cell.get("arch")
             if stored is not None:
-                tags = [t for t in (cell.get("protocol"), run_tag) if t]
                 cell["arch_stored"] = str(stored)
                 cell["arch"] = display_name(
-                    str(stored), protocol=", ".join(tags) if tags else None)
+                    str(stored), protocol=cell_protocol(cell, run_tag))
             cells[idx] = cell
     return cells
 

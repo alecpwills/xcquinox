@@ -38,12 +38,13 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import re
 import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -67,6 +68,92 @@ _IDENTITY_KEYS = ("basis:", "density_fit:", "grid_level:", "parent_anchor:",
 _EVAL_CHANNELS = ("eval_holdout", "eval_holdout_val_best", "eval_holdout_converged",
                   "eval_holdout_converged_val_best")
 _SPEC_DIR = re.compile(r"^spec_(\d{4})$")
+#: the run-level CCSD T1 table the benchmark-references backfill writes; the
+#: figure suite reads it beside a run's manifest for the model-free
+#: ``_excl_t1`` variant, so the view carries one (``_carry_t1_table``)
+_T1_FILE = "t1_diagnostics.json"
+#: two tables of one production identity state one diagnostic per species: a
+#: difference beyond this is a disagreement, not rounding (the two tables on
+#: disk on 2026-09-15 are byte-identical; a value re-derived from the same
+#: CCSD amplitudes agrees to far below this)
+_T1_TOLERANCE = 1e-9
+
+
+def _t1_species_key(name) -> str:
+    """The key the suite's reader compares species under (its ``_mol_cf``: the
+    casefolded name, since the pools spell one molecule in two cases)."""
+    return str(name).casefold()
+
+
+def _t1_values(run: Path, category: str, table: dict) -> Dict[str, float]:
+    values: Dict[str, float] = {}
+    for name, v in (table.get("t1") or {}).items():
+        key, value = _t1_species_key(name), float(v)
+        if key in values and not math.isclose(values[key], value, rel_tol=0.0,
+                                              abs_tol=_T1_TOLERANCE):
+            raise SystemExit(
+                f"[merge] REFUSING {category} {run.name}: its {_T1_FILE} names "
+                f"{name!r} twice under one casefold with different values")
+        values[key] = value
+    return values
+
+
+def _write_t1_table(view_dir: Path, carried: Dict[str, Any]) -> None:
+    # ``source`` names every distinct references directory the composed table
+    # was measured against (the runs' identity check does not cover it)
+    (view_dir / _T1_FILE).write_text(json.dumps(
+        {"n_species": len(carried["t1"]),
+         "source": "; ".join(sorted({str(s) for s in carried["sources"]})),
+         "merged_from": list(carried["categories"]),
+         "threshold": carried["threshold"],
+         "t1": dict(sorted(carried["t1"].items()))}, indent=1))
+
+
+def _carry_t1_table(run: Path, view_dir: Path, category: str,
+                    carried: Dict[str, Any]) -> str:
+    """Carry a contributing run's T1 table into the view.
+
+    The suite reads ``t1_diagnostics.json`` beside a run's manifest for the
+    model-free ``_excl_t1`` variant, keyed by the casefolded species name. The
+    first contributing run's table is written beside the view's manifest under
+    those keys; a later contributing run's table must agree with it on every
+    shared species and on the threshold (one production identity carries one
+    diagnostic), else the merge refuses rather than choose, and the species
+    only the later table names are added, so the view's diagnostic covers
+    every species any contributing run measured. ``carried`` is the build's
+    record of the view's table. Returns the note written to the marker line:
+    ``carried``, ``agrees with <category>`` (``, adds N species`` when it
+    extends the table), or ``none`` when the run has no table. The caller
+    skips a run with no cells: its table diagnoses nothing in the view."""
+    src = run / _T1_FILE
+    if not src.is_file():
+        return "none"
+    table = json.loads(src.read_text())
+    values = _t1_values(run, category, table)
+    threshold = table.get("threshold")
+    if not carried:
+        carried.update({"categories": [category], "t1": values,
+                        "threshold": threshold,
+                        "sources": [table.get("source") or ""]})
+        _write_t1_table(view_dir, carried)
+        return "carried"
+    off = sorted(m for m in set(values) & set(carried["t1"])
+                 if not math.isclose(values[m], carried["t1"][m],
+                                     rel_tol=0.0, abs_tol=_T1_TOLERANCE))
+    if off or threshold != carried["threshold"]:
+        what = (f"species {off}" if off
+                else f"threshold {threshold!r} vs {carried['threshold']!r}")
+        raise SystemExit(
+            f"[merge] REFUSING {category} {run.name}: its {_T1_FILE} disagrees with "
+            f"{carried['categories'][0]}'s on {what}; one production identity "
+            "carries one T1 diagnostic, and a disagreement is read, not merged")
+    new = sorted(set(values) - set(carried["t1"]))
+    carried["t1"].update({m: values[m] for m in new})
+    carried["categories"].append(category)
+    carried["sources"].append(table.get("source") or "")
+    _write_t1_table(view_dir, carried)
+    note = f"agrees with {carried['categories'][0]}"
+    return note + (f", adds {len(new)} species" if new else "")
 
 
 @dataclass(frozen=True)
@@ -265,6 +352,7 @@ def _build_view_into(spec: FamilySpec, results_root, view_dir: Path,
     contributing: List[str] = []
     slot_owner: Dict[str, str] = {}
     slot_from: Dict[str, Dict[str, str]] = {}
+    t1_carried: Dict[str, Any] = {}
     model_block = None
     idx = 0
     for entry in spec.entries:
@@ -343,6 +431,13 @@ def _build_view_into(spec: FamilySpec, results_root, view_dir: Path,
                 f"differs from the view's ({diff}); the view keeps one configuration "
                 "(basis label, references, anchor), and a protocol tag names a training "
                 "protocol, not an identity")
+        # only a run with cells carries its diagnostic: a table of a run that
+        # contributes nothing would name the view's source without a cell
+        if spec_dirs:
+            t1_note = _carry_t1_table(run, view_dir, entry.category, t1_carried)
+        else:
+            t1_note = ("skipped (no cells)" if (run / _T1_FILE).is_file()
+                       else "none")
         for sd in spec_dirs:
             for chan in sorted(p.name for p in sd.glob("eval_holdout*") if p.is_dir()):
                 assert_channel_not_sliced(sd, chan)
@@ -383,7 +478,7 @@ def _build_view_into(spec: FamilySpec, results_root, view_dir: Path,
             f.write(f"{entry.category}\t{run.name}\t{len(spec_dirs)} specs\t{n_eval} "
                     f"evaluated\tprotocol: {entry.protocol or '-'}\tpretrain: "
                     f"{'carried' if entry.pretrain else 'slot carried from ' + ', '.join(sorted(set(slot_from.get(entry.category, {}).values())) or ['-'])}"
-                    f"\tfidelity: {cert_note}\n")
+                    f"\tfidelity: {cert_note}\tt1: {t1_note}\n")
         for src in [run / "resolved_config.yaml", *sorted(run.glob("scan_pool_*.json"))]:
             dst = view_dir / src.name
             if src.is_file() and not dst.exists():
@@ -411,6 +506,9 @@ def _build_view_into(spec: FamilySpec, results_root, view_dir: Path,
                                if str(s).lower().startswith("waived"))}}
     if model_block is not None:
         out["model"] = model_block
+    # the contributing runs whose T1 tables the view's table is composed from
+    # (empty: no contributing run has one)
+    out["t1_tables_from"] = list(t1_carried.get("categories", []))
     (view_dir / "manifest.json").write_text(json.dumps(out, indent=1))
     return report
 

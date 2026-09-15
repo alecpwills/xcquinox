@@ -807,3 +807,167 @@ def test_only_the_rendered_channels_count_as_evaluated(tmp_path):
     (d / "eval_holdout_val_best").mkdir()
     (d / "eval_holdout_val_best" / "per_reaction.json").write_text("[]")
     assert mf._evaluated(d) is True
+
+
+# --------------------------------------------------------------------------- #
+# T13-T16 -- the run-level T1 table rides into the view (2026-09-15)
+#
+# The suite reads ``t1_diagnostics.json`` beside a run's manifest for the
+# model-free ``_excl_t1`` variant, keyed by the casefolded species name; the
+# view is what the suite renders, so the first CONTRIBUTING run's table is
+# written there under those keys, a later contributing run's must agree with
+# it on every shared species and the threshold (one production identity, one
+# diagnostic) and adds the species only it names, a run without cells is not
+# read, and a family without a table builds a view without one.
+# --------------------------------------------------------------------------- #
+_T13_T1_YAML = f"""
+view: {VIEW}
+domain: {DOMAIN}
+runs:
+  - category: dfs6311_grid3_v7g1_size
+    run: latest
+  - category: dfs6311_grid3_v7g2a_families_core
+    run: latest
+"""
+
+
+def _t1_table(values, threshold=0.02, source="/refs"):
+    return json.dumps({"n_species": len(values), "source": source,
+                       "t1": values, "threshold": threshold})
+
+
+def _two_runs(root):
+    size = _mk_run(root, "dfs6311_grid3_v7g1_size", "run_20260902T000000Z",
+                   [(ARCH_A, 1)], evaluated=True)
+    core = _mk_run(root, "dfs6311_grid3_v7g2a_families_core",
+                   "run_20260902T000002Z", [(ARCH_B, 1)], evaluated=True)
+    return size, core
+
+
+def test_t13_the_view_carries_the_t1_table_of_a_contributing_run(tmp_path):
+    """The first contributing run's table is the view's, under the casefolded
+    keys the suite's reader compares species by (the pools spell ``BN`` and
+    ``bn``); the manifest names the source run and the marker line says so."""
+    mf = _mf()
+    import make_ablation_arch_figure as fig
+    root = tmp_path / "runs"
+    size, _core = _two_runs(root)
+    (size / "t1_diagnostics.json").write_text(
+        _t1_table({"BN": 0.031, "h2o": 0.008}))
+    spec = mf.load_family_runs(_family(tmp_path, _T13_T1_YAML))
+    mf.build_view(spec, root)
+    view = _view_dir(root, "20260902T000002Z")
+    written = json.loads((view / "t1_diagnostics.json").read_text())
+    assert written["t1"] == {"bn": 0.031, "h2o": 0.008}
+    assert written["threshold"] == 0.02
+    assert written["merged_from"] == ["dfs6311_grid3_v7g1_size"]
+    assert written["n_species"] == 2 and written["source"] == "/refs"
+    lines = (view / "MERGED_RUNS.txt").read_text().splitlines()
+    assert lines[0].startswith("dfs6311_grid3_v7g1_size") and \
+        lines[0].endswith("t1: carried"), lines
+    assert lines[1].endswith("t1: none"), lines
+    m = json.loads((view / "manifest.json").read_text())
+    assert m["t1_tables_from"] == ["dfs6311_grid3_v7g1_size"]
+    # the suite's own loader finds it where it reads a run's table
+    table = fig.load_t1_table(view)
+    assert table["t1"] == {"bn": 0.031, "h2o": 0.008}
+    assert table["threshold"] == 0.02
+
+
+def test_t14_two_t1_tables_that_disagree_refuse_the_merge(tmp_path):
+    """A disagreement of one part in a million on one shared species refuses
+    the build, so does a case-variant spelling of a disagreeing species and a
+    different threshold; a rounding-level difference does not, a species only
+    one table names is added to the view's table, and the agreement is
+    recorded on the marker line and in the manifest."""
+    mf = _mf()
+    root = tmp_path / "runs"
+    size, core = _two_runs(root)
+    (size / "t1_diagnostics.json").write_text(
+        _t1_table({"bn": 0.031, "h2o": 0.008}))
+    (core / "t1_diagnostics.json").write_text(
+        _t1_table({"bn": 0.031001, "h2o": 0.008, "cn": 0.9}))
+    spec = mf.load_family_runs(_family(tmp_path, _T13_T1_YAML))
+    with pytest.raises(SystemExit) as exc:
+        mf.build_view(spec, root)
+    msg = str(exc.value)
+    assert "bn" in msg and "h2o" not in msg, msg
+    assert "dfs6311_grid3_v7g2a_families_core" in msg
+    assert "t1_diagnostics.json" in msg
+    # the comparison is by the casefolded species: ``BN`` is ``bn``
+    (core / "t1_diagnostics.json").write_text(
+        _t1_table({"BN": 0.999, "h2o": 0.008}))
+    with pytest.raises(SystemExit) as exc:
+        mf.build_view(spec, root)
+    assert "bn" in str(exc.value)
+    # one file naming a species twice under one casefold with two values
+    (core / "t1_diagnostics.json").write_text(
+        _t1_table({"BN": 0.031, "bn": 0.999, "h2o": 0.008}))
+    with pytest.raises(SystemExit) as exc:
+        mf.build_view(spec, root)
+    assert "twice" in str(exc.value) and "bn" in str(exc.value).lower()
+    # a rounding-level difference is agreement; the species only the second
+    # table names joins the view's table, and the record says so, naming
+    # both references directories
+    (core / "t1_diagnostics.json").write_text(
+        _t1_table({"BN": 0.031 + 1e-12, "h2o": 0.008, "cn": 0.9},
+                  source="/refs/core"))
+    mf.build_view(spec, root)
+    view = _view_dir(root, "20260902T000002Z")
+    written = json.loads((view / "t1_diagnostics.json").read_text())
+    assert written["t1"] == {"bn": 0.031, "cn": 0.9, "h2o": 0.008}
+    assert written["merged_from"] == ["dfs6311_grid3_v7g1_size",
+                                      "dfs6311_grid3_v7g2a_families_core"]
+    assert written["source"] == "/refs; /refs/core"
+    txt = (view / "MERGED_RUNS.txt").read_text()
+    assert "t1: agrees with dfs6311_grid3_v7g1_size, adds 1 species" in txt, txt
+    m = json.loads((view / "manifest.json").read_text())
+    assert m["t1_tables_from"] == ["dfs6311_grid3_v7g1_size",
+                                   "dfs6311_grid3_v7g2a_families_core"]
+    # the threshold is part of the diagnostic
+    (core / "t1_diagnostics.json").write_text(
+        _t1_table({"bn": 0.031}, threshold=0.03))
+    with pytest.raises(SystemExit) as exc:
+        mf.build_view(spec, root)
+    assert "threshold" in str(exc.value)
+
+
+def test_t15_runs_without_a_t1_table_build_a_view_without_one(tmp_path):
+    mf = _mf()
+    root = tmp_path / "runs"
+    _two_runs(root)
+    spec = mf.load_family_runs(_family(tmp_path, _T13_T1_YAML))
+    mf.build_view(spec, root)
+    view = _view_dir(root, "20260902T000002Z")
+    assert not (view / "t1_diagnostics.json").exists()
+    lines = (view / "MERGED_RUNS.txt").read_text().splitlines()
+    assert len(lines) == 2 and all(ln.endswith("t1: none") for ln in lines), lines
+    m = json.loads((view / "manifest.json").read_text())
+    assert m["t1_tables_from"] == []
+
+
+def test_t16_a_table_of_a_run_without_cells_is_not_the_views(tmp_path):
+    """A listed run with a table and no cells contributes nothing to the view,
+    so its table diagnoses nothing there: it is skipped, and the first run
+    WITH cells is the one whose table the view carries -- including the
+    species the cell-less run's table lacks."""
+    mf = _mf()
+    root = tmp_path / "runs"
+    size = _mk_run(root, "dfs6311_grid3_v7g1_size", "run_20260902T000000Z",
+                   [], evaluated=True)                 # no cells yet
+    core = _mk_run(root, "dfs6311_grid3_v7g2a_families_core",
+                   "run_20260902T000002Z", [(ARCH_B, 1)], evaluated=True)
+    (size / "t1_diagnostics.json").write_text(_t1_table({"bn": 0.031}))
+    (core / "t1_diagnostics.json").write_text(
+        _t1_table({"bn": 0.031, "cn": 0.9}))
+    spec = mf.load_family_runs(_family(tmp_path, _T13_T1_YAML))
+    mf.build_view(spec, root)
+    view = _view_dir(root, "20260902T000002Z")
+    written = json.loads((view / "t1_diagnostics.json").read_text())
+    assert written["t1"] == {"bn": 0.031, "cn": 0.9}
+    assert written["merged_from"] == ["dfs6311_grid3_v7g2a_families_core"]
+    lines = (view / "MERGED_RUNS.txt").read_text().splitlines()
+    assert lines[0].endswith("t1: skipped (no cells)"), lines
+    assert lines[1].endswith("t1: carried"), lines
+    m = json.loads((view / "manifest.json").read_text())
+    assert m["t1_tables_from"] == ["dfs6311_grid3_v7g2a_families_core"]

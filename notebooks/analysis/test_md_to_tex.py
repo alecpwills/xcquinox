@@ -838,3 +838,20 @@ def test_convert_drops_the_html_comment_lines_that_mark_generated_tables(tmp_pat
     assert "<!--" not in body and "table:holdout" not in body
     assert r"\begin{longtable}" in body
     assert "Before." in body and "After." in body
+
+
+def test_figure_paths_and_the_guard_accept_a_tagged_figure_name():
+    """The figure sets file a protocol-tagged cell under its shown name, with
+    a space and brackets (``trained_fx_fc_deep_3x16 [25 cycles].png``); the
+    path guard must see such a reference, not skip it, and the family prefix
+    rule applies to it as to any other."""
+    mod = _load_script()
+    tagged = "figures_dfs_step7_v7_family_val_best/trained_fx_fc_deep_3x16 [25 cycles].png"
+    stale = "figures_dfs_step7_dfs6311_grid3_v3/trained_fx_fc_deep_3x16 [25 cycles].png"
+    md = f"Text.\n\n![the arm's curves]({tagged})\n\nMore text.\n"
+    assert mod.figure_paths(md) == [tagged]
+    mod.check_figure_paths(md, _V7_PREFIXES)
+    with pytest.raises(mod.MarkdownError):
+        mod.check_figure_paths(md.replace(tagged, stale), _V7_PREFIXES)
+    tex = "\\includegraphics[width=\\linewidth]{" + tagged + "}"
+    assert mod.figure_paths(tex) == [tagged]

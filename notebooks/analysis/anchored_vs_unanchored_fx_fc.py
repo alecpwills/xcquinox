@@ -67,6 +67,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
+from xcquinox.alec.arch_names import split_tag  # noqa: E402
+
 #: Directory the per-generation figure sets live in; also the default root the
 #: source CSVs are resolved against.
 ANALYSIS_DIR = Path(__file__).resolve().parent
@@ -127,6 +129,15 @@ class SeriesSpec:
         state = "anchored" if self.anchored else "unanchored"
         return f"{self.generation} {state} ({self.arch})"
 
+    @property
+    def series_name(self) -> str:
+        """The name the curve files are read under: the registry key, tagged
+        ``[anchored]`` for an anchored generation, since the suite shows an
+        anchored run's cells under that tag and ``trained_fx_fc.py`` writes it
+        into a regenerated file's ``protocol`` column; an archived file
+        without the column answers either spelling."""
+        return f"{self.arch} [anchored]" if self.anchored else self.arch
+
 
 #: The drawn series, in legend order: the two unanchored generations first
 #: (oldest first), then the anchored G1 pair.
@@ -152,6 +163,22 @@ SERIES: Tuple[SeriesSpec, ...] = (
 #: The generation whose trained coverage the footer reports (the figure is
 #: published into that generation's own directory).
 COVERAGE_GENERATION = "v6"
+
+#: The per-generation figure sets the series read were removed from the tree
+#: on 2026-09-09 (the merged family view replaced them) and kept on disk under
+#: this gitignored archive; the sources resolve there when the analysis
+#: directory no longer holds them.
+ARCHIVE_DIR = ANALYSIS_DIR / "figures_archive"
+
+
+def default_source_root() -> Path:
+    """Where the drawn series' curve files are: the analysis directory while
+    it holds the first series' pretrained curves, else :data:`ARCHIVE_DIR`."""
+    first = SERIES[0]
+    if (ANALYSIS_DIR / first.figure_dir / PRETRAIN_CSV).is_file():
+        return ANALYSIS_DIR
+    return ARCHIVE_DIR
+
 
 DEFAULT_OUTDIR = (ANALYSIS_DIR
                   / "figures_dfs_step7_dfs6311_grid3_v6g1_size_val_best")
@@ -222,9 +249,14 @@ def read_curve(path: Path, arch: str, channel: str, *,
     whose ``rs`` cell is empty); ``subset_size`` selects a trained cell and
     also switches on the trained-file column requirements. A selected row
     bearing a non-empty ``alpha`` is refused: that is a SCAN-parent slice, and
-    this figure's zero line is the PBE parent.
+    this figure's zero line is the PBE parent. ``arch`` may carry a protocol
+    tag (``medium [25 cycles]``): the rows of that protocol are selected
+    (the ``protocol`` column the trained curve files carry since 2026-09-15),
+    and a bare name selects the untagged rows only, so a merged view's arm
+    series never mixes with the run's own.
     """
     path = Path(path)
+    arch, tag = split_tag(arch)
     if not path.is_file():
         raise CurveSourceError(
             f"{path} is not on disk; this figure is built from the committed "
@@ -249,6 +281,11 @@ def read_curve(path: Path, arch: str, channel: str, *,
             # files the key in ``arch`` alone
             key = row["arch_stored"] if "arch_stored" in fields else row["arch"]
             if key != arch or row["channel"] != channel:
+                continue
+            # a file without the column predates the tags (the archived sets):
+            # its rows answer any request of their architecture; a file with
+            # the column answers the request's protocol only
+            if "protocol" in fields and (row.get("protocol") or "") != tag:
                 continue
             if subset_size is not None and \
                     int(row["subset_size"]) != subset_size:
@@ -300,8 +337,8 @@ def read_series(spec: SeriesSpec, root: Path) -> Dict[str, Dict[str, Curve]]:
         subset = None if stage == "pretrained" else TRAINED_SUBSET_SIZE
         path = source / filename
         out[stage] = {
-            "fx": read_curve(path, spec.arch, "fx", subset_size=subset),
-            "fc": read_curve(path, spec.arch, "fc", rs=RS_FIGURE,
+            "fx": read_curve(path, spec.series_name, "fx", subset_size=subset),
+            "fc": read_curve(path, spec.series_name, "fc", rs=RS_FIGURE,
                              subset_size=subset),
         }
     return out
@@ -535,10 +572,12 @@ def main(argv=None) -> int:
     ap.add_argument("--outdir", default=str(DEFAULT_OUTDIR),
                     help="where the figure and its table are written "
                          "(default: the v6 G1 validation-best figure set)")
-    ap.add_argument("--source-root", default=str(ANALYSIS_DIR),
+    ap.add_argument("--source-root", default=str(default_source_root()),
                     help="directory holding the per-generation figure sets "
                          "the curves are read from (default: the analysis "
-                         "directory this script lives in)")
+                         "directory this script lives in while it holds "
+                         "them, else its figures_archive/ where the sets "
+                         "were moved on 2026-09-09)")
     args = ap.parse_args(argv)
     try:
         png, table = build(Path(args.source_root).expanduser(),

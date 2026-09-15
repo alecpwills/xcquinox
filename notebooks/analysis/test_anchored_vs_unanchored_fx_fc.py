@@ -63,7 +63,19 @@ def _raw_delta_at(path, *, arch, channel, s, rs="", subset_size=None):
 
 
 def _source(spec, filename):
-    return os.path.join(A.ANALYSIS_DIR, spec.figure_dir, filename)
+    return os.path.join(A.default_source_root(), spec.figure_dir, filename)
+
+
+# the per-generation sets the series read left the tree on 2026-09-09 and live
+# in the gitignored archive; the tests bound to those files run where the
+# archive is on disk and are skipped, by name, elsewhere
+_SOURCES_PRESENT = all(os.path.isfile(_source(s, f)) for s in A.SERIES
+                       for f in (A.PRETRAIN_CSV, A.TRAINED_CSV))
+_needs_sources = pytest.mark.skipif(
+    not _SOURCES_PRESENT,
+    reason="the per-generation figure sets the drawn series read are neither in "
+           "the analysis directory nor under figures_archive/ ("
+           + ", ".join(sorted({s.figure_dir for s in A.SERIES})) + ")")
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +126,7 @@ def _synthetic_spec(figure_dir, arch, **kwargs):
 # The committed sources
 # ---------------------------------------------------------------------------
 
+@_needs_sources
 def test_source_csvs_exist_with_the_expected_columns():
     """Every source the module names is on disk with the schema it reads."""
     seen = set()
@@ -133,6 +146,7 @@ def test_source_csvs_exist_with_the_expected_columns():
     assert len(seen) == 6, sorted(seen)
 
 
+@_needs_sources
 def test_no_source_carries_a_meta_gga_row_for_a_drawn_arch():
     """The drawn architectures are GGA: no ``alpha`` column, and so no SCAN
     slice smuggled onto a PBE-parent difference axis."""
@@ -152,6 +166,7 @@ def test_no_source_carries_a_meta_gga_row_for_a_drawn_arch():
             assert not offenders, (path, spec.arch, offenders[:2])
 
 
+@_needs_sources
 def test_trained_subset_size_is_the_largest_cell_common_to_every_series():
     """The drawn cell is not an arbitrary pick.
 
@@ -165,7 +180,7 @@ def test_trained_subset_size_is_the_largest_cell_common_to_every_series():
     shared = None
     for spec in A.SERIES:
         sizes, _channels = A.trained_coverage(
-            os.path.join(A.ANALYSIS_DIR, spec.figure_dir, A.TRAINED_CSV))
+            os.path.join(A.default_source_root(), spec.figure_dir, A.TRAINED_CSV))
         available = set(sizes[spec.arch])
         shared = available if shared is None else shared & available
     assert shared, [spec.key for spec in A.SERIES]
@@ -173,9 +188,10 @@ def test_trained_subset_size_is_the_largest_cell_common_to_every_series():
     assert A.TRAINED_SUBSET_SIZE == max(shared), sorted(shared)
 
 
+@_needs_sources
 def test_every_series_resolves_on_one_grid():
     """All four series read, both stages, on the one shared s grid."""
-    drawn = A.read_all(A.ANALYSIS_DIR)
+    drawn = A.read_all(A.default_source_root())
     assert [spec.key for spec, _ in drawn] == [s.key for s in A.SERIES]
     grid = drawn[0][1]["pretrained"]["fx"].s
     assert grid[0] == 0.0 and grid[-1] == 6.0 and grid.size > 100
@@ -192,6 +208,7 @@ def test_every_series_resolves_on_one_grid():
                     assert curve.eval_channel == ""
 
 
+@_needs_sources
 def test_pretrained_value_matches_an_independent_parse_of_the_csv():
     """One pinned PRETRAINED value, computed from the file inside the test."""
     spec = next(s for s in A.SERIES if s.key == "v4gga")
@@ -205,6 +222,7 @@ def test_pretrained_value_matches_an_independent_parse_of_the_csv():
     assert abs(expected) > 1e-2, expected
 
 
+@_needs_sources
 def test_optimized_value_matches_an_independent_parse_of_the_csv():
     """One pinned OPTIMIZED value: the anchored correlation correction at the
     top of the grid, where the pre-image suppression is largest."""
@@ -221,10 +239,11 @@ def test_optimized_value_matches_an_independent_parse_of_the_csv():
     assert curve.eval_channel == "val_best"
 
 
+@_needs_sources
 def test_anchored_pretrains_sit_at_the_parent_and_unanchored_do_not():
     """The figure's own claim, as a discriminating pin: swapping which
     generation is drawn as anchored breaks both halves at once."""
-    drawn = A.read_all(A.ANALYSIS_DIR)
+    drawn = A.read_all(A.default_source_root())
     for spec, curves in drawn:
         worst = max(float(np.max(np.abs(curves["pretrained"][c].delta)))
                     for c in A.CHANNELS)
@@ -234,11 +253,12 @@ def test_anchored_pretrains_sit_at_the_parent_and_unanchored_do_not():
             assert worst > 1e-2, (spec.key, worst)
 
 
+@_needs_sources
 def test_optimized_corrections_are_orders_above_the_anchored_start():
     """The bottom row is not the top row: every drawn cell moves off its
     pretrained state by at least an order of magnitude more than the anchored
     pretrain sat from the parent."""
-    drawn = A.read_all(A.ANALYSIS_DIR)
+    drawn = A.read_all(A.default_source_root())
     for spec, curves in drawn:
         worst = max(float(np.max(np.abs(curves["optimized"][c].delta)))
                     for c in A.CHANNELS)
@@ -263,6 +283,7 @@ def test_alpha_bearing_row_is_refused_and_a_blank_alpha_is_not(tmp_path):
     assert curve.s.size == 3
 
 
+@_needs_sources
 def test_absent_cell_is_refused_and_names_what_is_on_disk():
     """A subset size the sweep has not reached is a refusal, not an empty
     panel; the message carries the cells that do exist."""
@@ -316,15 +337,16 @@ def test_mismatched_grid_is_refused(tmp_path):
 # Footer, table and the command-line seam
 # ---------------------------------------------------------------------------
 
+@_needs_sources
 def test_footer_states_the_v6_trained_coverage():
     """The coverage sentence counts the cells actually in the source file."""
-    drawn = A.read_all(A.ANALYSIS_DIR)
+    drawn = A.read_all(A.default_source_root())
     spec = next(s for s in A.SERIES
                 if s.generation == A.COVERAGE_GENERATION)
-    path = os.path.join(A.ANALYSIS_DIR, spec.figure_dir, A.TRAINED_CSV)
+    path = os.path.join(A.default_source_root(), spec.figure_dir, A.TRAINED_CSV)
     pairs = {(row["arch"], row["subset_size"]) for row in _raw_rows(path)}
     channels = {row["eval_channel"] for row in _raw_rows(path)}
-    footer = A.footer_text(drawn, A.ANALYSIS_DIR)
+    footer = A.footer_text(drawn, A.default_source_root())
     assert f"{len(pairs)} cells" in footer, footer
     for channel in channels:
         assert channel in footer
@@ -345,6 +367,7 @@ def test_footer_quantifies_only_the_classes_actually_drawn(tmp_path):
     assert "anchored" in footer and "unanchored" not in footer, footer
 
 
+@_needs_sources
 def test_cli_writes_the_figure_and_its_table(tmp_path):
     """End to end on the committed sources, into a scratch directory."""
     assert A.main(["--outdir", str(tmp_path)]) == 0
@@ -355,7 +378,7 @@ def test_cli_writes_the_figure_and_its_table(tmp_path):
     with open(table) as fh:
         rows = list(csv.DictReader(fh))
     assert tuple(rows[0].keys()) == A.CSV_COLUMNS
-    grid = A.read_all(A.ANALYSIS_DIR)[0][1]["pretrained"]["fx"].s
+    grid = A.read_all(A.default_source_root())[0][1]["pretrained"]["fx"].s
     assert len(rows) == (len(A.SERIES) * len(A.STAGES) * len(A.CHANNELS)
                          * grid.size)
     for row in rows[:: max(1, len(rows) // 40)]:
@@ -457,3 +480,82 @@ def test_read_curve_selects_the_series_by_the_stored_key_when_present(tmp_path):
         w.writerows(old)
     curve = A.read_curve(tmp_path / "old.csv", "deep0_3x16", "fx")
     assert float(curve.f_model[0]) == 22.0
+
+
+def test_read_curve_selects_a_protocol_series_by_its_tag(tmp_path):
+    """A trained curve file of a merged view holds ``medium`` at one subset
+    size twice, the run's own cell and the 25-cycle arm's, told apart by the
+    ``protocol`` column: a bare name reads the run's own rows, a tagged name
+    the arm's, and neither request is ambiguous. A file without the column
+    (written before 2026-09-15) reads as untagged throughout."""
+    columns = ["arch", "arch_stored", "protocol", "subset_size", "channel",
+               "rs", "s", "f_model", "f_parent", "eval_channel"]
+    rows = []
+    for shown, tag, value in (("deep_3x16", "", 11.0),
+                              ("deep_3x16 [25 cycles]", "25 cycles", 22.0)):
+        for channel, rs in (("fx", ""), ("fc", f"{A.RS_FIGURE:g}")):
+            for s in (0.0, 0.5, 1.0):
+                rows.append([shown, "medium", tag, "7", channel, rs,
+                             f"{s:.6f}", repr(value), "1.0", "val_best"])
+    with open(tmp_path / A.TRAINED_CSV, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(columns)
+        w.writerows(rows)
+    plain = A.read_curve(tmp_path / A.TRAINED_CSV, "medium", "fx",
+                         subset_size=7)
+    assert float(plain.f_model[0]) == 11.0
+    tagged = A.read_curve(tmp_path / A.TRAINED_CSV, "medium [25 cycles]", "fx",
+                          subset_size=7)
+    assert float(tagged.f_model[0]) == 22.0
+    with pytest.raises(A.CurveSourceError):
+        A.read_curve(tmp_path / A.TRAINED_CSV, "medium [dpyscf parity]", "fx",
+                     subset_size=7)
+    # the older column set: every row untagged, a bare name still reads it
+    old = [r[:2] + r[3:] for r in rows if r[2] == ""]
+    with open(tmp_path / "old.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(columns[:2] + columns[3:])
+        w.writerows(old)
+    assert float(A.read_curve(tmp_path / "old.csv", "medium", "fx",
+                              subset_size=7).f_model[0]) == 11.0
+
+
+def test_an_anchored_series_reads_its_archived_and_its_regenerated_files(tmp_path):
+    """The anchored generations' files come in two schemas: the archived sets
+    (no ``protocol`` column, every row untagged) and a regenerated trained set
+    (``trained_fx_fc.py`` tags an anchored run's rows ``anchored``). The series
+    reads under its tagged name, which an archived file answers because it has
+    no column and a regenerated file answers by the tag; a bare request on the
+    regenerated file finds nothing, since its rows are all tagged."""
+    old = ["arch", "arch_stored", "channel", "rs", "s", "f_model", "f_parent"]
+    new = ["arch", "arch_stored", "protocol", "subset_size", "channel", "rs",
+           "s", "f_model", "f_parent", "eval_channel"]
+    root = tmp_path / "gen"
+    root.mkdir()
+    with open(root / A.PRETRAIN_CSV, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(old)
+        for channel, rs in (("fx", ""), ("fc", f"{A.RS_FIGURE:g}")):
+            for s in (0.0, 0.5, 1.0):
+                w.writerow(["deep_3x16", "medium", channel, rs, f"{s:.6f}",
+                            "1.5", "1.0"])
+    with open(root / A.TRAINED_CSV, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(new)
+        for channel, rs in (("fx", ""), ("fc", f"{A.RS_FIGURE:g}")):
+            for s in (0.0, 0.5, 1.0):
+                w.writerow(["deep_3x16 [anchored]", "medium", "anchored",
+                            str(A.TRAINED_SUBSET_SIZE), channel, rs,
+                            f"{s:.6f}", "2.5", "1.0", "val_best"])
+    spec = _synthetic_spec("gen", "medium", anchored=True)
+    assert spec.series_name == "medium [anchored]"
+    assert _synthetic_spec("gen", "medium", anchored=False).series_name == "medium"
+    curves = A.read_series(spec, tmp_path)
+    assert float(curves["pretrained"]["fx"].delta[0]) == 0.5
+    assert float(curves["optimized"]["fx"].delta[0]) == 1.5
+    # the archived file answers the tagged request too; the regenerated one
+    # answers the bare request with nothing
+    assert A.read_curve(root / A.PRETRAIN_CSV, "medium [anchored]", "fx").s.size == 3
+    with pytest.raises(A.CurveSourceError):
+        A.read_curve(root / A.TRAINED_CSV, "medium", "fx",
+                     subset_size=A.TRAINED_SUBSET_SIZE)

@@ -8144,3 +8144,23 @@ def test_energy_by_arch_footer_bands_are_disjoint(tmp_path, monkeypatch):
     for lower, upper in zip(boxes, boxes[1:]):
         assert lower.y1 <= upper.y0 + 0.5, (lower, upper)
     assert boxes[0].y0 >= 0
+
+
+def test_cell_protocol_composes_the_cells_tag_and_the_runs(tmp_path):
+    """One composition for every figure script: the cell's own tag (a merged
+    view's) and the run's (``anchored``), joined with a comma; ``None`` when
+    the cell carries neither, and an empty cell tag counts as none."""
+    assert fig.ccp.cell_protocol({}, None) is None
+    assert fig.ccp.cell_protocol({"protocol": ""}, None) is None
+    assert fig.ccp.cell_protocol({"protocol": "25 cycles"}, None) == "25 cycles"
+    assert fig.ccp.cell_protocol({}, "anchored") == "anchored"
+    assert fig.ccp.cell_protocol({"protocol": "25 cycles"}, "anchored") == \
+        "25 cycles, anchored"
+    # and the manifest boundary uses it: an anchored run with a tagged cell
+    (tmp_path / "resolved_config.yaml").write_text("model:\n  parent_anchor: true\n")
+    (tmp_path / "manifest.json").write_text(json.dumps({"specs": [
+        {"index": 0, "cell": {"arch": "medium", "subset_size": 7,
+                              "protocol": "25 cycles"}}]}))
+    cells = fig.ccp._read_manifest_cells(tmp_path)
+    assert cells[0]["arch"] == "deep_3x16 [25 cycles, anchored]"
+    assert cells[0]["arch_stored"] == "medium"

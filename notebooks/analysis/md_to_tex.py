@@ -391,7 +391,10 @@ def convert(md: str, figroot) -> str:
 #: subset-selection set; a per-run set of an earlier refresh fails the build
 V7_FIGURE_PREFIXES = ("figures_dfs_step7_v7_family", "figures_dfs_step7_v7_subsets")
 V7_DOCUMENT_PREFIXES = ("REPORT_v7", "SUMMARY_v7", "SLIDES_v7")
-_IMAGE_REF = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)|\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
+# a path may carry a space and brackets (the figure sets file a protocol-tagged
+# cell under its shown name, ``trained_fx_fc_deep_3x16 [25 cycles].png``), so
+# only the closing parenthesis and a line break end a markdown path
+_IMAGE_REF = re.compile(r"!\[[^\]]*\]\(([^)\n]+)\)|\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
 
 
 def figure_paths(text: str) -> List[str]:

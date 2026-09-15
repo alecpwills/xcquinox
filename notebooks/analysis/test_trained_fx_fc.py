@@ -132,15 +132,18 @@ def test_seam_renders_an_anchored_checkpoint_at_round_off(tmp_path):
     outdir = tmp_path / "figs"
 
     assert T.build_all(run, outdir, eval_channel="val_best") == 0
-    # the stored key deep_3x16 (zero-init) is shown, and filed, as deep0_3x16
-    assert (outdir / "trained_fx_fc_deep0_3x16.png").stat().st_size > 0
+    # the stored key deep_3x16 (zero-init) is shown, and filed, as deep0_3x16;
+    # the fixture run states parent_anchor: true, and the suite tags such a
+    # run's cells ``[anchored]``, so the file carries the tag (2026-09-15)
+    assert (outdir / "trained_fx_fc_deep0_3x16 [anchored].png").stat().st_size > 0
     assert (outdir / "trained_fx_fc_delta_best.png").stat().st_size > 0
 
     rows = _csv_rows(outdir)
-    assert set(rows[0]) == {"arch", "arch_stored", "subset_size", "channel",
-                            "rs", "s", "f_model", "f_parent", "eval_channel"}
-    assert {(r["arch"], r["arch_stored"]) for r in rows} == \
-        {("deep0_3x16", "deep_3x16")}
+    assert set(rows[0]) == {"arch", "arch_stored", "protocol", "subset_size",
+                            "channel", "rs", "s", "f_model", "f_parent",
+                            "eval_channel"}
+    assert {(r["arch"], r["arch_stored"], r["protocol"]) for r in rows} == \
+        {("deep0_3x16 [anchored]", "deep_3x16", "anchored")}
     assert len(rows) == len(T.S_GRID) * (1 + len(T.RS_VALUES))
     assert {r["eval_channel"] for r in rows} == {"val_best"}
     assert {r["subset_size"] for r in rows} == {"4"}
@@ -235,7 +238,10 @@ def test_the_val_best_fallback_labels_itself(tmp_path):
 
     note = T._fallback_note(cells, "val_best")
     assert "model_val_best.eqx" in note and "model.eqx" in note
-    assert "deep_3x16/4" in note
+    # the note names the cell as the figure shows it: the shown name with the
+    # anchored fixture run's tag, never the stored key (2026-09-15)
+    assert "deep0_3x16 [anchored]/4" in note, note
+    assert "deep_3x16/4" not in note
 
     outdir = tmp_path / "figs"
     assert T.build_all(run, outdir, eval_channel="val_best") == 0
@@ -309,7 +315,10 @@ def test_an_arch_without_a_held_out_eval_falls_back_to_the_largest_cell(tmp_path
     cells, _missing = T.discover_cells(run, "val_best")
 
     selected, unranked = T.best_cells(run, cells, 4)
-    assert unranked == ["deep_3x16"]
+    # the unranked list names the architecture as the figure footer shows it:
+    # the stored key ``deep_3x16`` is the shown ``deep0_3x16``, with the
+    # anchored fixture run's tag (2026-09-15)
+    assert unranked == ["deep0_3x16 [anchored]"]
     assert [(c.subset_size, mae) for c, mae in selected] == [(8, None)]
 
 
@@ -346,14 +355,14 @@ def test_seam_renders_an_anchored_mgga_checkpoint_at_round_off(tmp_path):
     outdir = tmp_path / "figs"
 
     assert T.build_all(run, outdir, eval_channel="val_best") == 0
-    assert (outdir
-            / "trained_fx_fc_deep0_cusp_mgga_3x16.png").stat().st_size > 0
+    assert (outdir / "trained_fx_fc_deep0_cusp_mgga_3x16 [anchored].png"
+            ).stat().st_size > 0
     assert (outdir / "trained_fx_fc_delta_best.png").stat().st_size > 0
 
     rows = _csv_rows(outdir)
-    assert set(rows[0]) == {"arch", "arch_stored", "subset_size", "channel",
-                            "rs", "alpha", "s", "f_model", "f_parent",
-                            "eval_channel"}
+    assert set(rows[0]) == {"arch", "arch_stored", "protocol", "subset_size",
+                            "channel", "rs", "alpha", "s", "f_model",
+                            "f_parent", "eval_channel"}
     n_scan = len(T.S_GRID) * len(T.ALPHA_VALUES) * (1 + len(T.RS_VALUES))
     assert len(rows) == n_scan
     fx = [r for r in rows if r["channel"] == "fx"]
@@ -409,12 +418,12 @@ def test_a_mixed_run_routes_each_arch_to_its_own_parent(tmp_path):
     outdir = tmp_path / "figs"
 
     assert T.build_all(run, outdir, eval_channel="val_best") == 0
-    assert (outdir / "trained_fx_fc_deep0_3x16.png").is_file()
-    assert (outdir / "trained_fx_fc_deep0_mgga_3x16.png").is_file()
+    assert (outdir / "trained_fx_fc_deep0_3x16 [anchored].png").is_file()
+    assert (outdir / "trained_fx_fc_deep0_mgga_3x16 [anchored].png").is_file()
     rows = _csv_rows(outdir)
-    gga_fx = [r for r in rows if r["arch"] == "deep0_3x16"
+    gga_fx = [r for r in rows if r["arch"] == "deep0_3x16 [anchored]"
               and r["channel"] == "fx"]
-    scan_fx0 = [r for r in rows if r["arch"] == "deep0_mgga_3x16"
+    scan_fx0 = [r for r in rows if r["arch"] == "deep0_mgga_3x16 [anchored]"
                 and r["channel"] == "fx" and r["alpha"] == "0"]
     assert {r["alpha"] for r in gga_fx} == {""}
     assert len(gga_fx) == len(T.S_GRID)
@@ -436,7 +445,9 @@ def test_an_arch_restriction_matching_nothing_says_what_the_run_holds(
     run = _make_run(tmp_path, {0: 4})
     assert T.build_all(run, tmp_path / "figs", archs=("deep_cusp_3x16",)) == 2
     out = capsys.readouterr().out
-    assert "matches no cell" in out and "deep_3x16" in out
+    # the names offered are the ones a restriction can select: the shown
+    # name with the tag the suite shows the cell under (2026-09-15)
+    assert "matches no cell" in out and "deep0_3x16 [anchored]" in out, out
 
 
 def test_a_run_dir_without_a_manifest_is_reported(tmp_path, capsys):
@@ -569,3 +580,219 @@ def test_render_best_figure_legend_shows_display_names(tmp_path, monkeypatch):
     blob = " ".join(texts)
     assert not re.search(r"\bmedium\b", blob), blob
     assert "deep_3x16: 3 x 16, Glorot initialization" in blob, blob
+
+
+# ---------------------------------------------------------------------------
+# T6: the protocol tag of a merged-view cell (2026-09-15)
+#
+# The family view's manifest carries an arm's training protocol as the cell's
+# ``protocol`` key beside the stored architecture key (merge_family_runs.py).
+# A tagged cell is another cell of the same architecture and size, so it is
+# selected, grouped, ranked, filed and labelled under the tagged shown name,
+# the figure suite's own rule (``deep_3x16 [25 cycles]``), and never merged
+# with the untagged cell.
+# ---------------------------------------------------------------------------
+
+def _make_tagged_run(tmp_path, *, parent_anchor=False):
+    """Two ``medium`` cells at subset 7: spec 0 untagged, spec 1 carrying the
+    merge's ``protocol`` key; both with a val-best checkpoint stub. Unanchored
+    as the v7 runs are, unless asked (an anchored run adds its own tag)."""
+    run = tmp_path / "run_20260908T153908Z"
+    (run / "checkpoints").mkdir(parents=True)
+    with open(run / "resolved_config.yaml", "w") as fh:
+        yaml.safe_dump(_raw_config(["medium"], parent_anchor=parent_anchor), fh)
+    specs = [{"index": 0, "cell": {"arch": "medium", "subset_size": 7}},
+             {"index": 1, "cell": {"arch": "medium", "subset_size": 7,
+                                   "protocol": "25 cycles"}}]
+    with open(run / "manifest.json", "w") as fh:
+        json.dump({"width": 4, "n_specs": 2, "specs": specs}, fh)
+    for index in (0, 1):
+        d = run / "checkpoints" / f"spec_{index:04d}"
+        d.mkdir()
+        (d / "model_val_best.eqx").write_bytes(b"x")
+    return run
+
+
+def _full_curves():
+    """Synthetic PBE-arch curves carrying every r_s the CSV writer walks."""
+    n = T.S_GRID.size
+    model, parent = np.linspace(1.0, 1.2, n), np.ones(n)
+    return {"fx_model": model, "fx_parent": parent,
+            "fc": {rs: {"model": model, "parent": parent}
+                   for rs in T.RS_VALUES}}
+
+
+def test_discovery_carries_the_cells_protocol_tag(tmp_path):
+    run = _make_tagged_run(tmp_path)
+    cells, missing = T.discover_cells(run, "val_best")
+    assert missing == []
+    assert [(c.index, c.arch, c.protocol) for c in cells] == [
+        (0, "medium", None), (1, "medium", "25 cycles")]
+
+
+def test_a_tagged_cell_is_filed_and_titled_under_its_tag(tmp_path,
+                                                          monkeypatch):
+    """The 25-cycle cell of ``medium`` at 7 and the size group's cell at 7
+    are two cells: the tagged one gets its own file and title."""
+    captured = _capture_figures(monkeypatch)
+    cell, curves = _synthetic_cell_and_curves(tmp_path, "medium",
+                                              subset_size=7)
+    tagged = dataclasses.replace(cell, protocol="25 cycles")
+    out = T.render_arch_figure("medium", [tagged], {tagged.index: curves},
+                               tmp_path, "footer", protocol="25 cycles")
+    assert out.name == "trained_fx_fc_deep_3x16 [25 cycles].png"
+    assert out.is_file() and out.stat().st_size > 0
+    texts = _fig_texts(captured[-1])
+    assert any(t.startswith("deep_3x16 [25 cycles]:") for t in texts), texts
+    out2 = T.render_arch_figure("medium", [cell], {cell.index: curves},
+                                tmp_path, "footer")
+    assert out2.name == "trained_fx_fc_deep_3x16.png"
+
+
+def test_an_arch_restriction_with_a_tag_selects_the_tagged_cells_only(
+        tmp_path):
+    run = _make_tagged_run(tmp_path)
+    tagged, _m = T.discover_cells(run, "val_best",
+                                  archs=("deep_3x16 [25 cycles]",))
+    assert [c.index for c in tagged] == [1]
+    plain, _m = T.discover_cells(run, "val_best", archs=("deep_3x16",))
+    assert [c.index for c in plain] == [0]
+    both, _m = T.discover_cells(run, "val_best",
+                                archs=("deep_3x16", "deep_3x16 [25 cycles]"))
+    assert [c.index for c in both] == [0, 1]
+
+
+def test_best_cells_rank_each_protocol_separately(tmp_path):
+    """One winner per (architecture, protocol): the arm's cells are never the
+    size group's best, and the other way round."""
+    run = _make_tagged_run(tmp_path)
+    _write_test_set(run, 0, 6.0)
+    _write_test_set(run, 1, 9.0)
+    cells, _m = T.discover_cells(run, "val_best")
+    selected, unranked = T.best_cells(run, cells, 4)
+    assert unranked == []
+    assert [(c.index, c.protocol, mae) for c, mae in selected] == [
+        (0, None, pytest.approx(6.0)), (1, "25 cycles", pytest.approx(9.0))]
+
+
+def test_render_best_figure_labels_carry_the_tag(tmp_path, monkeypatch):
+    captured = _capture_figures(monkeypatch)
+    c_plain, curves_plain = _synthetic_cell_and_curves(
+        tmp_path, "medium", index=0, subset_size=7)
+    c_tag, curves_tag = _synthetic_cell_and_curves(
+        tmp_path, "medium", index=1, subset_size=7)
+    c_tag = dataclasses.replace(c_tag, protocol="25 cycles")
+    T.render_best_figure([(c_plain, curves_plain, 6.0),
+                          (c_tag, curves_tag, 9.0)], tmp_path, "run run_x")
+    texts = _fig_texts(captured[-1])
+    assert "deep_3x16 (7 mols, 6.00 kcal/mol)" in texts, texts
+    assert "deep_3x16 [25 cycles] (7 mols, 9.00 kcal/mol)" in texts, texts
+    # the footer's key line expands the tagged name too
+    blob = " ".join(texts)
+    assert "deep_3x16 [25 cycles]: 3 x 16, Glorot initialization" in blob, blob
+
+
+def test_the_curves_csv_names_a_tagged_cell_by_its_shown_name(tmp_path):
+    c_plain, _c = _synthetic_cell_and_curves(tmp_path, "medium", index=0,
+                                             subset_size=7)
+    c_tag, _c = _synthetic_cell_and_curves(tmp_path, "medium", index=1,
+                                           subset_size=7)
+    c_tag = dataclasses.replace(c_tag, protocol="25 cycles")
+    T.write_curves_csv([c_tag, c_plain],
+                       {0: _full_curves(), 1: _full_curves()}, tmp_path)
+    rows = _csv_rows(tmp_path)
+    assert {(r["arch"], r["arch_stored"], r["protocol"]) for r in rows} == {
+        ("deep_3x16", "medium", ""),
+        ("deep_3x16 [25 cycles]", "medium", "25 cycles")}
+    first_tagged = next(i for i, r in enumerate(rows)
+                        if r["arch"].endswith("]"))
+    assert first_tagged > 0
+    assert all(not r["arch"].endswith("]") for r in rows[:first_tagged])
+
+
+def _synthetic_scan_curves():
+    """Synthetic SCAN-parent curves in the shape ``compute_curves_scan`` returns."""
+    n = T.S_GRID.size
+    model, parent = np.linspace(1.0, 1.2, n), np.ones(n)
+    return {"fx_alpha": {a: {"model": model, "parent": parent}
+                         for a in T.ALPHA_VALUES},
+            "fc_alpha": {a: {rs: {"model": model, "parent": parent}
+                             for rs in T.RS_VALUES}
+                         for a in T.ALPHA_VALUES}}
+
+
+def test_a_tagged_scan_cell_is_filed_labelled_and_tabulated_under_its_tag(
+        tmp_path, monkeypatch):
+    """The meta-GGA branches (the 2x4 per-arch figure, the best figure with a
+    SCAN arch, the alpha-columned CSV) carry the tag as the PBE ones do."""
+    captured = _capture_figures(monkeypatch)
+    curves = _synthetic_scan_curves()
+    cell = T.Cell(index=3, arch="deep_mgga_3x16", subset_size=7,
+                  path=tmp_path / "spec_0003" / "model.eqx", channel="final",
+                  fallback=False, protocol="25 cycles")
+    out = T.render_arch_figure("deep_mgga_3x16", [cell], {3: curves}, tmp_path,
+                               "footer", protocol="25 cycles")
+    assert out.name == "trained_fx_fc_deep0_mgga_3x16 [25 cycles].png"
+    texts = _fig_texts(captured[-1])
+    assert any(t.startswith("deep0_mgga_3x16 [25 cycles]:") for t in texts), texts
+    T.render_best_figure([(cell, curves, 4.0)], tmp_path, "run run_x")
+    texts = _fig_texts(captured[-1])
+    assert any(t.startswith("deep0_mgga_3x16 [25 cycles] (7 mols, 4.00 kcal/mol")
+               for t in texts), texts
+    # the footer's key line expands the tagged name on the SCAN branch too
+    blob = " ".join(texts)
+    assert "deep0_mgga_3x16 [25 cycles]: 3 x 16" in blob, blob
+    T.write_curves_csv([cell], {3: curves}, tmp_path)
+    rows = _csv_rows(tmp_path)
+    assert {(r["arch"], r["arch_stored"], r["protocol"]) for r in rows} == {
+        ("deep0_mgga_3x16 [25 cycles]", "deep_mgga_3x16", "25 cycles")}
+    assert {r["alpha"] for r in rows} == {"0", "1"}
+
+
+def test_an_unranked_tagged_cell_is_named_with_its_tag(tmp_path):
+    run = _make_tagged_run(tmp_path)
+    _write_test_set(run, 0, 6.0)             # the tagged cell has no evaluation
+    cells, _m = T.discover_cells(run, "val_best")
+    selected, unranked = T.best_cells(run, cells, 4)
+    assert unranked == ["deep_3x16 [25 cycles]"]
+    assert [(c.index, mae) for c, mae in selected] == [(0, pytest.approx(6.0)),
+                                                       (1, None)]
+
+
+def test_the_fallback_note_names_a_tagged_cell_by_its_shown_name(tmp_path):
+    cell, _c = _synthetic_cell_and_curves(tmp_path, "medium", subset_size=7)
+    tagged = dataclasses.replace(cell, protocol="25 cycles", fallback=True)
+    note = T._fallback_note([tagged], "val_best")
+    assert "deep_3x16 [25 cycles]/7" in note, note
+    assert "medium" not in note
+
+
+def test_the_run_level_anchor_tag_is_carried_as_the_suite_carries_it(tmp_path):
+    """A run stating ``parent_anchor: true`` is shown ``[anchored]`` by the
+    suite; a cell of a merged view that also carries its own tag reads
+    ``[25 cycles, anchored]``. The names here are the suite's own boundary's
+    names, one composition (``make_cluster_pulls_figure.cell_protocol``)."""
+    run = _make_tagged_run(tmp_path, parent_anchor=True)
+    cells, _m = T.discover_cells(run, "val_best")
+    assert [c.protocol for c in cells] == ["anchored", "25 cycles, anchored"]
+    suite_cells = T.ccp._read_manifest_cells(run)
+    assert [T.display_name(c.arch, protocol=c.protocol) for c in cells] == \
+        [suite_cells[0]["arch"], suite_cells[1]["arch"]] == \
+        ["deep_3x16 [anchored]", "deep_3x16 [25 cycles, anchored]"]
+    # a restriction by the two-tag name selects that cell alone
+    both, _m = T.discover_cells(run, "val_best",
+                                archs=("deep_3x16 [25 cycles, anchored]",))
+    assert [c.index for c in both] == [1]
+
+
+def test_the_archs_option_keeps_a_comma_inside_a_tag():
+    """Every order the family list produces: tagged then bare, bare then
+    tagged (the size group first), tagged then tagged (the two arms)."""
+    assert T._split_archs("deep_3x16 [25 cycles, anchored],deep0_3x16") == \
+        ("deep_3x16 [25 cycles, anchored]", "deep0_3x16")
+    assert T._split_archs("deep0_3x16,deep_3x16 [25 cycles, anchored]") == \
+        ("deep0_3x16", "deep_3x16 [25 cycles, anchored]")
+    assert T._split_archs("deep_3x16 [25 cycles],deep_attn_3x16 [dpyscf parity]") == \
+        ("deep_3x16 [25 cycles]", "deep_attn_3x16 [dpyscf parity]")
+    assert T._split_archs("a, b ,c") == ("a", "b", "c")
+    assert T._split_archs("deep_3x16") == ("deep_3x16",)

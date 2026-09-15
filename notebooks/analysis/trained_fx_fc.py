@@ -54,13 +54,24 @@ Outputs, into ``--outdir``:
                                      subset-size cell (light -> dark) with
                                      difference panels (2x2 for a PBE arch,
                                      2x4 with one column per alpha slice for
-                                     a SCAN arch)
+                                     a SCAN arch); a merged family view's
+                                     cells trained under another protocol
+                                     carry the view's tag in the cell
+                                     (``protocol``) and are filed under the
+                                     tagged shown name, as the figure suite
+                                     files them
+                                     (``trained_fx_fc_deep_3x16 [25 cycles].png``),
+                                     never merged with the untagged cells of
+                                     the same architecture
   * ``trained_fx_fc_delta_best.png`` cross-arch differences, each arch at its
                                      best held-out cell against its own parent
-  * ``trained_fx_fc_curves.csv``     long-form curves (arch, subset_size,
-                                     channel, rs, s, f_model, f_parent,
-                                     eval_channel; an alpha column is added
-                                     when a SCAN arch is drawn)
+  * ``trained_fx_fc_curves.csv``     long-form curves (arch, arch_stored,
+                                     protocol, subset_size, channel, rs, s,
+                                     f_model, f_parent, eval_channel; an
+                                     alpha column is added when a SCAN arch
+                                     is drawn; ``arch`` is the tagged shown
+                                     name, ``protocol`` the tag alone or
+                                     empty)
 
 The ``eval_channel`` column states the channel each row's weights actually came
 from, so a row reading ``final`` under ``--eval-channel val_best`` is a cell
@@ -77,6 +88,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,7 +102,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from arch_style import arch_color, display_name, key_line, stored_key  # noqa: E402
+from arch_style import (  # noqa: E402
+    arch_color, display_name, key_line, split_tag, stored_key)
+import make_cluster_pulls_figure as ccp  # noqa: E402
 
 
 def _footer_with_key(footer: str, shown_names) -> str:
@@ -149,13 +163,35 @@ _LOCAL_ROOT = Path("~/Documents/Research/xcquinox-results/runs").expanduser()
 
 @dataclass(frozen=True)
 class Cell:
-    """One completed sweep cell and the checkpoint the curves are drawn from."""
+    """One completed sweep cell and the checkpoint the curves are drawn from.
+
+    ``protocol`` is the training-protocol tag the figure suite shows the
+    cell under (``make_cluster_pulls_figure.cell_protocol``): the tag a
+    merged family view writes into the cell beside the stored architecture
+    key (``25 cycles``, ``dpyscf parity``; ``merge_family_runs.py``), the
+    run's own tag (``anchored`` when the run states ``parent_anchor: true``),
+    or both joined; ``None`` for a plain cell. A tagged cell is another cell
+    of the same architecture: it is grouped, ranked, filed and labelled under
+    ``display_name(arch, protocol=protocol)``, the suite's rule.
+    """
     index: int
     arch: str
     subset_size: int
     path: Path
     channel: str
     fallback: bool
+    protocol: Optional[str] = None
+
+
+def _shown(cell: Cell) -> str:
+    """The shown name a cell is drawn, filed and tabulated under."""
+    return display_name(cell.arch, protocol=cell.protocol)
+
+
+def _group_key(cell: Cell) -> Tuple[str, str]:
+    """The per-architecture grouping key: the stored key and the tag (an
+    empty string when untagged, so the untagged group sorts first)."""
+    return cell.arch, cell.protocol or ""
 
 
 def read_manifest(run_dir: Path) -> Tuple[int, Dict[int, dict]]:
@@ -192,10 +228,16 @@ def discover_cells(run_dir: Path, eval_channel: str,
     a run pulled without the weights looks like.
     """
     width, manifest_cells = read_manifest(run_dir)
+    # the run-level tag (``anchored``), composed with each cell's own by the
+    # suite's rule, so a cell is named here as the suite names it
+    run_tag = ccp.run_protocol_tag(run_dir)
     # ``archs`` in either spelling: the manifest names the registry key, a
     # shown name is mapped to it; a name that is both is read in the shown
-    # sense, as the suite does
-    wanted = {stored_key(a) for a in archs} if archs else None
+    # sense, as the suite does. A protocol tag on a requested name selects
+    # the cells carrying that tag and nothing else; a bare name selects the
+    # untagged cells only.
+    wanted = ({(stored_key(a), split_tag(a)[1] or None) for a in archs}
+              if archs else None)
     found: List[Cell] = []
     missing: List[Tuple[int, str, int]] = []
     for index in sorted(manifest_cells):
@@ -203,7 +245,8 @@ def discover_cells(run_dir: Path, eval_channel: str,
         arch, subset_size = cell.get("arch"), cell.get("subset_size")
         if arch is None or subset_size is None:
             continue
-        if wanted is not None and arch not in wanted:
+        protocol = ccp.cell_protocol(cell, run_tag)
+        if wanted is not None and (arch, protocol) not in wanted:
             continue
         directory = spec_dir(run_dir, index, width)
         chain = [eval_channel]
@@ -216,7 +259,8 @@ def discover_cells(run_dir: Path, eval_channel: str,
                 found.append(Cell(index=index, arch=arch,
                                   subset_size=int(subset_size), path=path,
                                   channel=channel,
-                                  fallback=channel != eval_channel))
+                                  fallback=channel != eval_channel,
+                                  protocol=protocol))
                 break
         else:
             missing.append((index, arch, int(subset_size)))
@@ -434,19 +478,22 @@ def _cell_label(cell: Cell) -> str:
 
 def render_arch_figure(arch_name: str, cells: Sequence[Cell],
                        curves_by_index: Dict[int, dict], outdir: Path,
-                       footer: str) -> Path:
+                       footer: str, *, protocol: Optional[str] = None) -> Path:
     """Per-arch panels against the arch's parent: the 2x2 PBE layout, or the
     2x4 SCAN layout (one column per alpha slice) for a meta-GGA arch.
 
     One curve per completed subset-size cell, ascending, light -> dark.
+    ``protocol`` is the cells' training-protocol tag (``Cell.protocol``): the
+    figure is titled and filed under the tagged shown name.
     """
     ordered = sorted(cells, key=lambda c: (c.subset_size, c.index))
     if "fx_alpha" in curves_by_index[ordered[0].index]:
         return _render_arch_figure_scan(arch_name, ordered, curves_by_index,
-                                        outdir, footer)
+                                        outdir, footer, protocol=protocol)
     # ``arch_name`` is the manifest's stored key; the figure shows the derived
-    # name and is filed under it
-    shown = display_name(arch_name)
+    # name, with the protocol tag when the cells carry one, and is filed
+    # under it
+    shown = display_name(arch_name, protocol=protocol)
     shades = subset_shades(arch_color(shown), len(ordered))
     fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.6))
     (ax_fx, ax_dfx), (ax_fc, ax_dfc) = axes
@@ -498,15 +545,17 @@ def render_arch_figure(arch_name: str, cells: Sequence[Cell],
 
 def _render_arch_figure_scan(arch_name: str, ordered: Sequence[Cell],
                              curves_by_index: Dict[int, dict], outdir: Path,
-                             footer: str) -> Path:
+                             footer: str, *,
+                             protocol: Optional[str] = None) -> Path:
     """Per-arch 2x4 against the SCAN parent: one column per (channel, alpha)
     -- [F_x a=0 | F_x a=1 | F_c a=0 | F_c a=1], overlays on the top row and
     differences below, so every panel is a single-alpha family of cell curves
     exactly like the PBE panels. ``ordered`` is the cell list already sorted
     by (subset_size, index)."""
     # ``arch_name`` is the manifest's stored key; the figure shows the derived
-    # name and is filed under it
-    shown = display_name(arch_name)
+    # name, with the protocol tag when the cells carry one, and is filed
+    # under it
+    shown = display_name(arch_name, protocol=protocol)
     shades = subset_shades(arch_color(shown), len(ordered))
     fig, axes = plt.subplots(2, 4, figsize=(18.0, 7.6))
     top, bottom = axes
@@ -570,9 +619,9 @@ def render_best_figure(best: Sequence[Tuple[Cell, dict, Optional[float]]],
     if any("fx_alpha" in curves for _cell, curves, _mae in best):
         return _render_best_figure_with_scan(best, outdir, footer)
     fig, (ax_dfx, ax_dfc) = plt.subplots(1, 2, figsize=(11.0, 4.4))
-    shown_names = [display_name(cell.arch) for cell, _c, _m in best]
+    shown_names = [_shown(cell) for cell, _c, _m in best]
     for cell, curves, mae in best:
-        shown = display_name(cell.arch)
+        shown = _shown(cell)
         color = arch_color(shown)
         label = (f"{shown} ({cell.subset_size} mol"
                  + ("" if cell.subset_size == 1 else "s")
@@ -614,9 +663,9 @@ def _render_best_figure_with_scan(
     has_pbe = any("fx_model" in curves for _cell, curves, _mae in best)
     parent_tag = r"\mathrm{parent}" if has_pbe else r"\mathrm{SCAN}"
     fig, (ax_dfx, ax_dfc) = plt.subplots(1, 2, figsize=(11.0, 4.4))
-    shown_names = [display_name(cell.arch) for cell, _c, _m in best]
+    shown_names = [_shown(cell) for cell, _c, _m in best]
     for cell, curves, mae in best:
-        shown = display_name(cell.arch)
+        shown = _shown(cell)
         color = arch_color(shown)
         stem = (f"{shown} ({cell.subset_size} mol"
                 + ("" if cell.subset_size == 1 else "s")
@@ -672,27 +721,29 @@ def write_curves_csv(cells: Sequence[Cell], curves_by_index: Dict[int, dict],
     column, which PBE-arch rows leave empty exactly as fx rows leave ``rs``
     empty."""
     out = outdir / "trained_fx_fc_curves.csv"
-    ordered = sorted(cells, key=lambda c: (c.arch, c.subset_size, c.index))
+    ordered = sorted(cells, key=lambda c: (*_group_key(c), c.subset_size,
+                                           c.index))
     if any("fx_alpha" in curves_by_index[c.index] for c in ordered):
         return _write_curves_csv_with_alpha(ordered, curves_by_index, out)
-    # the CSV convention of the figure layer: ``arch`` is the shown name,
-    # ``arch_stored`` the manifest's key
+    # the CSV convention of the figure layer: ``arch`` is the shown name
+    # (tagged for a merged view's protocol cells), ``arch_stored`` the
+    # manifest's key
     with open(out, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["arch", "arch_stored", "subset_size", "channel", "rs", "s",
-                    "f_model", "f_parent", "eval_channel"])
+        w.writerow(["arch", "arch_stored", "protocol", "subset_size", "channel",
+                    "rs", "s", "f_model", "f_parent", "eval_channel"])
         for cell in ordered:
             curves = curves_by_index[cell.index]
-            shown = display_name(cell.arch)
+            shown, tag = _shown(cell), cell.protocol or ""
             for s, fm, fp in zip(S_GRID, curves["fx_model"],
                                  curves["fx_parent"]):
-                w.writerow([shown, cell.arch, cell.subset_size, "fx", "",
+                w.writerow([shown, cell.arch, tag, cell.subset_size, "fx", "",
                             f"{s:.6f}", repr(float(fm)), repr(float(fp)),
                             cell.channel])
             for rs in RS_VALUES:
                 pair = curves["fc"][rs]
                 for s, fm, fp in zip(S_GRID, pair["model"], pair["parent"]):
-                    w.writerow([shown, cell.arch, cell.subset_size, "fc",
+                    w.writerow([shown, cell.arch, tag, cell.subset_size, "fc",
                                 f"{rs:g}", f"{s:.6f}", repr(float(fm)),
                                 repr(float(fp)), cell.channel])
     return out
@@ -702,21 +753,21 @@ def _write_curves_csv_with_alpha(ordered: Sequence[Cell],
                                  curves_by_index: Dict[int, dict],
                                  out: Path) -> Path:
     """The long-form CSV when at least one SCAN arch is drawn (``ordered`` is
-    the cell list already sorted by (arch, subset_size, index))."""
+    the cell list already sorted by (arch, tag, subset_size, index))."""
     with open(out, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["arch", "arch_stored", "subset_size", "channel", "rs",
-                    "alpha", "s", "f_model", "f_parent", "eval_channel"])
+        w.writerow(["arch", "arch_stored", "protocol", "subset_size", "channel",
+                    "rs", "alpha", "s", "f_model", "f_parent", "eval_channel"])
         for cell in ordered:
             curves = curves_by_index[cell.index]
-            shown = display_name(cell.arch)
+            shown, tag = _shown(cell), cell.protocol or ""
             if "fx_alpha" in curves:
                 for alpha in ALPHA_VALUES:
                     pair = curves["fx_alpha"][alpha]
                     for s, fm, fp in zip(S_GRID, pair["model"],
                                          pair["parent"]):
-                        w.writerow([shown, cell.arch, cell.subset_size, "fx",
-                                    "", f"{alpha:g}", f"{s:.6f}",
+                        w.writerow([shown, cell.arch, tag, cell.subset_size,
+                                    "fx", "", f"{alpha:g}", f"{s:.6f}",
                                     repr(float(fm)), repr(float(fp)),
                                     cell.channel])
                 for alpha in ALPHA_VALUES:
@@ -724,22 +775,23 @@ def _write_curves_csv_with_alpha(ordered: Sequence[Cell],
                         pair = curves["fc_alpha"][alpha][rs]
                         for s, fm, fp in zip(S_GRID, pair["model"],
                                              pair["parent"]):
-                            w.writerow([shown, cell.arch, cell.subset_size,
-                                        "fc", f"{rs:g}", f"{alpha:g}",
-                                        f"{s:.6f}", repr(float(fm)),
-                                        repr(float(fp)), cell.channel])
+                            w.writerow([shown, cell.arch, tag,
+                                        cell.subset_size, "fc", f"{rs:g}",
+                                        f"{alpha:g}", f"{s:.6f}",
+                                        repr(float(fm)), repr(float(fp)),
+                                        cell.channel])
             else:
                 for s, fm, fp in zip(S_GRID, curves["fx_model"],
                                      curves["fx_parent"]):
-                    w.writerow([shown, cell.arch, cell.subset_size, "fx", "",
-                                "", f"{s:.6f}", repr(float(fm)),
+                    w.writerow([shown, cell.arch, tag, cell.subset_size, "fx",
+                                "", "", f"{s:.6f}", repr(float(fm)),
                                 repr(float(fp)), cell.channel])
                 for rs in RS_VALUES:
                     pair = curves["fc"][rs]
                     for s, fm, fp in zip(S_GRID, pair["model"],
                                          pair["parent"]):
-                        w.writerow([shown, cell.arch, cell.subset_size, "fc",
-                                    f"{rs:g}", "", f"{s:.6f}",
+                        w.writerow([shown, cell.arch, tag, cell.subset_size,
+                                    "fc", f"{rs:g}", "", f"{s:.6f}",
                                     repr(float(fm)), repr(float(fp)),
                                     cell.channel])
     return out
@@ -750,7 +802,8 @@ def _write_curves_csv_with_alpha(ordered: Sequence[Cell],
 # ---------------------------------------------------------------------------
 
 def _fallback_note(cells: Sequence[Cell], eval_channel: str) -> str:
-    fell_back = sorted({f"{c.arch}/{c.subset_size}" for c in cells if c.fallback})
+    # the cells by their shown names, as every text on the figure names them
+    fell_back = sorted({f"{_shown(c)}/{c.subset_size}" for c in cells if c.fallback})
     if not fell_back:
         return ""
     return (f"  {len(fell_back)} cell(s) had no "
@@ -761,30 +814,32 @@ def _fallback_note(cells: Sequence[Cell], eval_channel: str) -> str:
 
 def best_cells(run_dir: Path, cells: Sequence[Cell], width: int
                ) -> Tuple[List[Tuple[Cell, Optional[float]]], List[str]]:
-    """``([(cell, mae)], unranked_archs)``: one cell per architecture.
+    """``([(cell, mae)], unranked)``: one cell per (architecture, protocol
+    tag), a merged view's tagged cells ranked among themselves.
 
     The cell kept is the one with the smallest combined held-out MAE on the
     channel its own weights came from -- the ranking is scored on the weights
     the curve is drawn from, not on a sibling checkpoint's evaluation. An
     architecture with no held-out evaluation on disk is drawn at its largest
-    completed subset size and named in the returned list, so the figure can
-    say the cell was not selected on a measurement.
+    completed subset size and named (by its shown name, tag included) in the
+    returned list, so the figure can say the cell was not selected on a
+    measurement.
     """
-    by_arch: Dict[str, List[Cell]] = {}
+    by_arch: Dict[Tuple[str, str], List[Cell]] = {}
     for cell in cells:
-        by_arch.setdefault(cell.arch, []).append(cell)
+        by_arch.setdefault(_group_key(cell), []).append(cell)
     out: List[Tuple[Cell, Optional[float]]] = []
     unranked: List[str] = []
-    for arch_name in sorted(by_arch):
+    for key in sorted(by_arch):
         scored = [(held_out_mae(run_dir, c.index, width, c.channel), c)
-                  for c in by_arch[arch_name]]
+                  for c in by_arch[key]]
         ranked = [(m, c) for m, c in scored if m is not None]
         if ranked:
             mae, cell = min(ranked, key=lambda t: (t[0], t[1].index))
             out.append((cell, mae))
         else:
-            unranked.append(arch_name)
-            out.append((max(by_arch[arch_name],
+            unranked.append(_shown(by_arch[key][0]))
+            out.append((max(by_arch[key],
                             key=lambda c: (c.subset_size, c.index)), None))
     return out, unranked
 
@@ -801,8 +856,12 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
         return 2
     cells, missing = discover_cells(run_dir, eval_channel, archs)
     if not cells and not missing:
-        present = sorted({c.get("arch") for c in manifest_cells.values()
-                          if c.get("arch")})
+        # the run's cells by the names a restriction can select: the shown
+        # name with the tag the suite shows it under
+        run_tag = ccp.run_protocol_tag(run_dir)
+        present = sorted({display_name(str(c["arch"]),
+                                       protocol=ccp.cell_protocol(c, run_tag))
+                          for c in manifest_cells.values() if c.get("arch")})
         print(f"--archs {','.join(archs or ())} matches no cell of "
               f"{run_dir.name}; its manifest holds {', '.join(present)}.")
         return 2
@@ -818,7 +877,7 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
     parents_scan: Optional[dict] = None  # built on the first SCAN arch
     parent_by_arch: Dict[str, str] = {}
     curves_by_index: Dict[int, dict] = {}
-    for cell in sorted(cells, key=lambda c: (c.arch, c.subset_size)):
+    for cell in sorted(cells, key=lambda c: (*_group_key(c), c.subset_size)):
         arch, model = load_trained_model(cfg, cell.arch, cell.path)
         parent = parent_for_arch(arch)
         parent_by_arch[cell.arch] = parent
@@ -829,18 +888,20 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
                                                               parents_scan)
         else:
             curves_by_index[cell.index] = compute_curves(model, parents)
-        print(f"loaded spec {cell.index} {cell.arch} ss={cell.subset_size} "
+        print(f"loaded spec {cell.index} {_shown(cell)} ss={cell.subset_size} "
               f"[{cell.channel}] max|dF_x| "
               f"{max_abs_dfx(curves_by_index[cell.index]):.3e}", flush=True)
 
-    by_arch: Dict[str, List[Cell]] = {}
+    # one figure per (architecture, protocol tag): a merged view's arm cells
+    # are drawn beside, never inside, the untagged cells of the same network
+    by_arch: Dict[Tuple[str, str], List[Cell]] = {}
     for cell in cells:
-        by_arch.setdefault(cell.arch, []).append(cell)
+        by_arch.setdefault(_group_key(cell), []).append(cell)
 
     channel_note = (f"checkpoint channel {eval_channel} "
                     f"({CHANNEL_FILENAMES[eval_channel]})")
-    for arch_name in sorted(by_arch):
-        arch_cells = by_arch[arch_name]
+    for arch_name, tag in sorted(by_arch):
+        arch_cells = by_arch[(arch_name, tag)]
         worst = max(max_abs_dfx(curves_by_index[c.index]) for c in arch_cells)
         if parent_by_arch[arch_name] == "scan":
             footer = (f"run {run_dir.name}; {channel_note}; parent SCAN; "
@@ -860,7 +921,7 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
                       "(libxc constants)." + _fallback_note(arch_cells,
                                                             eval_channel))
         out = render_arch_figure(arch_name, arch_cells, curves_by_index,
-                                 outdir, footer)
+                                 outdir, footer, protocol=tag or None)
         print(f"wrote {out} ({len(arch_cells)} cells, max|dF_x| {worst:.3e})")
 
     selected, unranked = best_cells(run_dir, cells, width)
@@ -898,13 +959,25 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
     return 0
 
 
+def _split_archs(text: str) -> Tuple[str, ...]:
+    """The ``--archs`` list: comma-separated names, where a comma inside a
+    protocol tag's brackets (``deep_3x16 [25 cycles, anchored]``, the suite's
+    two-tag form) is part of the name, not a separator."""
+    return tuple(a.strip() for a in re.split(r",(?![^\[]*\])", text)
+                 if a.strip())
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--archs", default=None,
-                    help="comma-separated subset (default: every arch in the "
-                         "run's manifest with a checkpoint on disk)")
+                    help="comma-separated subset in either spelling (default: "
+                         "every arch in the run's manifest with a checkpoint "
+                         "on disk). A protocol tag on a name, as a merged "
+                         "family view shows it ('deep_3x16 [25 cycles]'), "
+                         "selects the cells of that protocol only; a bare "
+                         "name the untagged cells only.")
     ap.add_argument("--eval-channel", default="val_best",
                     choices=sorted(CHANNEL_FILENAMES),
                     help="which trained checkpoint to draw: 'val_best' (the "
@@ -913,8 +986,7 @@ def main(argv=None) -> int:
                          "model_val_best.eqx falls back to model.eqx and is "
                          "labelled as such.")
     args = ap.parse_args(argv)
-    archs = (tuple(a.strip() for a in args.archs.split(","))
-             if args.archs else None)
+    archs = _split_archs(args.archs) if args.archs else None
     return build_all(Path(args.run_dir).expanduser(),
                      Path(args.outdir).expanduser(),
                      eval_channel=args.eval_channel, archs=archs)
