@@ -647,7 +647,7 @@ def test_main_reports_a_missing_markdown_file(tmp_path, capsys):
 # ---------------------------------------------------------------------------
 
 _TITLE = "v7 revision report"
-_DATE = "2026-09-09"
+_DATE = "2026-09-15"
 
 
 def _document(tmp_path):
@@ -811,8 +811,8 @@ def test_the_tracked_v7_sources_reference_family_figures_only():
     import os
     mod = _load_script()
     here = os.path.dirname(os.path.abspath(__file__))
-    for name in ("REPORT_v7_2026-09-09.md", "SUMMARY_v7_2026-09-09.md",
-                 "SLIDES_v7_2026-09-09_frames.tex"):
+    for name in ("REPORT_v7_2026-09-15.md", "SUMMARY_v7_2026-09-15.md",
+                 "SLIDES_v7_2026-09-15_frames.tex"):
         with open(os.path.join(here, name)) as fh:
             text = fh.read()
         paths = mod.figure_paths(text)

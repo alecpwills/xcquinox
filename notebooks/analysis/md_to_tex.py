@@ -32,8 +32,8 @@ portrait at the line width, capped at ``0.92\\textheight``.
 
 Usage::
 
-    python notebooks/analysis/md_to_tex.py notebooks/analysis/REPORT_v7_2026-09-09.md \\
-        --title "..." --date 2026-09-09 --pdf
+    python notebooks/analysis/md_to_tex.py notebooks/analysis/REPORT_v7_2026-09-15.md \\
+        --title "..." --date 2026-09-15 --pdf
 """
 from __future__ import annotations
 

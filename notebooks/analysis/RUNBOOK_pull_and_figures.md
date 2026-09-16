@@ -484,17 +484,20 @@ form) are the tracked sources; their `.tex` and `.pdf` are built by the
 repository's translator, which needs xelatex (DejaVu fonts) and Pillow:
 
 ```bash
-python notebooks/analysis/md_to_tex.py notebooks/analysis/REPORT_v7_2026-09-09.md --date 2026-09-09 --pdf
-python notebooks/analysis/md_to_tex.py notebooks/analysis/SUMMARY_v7_2026-09-09.md --date 2026-09-09 --pdf
+python notebooks/analysis/md_to_tex.py notebooks/analysis/REPORT_v7_2026-09-15.md --date 2026-09-15 --pdf
+python notebooks/analysis/md_to_tex.py notebooks/analysis/SUMMARY_v7_2026-09-15.md --date 2026-09-15 --pdf
 ```
 
 Before the build, the per-cell tables between the documents' marker lines are
-regenerated from the family CSVs and, for the two training-log tables of the report's
-Sec. 4.6, from the view's `aux_log.pkl` files through the suite's own collector
-(`--view` names the family view directory the figures were rendered from):
+regenerated from the family CSVs and, for the three view tables of the report's Sec. 4.6
+(the training losses and the validation checks from the view's `aux_log.pkl` files through
+the suite's own collector; the in-sample density fit from `eval/per_molecule.json` and the
+same logs), over the cells of the in-sample CSV (66 trained on 2026-09-15) where the
+held-out tables follow the held-out CSV (64 evaluated); `--view` names the family view
+directory the figures were rendered from:
 
 ```bash
-python notebooks/analysis/report_tables.py --view <view> --splice notebooks/analysis/REPORT_v7_2026-09-09.md notebooks/analysis/SUMMARY_v7_2026-09-09.md
+python notebooks/analysis/report_tables.py --view <view> --splice notebooks/analysis/REPORT_v7_2026-09-15.md notebooks/analysis/SUMMARY_v7_2026-09-15.md
 ```
 
 The title defaults to the markdown's `#` heading (`--title` overrides it); the
@@ -593,8 +596,8 @@ JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py --run-dir <view> --
 ```
 
 The family figure sets (suite plus trained_fx_fc outputs) are tracked in
-full at partial coverage as the campaign's visible progress (33 evaluated
-cells on 2026-09-09); the shared basis-comparison sets stay untracked
+full at partial coverage as the campaign's visible progress (64 evaluated
+cells on 2026-09-15); the shared basis-comparison sets stay untracked
 (regenerated on every suite call). A run whose architecture fails its
 certificate refuses the merge, and with it the whole family set: an
 uncertified architecture never enters the campaign's figures, and the

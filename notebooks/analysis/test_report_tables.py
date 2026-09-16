@@ -789,7 +789,33 @@ def _view_fixture(tmp_path, *, parent_anchor=False):
     _write_log(ck / "spec_0000", rows, _WEIGHTS)
     _write_log(ck / "spec_0002", [_update(e) for e in range(3)])
     _write_log(ck / "spec_0003", [_update(e) for e in range(2)])
+    # the in-sample record of the first cell: H2O, a case-twin pair (CH4, ch4) and an
+    # atom without a density (skipped by the collector)
+    _write_insample(ck / "spec_0000", _INSAMPLE_RECORDS)
     return view
+
+
+_INSAMPLE_RECORDS = [
+    # values that are exact in binary: H2O and CO improve on PBE (1 against 4, 1 against
+    # 3), the CH4/ch4 twins average to 3 against 2 and do not, and N2 ties (2 against 2)
+    # and does not count under the strict comparison, so the count is 2 of 4 (3 of 4 with
+    # a tie counted, 1 of 4 with the direction reversed); the cell means are 1.75 and 2.75
+    # (ratio 0.64), which a flat row mean of the PBE values (2.6), an inverted ratio (1.57)
+    # or a PBE column read from the network column (1.75) would each change
+    {"molecule": "H2O", "density_rmse": 1.0, "density_rmse_pbe": 4.0},
+    {"molecule": "CH4", "density_rmse": 4.0, "density_rmse_pbe": 1.0},
+    {"molecule": "ch4", "density_rmse": 2.0, "density_rmse_pbe": 3.0},
+    {"molecule": "N2", "density_rmse": 2.0, "density_rmse_pbe": 2.0},
+    {"molecule": "CO", "density_rmse": 1.0, "density_rmse_pbe": 3.0},
+    {"molecule": "H", "density_rmse": None, "density_rmse_pbe": None},
+]
+
+
+def _write_insample(spec_dir, records):
+    import json
+    d = Path(spec_dir) / "eval"
+    d.mkdir(exist_ok=True)
+    (d / "per_molecule.json").write_text(json.dumps(list(records)))
 
 
 # the evaluated cells of the view, as the family CSV names them
@@ -885,6 +911,16 @@ def test_the_training_tables_cover_the_family_csvs_cells_only(tmp_path, capsys):
     view = _view_fixture(tmp_path)
     kept = _table_lines(mod.training_losses_table(view, family_dir=fam))
     assert len(kept) == 5 and _TRAINING_ROW_3 not in kept
+    # the view tables' cell set is the in-sample CSV's: an empty one is refused by
+    # name, as the held-out one is for the held-out tables
+    empty = Path(tmp_path) / "empty_family"
+    empty.mkdir()
+    for name in (mod.HOLDOUT_CSV, mod.INSAMPLE_CSV):
+        (empty / name).write_text((fam / name).read_text().splitlines()[0] + "\n")
+    with pytest.raises(ValueError, match=f"{mod.INSAMPLE_CSV}: no cell rows"):
+        mod.training_losses_table(view, family_dir=empty)
+    with pytest.raises(ValueError, match=f"{mod.HOLDOUT_CSV}: no cell rows"):
+        mod.family_cells(empty)
     out = capsys.readouterr().out
     assert "[tables] 1 logged spec(s) not tabulated" in out and "[3]" in out, out
     assert "[tables] view spec 4: no architecture or subset size" in out, out
@@ -907,11 +943,14 @@ def test_an_empty_family_csv_is_refused_by_name(tmp_path):
     fam = Path(tmp_path) / "empty_family"
     fam.mkdir()
     (fam / "holdout_by_pool_3x3_eps.csv").write_text(HEADER + "\n")
+    (fam / "insample_by_pool_3x3_eps.csv").write_text(HEADER + "\n")
     with pytest.raises(ValueError) as exc:
         mod.family_cells(fam)
     assert "holdout_by_pool_3x3_eps.csv" in str(exc.value)
-    with pytest.raises(ValueError):
+    # the view tables read the in-sample CSV's cells and refuse its empty form by name
+    with pytest.raises(ValueError) as exc:
         mod.training_losses_table(_view_fixture(tmp_path), family_dir=fam)
+    assert "insample_by_pool_3x3_eps.csv" in str(exc.value)
 
 
 def test_the_validation_best_epoch_is_the_completed_count_and_the_earliest_on_a_tie(
@@ -1021,3 +1060,132 @@ def test_the_view_is_required_only_when_a_document_carries_a_training_table(tmp_
     assert _VALIDATION_ROW_0 in _block_of(doc_d.read_text(), "validation_checks")
     printed = capsys.readouterr().out
     assert "training_losses (3 rows)" in printed and "validation_checks (3 rows)" in printed
+
+
+# ---------------------------------------------------------------------------
+# T5: the in-sample density fit per cell (2026-09-15): the trained species with a
+# density reference, case twins collapsed as the suite collapses them, the network
+# and PBE cell means and their ratio, the improved species, the loss fall over the
+# first and last five percent of the updates, and the update count.
+# ---------------------------------------------------------------------------
+
+INSAMPLE_DENSITY_HEADER = ("| Run | Architecture | Subset | Trained species | Density RMSE NN | "
+                           "PBE | NN/PBE | Species improved | Loss fall (first/last 5%) | "
+                           "Updates |")
+# H2O and CO improve on PBE, the CH4/ch4 twins (3 against 2) and the N2 tie do not: 2 of
+# 4; the cell means are 1.75 and 2.75; the eight updates of 13.5 + 6e: one-update windows,
+# 13.5 / 55.5 = 0.24
+_DENSITY_ROW_0 = "| size | deep_3x16 | 7 | 4 | 1.75e+0 | 2.75e+0 | 0.64 | 2/4 | 0.2 | 8 |"
+# the tagged cell: a three-update log (13.5 / 25.5), no in-sample record
+_DENSITY_ROW_2 = "| 25-cycle arm | deep_3x16 [25 cycles] | 7 | -- | -- | -- | -- | -- | 0.5 | 3 |"
+_DENSITY_ROW_1 = "| families | deep0_3x16 | 12 | -- | -- | -- | -- | -- | -- | -- |"
+
+
+def test_insample_density_rows_collapse_twins_and_count_the_improved_species(tmp_path):
+    mod = _load_script()
+    view = _view_fixture(tmp_path)
+    fam, _excl = _view_family_dirs(tmp_path)
+    rows = mod.insample_density_rows(view)
+    assert set(rows) == {0}
+    # five named records with a density, four species once the CH4/ch4 twins are one
+    assert rows[0]["n_species"] == 4
+    assert rows[0]["nn"] == 1.75
+    assert rows[0]["pbe"] == 2.75
+    # H2O and CO below PBE; the twins' mean above it; the N2 tie not counted
+    assert rows[0]["improved"] == 2
+    # the cell means are the suite's own reduction (twin-then-species)
+    suite = mod._suite()
+    drows = suite.collect_insample_density_rows(view)
+    by_cell = suite.insample_density_by_arch_subset(drows, key="density_rmse")
+    assert by_cell[("deep_3x16", 7)] == pytest.approx(rows[0]["nn"])
+    table = mod.insample_density_table(view, family_dir=fam)
+    lines = table.splitlines()
+    assert lines[0] == INSAMPLE_DENSITY_HEADER
+    assert lines[2:] == [_DENSITY_ROW_0, _DENSITY_ROW_2, _DENSITY_ROW_1]
+
+
+def test_a_species_without_a_pbe_column_leaves_the_pbe_columns_absent(tmp_path):
+    mod = _load_script()
+    rows = [_update(e) for e in range(4)]
+    view = _one_cell_view(tmp_path, rows)
+    _write_insample(view / "checkpoints" / "spec_0000",
+                    [{"molecule": "H2O", "density_rmse": 1e-4, "density_rmse_pbe": 2e-4},
+                     {"molecule": "HLi", "density_rmse": 3e-4, "density_rmse_pbe": None}])
+    r = mod.insample_density_rows(view)[0]
+    assert r["n_species"] == 2 and r["nn"] == pytest.approx(2e-4)
+    assert r["pbe"] is None and r["improved"] is None
+    row = mod.insample_density_table(view).splitlines()[2]
+    assert row == "| size | deep_3x16 | 7 | 2 | 2.00e-4 | -- | -- | -- | 0.4 | 4 |"
+
+
+def test_the_loss_fall_windows_are_five_percent_of_the_updates_rounded_up(tmp_path):
+    """41 updates: windows of three (five percent rounded up), not two; the losses are
+    chosen so that the two window sizes give different falls (8 / 2 = 4.0 over three
+    updates, 9 / 2 = 4.5 over two). 40 updates over ten epochs of four: the window is
+    exactly two (no rounding), and the fall is over the updates in the log's order, the
+    first two (10 and 2) against the last two (1 and 1): 6.0, where the epoch means would
+    give 4.5 / 1 = 4.5 and a window of three (10, 2 and 3) 5.0."""
+    mod = _load_script()
+    losses = [12.0, 6.0, 6.0] + [5.0] * 35 + [2.0, 2.0, 2.0]
+    rows = [_update(e) for e in range(len(losses))]
+    for r, loss in zip(rows, losses):
+        r["loss"] = loss
+    view = _one_cell_view(tmp_path, rows)
+    fall = mod.loss_fall_rows(view)
+    assert fall[0]["updates"] == 41
+    assert fall[0]["fall"] == pytest.approx(4.0)
+    per_epoch = [[10.0, 2.0, 3.0, 3.0]] + [[5.0] * 4] * 8 + [[1.0] * 4]
+    rows40 = [_update(e) for e, group in enumerate(per_epoch) for _ in group]
+    for r, loss in zip(rows40, (x for group in per_epoch for x in group)):
+        r["loss"] = loss
+    view40 = _one_cell_view(tmp_path, rows40, name="run_forty")
+    fall40 = mod.loss_fall_rows(view40)
+    assert fall40[0]["updates"] == 40
+    assert fall40[0]["fall"] == pytest.approx(6.0)
+    # a log without a stepped loss has no entry, and the table reads absent
+    rows_no_loss = [_update(e, with_total=False) for e in range(6)]
+    view2 = _one_cell_view(tmp_path, rows_no_loss, name="run_two")
+    assert mod.loss_fall_rows(view2) == {}
+    assert mod.insample_density_table(view2).splitlines()[2].endswith("| -- | -- |")
+
+
+def test_the_view_tables_follow_the_in_sample_csv_not_the_held_out_one(tmp_path):
+    """A cell that trained and was evaluated in-sample but has no held-out
+    evaluation (the two cells set aside on 2026-09-15 after the reference refusal)
+    is in the in-sample CSV and not in the held-out one: the three view tables
+    carry it, the held-out cell set does not."""
+    mod = _load_script()
+    fam, _excl = _view_family_dirs(tmp_path)
+    extra = _csv_text([("deep_3x16", "medium", 26, 58, 66, 58)],
+                      _INSAMPLE_NUMBERS).splitlines()[1:]
+    path = fam / "insample_by_pool_3x3_eps.csv"
+    path.write_text(path.read_text().rstrip("\n") + "\n" + "\n".join(extra) + "\n")
+    assert ("deep_3x16", 26) not in mod.family_cells(fam)
+    assert ("deep_3x16", 26) in mod.family_cells(fam, mod.INSAMPLE_CSV)
+    view = _view_fixture(tmp_path)
+    lines = _table_lines(mod.training_losses_table(view, family_dir=fam))
+    assert len(lines) == 6 and lines[3] == _TRAINING_ROW_3
+    tables = mod.training_tables(view, fam)
+    assert _TRAINING_ROW_3 in tables["training_losses"]
+    assert "| size | deep_3x16 | 26 | 2 | -- | -- |" in tables["validation_checks"]
+    # the running cell's two updates, 13.5 and 19.5: one-update windows
+    assert "| size | deep_3x16 | 26 | -- | -- | -- | -- | -- | 0.7 | 2 |" in \
+        tables["insample_density"]
+
+
+def test_the_insample_density_marker_needs_the_view_and_is_spliced(tmp_path, capsys):
+    mod = _load_script()
+    fam, excl = _view_family_dirs(tmp_path)
+    doc = Path(tmp_path) / "REPORT_density.md"
+    doc.write_text("# d\n\n" + _marked("insample_density"))
+    with pytest.raises(SystemExit):
+        mod.main(["--family-dir", str(fam), "--excl-dir", str(excl), "--splice", str(doc)])
+    assert "--view" in capsys.readouterr().err
+    view = _view_fixture(tmp_path)
+    assert not mod.main(["--family-dir", str(fam), "--excl-dir", str(excl),
+                         "--view", str(view), "--splice", str(doc)])
+    block = _block_of(doc.read_text(), "insample_density")
+    assert _DENSITY_ROW_0 in block and _DENSITY_ROW_2 in block and _DENSITY_ROW_1 in block
+    assert "insample_density (3 rows)" in capsys.readouterr().out
+    assert set(mod.training_tables(view, fam)) == {"training_losses", "validation_checks",
+                                                   "insample_density"}

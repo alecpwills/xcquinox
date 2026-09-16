@@ -124,9 +124,9 @@ xcquinox/tests/testmakenetnotebooks/checkpoints/
 # slide) and the full v7 report stay off the remote; the plain decks and the summary are tracked
 notebooks/analysis/*_annotated.tex
 notebooks/analysis/*_annotated.pdf
-notebooks/analysis/REPORT_v7_2026-09-09.md
-notebooks/analysis/REPORT_v7_2026-09-09.tex
-notebooks/analysis/REPORT_v7_2026-09-09.pdf
+notebooks/analysis/REPORT_v7_*.md
+notebooks/analysis/REPORT_v7_*.tex
+notebooks/analysis/REPORT_v7_*.pdf
 reports_local/
 
 # Training-run artifact directories. These are large binary checkpoint

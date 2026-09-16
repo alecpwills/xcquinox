@@ -45,9 +45,9 @@ _SCRIPT = _HERE / "slide_code_notes.py"
 _MODNAME = "slide_code_notes"
 
 _EXCERPT_DIR = _HERE / "slides_code"
-_FRAMES = _HERE / "SLIDES_v7_2026-09-09_frames.tex"
-_PLAIN = _HERE / "SLIDES_v7_2026-09-09.tex"
-_ANNOTATED = _HERE / "SLIDES_v7_2026-09-09_annotated.tex"
+_FRAMES = _HERE / "SLIDES_v7_2026-09-15_frames.tex"
+_PLAIN = _HERE / "SLIDES_v7_2026-09-15.tex"
+_ANNOTATED = _HERE / "SLIDES_v7_2026-09-15_annotated.tex"
 
 # The pages the manifest covers and the number of rows on each, from the manifest itself
 # (88 rows: 3(7) 4(5) 5(6) 6(5) 7(6) 8(6) 9(4) 11(10) 12(5) 15(12) 16(11) 19(11)).
@@ -60,8 +60,9 @@ _ROWS = 88
 # the drift test below is the provenance.
 _HEADER = re.compile(r"^# (?P<path>[^\s:]+):(?P<first>\d+)-(?P<last>\d+)$")
 
-# The frames file holds this many ``\begin{frame}`` lines; page N of the plain deck is the N-th.
-_FRAME_COUNT = 24
+# The frames file holds this many ``\begin{frame}`` lines; page N of the plain deck is the N-th
+# (25 since 2026-09-15: the per-cell table frame became two frames over 64 cells).
+_FRAME_COUNT = 25
 
 # One ``\codenote`` line of the frames file.
 _CODENOTE = re.compile(r"^\\codenote\{(.*)\}\{slides_code/([^}]+)\.txt\}$")
@@ -480,7 +481,8 @@ def _pdf_pages(pdf: Path) -> int:
 @pytest.mark.skipif(shutil.which("xelatex") is None or shutil.which("pdfinfo") is None,
                     reason="xelatex or pdfinfo not installed")
 def test_decks_build(tmp_path):
-    """Both wrappers compile from the analysis directory: the plain deck keeps its 24 pages,
+    """Both wrappers compile from the analysis directory: the plain deck keeps its 25 pages
+    (24 until 2026-09-15, when the per-cell table frame became two frames over 64 cells),
     the annotated one grows by the code frames, and no glyph of an excerpt is missing."""
     results = {}
     for wrapper in (_PLAIN, _ANNOTATED):
@@ -494,5 +496,5 @@ def test_decks_build(tmp_path):
         assert proc.returncode == 0, f"{wrapper.name}: xelatex failed\n{log[-3000:]}"
         assert "Missing character" not in log, f"{wrapper.name}: a glyph is missing"
         results[wrapper.stem] = _pdf_pages(out / f"{wrapper.stem}.pdf")
-    assert results[_PLAIN.stem] == 24, results
+    assert results[_PLAIN.stem] == 25, results
     assert results[_ANNOTATED.stem] > 56, results

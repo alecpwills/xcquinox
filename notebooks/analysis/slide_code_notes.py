@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Code notes of the annotated results deck: verbatim excerpts traced from the repository.
 
-The annotated deck (``SLIDES_v7_2026-09-09_annotated.tex``) follows every slide with a notes
+The annotated deck (``SLIDES_v7_2026-09-15_annotated.tex``) follows every slide with a notes
 frame. For the slides that state equations, descriptors, architectures, the training pool, the
 subset metric, the pre-training objective, the fidelity certificate, the training objective, the
 solver and the held-out metrics, the notes are followed by the code that implements each claim:
@@ -20,7 +20,7 @@ Usage, from the repository root, after a change to any excerpted file::
     python3 notebooks/analysis/slide_code_notes.py --write
 
 writes ``notebooks/analysis/slides_code/*.txt`` and prints the ``\\codenote`` lines per page (the
-lines already placed in ``SLIDES_v7_2026-09-09_frames.tex``); without ``--write`` it only prints.
+lines already placed in ``SLIDES_v7_2026-09-15_frames.tex``); without ``--write`` it only prints.
 Standard library only.
 """
 from __future__ import annotations
@@ -42,8 +42,10 @@ class Entry(NamedTuple):
     tokens: Tuple[str, ...]   # each must occur on one line of the excerpt
 
 
-# The frames file holds this many \begin{frame} lines; page N of the plain deck is the N-th.
-FRAME_COUNT = 24
+# The frames file holds this many \begin{frame} lines; page N of the plain deck is the N-th
+# (24 until 2026-09-15, when the per-cell table frame became two frames over 64 cells; no
+# manifest row cites a page after the split point).
+FRAME_COUNT = 25
 
 # The rows: page, order, title, path, first, last, tokens. Five rows differ from the first
 # draft of this manifest, corrected against the code on 2026-09-10 (p5.2, p11.2, p11.6, p16.2,
@@ -106,9 +108,10 @@ MANIFEST: Tuple[Entry, ...] = (
     Entry(6, 1, "the architecture record",
           "xcquinox/alec/config.py", 103, 159,
           ("depth: int", "nodes: int", "num_heads: int = 1", "zero_init_final_layer: bool = False", )),
-    Entry(6, 2, "the registry entries medium and medium_attn (shown deep_3x16, deep_attn_3x16)",
+    Entry(6, 2, "the registry entries shallow, shallow_attn, medium and medium_attn (shown "
+                "deep_2x8, deep_attn_2x8, deep_3x16, deep_attn_3x16)",
           "xcquinox/alec/config.py", 512, 515,
-          ("\"medium\"", "num_heads=4", )),
+          ("\"shallow\"", "\"medium\"", "num_heads=2", "num_heads=4", )),
     Entry(6, 3, "the registry entries deep_3x16, deep_attn_3x16, deep_cusp_3x16 (shown deep0_*)",
           "xcquinox/alec/config.py", 579, 592,
           ("zero_init_final_layer=True", "num_heads=4", )),

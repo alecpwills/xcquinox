@@ -1015,3 +1015,47 @@ reader still accepts (a file without `arch_stored` is read by `arch`).
 **TRIGGER:** when the anchored-versus-unanchored figure is next needed: point the series at the
 archive root (or at the merged family view of the v7 plan), skip the eleven tests when the
 sources are absent, and record the source root in the figure footer.
+
+## 33. Deploy the T1-key remedy to the cluster and re-evaluate the two refused cells (deferred 2026-09-15)
+
+**WHAT:** the remedy of `ab1ecc89c` (the reference loader accepts `t1_diagnostic`; a
+reference the loader cannot read stops a held-out pass; an evaluation that precomputed no
+species is refused before any table is written) is committed locally and not yet on the
+cluster, whose checkout is at `0d44a264b`. Two evaluated cells carry NaN tables from the
+refusal (size run `run_20260902T145245Z` spec 42, deep_attn_2x8 at 18; 25-cycle run
+`run_20260908T153856Z` spec 2, deep_3x16 [25 cycles] at 15); their channel directories are
+set aside locally under `checkpoints/spec_XXXX/refused_t1key_2026-09-15/` so the figures
+hold the evaluated cells only.
+
+**WHY:** the user chose on 2026-09-15 to verify and publish the pulled results first and to
+re-run the two cells in a later job.
+
+**KNOWN:** every task whose held-out evaluation starts before the deploy lands writes the same
+NaN tables (the four tasks running at the pull and everything queued behind them); the sweep
+line below lists every such task from the cluster's logs, and each one listed needs one more
+repair submission (the same command with its run directory and index). The repair job's
+default wall (6 h at 20 workers) is short for the 25-cycle cell (8.3 h scaled from its
+measured passes); the submissions carry 12 h and the campaign's own 40 workers.
+
+**TRIGGER:** the next cluster session. The commands, from the repository root:
+
+```bash
+rsync -av xcquinox/alec/data.py xcquinox/alec/eval_holdout.py xcquinox/alec/benchmark_refs.py "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/alec/
+rsync -av xcquinox/alec/cluster/_eval_one_spec.py xcquinox/alec/cluster/_holdout_parallel.py "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/alec/cluster/
+ssh "$swpath" bash -l <<'EOS'
+grep -c t1_diagnostic /gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/alec/data.py
+grep -c 'FAILED (external_data' /gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v7g*/runs/run_*/logs/train_eval_*.out | grep -v ':0$'
+sacct -j 2166308,2166309 -X -o JobID%14,State,ExitCode,Elapsed,Start,End
+squeue -u awills
+EOS
+ssh "$swpath" bash -l <<'EOS'
+cd /gpfs/scratch/awills || exit 1
+grep -q t1_diagnostic /gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/alec/data.py || { echo "deploy not on the cluster"; exit 1; }
+sbatch --time=12:00:00 --export=ALL,REEVAL_TASKSET_CPUS=40,REEVAL_RUN_DIR=/gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v7g1_size/runs/run_20260902T145245Z,REEVAL_SPEC_IDX=42 /gpfs/projects/FernandezGroup/Alec/xcquinox/hpcjobs/reeval_holdout_spec.sbatch
+sbatch --time=12:00:00 --export=ALL,REEVAL_TASKSET_CPUS=40,REEVAL_RUN_DIR=/gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v7g1_c25/runs/run_20260908T153856Z,REEVAL_SPEC_IDX=2 /gpfs/projects/FernandezGroup/Alec/xcquinox/hpcjobs/reeval_holdout_spec.sbatch
+squeue -u awills
+EOS
+```
+
+After the repair jobs end: pull the two runs, remove the local `refused_t1key_2026-09-15/`
+directories, re-merge and re-render.

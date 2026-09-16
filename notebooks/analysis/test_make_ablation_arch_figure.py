@@ -6608,10 +6608,13 @@ def test_pre_gate_runs_carry_the_fidelity_disclosure_first(tmp_path):
     f = plt.figure()
     fig._stamp_parity_footer(f, run_id="run_20260810T202813Z", title="t",
                              note="base note", provenance=None, caveat=None)
-    texts = [t.get_text() for t in f.texts]
-    stamped = [t for t in texts if fig._FIDELITY_DISCLOSURE in t]
+    # the footer stack wraps every note to the figure's width (``_wrap_lines`` since
+    # 2026-09-09), so the disclosure is compared with its line breaks folded back to spaces
+    texts = [" ".join(t.get_text().split()) for t in f.texts]
+    disclosure = " ".join(fig._FIDELITY_DISCLOSURE.split())
+    stamped = [t for t in texts if disclosure in t]
     assert stamped, texts
-    assert stamped[0].startswith(fig._FIDELITY_DISCLOSURE)
+    assert stamped[0].startswith(disclosure)
     assert "base note" in stamped[0]
     plt.close(f)
 
@@ -6621,7 +6624,8 @@ def test_post_gate_runs_carry_no_fidelity_disclosure(tmp_path):
     f = plt.figure()
     fig._stamp_parity_footer(f, run_id="run_20260901T000000Z", title="t",
                              note="base note", provenance=None, caveat=None)
-    assert not any(fig._FIDELITY_DISCLOSURE in t.get_text() for t in f.texts)
+    disclosure = " ".join(fig._FIDELITY_DISCLOSURE.split())
+    assert not any(disclosure in " ".join(t.get_text().split()) for t in f.texts)
     plt.close(f)
 
 
