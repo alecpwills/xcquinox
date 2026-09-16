@@ -50,9 +50,13 @@ _PLAIN = _HERE / "SLIDES_v7_2026-09-15.tex"
 _ANNOTATED = _HERE / "SLIDES_v7_2026-09-15_annotated.tex"
 
 # The pages the manifest covers and the number of rows on each, from the manifest itself
-# (88 rows: 3(7) 4(5) 5(6) 6(5) 7(6) 8(6) 9(4) 11(10) 12(5) 15(12) 16(11) 19(11)).
-_PAGES = (3, 4, 5, 6, 7, 8, 9, 11, 12, 15, 16, 19)
-_ROWS_PER_PAGE = {3: 7, 4: 5, 5: 6, 6: 5, 7: 6, 8: 6, 9: 4, 11: 10, 12: 5, 15: 12, 16: 11, 19: 11}
+# (88 rows over 15 pages since 2026-09-16: 5(7) 6(5) 7(3) 8(3) 9(5) 10(6) 11(6) 12(3) 13(1)
+# 15(10) 16(5) 21(12) 22(6) 23(5) 27(11)). The deck was restructured that day into 37 main and
+# 8 backup frames, which split three annotated pages in two (old 5 -> 7 and 8, old 9 -> 12 and
+# 13, old 16 -> 22 and 23) and moved the rest; the row count is unchanged.
+_PAGES = (5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 21, 22, 23, 27)
+_ROWS_PER_PAGE = {5: 7, 6: 5, 7: 3, 8: 3, 9: 5, 10: 6, 11: 6, 12: 3, 13: 1, 15: 10, 16: 5,
+                  21: 12, 22: 6, 23: 5, 27: 11}
 _ROWS = 88
 
 # ``# <path>:<first>-<last>`` -- the first line of every excerpt file. No commit hash: the
@@ -61,8 +65,20 @@ _ROWS = 88
 _HEADER = re.compile(r"^# (?P<path>[^\s:]+):(?P<first>\d+)-(?P<last>\d+)$")
 
 # The frames file holds this many ``\begin{frame}`` lines; page N of the plain deck is the N-th
-# (25 since 2026-09-15: the per-cell table frame became two frames over 64 cells).
-_FRAME_COUNT = 25
+# (25 since 2026-09-15, when the per-cell table frame became two frames over 64 cells; 45 since
+# 2026-09-16, when the deck was restructured into 37 main and 8 backup frames).
+_FRAME_COUNT = 45
+
+# A distinctive part of the title of the frame each manifest page names: the count pins how many
+# frames there are, this pins which frame each page is, so a reordering of the frames cannot
+# re-point the code notes silently (2026-09-16).
+_PAGE_TITLES = {
+    5: "density variables", 6: "the extra descriptors", 7: "the network",
+    8: "the functional form", 9: "the architectures", 10: "the 26-point DFS pool",
+    11: "the descriptor distributions", 12: "the metric", 13: "the search",
+    15: "targets and objective", 16: "the fidelity certificate", 21: "the training objective",
+    22: "the training losses", 23: "validation and the arms", 27: "the set and the metrics",
+}
 
 # One ``\codenote`` line of the frames file.
 _CODENOTE = re.compile(r"^\\codenote\{(.*)\}\{slides_code/([^}]+)\.txt\}$")
@@ -189,7 +205,7 @@ def test_manifest_tokens_present():
 
 
 def test_manifest_pages():
-    """The manifest covers the 12 annotated pages, each with orders 1..n and no gaps."""
+    """The manifest covers the 15 annotated pages, each with orders 1..n and no gaps."""
     mod = _mod()
     assert len(mod.MANIFEST) == _ROWS
     orders: dict[int, list[int]] = {}
@@ -385,6 +401,8 @@ def test_frames_carry_codenotes():
     for page in mod.PAGES:
         assert page <= len(frames), f"page {page} beyond the {len(frames)} frames"
         start = frames[page - 1]
+        assert _PAGE_TITLES[page] in lines[start], (
+            f"page {page}: the frame is {lines[start]!r}, not the one the manifest rows describe")
         stop = frames[page] if page < len(frames) else len(lines)
         notes_here = [i for i in range(start, stop) if lines[i].startswith("\\slidenote{")]
         assert len(notes_here) == 1, f"page {page}: {len(notes_here)} slidenote lines"
@@ -481,9 +499,12 @@ def _pdf_pages(pdf: Path) -> int:
 @pytest.mark.skipif(shutil.which("xelatex") is None or shutil.which("pdfinfo") is None,
                     reason="xelatex or pdfinfo not installed")
 def test_decks_build(tmp_path):
-    """Both wrappers compile from the analysis directory: the plain deck keeps its 25 pages
-    (24 until 2026-09-15, when the per-cell table frame became two frames over 64 cells),
-    the annotated one grows by the code frames, and no glyph of an excerpt is missing."""
+    """Both wrappers compile from the analysis directory: the plain deck holds its 45 pages
+    (24 until 2026-09-15, when the per-cell table frame became two frames over 64 cells; 25
+    until 2026-09-16, when the deck was restructured into 37 main and 8 backup frames), the
+    annotated one grows by the notes and code frames, and no glyph of an excerpt is missing.
+
+    The annotated bound is the 45 slides plus at least one notes page each."""
     results = {}
     for wrapper in (_PLAIN, _ANNOTATED):
         out = tmp_path / wrapper.stem
@@ -496,5 +517,5 @@ def test_decks_build(tmp_path):
         assert proc.returncode == 0, f"{wrapper.name}: xelatex failed\n{log[-3000:]}"
         assert "Missing character" not in log, f"{wrapper.name}: a glyph is missing"
         results[wrapper.stem] = _pdf_pages(out / f"{wrapper.stem}.pdf")
-    assert results[_PLAIN.stem] == 25, results
-    assert results[_ANNOTATED.stem] > 56, results
+    assert results[_PLAIN.stem] == 45, results
+    assert results[_ANNOTATED.stem] > 90, results
