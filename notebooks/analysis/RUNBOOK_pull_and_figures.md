@@ -467,12 +467,25 @@ JAX_PLATFORMS=cpu python notebooks/analysis/trained_fx_fc.py --run-dir <view> --
 python notebooks/analysis/plot_pretraining_curves.py <view> -o notebooks/analysis/figures_dfs_step7_v7_family_pretrain/pretrain_curves.png
 JAX_PLATFORMS=cpu python notebooks/analysis/pretrain_fx_fc.py --run-dir <view> --outdir notebooks/analysis/figures_dfs_step7_v7_family_pretrain
 JAX_PLATFORMS=cpu python notebooks/analysis/plot_certificate_summary.py --runs g1=<g1 run> --runs g2a=<g2a run> --runs mgga=<mgga run> --out notebooks/analysis/figures_dfs_step7_v7_family_pretrain/certificate_summary.png
+python notebooks/analysis/arm_vs_size_density.py --run-dir <view> --eval-channel val_best --family-dir notebooks/analysis/figures_dfs_step7_v7_family_val_best
 ```
 
 The view's `pretrain/` holds the carried (PASS) directories only, so the certificate
 summary reads the source runs, where a FAIL (the meta-GGA group's) is visible. The
 tracked figure sets are the family ones; the per-run sets of the earlier refreshes are
 no longer regenerated.
+
+`arm_vs_size_density.py` (2026-09-16) answers the 25-cycle question species by species: every
+arm cell (a manifest cell with a protocol tag) against the size cell of the same stored
+architecture and subset, on the held-out density rows the suite's reader returns. It writes
+`arm_vs_size_density.csv` (subset, arm, species, the two twin-collapsed RMSEs, their ratio
+arm / size, the eps values, cycles, convergence, the recurring-tail flag) and
+`arm_vs_size_density.png` (per subset the sorted ratios of each arm on a log axis, the tail
+species as hollow markers, the counts and medians in the legend) into the family set, and
+prints the deck table's LaTeX rows from the set's two pool CSVs and the caveat that names each
+cell's SCF cycle budget and converged count (the arms were evaluated with 25 cycles, the size
+cells with 3, so the comparison is not a functional-against-functional one until the
+converged channel exists). An arm the channel has not evaluated is skipped with one line.
 
 (`pull auto --category dfs_step7` also discovers the v7 runs by activity.)
 Outputs land at `figures_dfs_step7_v7_family*` (the section above).
