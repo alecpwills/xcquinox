@@ -5,8 +5,9 @@ The annotated deck (``SLIDES_v7_2026-09-15_annotated.tex``) follows every slide 
 frame. For the slides that state equations, descriptors, architectures, the training pool, the
 subset metric, the pre-training objective, the fidelity certificate, the training objective, the
 solver and the held-out metrics, the notes are followed by the code that implements each claim:
-one ``\\codenote{<title> [<path>:<first>--<last>]}{slides_code/<slug>.txt}`` frame per manifest
-row, rendered verbatim by the annotated wrapper and dropped by the plain one.
+the code appendix of the annotated deck (``SLIDES_v7_2026-09-15_code_appendix.tex``, one
+``allowframebreaks`` frame per manifest row, labelled ``code:<slug>``), which the notes point
+into by page reference; the plain deck inputs neither the notes nor the appendix.
 
 ``MANIFEST`` is the trace: for each row the slide page (of the plain deck), the order on that
 page, a title, the repository file, the 1-based inclusive line range and the tokens the claim
@@ -19,8 +20,9 @@ Usage, from the repository root, after a change to any excerpted file::
 
     python3 notebooks/analysis/slide_code_notes.py --write
 
-writes ``notebooks/analysis/slides_code/*.txt`` and prints the ``\\codenote`` lines per page (the
-lines already placed in ``SLIDES_v7_2026-09-15_frames.tex``); without ``--write`` it only prints.
+writes ``notebooks/analysis/slides_code/*.txt`` and the appendix file, and prints the pointer
+line of every manifest page (the sentence that closes that page's notes in
+``SLIDES_v7_2026-09-15_frames.tex``); without ``--write`` it only prints.
 Standard library only.
 """
 from __future__ import annotations
@@ -413,34 +415,73 @@ def latex_escape(text: str) -> str:
     return out
 
 
-def codenote_lines(page: int, entries: Optional[Iterable[Entry]] = None,
+APPENDIX_NAME = "SLIDES_v7_2026-09-15_code_appendix.tex"
+
+
+def code_label(entry: Entry) -> str:
+    """The LaTeX label of a row's appendix frame, ``code:<slug>``, the target of the page
+    references in the notes."""
+    return f"code:{slug(entry)}"
+
+
+def appendix_lines(entries: Optional[Iterable[Entry]] = None,
                    outdir_name: str = _OUTDIR_NAME) -> List[str]:
-    """The ``\\codenote`` lines of one page, in manifest order."""
+    """The code appendix of the annotated deck: a section heading, then one
+    ``allowframebreaks`` frame per manifest row in (page, order) order, titled by the row's
+    page, order, title and file range, labelled by :func:`code_label` and setting the row's
+    excerpt verbatim. One frame per row is an invariant the pointer lines rest on: a page's
+    rows are contiguous in the appendix, so its first and last labels bound its pages."""
+    out = ["\\section*{Appendix: code excerpts}"]
+    for e in sorted(_entries(entries), key=lambda e: (e.page, e.order)):
+        out.extend([
+            f"\\begin{{frame}}[allowframebreaks]{{Code p{e.page}.{e.order}: "
+            f"{latex_escape(e.title)} [{latex_escape(e.path)}:{e.first}--{e.last}]}}",
+            f"\\label{{{code_label(e)}}}",
+            f"\\VerbatimInput[fontsize=\\tiny]{{{outdir_name}/{slug(e)}.txt}}",
+            "\\end{frame}",
+        ])
+    return out
+
+
+def pointer_line(page: int, entries: Optional[Iterable[Entry]] = None) -> str:
+    """The sentence that closes the notes of a manifest page: the appendix page of the page's
+    one excerpt, or the range from its first to its last; a page with no row is refused."""
     rows = sorted((e for e in _entries(entries) if e.page == page), key=lambda e: e.order)
-    return [
-        f"\\codenote{{{latex_escape(e.title)} [{latex_escape(e.path)}:{e.first}--{e.last}]}}"
-        f"{{{outdir_name}/{slug(e)}.txt}}"
-        for e in rows
-    ]
+    if not rows:
+        raise ValueError(f"page {page} has no manifest row, so no appendix to point at")
+    if len(rows) == 1:
+        return f"Code: appendix p. \\pageref{{{code_label(rows[0])}}}."
+    return (f"Code: appendix pp. \\pageref{{{code_label(rows[0])}}} to "
+            f"\\pageref{{{code_label(rows[-1])}}}.")
+
+
+def write_appendix(path, entries: Optional[Iterable[Entry]] = None) -> Path:
+    """Write the appendix file (:func:`appendix_lines`, one line each)."""
+    target = Path(path)
+    target.write_text("\n".join(appendix_lines(entries)) + "\n", encoding="utf-8")
+    return target
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     here = Path(__file__).resolve().parent
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--write", action="store_true",
-                    help="write the excerpt files (default: only print the codenote lines)")
+                    help="write the excerpt files and the appendix (default: only print the pointer lines)")
     ap.add_argument("--root", type=Path, default=here.parents[1],
                     help="repository root the manifest paths are relative to")
     ap.add_argument("--outdir", type=Path, default=here / _OUTDIR_NAME,
                     help="directory of the excerpt files")
+    ap.add_argument("--appendix", type=Path, default=here / APPENDIX_NAME,
+                    help="the appendix file (default: the tracked one beside this module, "
+                         "which --write rewrites)")
     args = ap.parse_args(argv)
     if args.write:
         written = write_excerpts(args.root, args.outdir)
         print(f"% {len(written)} excerpts written to {args.outdir}")
+        print(f"% appendix written to {write_appendix(args.appendix)}")
     for page in PAGES:
         print(f"% page {page}")
-        for line in codenote_lines(page):
-            print(line)
+        print(pointer_line(page))
     return 0
 
 

@@ -173,3 +173,10 @@ notebooks/analysis/bh76w411_representative_subsets/
 # committed; the durable record of any finding lives in HISTORY.md and the
 # committed tests.
 /scratch/
+
+# LaTeX build artifacts of the decks (the PDFs are tracked or ignored by name)
+notebooks/analysis/*.aux
+notebooks/analysis/*.nav
+notebooks/analysis/*.out
+notebooks/analysis/*.snm
+notebooks/analysis/*.toc
