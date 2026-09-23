@@ -52,6 +52,7 @@ from xcquinox.pipeline.solver import SolverConfig, SolverMode
 from xcquinox.pipeline.data import precompute_fixed_density_data
 from xcquinox.pipeline.losses import make_loss
 from xcquinox.pipeline.models import AlecGGAModel
+from xcquinox.pipeline.oneshot import ONESHOT_AT_REFERENCE_KEY
 from xcquinox.pipeline.networks import create_network_pair
 from xcquinox.pipeline.defused_grad import defused_value_and_grad
 from xcquinox.pipeline.padding import common_pad_target
@@ -1099,6 +1100,13 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
         # the DFS seed mixture, so a checkpoint states its seeding as it
         # states its mixer schedule (solver_config.mixer_kwargs)
         "seed_mix_atomic": bool(getattr(spec, "seed_mix_atomic", False)),
+        # the published protocol's non-self-consistent points: the switch,
+        # the weight and the recorded names, stated for every run
+        "respect_sc_flag": bool(getattr(spec, "respect_sc_flag", False)),
+        "nonsc_weight": float(getattr(spec, "nonsc_weight", 1.0)),
+        "nonsc_points": list(getattr(spec, "nonsc_points", ()) or ()),
+        "nonsc_species": [[name, list(names)] for name, names
+                          in (getattr(spec, "nonsc_species", ()) or ())],
         "optimizer": getattr(spec, "optimizer", "adamw_linear"),
         "balancing_active": (
             getattr(spec, "update_scheme", "batched") != "per_molecule"
@@ -1858,6 +1866,10 @@ _DEFAULT_CHANNEL_WEIGHTS = {
     "loss_rho": 20.0,
 }
 
+#: The energy channels: the ones a non-self-consistent group's ``nonsc_weight``
+#: scales (the published script's ``nonSC_mult`` on the group's energy loss).
+_ENERGY_CHANNELS = ("loss_AE", "loss_BH76", "loss_IP13")
+
 
 def _effective_channel_weights(channel_weights_dict: dict) -> dict:
     """Merge a (possibly partial) user channel_weights over the density-dominant
@@ -1885,6 +1897,18 @@ def _training_groups(spec: TrainingSpec) -> list:
     lk = spec.loss_kwargs_dict
     reg_set = set(lk.get("regularize_atom_syms") or ())
     aux_only = set(lk.get("aux_only_names") or ())
+    # The published protocol's non-self-consistent points, by name, and the
+    # species each marks; a named point with no species listed marks its
+    # whole group. Every group carries ``sc`` (its flag) and
+    # ``nonsc_species`` (the names to mark, None for the whole group).
+    nonsc = set(getattr(spec, "nonsc_points", ()) or ())
+    nonsc_species = dict(getattr(spec, "nonsc_species", ()) or ())
+
+    def _flag(name):
+        if name not in nonsc:
+            return True, None
+        marks = nonsc_species.get(name)
+        return False, (tuple(marks) if marks else None)
 
     def _n_atoms(m):
         return sum(dict(m.atom_composition).values())
@@ -1897,14 +1921,18 @@ def _training_groups(spec: TrainingSpec) -> list:
             if s not in names:
                 names.append(s)
         species = tuple(by_name[n] for n in names if n in by_name)
+        sc, marks = _flag(r["name"])
         groups.append({"label": f"bh76:{r['name']}", "species": species,
-                       "bh76": (r,), "ip13": ()})
+                       "bh76": (r,), "ip13": (), "sc": sc,
+                       "nonsc_species": marks})
 
     for p in (lk.get("ip13_pairs") or ()):
         species = tuple(by_name[n] for n in (p["neutral"], p["cation"])
                         if n in by_name)
+        sc, marks = _flag(p["name"])
         groups.append({"label": f"ip13:{p['name']}", "species": species,
-                       "bh76": (), "ip13": (p,)})
+                       "bh76": (), "ip13": (p,), "sc": sc,
+                       "nonsc_species": marks})
 
     for m in spec.molecules:
         # Skip aux-forced polyatomics: a reaction-form AE compound
@@ -1915,8 +1943,10 @@ def _training_groups(spec: TrainingSpec) -> list:
         # re-apply density (weight 20) + vxc, double-supervising it per epoch.
         if (_n_atoms(m) > 1 and m.name in targets
                 and m.name not in aux_only):
+            sc, marks = _flag(m.name)
             groups.append({"label": f"ae:{m.name}", "species": (m,),
-                           "bh76": (), "ip13": ()})
+                           "bh76": (), "ip13": (), "sc": sc,
+                           "nonsc_species": marks})
 
     for m in spec.molecules:
         comp = dict(m.atom_composition)
@@ -1928,8 +1958,11 @@ def _training_groups(spec: TrainingSpec) -> list:
         # IP channel. Cations train through their IP13 group only.
         if (sum(comp.values()) == 1 and next(iter(comp)) in reg_set
                 and int(getattr(m, "charge", 0)) == 0):
+            # the atomic references are self-consistent in the published
+            # training
             groups.append({"label": f"anchor:{m.name}", "species": (m,),
-                           "bh76": (), "ip13": ()})
+                           "bh76": (), "ip13": (), "sc": True,
+                           "nonsc_species": None})
 
     if not groups:
         raise ValueError(
@@ -1948,6 +1981,21 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     species = group["species"]
     sub_mol_data = tuple(batch["mol_data"][name_to_idx[s.name]] for s in species)
 
+    # The published protocol's non-self-consistent points: under the switch,
+    # the records the group marks are the group's OWN copies (the batch record
+    # is shared with every other group the molecule belongs to, which must
+    # see it unmarked), evaluated in one pass at the reference density and
+    # left out of the density, potential and atomic-regularizer terms.
+    marked: set = set()
+    if (bool(getattr(spec, "respect_sc_flag", False))
+            and not group.get("sc", True)):
+        names = group.get("nonsc_species")
+        marked = set(names) if names else {s.name for s in species}
+        sub_mol_data = tuple(
+            dict(md, **{ONESHOT_AT_REFERENCE_KEY: True}) if s.name in marked
+            else md
+            for s, md in zip(species, sub_mol_data))
+
     lk = dict(spec.loss_kwargs_dict)
     lk["vxc_weight"] = 1.0
     lk["density_weight"] = 1.0
@@ -1955,19 +2003,26 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     lk["ip13_pairs"] = list(group["ip13"])
     lk["solver_config"] = (spec.loss_kwargs_dict.get("solver_config")
                            or spec.solver_config)
-    # Scope the atom-anchor allowlist to atoms actually present in this group.
+    # Scope the atom-anchor allowlist to atoms actually present in this group
+    # and not marked (a marked atom carries no per-molecule term).
     group_atom_syms = {
         next(iter(dict(s.atom_composition)))
-        for s in species if sum(dict(s.atom_composition).values()) == 1
+        for s in species
+        if sum(dict(s.atom_composition).values()) == 1
+        and s.name not in marked
     }
     # A CONFIGURED allowlist scopes to the group and an empty scope must
     # STAY empty: None means "regularize every single-atom MoleculeSpec"
     # (losses back-compat), which silently anchored every atom in groups
     # whose atoms miss the allowlist. Only an UNCONFIGURED run (no
-    # allowlist at all) keeps the regularize-everything default.
+    # allowlist at all) keeps the regularize-everything default; with a
+    # marked atom in the group that default becomes the explicit list of
+    # the group's unmarked atoms.
     run_reg = spec.loss_kwargs_dict.get("regularize_atom_syms")
-    if run_reg is None:
+    if run_reg is None and not marked:
         lk["regularize_atom_syms"] = None
+    elif run_reg is None:
+        lk["regularize_atom_syms"] = tuple(sorted(group_atom_syms))
     else:
         lk["regularize_atom_syms"] = tuple(
             s for s in run_reg if s in group_atom_syms)
@@ -1979,6 +2034,17 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     lk.pop("pbe_anchor_sample", None)
 
     sub_loss = make_loss(spec.loss_name, molecules=species, **lk)
+    nonsc_weight = float(getattr(spec, "nonsc_weight", 1.0))
+    if marked and lk.get("regularize_atom_syms") and nonsc_weight > 0.0:
+        # The loop scales this group's energy channels by nonsc_weight, and
+        # the atomic regularizer of the group's unmarked atoms rides in the
+        # AE channel; the published script adds those atoms' energy terms
+        # unscaled, so the regularizer's weight is raised by the same factor
+        # and the term stays at the run's own value.
+        w_atomic = getattr(sub_loss, "w_atomic", None)
+        if w_atomic is not None:
+            lk["w_atomic"] = float(w_atomic) / nonsc_weight
+            sub_loss = make_loss(spec.loss_name, molecules=species, **lk)
     sub_targets = {s.name: batch["targets"][s.name]
                    for s in species if s.name in batch["targets"]}
     sub_batch = {
@@ -1992,7 +2058,7 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
 def _require_minao_seed(prepared) -> None:
     """seed_mix_atomic needs dm_minao on every molecule of every group; a missing
     one is refused before the first update, by name."""
-    for label, _gloss, gbatch in prepared:
+    for label, _gloss, gbatch, _gcw in prepared:
         for md in gbatch["mol_data"]:
             if md.get("dm_minao") is None:
                 raise ValueError(
@@ -2025,10 +2091,15 @@ def _mix_seed_batch(gbatch: dict, rng) -> dict:
     checkpoint's ``mix_rng_state`` covers the sequence and the loop's shuffle
     stream is left to the group order. Only dm_seed is replaced; every other
     array of the molecule dict is shared, and the mixture is formed before
-    padding."""
+    padding. A record marked for the one pass at its reference density keeps
+    its seed and still consumes its draw, as the script draws ``mixing``
+    before testing the entry's flag."""
     mixed = []
     for md in gbatch["mol_data"]:
         beta = (float(rng.uniform()) + 1.0) / 2.0
+        if md.get(ONESHOT_AT_REFERENCE_KEY, False):
+            mixed.append(md)
+            continue
         new = dict(md)
         new["dm_seed"] = (1.0 - beta) * md["dm_seed"] + beta * md["dm_minao"]
         mixed.append(new)
@@ -2054,6 +2125,16 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     pad_target = (common_pad_target(batch["mol_data"])
                   if getattr(spec, "pad_group_to_common_shape", False) else None)
     groups = _training_groups(spec)
+    respect_sc = bool(getattr(spec, "respect_sc_flag", False))
+    nonsc_weight = float(getattr(spec, "nonsc_weight", 1.0))
+    if respect_sc and nonsc_weight == 0.0:
+        # the published script skips a non-self-consistent group outright at
+        # weight zero: no optimizer step and no schedule slot for it
+        groups = [g for g in groups if g.get("sc", True)]
+        if not groups:
+            raise ValueError(
+                "respect_sc_flag with nonsc_weight 0 leaves no training "
+                "group: every group of the spec is non-self-consistent")
     n_groups = len(groups)
     n_epochs = spec.n_steps
     total_updates = max(1, n_epochs * n_groups)
@@ -2080,7 +2161,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     resume_enabled = checkpoint_every > 0
     checkpoint_dir = spec.checkpoint_dir
 
-    def _step(model, opt_state, gbatch, gloss):
+    def _step(model, opt_state, gbatch, gloss, gcw):
         # De-fused value-and-gradient: identical (loss, grads) to the fused
         # eqx.filter_value_and_grad(scalar_loss) but each molecule's SCF compiles
         # at per-molecule size, so the 6-311++G(3df,2pd)+grid3 groups no longer
@@ -2089,13 +2170,23 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         # utility jits per molecule internally (see xcquinox.pipeline.defused_grad),
         # and is loss-agnostic (any AlecLoss, via the shared energy-stack hook).
         (loss_val, comps), grads = defused_value_and_grad(
-            gloss, model, gbatch, cw, relative, pad_target=pad_target)
+            gloss, model, gbatch, gcw, relative, pad_target=pad_target)
         updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         model = eqx.apply_updates(model, updates)
         return model, opt_state, loss_val, comps, grads
 
+    def _group_weights(g):
+        """The run's channel weights, the energy channels scaled by
+        nonsc_weight for a non-self-consistent group under the switch (the
+        published script's nonSC_mult on the group's energy loss)."""
+        if respect_sc and not g.get("sc", True):
+            return {k: (v * nonsc_weight if k in _ENERGY_CHANNELS else v)
+                    for k, v in cw.items()}
+        return cw
+
     prepared = [
-        (g["label"], *_build_group_loss_and_batch(spec, g, batch))
+        (g["label"], *_build_group_loss_and_batch(spec, g, batch),
+         _group_weights(g))
         for g in groups
     ]
 
@@ -2259,11 +2350,11 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         for epoch in range(start_epoch, n_epochs):
             rng.shuffle(order)
             for gi in order:
-                label, gloss, gbatch = prepared[gi]
+                label, gloss, gbatch, gcw = prepared[gi]
                 if mix_seed:
                     gbatch = _mix_seed_batch(gbatch, mix_rng)
                 model, opt_state, loss_val, comps, grads = _step(
-                    model, opt_state, gbatch, gloss)
+                    model, opt_state, gbatch, gloss, gcw)
                 loss_py = float(loss_val)
                 _abort_if_nonfinite(loss_val, comps, loop="per_molecule",
                                     step=update, group=label, grads=grads)

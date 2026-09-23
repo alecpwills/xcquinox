@@ -328,6 +328,63 @@ def _cfg_with(hp_kwargs=None, inputs_kwargs=None):
     )
 
 
+def test_the_sc_knobs_round_trip_and_are_bounded(tmp_path):
+    """The two non-self-consistency knobs survive the resolved-config round
+    trip, default off, and are bounded at submit time.
+
+    A knob parsed but not written back leaves every stage reading the default
+    while the submitted file states the arm; the seeding and census knobs are
+    held to the same contract by their own round-trip tests. The semantic rules
+    mirror ``TrainingSpec.validate``: the switch is read only by the
+    per-molecule loop, and the weight multiplies an energy channel, so a
+    negative value flips the sign of the term it scales.
+
+    Oracle: the raw dict written, reloaded, re-serialized by the writer the
+    submit path uses and reloaded again; and the pair of configs differing in
+    ``update_scheme`` alone, the per-molecule member validating.
+    """
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+
+    raw = _base_config_dict()
+    raw["hyperparams"]["respect_sc_flag"] = True
+    raw["hyperparams"]["nonsc_weight"] = 0.5
+    cfg = load_grid_config(_write(tmp_path, "sc.yaml", raw))
+    assert cfg.hyperparams.respect_sc_flag is True
+    assert cfg.hyperparams.nonsc_weight == 0.5
+    cfg2 = load_grid_config(
+        _write(tmp_path, "sc_resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.hyperparams.respect_sc_flag is True
+    assert cfg2.hyperparams.nonsc_weight == 0.5
+
+    # Default off: every existing configuration keeps the self-consistent
+    # protocol and an unscaled energy channel.
+    plain = load_grid_config(
+        _write(tmp_path, "plain_sc.yaml", _base_config_dict()))
+    assert plain.hyperparams.respect_sc_flag is False
+    assert plain.hyperparams.nonsc_weight == 1.0
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grid_semantics(
+            _cfg_with(hp_kwargs={"respect_sc_flag": True,
+                                 "update_scheme": "batched"}),
+            _StubDomain(pool_size=40))
+    message = str(excinfo.value)
+    assert "hyperparams.respect_sc_flag" in message, message
+    assert "update_scheme" in message, message
+    # Control: the same switch under the scheme that reads it.
+    validate_grid_semantics(
+        _cfg_with(hp_kwargs={"respect_sc_flag": True, "nonsc_weight": 0.5,
+                             "update_scheme": "per_molecule"}),
+        _StubDomain(pool_size=40))
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grid_semantics(
+            _cfg_with(hp_kwargs={"nonsc_weight": -1.0,
+                                 "update_scheme": "per_molecule"}),
+            _StubDomain(pool_size=40))
+    assert "hyperparams.nonsc_weight" in str(excinfo.value), str(excinfo.value)
+
+
 # --- The seed start as the one variable between the arms -------------------
 
 def test_seed_mixture_is_refused_on_a_cold_start_seed():

@@ -95,6 +95,7 @@ def _atom_anchor_atoms(sym: str) -> Atoms:
     """
     a = make_atom_atoms(sym)
     a.info["dfs_hill"] = sym
+    a.info["sc"] = True
     return a
 
 
@@ -122,6 +123,8 @@ def _ae_point_from_atoms(compound: Atoms) -> TrainingPoint:
             "ae_kcalmol": compound.info.get("ae_kcalmol"),
             "ae_source": compound.info.get("ae_source"),
             "ae_name": compound.info.get("ae_name"),
+            # the published training's self-consistency flag of the compound
+            "sc": bool(compound.info.get("sc", True)),
         },
     )
 
@@ -159,6 +162,9 @@ def _ae_reaction_point_from_atoms(compound: Atoms) -> TrainingPoint:
         counts[sym] = counts.get(sym, 0) + 1
     elements = sorted(counts)
     species: list = [cmp]
+    # The compound carries its own self-consistency flag; the atoms it
+    # atomizes into are self-consistent in the published training, whichever
+    # the compound's flag (the trajectory's atom entries carry no flag).
     for sym in elements:
         species.append(_atom_anchor_atoms(sym))
     return TrainingPoint(
@@ -174,6 +180,7 @@ def _ae_reaction_point_from_atoms(compound: Atoms) -> TrainingPoint:
             "ae_source": compound.info.get("ae_source"),
             "ae_name": compound.info.get("ae_name"),
             "source": compound.info.get("ae_source"),
+            "sc": bool(compound.info.get("sc", True)),
         },
     )
 
@@ -248,6 +255,7 @@ def _bh76_point_from_dict(
     elements: set[str] = set()
     species_spins = rxn.get("species_spins", {})
     species_charges = rxn.get("species_charges", {})
+    point_sc = bool(rxn.get("sc", True))
     for sp_name in species_names:
         if sp_name in seen_names:
             continue
@@ -275,14 +283,20 @@ def _bh76_point_from_dict(
         # A species outside the dict's charge map (the TS) keeps its own.
         a.info["charge"] = int(species_charges.get(sp_name,
                                                    a.info.get("charge", 0)))
+        # the reaction's flag: every species of a non-self-consistent
+        # reaction is non-self-consistent in the published training
+        a.info["sc"] = point_sc
         species.append(a)
         elements.update(a.get_chemical_symbols())
     # Atom anchors ONLY for Dick-regularized elements (H, Li) that
     # appear in any species but aren't already a single-atom reactant
-    # or product. C, N, O, F, ... do NOT get separate MoleculeSpecs.
+    # or product. C, N, O, F, ... do NOT get separate MoleculeSpecs. An
+    # anchor carries the point's flag like the species it serves.
     for sym in sorted(elements):
         if sym in DICK_ATOM_REGULARIZER_SYMS and sym not in seen_names:
-            species.append(_atom_anchor_atoms(sym))
+            anchor = _atom_anchor_atoms(sym)
+            anchor.info["sc"] = point_sc
+            species.append(anchor)
             seen_names.add(sym)
     # Mode selects the trained reference AND the stoichiometry the loss
     # sums. The loss reads only metadata["e_rxn_ref"] over
@@ -313,6 +327,7 @@ def _bh76_point_from_dict(
             "barrier_ref": rxn["barrier_ref"],
             "reaction_energy_ref": rxn["reaction_energy_ref"],
             "source": rxn.get("source"),
+            "sc": point_sc,
         },
     )
 
@@ -331,6 +346,9 @@ def _ip13_point_from_dict(pair: dict) -> TrainingPoint:
         spin=int(pair["cation_spin"]),
     )
     cation.info["name"] = pair["cation"]
+    point_sc = bool(pair.get("sc", True))
+    neutral.info["sc"] = point_sc
+    cation.info["sc"] = point_sc
     return TrainingPoint(
         kind="ip13",
         name=pair["name"],
@@ -340,6 +358,7 @@ def _ip13_point_from_dict(pair: dict) -> TrainingPoint:
             "cation": pair["cation"],
             "ip_ref": pair.get("ip_ref"),
             "source": pair.get("source"),
+            "sc": point_sc,
         },
     )
 
@@ -453,6 +472,8 @@ def _molspec_to_atoms(spec) -> Atoms:
     a.info["name"] = spec.name
     a.info["charge"] = int(getattr(spec, "charge", 0) or 0)
     a.info["spin"] = int(getattr(spec, "spin", 0) or 0)
+    # the benchmark pools carry no self-consistency flag: self-consistent
+    a.info["sc"] = True
     return a
 
 

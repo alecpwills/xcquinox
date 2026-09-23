@@ -192,6 +192,15 @@ class HyperParams:
     plateau_patience: int = 10
     plateau_factor: float = 0.1
     seed_mix_atomic: bool = False
+    # The published protocol's non-self-consistent points (the trajectory's
+    # flag, carried on the pool and recorded on every spec as its
+    # ``nonsc_points``): with ``respect_sc_flag`` the per-molecule loop
+    # evaluates such a group's energies at the reference density in one
+    # pass, drops its per-molecule and atomic-regularizer terms, scales its
+    # energy loss by ``nonsc_weight`` and drops the group at weight zero.
+    # Off by default: byte-identical to every existing sweep.
+    respect_sc_flag: bool = False
+    nonsc_weight: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -1077,6 +1086,8 @@ def _build_hyperparams(d: dict) -> HyperParams:
         plateau_patience=int(d.get("plateau_patience", 10)),
         plateau_factor=float(d.get("plateau_factor", 0.1)),
         seed_mix_atomic=bool(d.get("seed_mix_atomic", False)),
+        respect_sc_flag=bool(d.get("respect_sc_flag", False)),
+        nonsc_weight=float(d.get("nonsc_weight", 1.0)),
     )
 
 
@@ -2178,6 +2189,14 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             "atomic guess itself: every mixture would be the cold start while "
             "the record states a mixed-seed protocol. Use seed_xc 'auto', 'pbe' "
             "or 'scan' with the mixture, or 'minao' without it.")
+    if hp.respect_sc_flag and hp.update_scheme != "per_molecule":
+        raise ValueError(
+            "hyperparams.respect_sc_flag is applied by the per-molecule loop (update_scheme per_molecule) only; "
+            f"got update_scheme={hp.update_scheme!r}")
+    # finite and non-negative: NaN fails the first comparison, inf the second
+    if not (hp.nonsc_weight >= 0.0 and hp.nonsc_weight < float("inf")):
+        raise ValueError(
+            f"hyperparams.nonsc_weight must be finite and >= 0, got {hp.nonsc_weight!r}")
     if hp.plateau_patience < 0:
         raise ValueError(
             f"hyperparams.plateau_patience must be >= 0, got {hp.plateau_patience}")

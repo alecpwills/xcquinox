@@ -1097,3 +1097,54 @@ def test_compute_energy_trajectories_tail_shape_and_values():
     assert jnp.allclose(traj[0], trace[2:])  # skip = 4 - 2 = 2
 
 
+def test_the_density_terms_skip_a_marked_record_silently(h_mol_data,
+                                                         h2o_mol_data):
+    """``_grid_term``, ``_dm_term`` and ``_vxc_term`` leave a record marked for
+    evaluation at the reference density out of their mean, and say nothing.
+
+    A non-self-consistent entry of the published protocol carries no
+    per-molecule loss: its density, density-matrix and potential are the
+    reference's by construction, so scoring them measures the reference against
+    itself. The existing skip for a missing reference warns, since a missing
+    reference is a staging fault; a marked record is a configured choice and
+    must not raise a warning. The oracle is the same pair of records with and
+    without the mark: the marked pair's value equals the term over the
+    self-consistent record alone, and the unmarked pair's does not.
+    """
+    import warnings
+
+    from xcquinox.pipeline.losses import _dm_term, _grid_term, _vxc_term
+    from xcquinox.pipeline.oneshot import ONESHOT_AT_REFERENCE_KEY
+
+    model = AlecGGAModel.from_arch(_make_arch(), seed=0)
+
+    def with_refs(md):
+        """Synthetic references: the PBE quantities themselves, so every
+        channel is finite and non-zero for a network that is not PBE."""
+        out = dict(md)
+        out["dm_target"] = md["dm_pbe"]
+        out["rho_ref_grid"] = md["rho_grid"]
+        out["vxc_ref"] = md["vxc_pbe"]
+        return out
+
+    kept = with_refs(h2o_mol_data)
+    unmarked = with_refs(h_mol_data)
+    marked = dict(unmarked, **{ONESHOT_AT_REFERENCE_KEY: True})
+
+    for term in (_grid_term, _dm_term, _vxc_term):
+        alone = float(term(model, (kept,), (0,)))
+        both = float(term(model, (kept, unmarked), (0, 1)))
+        # The second record moves the value, so the equality below cannot be
+        # satisfied by two coincidentally equal contributions.
+        assert abs(both - alone) > 1e-12, term.__name__
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            value = float(term(model, (kept, marked), (0, 1)))
+            only_marked = float(term(model, (marked,), (0,)))
+        assert value == pytest.approx(alone, rel=0, abs=1e-12), term.__name__
+        # every record marked: the channel is empty, not a division by zero
+        assert only_marked == 0.0, term.__name__
+        runtime = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+        assert not runtime, (term.__name__, [str(w.message) for w in runtime])
+
+

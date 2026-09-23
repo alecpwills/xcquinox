@@ -532,3 +532,91 @@ def test_the_paper_class_reaches_the_training_specs(tmp_path):
     for _cell, spec in built:
         assert spec.arch.descriptor_coordinates == "paper"
         assert spec.arch.ueg_gate == "x2"
+
+
+def _pool_with_sc_flags():
+    """The synthetic pool with a published-protocol self-consistency flag on
+    every point: the H2 AE point and the IP pair self-consistent, the H2O AE
+    point and the reaction not. The species Atoms carry the flags the
+    trajectory gives them: the H2O compound alone for its point (its anchors
+    self-consistent), every species of the reaction."""
+    flags = {"H2": True, "H2O": False, "N2_NO_rxn": False, "Li_IP": True}
+    out = []
+    for tp in _make_pool():
+        species = []
+        for s in tp.species:
+            a = s.copy()
+            if tp.name == "H2O":
+                a.info["sc"] = a.info["name"] != "H2O"
+            elif tp.name == "N2_NO_rxn":
+                a.info["sc"] = False
+            else:
+                a.info["sc"] = True
+            species.append(a)
+        out.append(dataclasses.replace(
+            tp, species=tuple(species),
+            metadata=dict(tp.metadata, sc=flags[tp.name])))
+    return out
+
+
+def _sc_ledger():
+    """The stub ledger with the three-point entry listed in an order that is
+    NOT sorted, so the recorded names are pinned to the sort and not to the
+    ledger's arrangement."""
+    ledger = _make_ledger()
+    ledger["l2/3"] = dict(ledger["l2/3"],
+                          point_names=["N2_NO_rxn", "H2O", "Li_IP"],
+                          point_kinds=["bh76", "ae", "ip13"])
+    return ledger
+
+
+def test_the_spec_builder_records_the_non_sc_points_and_threads_the_switch(
+        tmp_path):
+    """``build_training_specs`` records the sorted names of the chosen points
+    whose metadata flag is False, and threads the switch and the weight from
+    the hyperparameters.
+
+    The names are data about the chosen points and are recorded whether or not
+    the switch is on, so an arm can be read off its own spec; the switch and the
+    weight are what the loop consults. The oracle is a pool whose four points
+    carry known flags against the same pool with no flags at all, and a ledger
+    entry whose order differs from the sorted order.
+    """
+    domain = get_domain_profile("dfs_step7")
+    cfg = _make_cfg(tmp_path)
+
+    out = build_training_specs(_pool_with_sc_flags(), _sc_ledger(), cfg,
+                               domain, str(tmp_path / "run"))
+    (cell0, spec0), (cell1, spec1) = out
+    # Cell 0: the two AE points, one of them non-self-consistent.
+    assert cell0.subset_size == 2
+    assert spec0.nonsc_points == ("H2O",)
+    # the species each named point marks: the compound alone for the AE point
+    assert spec0.nonsc_species == (("H2O", ("H2O",)),)
+    # Cell 1: the reaction is non-self-consistent, the IP pair is not, and the
+    # names come out sorted rather than in ledger order.
+    assert cell1.subset_size == 3
+    assert spec1.nonsc_points == ("H2O", "N2_NO_rxn")
+    assert spec1.nonsc_species == (("H2O", ("H2O",)),
+                                   ("N2_NO_rxn", ("N2", "NO")))
+    for _cell, spec in out:
+        assert spec.respect_sc_flag is False
+        assert spec.nonsc_weight == 1.0
+
+    hp_on = dataclasses.replace(cfg.hyperparams, respect_sc_flag=True,
+                                nonsc_weight=0.5)
+    out_on = build_training_specs(
+        _pool_with_sc_flags(), _sc_ledger(),
+        dataclasses.replace(cfg, hyperparams=hp_on), domain,
+        str(tmp_path / "run_on"))
+    for _cell, spec in out_on:
+        assert spec.respect_sc_flag is True
+        assert spec.nonsc_weight == 0.5
+    assert out_on[1][1].nonsc_points == ("H2O", "N2_NO_rxn")
+
+    # A pool whose points carry no flag reads as fully self-consistent, the
+    # protocol of every campaign that predates the capability.
+    plain = build_training_specs(_make_pool(), _sc_ledger(), cfg, domain,
+                                 str(tmp_path / "run_plain"))
+    assert all(spec.nonsc_points == () for _cell, spec in plain)
+    assert all(spec.nonsc_species == () for _cell, spec in plain)

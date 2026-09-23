@@ -221,6 +221,63 @@ def test_get_architecture_raises_for_unknown():
 
 
 # ---------------------------------------------------------------------------
+# The non-self-consistent point capability: the scheme it needs and the weight
+# it accepts (the spec is built with ``_seed_spec`` below)
+# ---------------------------------------------------------------------------
+
+def test_the_sc_switch_needs_the_per_molecule_scheme_and_a_finite_weight(
+        tmp_path):
+    """``TrainingSpec.validate`` refuses the self-consistency switch off the
+    per-molecule scheme and refuses a negative or non-finite weight.
+
+    The switch is consulted only where the loop builds one group at a time and
+    weights that group's channels; under the full-batch scheme nothing reads it,
+    so a spec carrying it there states a protocol it does not execute. The
+    weight multiplies an energy channel, so a negative value flips the sign of
+    the term it scales and a NaN propagates through the whole update.
+
+    Oracle: the pair of specs differing in ``update_scheme`` alone, and the pair
+    differing in ``nonsc_weight`` alone -- the per-molecule form with a finite
+    weight validates, the other member raises with the offending field named.
+    The defaults are asserted too, since the capability is off unless a run asks
+    for it.
+    """
+    default = _seed_spec(tmp_path, seed_source="pbe")
+    assert default.respect_sc_flag is False
+    assert default.nonsc_weight == 1.0
+    assert default.nonsc_points == ()
+    default.validate()
+
+    # The protocol arm: the switch on, a fractional weight, and the names of
+    # the chosen non-self-consistent points recorded beside them.
+    _seed_spec(tmp_path, seed_source="pbe", respect_sc_flag=True,
+               nonsc_weight=0.5,
+               nonsc_points=("OH+N2_to_H+N2O",)).validate()
+
+    # The full-batch scheme has no per-group weighting to apply the flag to.
+    # The seed mixture is dropped here so its own per-molecule rule cannot be
+    # the one that fires.
+    spec = _seed_spec(tmp_path, seed_source="pbe", seed_mix_atomic=False,
+                      update_scheme="batched", respect_sc_flag=True)
+    with pytest.raises(ValueError) as excinfo:
+        spec.validate()
+    message = str(excinfo.value)
+    assert "respect_sc_flag" in message, message
+    assert "update_scheme" in message, message
+    # Control: the same spec without the switch is the historical full-batch
+    # arm and stays legal, so the rule names the pair and not the scheme alone.
+    _seed_spec(tmp_path, seed_source="pbe", seed_mix_atomic=False,
+               update_scheme="batched").validate()
+
+    for bad in (-1.0, float("nan")):
+        spec = _seed_spec(tmp_path, seed_source="pbe", respect_sc_flag=True,
+                          nonsc_weight=bad)
+        with pytest.raises(ValueError) as excinfo:
+            spec.validate()
+        assert "nonsc_weight" in str(excinfo.value), (bad, str(excinfo.value))
+
+
+# ---------------------------------------------------------------------------
 # The seed mixture against the cold start: the pair the mixture cannot express
 # ---------------------------------------------------------------------------
 

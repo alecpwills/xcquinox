@@ -1145,6 +1145,24 @@ class TrainingSpec:
     # only, and never with a minao seed, whose two endpoints are the same
     # atomic guess (validate refuses both).
     seed_mix_atomic: bool = False
+    # The published protocol's non-self-consistent points. ``nonsc_points``
+    # names the chosen training points whose trajectory flag is False (data,
+    # recorded by the spec builder whether or not the switch is on);
+    # ``respect_sc_flag`` makes the per-molecule loop treat those groups as
+    # the published script does: one pass at the reference density, no
+    # per-molecule or atomic-regularizer term, the group's energy loss times
+    # ``nonsc_weight``, and no step at all at weight zero. Off by default, so
+    # every existing run is byte-identical. Per-molecule scheme only
+    # (validate refuses it elsewhere).
+    nonsc_points: tuple[str, ...] = ()
+    # Per named point, the species the published training runs one pass for
+    # (a reaction point: every species it names; a reaction-form AE point:
+    # its compound, its atoms staying self-consistent), as ``(point name,
+    # (species names...))`` pairs; a named point absent here marks every
+    # species of its group.
+    nonsc_species: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    respect_sc_flag: bool = False
+    nonsc_weight: float = 1.0
     # Optimizer: "adamw_linear" (clip -> adamw on the constant-then-linear
     # schedule, every campaign through v7) or "adam_plateau" (dpyscf's: clip ->
     # coupled L2 -> Adam at lr_start, multiplied by plateau_factor after
@@ -1342,6 +1360,10 @@ class TrainingSpec:
                 "start while the record states a mixed-seed protocol. Use "
                 "seed_source 'pbe' or 'scan' with the mixture, or 'minao' "
                 "without it.")
+        if self.respect_sc_flag and self.update_scheme != "per_molecule":
+            raise ValueError(
+                "respect_sc_flag is applied by the per-molecule loop only; got "
+                f"update_scheme={self.update_scheme!r}")
         if self.optimizer not in ("adamw_linear", "adam_plateau"):
             raise ValueError(
                 f"optimizer must be 'adamw_linear' or 'adam_plateau', got "
@@ -1357,6 +1379,10 @@ class TrainingSpec:
             raise ValueError(
                 f"plateau_factor must be in (0, 1], got {self.plateau_factor}")
         import math
+        if not (math.isfinite(self.nonsc_weight) and self.nonsc_weight >= 0.0):
+            raise ValueError(
+                "nonsc_weight must be finite and >= 0, got "
+                f"{self.nonsc_weight!r}")
         for field_name in ("lr_start", "lr_end", "lr_decay_start", "grad_clip"):
             value = getattr(self, field_name)
             if not math.isfinite(value):

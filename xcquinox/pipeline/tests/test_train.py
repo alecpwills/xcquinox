@@ -521,6 +521,9 @@ _BASE_METADATA_KEYS = frozenset({
     "has_best_checkpoint", "timestamp", "duration_seconds",
     "update_scheme", "balancing_active", "effective_channel_weights",
     "seed_mix_atomic", "optimizer",
+    # the published protocol's non-self-consistent points: the switch, the
+    # weight, the names and the species each marks, recorded for every run
+    "respect_sc_flag", "nonsc_weight", "nonsc_points", "nonsc_species",
 })
 
 
@@ -1657,6 +1660,388 @@ def test_seed_mix_atomic_resamples_the_seed_per_update(training_batch_info,
         for rec in update:
             assert rec["seed_is_pbe"], rec["name"]
             assert rec["dm_minao"] is None
+
+
+# ---------------------------------------------------------------------------
+# The non-self-consistent point capability: the group flag the spec's recorded
+# point names imply, the marking and weighting the loop applies under the
+# switch, and the settings the run's record states.
+# ---------------------------------------------------------------------------
+
+_ENERGY_CHANNELS = ("loss_AE", "loss_BH76", "loss_IP13")
+
+
+def _sc_reaction_spec(training_batch_info, tmpdir, **extra):
+    """H/O/H2O under the per-molecule scheme with a reaction over the three
+    records, so the run carries the groups bh76:r1, ae:H2O, anchor:H and
+    anchor:O and the compound of the reaction also has an AE group of its own.
+    """
+    return _make_live_spec(
+        training_batch_info, loss_name="L5_gradnorm_vxc_step7", tmpdir=tmpdir,
+        loss_kwargs={
+            "regularize_atom_syms": ("H", "O"),
+            "bh76_reactions": [{
+                "name": "r1", "reactants": ["H2O"], "products": ["H", "O"],
+                "coeffs": [-1.0, 2.0, 1.0],
+                "e_rxn_ref": training_batch_info["targets"]["H2O"],
+            }],
+        },
+        update_scheme="per_molecule", require_atom_anchors=False, **extra)
+
+
+def _make_sc_recorder(records):
+    """A drop-in for ``defused_value_and_grad`` that records, per update, the
+    channel weights the group is handed and, per molecule, whether the record
+    is marked for evaluation at the reference density, the seed it enters the
+    update with and the run's converged seed density.
+
+    As with the seed recorder, the stub leaves the loop, the marking, the
+    mixture and the optimizer step exactly as they are and removes only the
+    SCF: what is under test is which record and which weights reach the update.
+    """
+    import equinox as eqx
+    import jax
+    import jax.numpy as jnp
+    from xcquinox.pipeline.oneshot import ONESHOT_AT_REFERENCE_KEY
+
+    def stub(loss, model, batch, channel_weights, relative=False,
+             pad_target=None):
+        records.append({
+            "channel_weights": dict(channel_weights),
+            "molecules": tuple(
+                {
+                    "name": md["name"],
+                    "mark": md.get(ONESHOT_AT_REFERENCE_KEY),
+                    "has_mark": ONESHOT_AT_REFERENCE_KEY in md,
+                    # object identity: an exempt record must reach the solver
+                    # with the run's own seed array, not a copy of it.
+                    "seed_is_pbe": md["dm_seed"] is md["dm_pbe"],
+                    "dm_seed": np.asarray(md["dm_seed"]),
+                    "dm_pbe": np.asarray(md["dm_pbe"]),
+                }
+                for md in batch["mol_data"]),
+        })
+        grads = jax.tree_util.tree_map(
+            jnp.zeros_like, eqx.filter(model, eqx.is_inexact_array))
+        return (jnp.asarray(1.0), {"loss_e": jnp.asarray(1.0)}), grads
+
+    return stub
+
+
+def test_the_groups_carry_the_points_flag():
+    """``_training_groups`` gives every group the self-consistency flag implied
+    by the point names the spec records, and no other group.
+
+    A reaction or IP group takes its flag from its own name, an AE group from
+    its compound's name, and an atom anchor is always self-consistent: the
+    published trajectory marks reaction species and eight AE molecules, never
+    the atomic references. The oracle is three specs differing in
+    ``nonsc_points`` alone over one fixed group set -- the reaction named, the
+    IP pair named, and nothing named -- so a rule that keys off the group KIND
+    rather than the recorded names disagrees with at least one of them.
+    """
+    import dataclasses
+    from xcquinox.pipeline.config import MoleculeSpec
+    from xcquinox.pipeline.train import _training_groups
+
+    li = MoleculeSpec.from_dict(name="Li", atom="Li 0 0 0", basis="sto-3g",
+                                charge=0, spin=1, atom_composition={"Li": 1})
+    li_cation = MoleculeSpec.from_dict(name="Li+", atom="Li 0 0 0",
+                                       basis="sto-3g", charge=1, spin=0,
+                                       atom_composition={"Li": 1})
+    spec = _make_training_spec(
+        molecules=(h_atom(), o_atom(), h2o_molecule(), h2_molecule(),
+                   li, li_cation),
+        targets=(("H", -0.5), ("H2", 0.17), ("H2O", 0.3), ("Li", -7.4),
+                 ("Li+", -7.2), ("O", -74.8)),
+        atom_energies=(("H", -0.5), ("Li", -7.4), ("O", -74.8)),
+        loss_name="L5_gradnorm_vxc_step7",
+        loss_kwargs=(
+            ("bh76_reactions", [{
+                "name": "r1", "reactants": ["H2O"], "products": ["H", "O"],
+                "coeffs": [-1.0, 2.0, 1.0], "e_rxn_ref": 0.3}]),
+            ("ip13_pairs", [{"name": "Li_IP", "neutral": "Li",
+                             "cation": "Li+", "ip_ref": 0.2}]),
+            ("regularize_atom_syms", ("H", "Li")),
+        ),
+        update_scheme="per_molecule", require_atom_anchors=False,
+        nonsc_points=("H2O", "r1"),
+    )
+
+    def flags(s):
+        return {g["label"]: g["sc"] for g in _training_groups(s)}
+
+    expected_labels = {"bh76:r1", "ip13:Li_IP", "ae:H2O", "ae:H2",
+                       "anchor:H", "anchor:Li"}
+    assert set(flags(spec)) == expected_labels
+    assert flags(spec) == {"bh76:r1": False, "ip13:Li_IP": True,
+                           "ae:H2O": False, "ae:H2": True,
+                           "anchor:H": True, "anchor:Li": True}
+    assert flags(dataclasses.replace(spec, nonsc_points=("Li_IP",))) == {
+        "bh76:r1": True, "ip13:Li_IP": False, "ae:H2O": True, "ae:H2": True,
+        "anchor:H": True, "anchor:Li": True}
+    assert all(flags(dataclasses.replace(spec, nonsc_points=())).values())
+
+
+def test_the_loop_marks_non_sc_groups_under_the_switch_only(
+        training_batch_info, monkeypatch):
+    """Under the switch the per-molecule loop marks every record of a
+    non-self-consistent group for evaluation at the reference density, hands
+    that group its energy channels scaled by ``nonsc_weight``, and leaves the
+    marked records out of the seed mixture; with the switch off it does none of
+    those things.
+
+    The reaction group and the AE group of its compound share the same molecule
+    record, so a mark written into the batch rather than into the group's own
+    copy would reach a self-consistent group as well; the recorder therefore
+    checks the other groups' records too. The oracle is the pair of runs
+    differing in ``respect_sc_flag`` alone: the same spec, the same recorded
+    point names, the same weight.
+    """
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.data import clear_precompute_cache
+    from xcquinox.pipeline.train import (
+        run_training, _effective_channel_weights, _training_groups)
+
+    n_epochs = 2
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clear_precompute_cache()
+        spec = _sc_reaction_spec(
+            training_batch_info, tmpdir, n_steps=n_epochs,
+            nonsc_points=("r1",), respect_sc_flag=True, nonsc_weight=0.5,
+            seed_mix_atomic=True)
+        labels = [g["label"] for g in _training_groups(spec)]
+        assert "bh76:r1" in labels and "ae:H2O" in labels
+        records = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_sc_recorder(records))
+        run_training(spec)
+
+    run_weights = _effective_channel_weights(spec.channel_weights_dict)
+    scaled = {k: (v * 0.5 if k in _ENERGY_CHANNELS else v)
+              for k, v in run_weights.items()}
+    # the weight reaches the energy channels only
+    assert scaled != run_weights
+    assert all(scaled[k] == run_weights[k]
+               for k in run_weights if k not in _ENERGY_CHANNELS)
+
+    assert len(records) == n_epochs * len(labels)
+    marked_updates = 0
+    for rec in records:
+        names = sorted(m["name"] for m in rec["molecules"])
+        if names == ["H", "H2O", "O"]:          # the reaction group
+            marked_updates += 1
+            assert all(m["mark"] is True for m in rec["molecules"]), names
+            assert rec["channel_weights"] == scaled, rec["channel_weights"]
+            for m in rec["molecules"]:
+                assert m["seed_is_pbe"], m["name"]
+                np.testing.assert_array_equal(m["dm_seed"], m["dm_pbe"])
+        else:
+            assert all(m["mark"] is not True for m in rec["molecules"]), names
+            assert rec["channel_weights"] == run_weights, names
+            for m in rec["molecules"]:
+                assert not m["seed_is_pbe"], m["name"]
+                assert not np.allclose(m["dm_seed"], m["dm_pbe"]), m["name"]
+    assert marked_updates == n_epochs
+
+    # The switch off: the same spec, the same recorded names and weight, and
+    # nothing marked, nothing rescaled, every seed mixed.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clear_precompute_cache()
+        spec_off = _sc_reaction_spec(
+            training_batch_info, tmpdir, n_steps=n_epochs,
+            nonsc_points=("r1",), respect_sc_flag=False, nonsc_weight=0.5,
+            seed_mix_atomic=True)
+        off_records = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_sc_recorder(off_records))
+        run_training(spec_off)
+
+    assert len(off_records) == n_epochs * len(labels)
+    for rec in off_records:
+        assert not any(m["has_mark"] for m in rec["molecules"])
+        assert rec["channel_weights"] == run_weights
+        for m in rec["molecules"]:
+            assert not m["seed_is_pbe"], m["name"]
+
+
+def test_a_zero_weight_drops_the_non_sc_group(training_batch_info,
+                                              monkeypatch):
+    """Under the switch a non-self-consistent group with ``nonsc_weight`` zero
+    takes no optimizer step at all: the published script skips such a group
+    outright, so the loop drops it from the epoch's groups rather than stepping
+    on a loss of zero (a step that would still move the weights through the
+    decay and advance the schedule).
+
+    Oracle: the recorded updates against the group list, the reaction group
+    absent from every epoch and no record marked.
+    """
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.data import clear_precompute_cache
+    from xcquinox.pipeline.train import run_training, _training_groups
+
+    n_epochs = 2
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clear_precompute_cache()
+        spec = _sc_reaction_spec(
+            training_batch_info, tmpdir, n_steps=n_epochs,
+            nonsc_points=("r1",), respect_sc_flag=True, nonsc_weight=0.0)
+        labels = [g["label"] for g in _training_groups(spec)]
+        assert "bh76:r1" in labels
+        records = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_sc_recorder(records))
+        run_training(spec)
+
+    assert len(records) == n_epochs * (len(labels) - 1)
+    for rec in records:
+        names = sorted(m["name"] for m in rec["molecules"])
+        assert names != ["H", "H2O", "O"], names
+        assert not any(m["has_mark"] for m in rec["molecules"])
+
+
+def test_a_marked_group_scopes_its_regularizer_and_keeps_its_weight(
+        training_batch_info):
+    """The group builder marks only the species the spec lists for a
+    non-self-consistent point, leaves a marked atom out of the regularizer's
+    allowlist, and raises the regularizer's weight by the group's scaling
+    factor when unmarked atoms keep theirs, so that term stays at the run's
+    own value while the group's energy channels are scaled.
+
+    The oracle is the same group built three ways: the switch off; the switch
+    on with the compound alone listed (the reaction-form AE case: its atoms
+    self-consistent); the switch on with no species listed (the reaction case:
+    every species marked). The records are name-only stand-ins, since the
+    builder indexes them by name and copies them.
+    """
+    from xcquinox.pipeline.oneshot import ONESHOT_AT_REFERENCE_KEY
+    from xcquinox.pipeline.train import (
+        _build_group_loss_and_batch, _training_groups)
+
+    def build(**extra):
+        spec = _sc_reaction_spec(training_batch_info, tempfile.mkdtemp(),
+                                 n_steps=1, **extra)
+        batch = {"mol_data": tuple({"name": m.name} for m in spec.molecules),
+                 "targets": spec.targets_dict,
+                 "atom_energies": spec.atom_energies_dict}
+        group = next(g for g in _training_groups(spec)
+                     if g["label"] == "bh76:r1")
+        return _build_group_loss_and_batch(spec, group, batch)
+
+    loss_off, batch_off = build(nonsc_points=("r1",), respect_sc_flag=False,
+                                nonsc_weight=0.5)
+    assert not any(ONESHOT_AT_REFERENCE_KEY in md
+                   for md in batch_off["mol_data"])
+
+    # the compound alone marked: the atoms keep their regularizer, at the
+    # run's weight once the group's scaling is compensated
+    loss_on, batch_on = build(nonsc_points=("r1",),
+                              nonsc_species=(("r1", ("H2O",)),),
+                              respect_sc_flag=True, nonsc_weight=0.5)
+    marks = {md["name"]: md.get(ONESHOT_AT_REFERENCE_KEY)
+             for md in batch_on["mol_data"]}
+    assert marks == {"H2O": True, "H": None, "O": None}
+    assert loss_on.regularize_atom_syms == loss_off.regularize_atom_syms
+    assert loss_off.regularize_atom_syms == ("H", "O")
+    assert loss_on.w_atomic == pytest.approx(loss_off.w_atomic / 0.5)
+
+    # the whole group marked: no regularized atom, the weight untouched
+    loss_all, batch_all = build(nonsc_points=("r1",), respect_sc_flag=True,
+                                nonsc_weight=0.5)
+    assert all(md.get(ONESHOT_AT_REFERENCE_KEY) is True
+               for md in batch_all["mol_data"])
+    assert loss_all.regularize_atom_syms == ()
+    assert loss_all.w_atomic == loss_off.w_atomic
+
+
+def test_training_metadata_records_the_sc_settings():
+    """The run's record states the self-consistency settings it was fit under:
+    the switch, the weight and the names of the non-self-consistent points.
+
+    Two runs differing only in those settings are otherwise indistinguishable
+    from their artifacts, and the split is method, so it is recorded whether or
+    not the arm turns it on. The oracle is the written ``train_metadata.json``
+    read back, and the base key set, which a new key must join.
+    """
+    from xcquinox.pipeline.train import _save_artifacts
+
+    spec = _make_training_spec(update_scheme="per_molecule",
+                               respect_sc_flag=True, nonsc_weight=0.5,
+                               nonsc_points=("H2O", "r1"),
+                               nonsc_species=(("r1", ("H2O",)),))
+    meta = _save_artifacts(spec, _make_arch(), [0.5, 0.4], [], 1.0,
+                           best_model=None, val_best_model=None,
+                           extra_metadata=None)
+    with open(os.path.join(spec.checkpoint_dir, "train_metadata.json")) as f:
+        on_disk = json.load(f)
+    for written in (meta, on_disk):
+        assert written["respect_sc_flag"] is True
+        assert written["nonsc_weight"] == 0.5
+        assert written["nonsc_points"] == ["H2O", "r1"]
+        # the species each named point marks: a run marking the compound
+        # alone and one marking its whole group differ here and nowhere else
+        assert written["nonsc_species"] == [["r1", ["H2O"]]]
+
+    spec_off = _make_training_spec(update_scheme="per_molecule")
+    meta_off = _save_artifacts(spec_off, _make_arch(), [0.5], [], 1.0,
+                               best_model=None, val_best_model=None,
+                               extra_metadata=None)
+    assert meta_off["respect_sc_flag"] is False
+    assert meta_off["nonsc_weight"] == 1.0
+    assert meta_off["nonsc_points"] == []
+    assert meta_off["nonsc_species"] == []
+    # The base key set is the contract the non-validating run is held to, so
+    # the four keys belong in it.
+    assert set(meta_off) == set(_BASE_METADATA_KEYS)
+
+
+def test_a_marked_record_consumes_its_mixing_draw():
+    """The mixture draws one coefficient per molecule in batch order and
+    applies it to the unmarked ones only: a marked record keeps its seed and
+    still consumes its draw, as the published script draws ``mixing`` before
+    testing the entry's flag. A coefficient stream that skipped the marked
+    record would hand every later molecule of the group another coefficient
+    and change the run's seeds from that update on.
+
+    Oracle: ``np.random.RandomState(0)`` replayed beside the call over three
+    molecules with the middle one marked; the third molecule takes the third
+    draw, not the second.
+    """
+    from xcquinox.pipeline.oneshot import ONESHOT_AT_REFERENCE_KEY
+    from xcquinox.pipeline.train import _mix_seed_batch
+
+    def record(name, scale, marked=False):
+        md = {
+            "name": name,
+            "dm_seed": scale * np.array([[1.0, 0.25], [0.25, 2.0]]),
+            "dm_pbe": scale * np.array([[1.0, 0.25], [0.25, 2.0]]),
+            "dm_minao": scale * np.array([[0.25, 0.0], [0.0, 0.5]]),
+            "s_matrix": np.eye(2),
+        }
+        if marked:
+            md[ONESHOT_AT_REFERENCE_KEY] = True
+        return md
+
+    mols = (record("A", 1.0), record("B", 2.0, marked=True), record("C", 3.0))
+    out = _mix_seed_batch({"mol_data": mols, "label": "g"},
+                          np.random.RandomState(0))
+
+    oracle = np.random.RandomState(0)
+    betas = [(float(oracle.uniform()) + 1.0) / 2.0 for _ in range(3)]
+    a, b, c = out["mol_data"]
+    np.testing.assert_allclose(
+        a["dm_seed"],
+        (1.0 - betas[0]) * mols[0]["dm_seed"] + betas[0] * mols[0]["dm_minao"],
+        rtol=0, atol=1e-12)
+    # the marked record is the input record itself, its seed untouched
+    assert b is mols[1]
+    assert b["dm_seed"] is mols[1]["dm_seed"]
+    # the third molecule takes the third draw: the marked one consumed the second
+    np.testing.assert_allclose(
+        c["dm_seed"],
+        (1.0 - betas[2]) * mols[2]["dm_seed"] + betas[2] * mols[2]["dm_minao"],
+        rtol=0, atol=1e-12)
+    assert betas[1] != betas[2]
 
 
 # ---------------------------------------------------------------------------

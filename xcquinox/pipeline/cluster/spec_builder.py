@@ -568,6 +568,22 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             for tp in chosen_points
             if tp.kind == "ip13"
         ]
+        # The published protocol's non-self-consistent points among the chosen
+        # ones, by name (the trajectory's flag on the point's metadata),
+        # recorded whether or not the switch is on.
+        nonsc_points = tuple(sorted(
+            tp.name for tp in chosen_points
+            if not bool(tp.metadata.get("sc", True))))
+        # Per such point, the species the published training runs one pass
+        # for (the species Atoms' own flags); a point whose species carry
+        # no flag marks its whole group.
+        nonsc_species = tuple(
+            (tp.name, tuple(sorted(
+                s.info["name"] for s in tp.species
+                if not bool(s.info.get("sc", True)))))
+            for tp in sorted(chosen_points, key=lambda tp: tp.name)
+            if tp.name in nonsc_points
+            and any(not bool(s.info.get("sc", True)) for s in tp.species))
 
         solver_cfg = _solver_config_from_named(
             cfg.solvers[cell.solver],
@@ -661,6 +677,12 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             plateau_patience=hp.plateau_patience,
             plateau_factor=hp.plateau_factor,
             seed_mix_atomic=hp.seed_mix_atomic,
+            # the published protocol's non-self-consistent points: the names
+            # as data, the switch and the weight from the hyperparameters
+            nonsc_points=nonsc_points,
+            nonsc_species=nonsc_species,
+            respect_sc_flag=hp.respect_sc_flag,
+            nonsc_weight=hp.nonsc_weight,
         )
         # WS3: attach the held-out validation slice (no-op unless val_refs_dir +
         # validate_every>0 + a staged val_reactions.json under run_dir).
