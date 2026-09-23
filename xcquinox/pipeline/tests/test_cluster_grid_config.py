@@ -867,3 +867,49 @@ def test_build_pretrain_bounds_every_protocol_number(key, value):
     with pytest.raises(ValueError) as exc:
         _build_pretrain({"data_dir": "/d", key: value})
     assert f"pretrain.{key}" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# The fourth SCF seed: the superposition-of-atomic-densities guess
+# ---------------------------------------------------------------------------
+
+
+def test_seed_xc_minao_round_trips_to_the_solver_seed(tmp_path):
+    """``minao`` is a run-wide seed choice beside pbe and scan: the config
+    carries it, the resolved config the workers re-read carries it, and the
+    per-cell resolution hands it to the solver configuration, which has
+    accepted the value since the coldstart channel was added
+    (``solver.py``: ``seed_source in ('pbe', 'scan', 'minao')``).
+
+    Oracle: the value at each of the three layers, with the solver in the FULL
+    mode a non-pbe seed requires, and the refusal message of a value that is
+    none of the four.
+    """
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+    from xcquinox.pipeline.cluster.spec_builder import (
+        _solver_config_from_named,
+        resolve_seed_xc,
+    )
+    d = _base_config_dict()
+    d["inputs"]["seed_xc"] = "minao"
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", d))
+    assert cfg.inputs.seed_xc == "minao"
+    cfg2 = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.inputs.seed_xc == "minao"
+
+    # The spec builder's own call shape: the per-cell resolution supplies
+    # seed_source, and a non-pbe seed is accepted only in FULL mode.
+    sc = _solver_config_from_named(
+        SolverNamed(mode="FULL", max_cycles=3),
+        seed_source=resolve_seed_xc(cfg2.inputs, cfg2.sweep.arch[0]))
+    assert sc.seed_source == "minao"
+
+    # The refusal names every accepted value, so the reader of the failure
+    # does not have to read the parser to learn what the fourth one is.
+    d["inputs"]["seed_xc"] = "hf"
+    with pytest.raises(ValueError) as exc:
+        load_grid_config(_write(tmp_path, "bad.yaml", d))
+    message = str(exc.value)
+    for value in ("pbe", "scan", "auto", "minao"):
+        assert value in message, (value, message)

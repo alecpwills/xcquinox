@@ -275,7 +275,9 @@ class InputPaths:
     # pending arm (e.g. the v4 mgga stacks) to the new protocol on resubmit.
     # "auto" = rung-derived per arch (rungs.seed_xc_for_arch: the meta-GGA
     # family seeds from converged SCAN, everything else from PBE); "scan"
-    # forces SCAN for every arch (controlled experiments only).
+    # forces SCAN for every arch (controlled experiments only); "minao"
+    # starts every SCF from the superposition of atomic densities, the cold
+    # start, with no converged parent density involved (FULL solvers only).
     seed_xc: str = "pbe"
     # Root of the SCAN seed cache (run_scf_with_cache layout: the per-species
     # npz files live under ``<seed_cache_dir>/_intermediates/``). Required
@@ -1135,9 +1137,9 @@ def _build_inputs(d: dict) -> InputPaths:
             "SCF may land anywhere on it -- so the run record states why that "
             "was acceptable")
     seed_xc = str(d.get("seed_xc", "pbe"))
-    if seed_xc not in ("pbe", "scan", "auto"):
+    if seed_xc not in ("pbe", "scan", "minao", "auto"):
         raise ValueError(
-            f"{ctx}.seed_xc must be one of 'pbe'/'scan'/'auto', got "
+            f"{ctx}.seed_xc must be one of 'pbe'/'scan'/'minao'/'auto', got "
             f"{seed_xc!r}"
         )
     return InputPaths(

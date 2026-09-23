@@ -470,3 +470,38 @@ def test_build_solvers_to_config_roundtrip_builds_dfs_mixer():
     assert cfg.scf_loss_use_tail is True
 
 
+
+
+# ---------------------------------------------------------------------------
+# The per-cell SCF seed resolution
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_seed_xc_passes_minao_through(tmp_path):
+    """The resolver passes an explicit seed through verbatim and derives only
+    ``auto`` from the architecture's rung, so a run-wide superposition-of-
+    atomic-densities seed reaches the solver configuration of every cell
+    rather than being silently replaced by the pbe default.
+
+    Oracle: the resolver's return, and the solver configuration of every spec
+    built from a config whose inputs name the seed. The cells carry a FULL
+    solver because a non-pbe seed is accepted in no other mode: ONESHOT
+    evaluates at the stored PBE density and would ignore the seed.
+    """
+    from xcquinox.pipeline.cluster.spec_builder import resolve_seed_xc
+    base = _make_cfg(tmp_path)
+    inputs = dataclasses.replace(base.inputs, seed_xc="minao")
+    assert resolve_seed_xc(inputs, base.sweep.arch[0]) == "minao"
+
+    cfg = dataclasses.replace(
+        base,
+        inputs=inputs,
+        sweep=dataclasses.replace(base.sweep, solver=("full_3",)),
+        solvers={"full_3": SolverNamed(mode="FULL", max_cycles=3)},
+    )
+    out = build_training_specs(_make_pool(), _make_ledger(), cfg,
+                               get_domain_profile("dfs_step7"),
+                               str(tmp_path / "run"))
+    assert len(out) == len(expand_grid(cfg)) == 2
+    for cell, spec in out:
+        assert spec.solver_config.seed_source == "minao", cell

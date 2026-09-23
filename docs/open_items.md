@@ -830,3 +830,24 @@ harness does (`cluster/fidelity.py`), and the end-to-end notebook tests then cov
 
 ---
 
+
+---
+
+## 35. The training-side references carry no PBE twin, so their in-sample PBE density baseline is absent
+
+**WHAT:** the model-free PBE-against-CCSD density baseline reads the reference calculation's own
+PBE density (`rho_pbe_grid`, written beside `rho_ref_grid` by `xcquinox.pipeline.benchmark_refs`)
+and never the locally recomputed density of the run's own SCF, a second PBE twin from another
+calculation (the two measured 0.39 percent apart on c2). The OEP references the training side
+reads (`inputs.external_refs_dir`, written by `external_refs.run_oep_cascade`) carry no such twin,
+so every in-sample record built from them reports `density_rmse_pbe`, `density_l1_pbe` and
+`density_eps_l1_pbe` as absent; the held-out channels, whose references come from the benchmark
+writer, keep the baseline. Every reader of the three columns tolerates the absence (the in-sample
+mean becomes nan, the tables and figures skip the column).
+
+**Remedy:** the OEP writer stores `rho_pbe_grid` from the reference SCF payload on the reference
+grid, as the benchmark writer does, and a backfill on the `t1_backfill` pattern adds the key to
+the existing references from their cached SCF payloads without a new SCF.
+
+**Why deferred:** a change to the reference file format on the training side, with its own tests
+and review; the v8 campaigns report the held-out baseline.

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=xcq_refinalize_verbatim
-#SBATCH --partition=short-40core
+#SBATCH --partition=short-96core-shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4

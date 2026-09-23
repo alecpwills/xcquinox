@@ -203,3 +203,48 @@ def test_the_guard_refuses_a_python_outside_the_prefix():
 def test_scripts_parse():
     for script in ALL_SCRIPTS + EXEMPT:
         _parses(script)
+
+
+# ---------------------------------------------------------------------------
+# The partition every job is submitted to
+# ---------------------------------------------------------------------------
+#
+# The 40-core nodes are gone; the milan nodes carry 96 cores and are what the
+# queues named below allocate. A job script naming a retired queue is rejected
+# at submission, which is a wasted turnaround rather than a wasted allocation,
+# but it is found here instead.
+
+#: The core count in the name of every milan queue. Stated identically in
+#: ``test_build_parity_env.py`` for the environment build.
+MILAN_TOKEN = "96core"
+
+#: A partition DIRECTIVE, as opposed to a commented example invocation in a
+#: header: the directive starts the line, the example does not.
+PARTITION_DIRECTIVE = re.compile(r"^#SBATCH\s+(?:--partition[=\s]+|-p\s+)(\S+)")
+
+
+def _partitions(script: str) -> list[str]:
+    return [m.group(1) for m in
+            (PARTITION_DIRECTIVE.match(line) for line in _lines(script))
+            if m is not None]
+
+
+def test_every_standalone_job_script_runs_on_a_milan_partition():
+    """Every tracked job script, the environment build included, requests a
+    milan queue. The set is read from the directory, so a new script is held
+    to the rule without a registration here.
+
+    Oracle: the ``#SBATCH --partition`` directives of the scripts themselves.
+    """
+    scripts = ALL_SCRIPTS + EXEMPT
+    assert scripts, "no job script found"
+    offenders = []
+    for script in scripts:
+        partitions = _partitions(script)
+        assert partitions, (
+            f"{script}: no '#SBATCH --partition' directive, so the rule below "
+            "would hold vacuously for it")
+        offenders += [f"{script}: {name}" for name in partitions
+                      if MILAN_TOKEN not in name]
+    assert offenders == [], (
+        f"queues that are not milan ({MILAN_TOKEN}): {offenders}")

@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=xcq_pretrained_holdout
-# long-40core, NOT long-96core: the 96-core queue is saturated by the production
-# training array and this job must not compete with it for nodes. The held-out
-# loop shards across the node's CPUs, so 40 cores is ample for ~214 molecules.
-#SBATCH --partition=long-40core
+# long-96core-shared: the milan queue, one whole node (--exclusive, --mem=0).
+# The held-out loop shards across the node's CPUs, 96 of them for ~214 molecules.
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
 #SBATCH --exclusive
 #SBATCH --mem=0
-#SBATCH --cpus-per-task=40
+#SBATCH --cpus-per-task=96
 #SBATCH --output=/gpfs/scratch/awills/pretrained_holdout_%j.out
 #SBATCH --mail-user=alec.wills@stonybrook.edu
 #SBATCH --mail-type=END,FAIL,TIME_LIMIT

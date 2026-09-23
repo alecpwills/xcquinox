@@ -273,7 +273,11 @@ def test_density_rmse_schema(tiny_model, h2o_data):
 def test_pbe_density_eps_closed_form():
     md = {
         "rho_ref_grid": np.array([2.0, 1.0]),
-        "rho_grid": np.array([2.5, 0.5]),
+        # the reference calculation's own PBE density, which is what the
+        # model-free baseline measures; the locally recomputed rho_grid is
+        # deliberately different here so the source of the number is pinned
+        "rho_pbe_ref_grid": np.array([2.5, 0.5]),
+        "rho_grid": np.zeros(2),
         "grid_weights": np.array([3.0, 1.0]),
     }
     eps, n_e, wsum = pbe_density_eps(md)
@@ -294,6 +298,9 @@ def test_density_rmse_emits_eps_and_bookkeeping(tiny_model, h2o_data):
         mol_data["rho_grid"]
     )
     mol_data["ref_density_method"] = "hf"
+    # the PBE twin of the reference calculation; the identity below is about
+    # the model-free channel, which is emitted only when it is present
+    mol_data["rho_pbe_ref_grid"] = mol_data["rho_grid"]
     out = DensityRMSEMetric().compute(tiny_model, mol_data)
     w = np.asarray(mol_data["grid_weights"])
     n_e = float(np.sum(w * np.asarray(mol_data["rho_ref_grid"])))
@@ -589,6 +596,7 @@ def test_density_rmse_metric_emits_pbe_channel(tiny_model, h2o_data):
     h2o = dict(h2o_data)
     h2o["rho_ref_grid"] = jnp.asarray(h2o["rho_grid"]) * 1.01
     h2o["ref_density_method"] = "ccsd"
+    h2o["rho_pbe_ref_grid"] = h2o["rho_grid"]
     out = m.compute(tiny_model, h2o)
     assert out["density_rmse_pbe"] is not None and out["density_rmse_pbe"] > 0
     assert out["density_l1_pbe"] is not None
@@ -600,5 +608,68 @@ def test_density_rmse_metric_emits_pbe_channel(tiny_model, h2o_data):
     no_ref["rho_ref_grid"] = None
     out_no_ref = m.compute(tiny_model, no_ref)
     assert out_no_ref["density_rmse_pbe"] is None
+    # a reference without its own PBE density (the training-side OEP
+    # references carry none): the NN channel is measured, the model-free
+    # channel is absent rather than taken from the locally recomputed twin
+    no_twin = dict(h2o)
+    del no_twin["rho_pbe_ref_grid"]
+    out_no_twin = m.compute(tiny_model, no_twin)
+    assert out_no_twin["density_rmse"] is not None
+    assert out_no_twin["density_rmse_pbe"] is None
+    assert out_no_twin["density_eps_l1_pbe"] is None
 
 
+
+
+def test_pbe_density_baseline_is_absent_without_the_reference_pbe_density():
+    """The model-free baseline is a statement about the reference
+    calculation's own PBE density on the reference grid. Where that density is
+    absent, both functions report absence rather than substituting the locally
+    recomputed ``rho_grid``: that twin comes from a different SCF, with its own
+    density fitting, grid and orientation, and the difference it produces is a
+    provenance difference rather than a PBE-vs-reference error (0.39 percent
+    apart on c2).
+
+    Oracle: the absent tuples both functions already return where no reference
+    density is present, and a record carrying the key, which still measures --
+    hand-computed on a two-point grid, weights ``[3, 1]``, reference
+    ``[2, 1]``, PBE ``[2.5, 0.5]``: RMSE and L1 both 0.5, eps = 2/7.
+    """
+    from xcquinox.pipeline.evaluation import pbe_density_errors
+    without = {
+        "rho_ref_grid": np.array([2.0, 1.0]),
+        "rho_grid": np.array([2.5, 0.5]),
+        "grid_weights": np.array([3.0, 1.0]),
+    }
+    assert pbe_density_errors(without) == (None, None)
+    assert pbe_density_eps(without) == (None, None, None)
+
+    with_baseline = dict(without,
+                         rho_pbe_ref_grid=np.array([2.5, 0.5]),
+                         rho_grid=np.zeros(2))
+    rmse, l1 = pbe_density_errors(with_baseline)
+    assert rmse == pytest.approx(0.5)
+    assert l1 == pytest.approx(0.5)
+    eps, n_e, wsum = pbe_density_eps(with_baseline)
+    assert eps == pytest.approx(2.0 / 7.0)
+    assert n_e == pytest.approx(7.0)
+    assert wsum == pytest.approx(4.0)
+
+
+def test_density_error_terms_closed_form_and_shape_guard():
+    """The weight-averaged RMSE and L1 of one density against another on one
+    grid, the formula the PBE baseline and the SCAN pool tool share, and a
+    refusal of two densities of different length rather than a broadcast.
+
+    Oracle: hand-computed on the two-point grid, weights ``[3, 1]``, reference
+    ``[2, 1]``, density ``[2.5, 0.5]``: sum(w diff^2) = 3*0.25 + 1*0.25 = 1
+    over sum(w) = 4 gives RMSE 0.5; sum(w |diff|) = 2 over 4 gives L1 0.5.
+    """
+    from xcquinox.pipeline.evaluation import density_error_terms
+    rmse, l1 = density_error_terms(np.array([2.5, 0.5]), np.array([2.0, 1.0]),
+                                   np.array([3.0, 1.0]))
+    assert rmse == pytest.approx(0.5)
+    assert l1 == pytest.approx(0.5)
+    with pytest.raises(ValueError, match="shape mismatch"):
+        density_error_terms(np.array([2.5, 0.5, 0.1]), np.array([2.0, 1.0]),
+                            np.array([3.0, 1.0]))

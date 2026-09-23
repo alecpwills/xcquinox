@@ -519,7 +519,7 @@ these differences:
 ## 5. Regeneration
 
 One suite invocation refreshes every figure above for the pulled bases, both checkpoint
-variants; see `RUNBOOK_pull_and_figures.md` for the pull commands and the canonical
+variants; see `docs/pipeline/pull_and_figures.md` for the pull commands and the canonical
 
     python tools/analysis/make_ablation_arch_figure.py --suite \
         --domain dfs_step7 --bases <comma-separated basis subdirs> \

@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=xcq_coldstart
-# long-40core, NOT short-40core: the short queues cap at 4 h (see
+# long-96core-shared, NOT short-96core-shared: the short queues cap at 4 h (see
 # hpcjobs/SEAWULF_RUNBOOK.md) and this job honestly needs more -- ~26
 # completed specs x ~8x a 3-cycle channel pass each. Done-skip
 # resumability covers anything a wall-kill leaves.
-#SBATCH --partition=long-40core
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=08:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

@@ -327,4 +327,4 @@ values above (kcal/mol).
 
 - `README_density_figures.md` -- what every figure panel/marker/footer band means; the
   dataset footer line on held-out figures carries the live counts from Sec. 1.
-- `RUNBOOK_pull_and_figures.md` -- how to pull runs and regenerate the figures.
+- `docs/pipeline/pull_and_figures.md` -- how to pull runs and regenerate the figures.

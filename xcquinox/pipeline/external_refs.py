@@ -731,7 +731,9 @@ def run_ccsd_with_cache(
     Returns dict with keys: dm_ao (AO-basis CCSD 1-RDM, shape
     ``(n_ao, n_ao)`` for RKS or ``(2, n_ao, n_ao)`` for UKS -- both spin
     channels kept for the V_xc shape contract), rho_ref_grid (1D spin-summed),
-    grid_weights, ao_grid, and ``t1_diagnostic`` (:func:`_t1_diagnostic`,
+    grid_weights, ao_grid, ``ccsd_converged`` (True from the computation and
+    from a cache carrying the stamp, None from a cache written before it
+    existed) and ``t1_diagnostic`` (:func:`_t1_diagnostic`,
     computed here where the amplitudes exist and cached with the density;
     None when served from a cache written before the diagnostic existed).
     ``require_t1`` recomputes such a cache and rewrites it with the key added
@@ -763,12 +765,18 @@ def run_ccsd_with_cache(
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
             has_t1 = "t1_diagnostic" in z.files
+            has_converged = "ccsd_converged" in z.files
             if has_t1 or not require_t1:
+                # The served payload carries the key set the computation
+                # returns; a file written before a key existed serves None
+                # for it rather than omitting it.
                 return {
                     "dm_ao": np.asarray(z["dm_ao"]),
                     "rho_ref_grid": np.asarray(z["rho_ref_grid"]),
                     "grid_weights": np.asarray(z["grid_weights"]),
                     "ao_grid": np.asarray(z["ao_grid"]),
+                    "ccsd_converged": (bool(z["ccsd_converged"])
+                                       if has_converged else None),
                     "t1_diagnostic": (float(z["t1_diagnostic"]) if has_t1
                                       else None),
                 }
@@ -857,7 +865,9 @@ def run_ccsd_with_cache(
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
         raise
-    return result
+    # The payload carries the stamp as a Python bool, as the served payload
+    # does; the file keeps the array written above.
+    return dict(result, ccsd_converged=True)
 
 
 # OEP cascade tiers, split RKS vs UKS because the achievable density_error

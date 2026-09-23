@@ -264,6 +264,14 @@ def _live_platform():
     return _LIVE_PLATFORM["fingerprint"]
 
 
+def _foreign_cpu_model() -> str:
+    """A CPU model that is not the live one, whatever the live one is. Derived
+    from the live string rather than written as a literal: a literal names one
+    CPU, and on the machine that IS that CPU a fingerprint fabricated from it
+    matches the live one in every field."""
+    return _live_platform()["cpu_model"] + " (foreign)"
+
+
 def _platform_summary(fingerprint):
     """One line naming a platform, for a report or a failure message."""
     return (f"{fingerprint['cpu_model']}, numpy "
@@ -787,14 +795,51 @@ def test_a_matching_fingerprint_takes_the_bitwise_branch(monkeypatch):
         assert_closed_shell_record_matches(_PROBE_ARCH, record=_fixture_record())
 
 
+#: The CPU of the hosted runner this suite also runs on. The fabricated
+#: fingerprint of the cross-platform test has to name a CPU that is NOT the
+#: live one, which no literal can do: on the runner this string IS the live
+#: value, the fabricated fingerprint then matches the live one in every field,
+#: and the branch that test is about is never taken.
+_RUNNER_CPU_MODEL = "AMD EPYC 7763 64-Core Processor"
+
+
+def test_the_foreign_cpu_model_differs_from_the_runner_cpu(monkeypatch):
+    """The fabricated CPU differs from the live one on every machine, the
+    hosted runner included.
+
+    Oracle: the live fingerprint pinned to the runner's CPU. A literal equal
+    to it produces no platform difference at all, so the comparison stays on
+    the bitwise branch; the value derived from the live string still produces
+    exactly one, on ``cpu_model``, and the comparison takes the cross-platform
+    branch.
+    """
+    monkeypatch.setitem(_LIVE_PLATFORM, "fingerprint",
+                        dict(_live_platform(), cpu_model=_RUNNER_CPU_MODEL))
+    _pin_platform(monkeypatch)
+
+    # the construction a literal gives, read on the machine it names
+    monkeypatch.setitem(_PLATFORM_BY_FIXTURE, _FIXTURE,
+                        dict(_live_platform(), cpu_model=_RUNNER_CPU_MODEL))
+    assert platform_differences() == []
+
+    foreign = _foreign_cpu_model()
+    assert foreign != _RUNNER_CPU_MODEL
+    monkeypatch.setitem(_PLATFORM_BY_FIXTURE, _FIXTURE,
+                        dict(_live_platform(), cpu_model=foreign))
+    differences = platform_differences()
+    assert len(differences) == 1 and differences[0].startswith("cpu_model"), (
+        differences)
+    assert comparison_mode() == CROSS_PLATFORM
+
+
 def test_an_unmatched_fingerprint_takes_the_cross_platform_branch(monkeypatch):
     """Off the recording platform the cluster's own three-ulp discrepancy
     passes and a 1e-9 Ha change of any key still fails."""
     assert not _has_indicator_column(_PROBE_ARCH)
     _pin_platform(monkeypatch)
-    monkeypatch.setitem(
-        _PLATFORM_BY_FIXTURE, _FIXTURE,
-        dict(_live_platform(), cpu_model="AMD EPYC 7763 64-Core Processor"))
+    foreign = _foreign_cpu_model()
+    monkeypatch.setitem(_PLATFORM_BY_FIXTURE, _FIXTURE,
+                        dict(_live_platform(), cpu_model=foreign))
     assert comparison_mode() == CROSS_PLATFORM
     differences = platform_differences()
     assert len(differences) == 1 and differences[0].startswith("cpu_model")
@@ -809,7 +854,7 @@ def test_an_unmatched_fingerprint_takes_the_cross_platform_branch(monkeypatch):
     report = assert_closed_shell_record_matches(_PROBE_ARCH, record=cluster)
     assert CROSS_PLATFORM in report
     assert "digest differs" in report
-    assert "AMD EPYC 7763 64-Core Processor" in report
+    assert foreign in report
     assert "cpu_model" in report
 
     for key in _CODE_PATH_KEYS + ("E_non_xc",):

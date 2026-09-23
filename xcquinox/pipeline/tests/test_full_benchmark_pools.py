@@ -9,7 +9,10 @@ assertions on counts adjust accordingly.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
+from pathlib import Path
 
 import pytest
 
@@ -247,3 +250,127 @@ def test_slice_held_out_pools_keeps_only_closed_reactions():
     assert [r["name"] for r in kept_rxns] == ["closed"]
 
 
+# ---------------------------------------------------------------------------
+# The GMTKN55 source clone: where it is resolved, and that the tracked caches
+# still come out of it
+# ---------------------------------------------------------------------------
+
+#: The repository root: this file sits at ``xcquinox/pipeline/tests/``.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+#: The two subsets the pool builders parse.
+_SUBSETS = ("BH76", "W4-11")
+
+
+def _serialize_pool(data) -> bytes:
+    """A pool dict as ``tools/rebuild_full_benchmark_pools.py`` writes it:
+    two-space indent, insertion order kept, non-ASCII verbatim, and the closing
+    newline its writer appends after the dump."""
+    return (json.dumps(data, indent=2, sort_keys=False,
+                       ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _missing_sources() -> list[str]:
+    """The subsets whose ``.res`` is on disk under neither layout of the
+    GMTKN55 clone. Resolved without ``gmtkn55_root()`` on purpose: a skip
+    decided by the resolution under test would hide the failure the
+    regeneration test exists to report."""
+    env = os.environ.get("XCQUINOX_GMTKN55_DIR")
+    root = Path(env) if env else _REPO_ROOT / "data" / "gmtkn55"
+    return [name for name in _SUBSETS
+            if not (root / name / ".res").is_file()
+            and not (root / "gmtkn55" / name / ".res").is_file()]
+
+
+def test_gmtkn55_root_descends_into_a_nested_checkout(tmp_path, monkeypatch):
+    """A clone whose own top directory repeats the collection name carries
+    every subset one level below the configured root, and the root resolves to
+    the level that holds the subsets -- the level the two pool builders read.
+
+    Oracle: a tree carrying ``<root>/gmtkn55/BH76`` and no ``<root>/BH76``,
+    which is the layout of the clone under ``data/gmtkn55``.
+    """
+    from xcquinox.pipeline.full_benchmark_pools import gmtkn55_root
+    (tmp_path / "gmtkn55" / "BH76").mkdir(parents=True)
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(tmp_path))
+    assert gmtkn55_root() == tmp_path / "gmtkn55"
+
+
+def test_gmtkn55_root_keeps_a_flat_checkout(tmp_path, monkeypatch):
+    """The descent is taken only where the subsets are not at the root: a
+    clone holding them directly resolves to itself even with a directory of
+    the collection's name beside them, and a machine carrying no clone at all
+    gets the root back rather than an error: the resolver imports everywhere,
+    and the subset accessor is what refuses, at the point of reading.
+
+    Oracle: two trees -- the subsets at the root with a decoy one level below,
+    and a root with nothing under it.
+    """
+    from xcquinox.pipeline.full_benchmark_pools import gmtkn55_root
+    (tmp_path / "BH76").mkdir()
+    (tmp_path / "gmtkn55" / "BH76").mkdir(parents=True)
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(tmp_path))
+    assert gmtkn55_root() == tmp_path
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(bare))
+    assert gmtkn55_root() == bare
+
+
+def test_gmtkn55_subset_dir_names_both_candidates(tmp_path, monkeypatch):
+    """The subset accessor resolves a subset under either layout, and where
+    the subset is under neither it reports both paths it looked at, so the
+    reader of the failure knows which clone belongs where.
+
+    Oracle: three trees -- flat, nested, and empty.
+    """
+    from xcquinox.pipeline.full_benchmark_pools import gmtkn55_subset_dir
+
+    flat = tmp_path / "flat"
+    (flat / "BH76").mkdir(parents=True)
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(flat))
+    assert gmtkn55_subset_dir("BH76") == flat / "BH76"
+
+    nested = tmp_path / "nested"
+    for name in _SUBSETS:
+        (nested / "gmtkn55" / name).mkdir(parents=True)
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(nested))
+    assert gmtkn55_subset_dir("W4-11") == nested / "gmtkn55" / "W4-11"
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(bare))
+    with pytest.raises(FileNotFoundError) as exc:
+        gmtkn55_subset_dir("BH76")
+    message = str(exc.value)
+    assert str(bare / "BH76") in message, message
+    assert str(bare / "gmtkn55" / "BH76") in message, message
+
+
+def test_the_tracked_pools_regenerate_byte_for_byte():
+    """The tracked caches are what the source produces now: each builder's
+    dict, serialized the way the regeneration script serializes it, equals the
+    tracked file byte for byte. A cache that no longer regenerates is a cache
+    whose provenance has been lost.
+
+    Oracle: ``xcquinox/pipeline/data/{bh76,w411}_full_pool.json`` as tracked.
+    """
+    missing = _missing_sources()
+    if missing:
+        pytest.skip("the GMTKN55 clone is not on this machine: no .res for "
+                    f"{', '.join(missing)} under data/gmtkn55 in either "
+                    "layout")
+    from xcquinox.pipeline.full_benchmark_pools import (
+        BH76_JSON_PATH,
+        W411_JSON_PATH,
+        build_bh76_pool_dict,
+        build_w411_pool_dict,
+    )
+    for builder, json_path in ((build_bh76_pool_dict, BH76_JSON_PATH),
+                               (build_w411_pool_dict, W411_JSON_PATH)):
+        regenerated = _serialize_pool(builder())
+        tracked = Path(json_path).read_bytes()
+        assert regenerated == tracked, (
+            f"{Path(json_path).name}: {len(regenerated)} bytes regenerated "
+            f"against {len(tracked)} tracked")

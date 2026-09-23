@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=xcq_wfmatrix
-# long-40core: the matrix is ONE process on ONE node (it drives every stage as
-# a subprocess of itself; nothing here queues anything) and needs a wall above
-# the 4 h cap of the short-* queues and the 12 h cap of the medium-* queues.
-# Override to match the login instance you submit from -- the *-96core-shared
-# queues exist only on milan1/milan2 and the *-28core queues only on
-# login1/login2:
-#   sbatch --partition=long-96core-shared --cpus-per-task=96 ...
-#   sbatch --partition=long-28core        --cpus-per-task=28 ...
-#SBATCH --partition=long-40core
+# long-96core-shared: the matrix is ONE process on ONE node (it drives every
+# stage as a subprocess of itself; nothing here queues anything) and needs a
+# wall above the 4 h cap of the short-* queues and the 12 h cap of the
+# medium-* queues; the node is held whole (--exclusive).
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=30:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=40
+#SBATCH --cpus-per-task=96
 #SBATCH --exclusive
 #SBATCH --mem=0
 #SBATCH --output=/gpfs/scratch/awills/workflow_matrix_%j.out
@@ -84,16 +80,14 @@
 # architecture returns.
 #
 # PARTITION CAP. hpcjobs/SEAWULF_RUNBOOK.md records short-* 4 h, medium-* 12 h,
-# and a 48 h MaxWall on every long-* QOS (40- and 96-core, shared included;
-# sacctmgr, 2026-08-27). Verify it before the first submission --
-#   sinfo -o "%20P %10l" -p long-40core
+# and a 48 h MaxWall on every long-* QOS (shared included; sacctmgr,
+# 2026-08-27). Verify it before the first submission --
+#   sinfo -o "%20P %10l" -p long-96core-shared
 # -- and if it caps below 30 h, no other long-* queue helps, since the 48 h is a
 # QOS cap they share: raise MATRIX_BATCHES (each submission then covers fewer
 # architectures and bounds lower) or move to an extended-* partition, whose cap
-# is 7 days. The choice of long-28core (--cpus-per-task=28) or long-96core-shared
-# (--cpus-per-task=96) is about the login instance you submit from, not about the
-# wall. An over-cap request is rejected by sbatch at submission, not after a
-# queue wait.
+# is 7 days. An over-cap request is rejected at submission, not after a queue
+# wait.
 #
 # THE PER-STAGE CAP (1800 s) is half the module's own hang detector,
 # DEFAULT_STAGE_TIMEOUT_S = 3600, and equals the per-stage wall the matrix's
@@ -465,7 +459,7 @@ fi
 # workflow_matrix._base_env, at (SLURM_CPUS_PER_TASK / shards) threads -- the
 # allocation, not the machine, so the budget holds on a shared queue and on an
 # SMT node.
-THREADS="${SLURM_CPUS_PER_TASK:-40}"
+THREADS="${SLURM_CPUS_PER_TASK:-96}"
 export OMP_NUM_THREADS="$THREADS"
 export MKL_NUM_THREADS="$THREADS"
 export OPENBLAS_NUM_THREADS="$THREADS"

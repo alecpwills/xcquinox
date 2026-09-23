@@ -241,23 +241,24 @@ def _coerce_enum(enum_cls, token):
 
 
 def resolve_seed_xc(inputs, arch_name: str) -> str:
-    """The per-cell SCF seed functional ("pbe" or "scan") for ``arch_name``.
+    """The per-cell SCF seed ("pbe", "scan" or "minao") for ``arch_name``.
 
-    ``inputs.seed_xc`` is authoritative: "pbe"/"scan" pass through verbatim
-    (the default "pbe" keeps every arch -- including a pending mgga arm
-    resubmitted after deployment -- on the pre-seeding protocol); "auto"
-    derives the rung baseline from the architecture registry
-    (rungs.seed_xc_for_arch: the meta-GGA family seeds SCAN, everything
-    else PBE). Shared by spec building and run validation so the two agree
-    by construction.
+    ``inputs.seed_xc`` is authoritative: "pbe"/"scan"/"minao" pass through
+    verbatim (the default "pbe" keeps every arch -- including a pending mgga
+    arm resubmitted after deployment -- on the pre-seeding protocol; "minao"
+    is the cold start, the superposition of atomic densities every SCF of
+    the cell starts from); "auto" derives the rung baseline from the
+    architecture registry (rungs.seed_xc_for_arch: the meta-GGA family seeds
+    SCAN, everything else PBE). Shared by spec building and run validation
+    so the two agree by construction.
     """
     mode = getattr(inputs, "seed_xc", "pbe") or "pbe"
     if mode == "auto":
         from xcquinox.pipeline.rungs import seed_xc_for_arch
         return seed_xc_for_arch(arch_name)
-    if mode not in ("pbe", "scan"):
+    if mode not in ("pbe", "scan", "minao"):
         raise ValueError(
-            f"inputs.seed_xc must be 'pbe'/'scan'/'auto', got {mode!r}")
+            f"inputs.seed_xc must be 'pbe'/'scan'/'minao'/'auto', got {mode!r}")
     return mode
 
 
@@ -574,7 +575,8 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             auxbasis=cfg.inputs.auxbasis,
             orientation_lock_strength=cfg.inputs.orientation_lock_strength,
             # per-rung seeding: resolved per cell from the arch registry
-            # ("auto") or forced run-wide ("pbe"/"scan"); default "pbe"
+            # ("auto") or forced run-wide ("pbe"/"scan"/"minao"); default
+            # "pbe"
             seed_source=resolve_seed_xc(cfg.inputs, cell.arch),
             seed_cache_dir=getattr(cfg.inputs, "seed_cache_dir", None),
         )

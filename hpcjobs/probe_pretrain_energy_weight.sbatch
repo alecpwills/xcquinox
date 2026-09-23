@@ -1,24 +1,16 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=xcq_ewsweep
-# long-40core: the sweep is ONE process on ONE node and needs a wall above the
-# 4 h cap of the short-* queues. Override to match the login instance you
-# submit from -- the *-96core-shared queues exist only on milan1/milan2 and the
-# *-28core queues only on login1/login2:
-#   sbatch --partition=long-96core-shared --cpus-per-task=96 ...
-#   sbatch --partition=long-28core        --cpus-per-task=28 ...
-# VERIFY THE 24 h REQUEST AGAINST THE QUEUE CAP BEFORE THE FIRST SUBMISSION.
-# SEAWULF_RUNBOOK.md records caps for short-* (4 h), medium-* (12 h) and
-# long-28core (2 days) but states none for long-40core, and an over-cap
-# --time is rejected at submit -- which would stall the whole v6 chain at its
-# first step, since this table is prerequisite (a) of the campaign YAML:
-#   sinfo -o "%20P %10l" -p long-40core
-# If the cap is under 24 h, SPLIT the sweep with EWSWEEP_ARCHS rather than
-# shortening the schedule (see the wall derivation below).
-#SBATCH --partition=long-40core
+# long-96core-shared: the sweep is ONE process on ONE node and needs a wall
+# above the 4 h cap of the short-* queues; the node is held whole
+# (--exclusive). The long-* QOS caps at 48 h (SEAWULF_RUNBOOK.md), which the
+# 24 h request is under; were a cap below 24 h ever set, SPLIT the sweep with
+# EWSWEEP_ARCHS rather than shortening the schedule (see the wall derivation
+# below).
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=40
+#SBATCH --cpus-per-task=96
 #SBATCH --exclusive
 #SBATCH --mem=0
 #SBATCH --output=/gpfs/scratch/awills/probe_pretrain_energy_weight_%j.out

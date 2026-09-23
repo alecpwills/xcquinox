@@ -398,24 +398,28 @@ def run_pbe_density_table(
     (PBE + geometry + basis only), so it is computed ONCE per run and written
     to ``<run_dir>/pbe_density_errors.json``: ``{basis, grid_level, refs_dir,
     errors: {name: {density_rmse_pbe, density_l1_pbe, density_eps_l1_pbe,
-    n_electrons, grid_weight_sum}}, failures: {name: msg}}`` -- the eps column
-    is the DFS Letter Eq. 20 per-electron L1, ``sum(w|rho_PBE - rho_ref|)/N_e``
-    with ``N_e = sum(w rho_ref)``. Works on summaries-profile pulls with zero
+    n_electrons, grid_weight_sum}}, failures: {name: msg}, no_reference:
+    [name, ...], no_pbe_twin: [name, ...]}`` -- the eps column is the DFS
+    Letter Eq. 20 per-electron L1, ``sum(w|rho_PBE - rho_ref|)/N_e`` with
+    ``N_e = sum(w rho_ref)``. Works on summaries-profile pulls with zero
     local ``model.eqx`` files. Atoms and species without a reference npz are
-    skipped (not failures).
+    skipped.
 
-    FAST PATH: benchmark reference npz files that carry ``rho_pbe_grid`` +
-    ``grid_weights`` (written by ``xcquinox.pipeline.benchmark_refs``) need NO
-    SCF at all -- the error is pure npz arithmetic against the
-    generator-side PBE density (for DF runs, the DF-consistent one).
-    Older refs without those keys fall back to a local PBE precompute
-    (``rho_grid`` is the PBE density on the same grid; non-DF vs a
-    DF-generated reference differs only by the DF error, well below the
-    PBE-vs-CCSD signal).
+    The baseline is the reference calculation's own PBE density: the npz key
+    ``rho_pbe_grid`` that ``xcquinox.pipeline.benchmark_refs`` writes beside
+    ``rho_ref_grid`` and ``grid_weights``. With the three keys present the
+    error is pure npz arithmetic and no SCF runs. A reference without the
+    twin has no baseline and is listed under ``no_pbe_twin``; one without a
+    reference density is listed under ``no_reference``; neither costs an
+    SCF, since the loader takes both densities from the same keys. A readable
+    file lacking only the weights, or an unreadable one, goes through the
+    loader (``precompute_one``), whose record is judged by the same two keys;
+    the locally recomputed density is never the baseline.
     """
     import numpy as np
 
-    from xcquinox.pipeline.evaluation import pbe_density_eps, pbe_density_errors
+    from xcquinox.pipeline.evaluation import (
+        density_eps_terms, pbe_density_eps, pbe_density_errors)
 
     basis, grid_level = _read_basis_grid(run_dir)
     mol_specs, _reactions = pools_loader(basis, grid_level, density_refs)
@@ -427,47 +431,73 @@ def run_pbe_density_table(
 
     errors: Dict[str, Dict[str, float]] = {}
     failures: Dict[str, str] = {}
+    # the two absences, recorded by name so that an empty table is never
+    # mistaken for a computed one
+    no_reference: List[str] = []
+    no_pbe_twin: List[str] = []
     t0 = time.perf_counter()
     n_fast = 0
     for k, (name, ms) in enumerate(sorted(with_refs.items()), 1):
         if sum(n for _, n in ms.atom_composition) == 1:
             continue                      # atoms: density matching skipped
         md = None
-        try:  # fast path; any read problem falls back to the SCF path
+        keys = None                       # the file's keys, when it is readable
+        try:  # fast path; an unreadable file goes through the loader
             with np.load(ms.external_data_path, allow_pickle=False) as z:
-                if {"rho_pbe_grid", "grid_weights", "rho_ref_grid"} \
-                        <= set(z.files):
-                    md = {"rho_grid": np.asarray(z["rho_pbe_grid"]),
+                keys = set(z.files)
+                if {"rho_pbe_grid", "grid_weights", "rho_ref_grid"} <= keys:
+                    # the reference calculation's own PBE density, the
+                    # baseline the model-free channel measures
+                    md = {"rho_pbe_ref_grid": np.asarray(z["rho_pbe_grid"]),
                           "rho_ref_grid": np.asarray(z["rho_ref_grid"]),
                           "grid_weights": np.asarray(z["grid_weights"])}
                     n_fast += 1
         except (OSError, ValueError):
-            md = None
+            md, keys = None, None
+        if md is None and keys is not None:
+            # the loader takes both densities from these same keys, so a
+            # file lacking one of them has no baseline whatever an SCF adds
+            if "rho_ref_grid" not in keys:
+                no_reference.append(name)
+                continue
+            if "rho_pbe_grid" not in keys:
+                no_pbe_twin.append(name)
+                continue
         try:
             if md is None:
                 md = precompute_one(ms)
+            if md.get("rho_ref_grid") is None:
+                no_reference.append(name)
+                continue
+            if md.get("rho_pbe_ref_grid") is None:
+                no_pbe_twin.append(name)
+                continue
             rmse, l1 = pbe_density_errors(md)
-            eps, n_e, wsum = pbe_density_eps(md)
+            eps, _, _ = pbe_density_eps(md)
+            # quadrature properties of the reference density and the grid
+            _, n_e, wsum = density_eps_terms(
+                md["rho_ref_grid"], md["rho_ref_grid"], md["grid_weights"])
         except Exception as exc:  # noqa: BLE001 - record + continue
             failures[name] = f"{type(exc).__name__}: {exc}"
             print(f"[pbe-density] ({k}/{len(with_refs)}) {name} FAILED: "
                   f"{failures[name]}", flush=True)
             continue
-        if rmse is None:
-            continue                      # npz present but carried no rho_ref
         errors[name] = {"density_rmse_pbe": rmse, "density_l1_pbe": l1,
                         "density_eps_l1_pbe": eps, "n_electrons": n_e,
                         "grid_weight_sum": wsum}
         elapsed = time.perf_counter() - t0
         eta = elapsed / k * (len(with_refs) - k)
         print(f"[pbe-density] ({k}/{len(with_refs)}) {name} "
-              f"rmse={rmse:.3e} l1={l1:.3e} "
-              f"eps={eps if eps is None else format(eps, '.3e')} "
+              f"rmse={rmse:.3e} l1={l1:.3e} eps={eps:.3e} "
               f"[elapsed {_fmt_eta(elapsed)}, "
               f"ETA {_fmt_eta(eta)}]", flush=True)
     if n_fast:
         print(f"[pbe-density] {n_fast} species used the stored "
               "rho_pbe_grid fast path (no SCF)", flush=True)
+    if no_reference or no_pbe_twin:
+        print(f"[pbe-density] no reference density: {len(no_reference)}; "
+              f"reference without its PBE twin: {len(no_pbe_twin)} "
+              "(listed in the table, not measured)", flush=True)
 
     payload = {
         "basis": basis,
@@ -475,6 +505,8 @@ def run_pbe_density_table(
         "refs_dir": str(density_refs),
         "errors": errors,
         "failures": failures,
+        "no_reference": no_reference,
+        "no_pbe_twin": no_pbe_twin,
     }
     out_path = run_dir / "pbe_density_errors.json"
     out_path.write_text(json.dumps(payload, indent=1))

@@ -665,7 +665,7 @@ On the cluster, from the repo root after `git pull`:
 ```bash
 cd /gpfs/projects/FernandezGroup/Alec/xcquinox
 git pull
-python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_rxn.yaml --partition long-40core --max-nodes 1 --train-time "48:00:00" --submit
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_rxn.yaml --partition long-96core-shared --max-nodes 1 --train-time "48:00:00" --submit
 ```
 
 Then, before the pretrain array can start (it waits on datagen, but hold it

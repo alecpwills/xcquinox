@@ -147,7 +147,7 @@ def scan_density_record(dm, ao, weights, rho_ref, *,
     """
     import numpy as np
 
-    from xcquinox.pipeline.evaluation import density_eps_terms, pbe_density_errors
+    from xcquinox.pipeline.evaluation import density_eps_terms, density_error_terms
 
     dm = np.asarray(dm)
     dm_tot = dm[0] + dm[1] if dm.ndim == 3 else dm
@@ -166,9 +166,7 @@ def scan_density_record(dm, ao, weights, rho_ref, *,
                 f"SCAN density integrates to {n_e_scan:.6f} electrons, expected "
                 f"{float(n_electrons_expected):.6f} -- the AO grid does not match "
                 "the grid the reference weights were written for")
-    md = {"rho_grid": rho_scan, "rho_ref_grid": rho_ref,
-          "grid_weights": weights}
-    rmse, l1 = pbe_density_errors(md)
+    rmse, l1 = density_error_terms(rho_scan, rho_ref, weights)
     eps, n_e_ref, wsum = density_eps_terms(rho_scan, rho_ref, weights)
     return {"density_rmse_scan": float(rmse), "density_l1_scan": float(l1),
             "density_eps_l1_scan": float(eps), "n_electrons": float(n_e_ref),

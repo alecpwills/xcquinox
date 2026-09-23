@@ -74,19 +74,47 @@ W411_JSON_PATH = _DATA_DIR / "w411_full_pool.json"
 
 # GMTKN55 source root, the regen script reads from here; runtime loaders
 # only touch it when XCQUINOX_REBUILD_FULL_POOLS=1.
-def gmtkn55_root() -> Path:
-    """The GMTKN55 clone: ``XCQUINOX_GMTKN55_DIR`` when set, else ``data/gmtkn55`` under
-    the repository (an ignored checkout; ``data/gmtkn55/PROVENANCE.md`` records the URL and
-    the pinned commit)."""
+#: The directory a clone of the collection may carry under its own top level,
+#: with the subsets beneath it (the layout of the checkout under ``data/``).
+_COLLECTION_DIR = "gmtkn55"
+#: The subset whose directory decides between the two layouts.
+_PROBE_SUBSET = "BH76"
+
+
+def _configured_root() -> Path:
+    """``XCQUINOX_GMTKN55_DIR`` when set, else ``data/gmtkn55`` under the repository."""
     env = os.environ.get("XCQUINOX_GMTKN55_DIR")
     if env:
         return Path(env)
     return Path(__file__).resolve().parents[2] / "data" / "gmtkn55"
 
 
-_GMTKN55_ROOT = gmtkn55_root()
-BH76_SOURCE_DIR = _GMTKN55_ROOT / "BH76"
-W411_SOURCE_DIR = _GMTKN55_ROOT / "W4-11"
+def gmtkn55_root() -> Path:
+    """The directory holding the GMTKN55 subsets: ``XCQUINOX_GMTKN55_DIR`` when set, else
+    ``data/gmtkn55`` under the repository (an ignored checkout; ``data/gmtkn55/PROVENANCE.md``
+    records the URL and the pinned commit). A clone whose top level repeats the collection's
+    name carries the subsets one level down, as ``data/gmtkn55/gmtkn55/BH76``; that level
+    is returned then. Nothing is raised here, so the module imports on a machine without the
+    clone; :func:`gmtkn55_subset_dir` refuses at the point of reading."""
+    root = _configured_root()
+    nested = root / _COLLECTION_DIR
+    if not (root / _PROBE_SUBSET).is_dir() and (nested / _PROBE_SUBSET).is_dir():
+        return nested
+    return root
+
+
+def gmtkn55_subset_dir(name: str) -> Path:
+    """The directory of one GMTKN55 subset under :func:`gmtkn55_root`. Where it is absent
+    the error names both candidate locations, the flat one and the nested one, so a clone
+    at the wrong depth is diagnosed rather than reported as a missing file."""
+    subset = gmtkn55_root() / name
+    if subset.is_dir():
+        return subset
+    root = _configured_root()
+    raise FileNotFoundError(
+        f"GMTKN55 subset {name!r} not found: neither {root / name} nor "
+        f"{root / _COLLECTION_DIR / name} is a directory (set XCQUINOX_GMTKN55_DIR to the "
+        f"clone, or fetch it as data/gmtkn55/PROVENANCE.md records)")
 
 
 # ---------------------------------------------------------------------------
@@ -351,12 +379,13 @@ def build_bh76_pool_dict() -> Dict[str, Any]:
     ``species_charges`` filled from the parsed coord files for fast
     PROBE_C-schema consumption at cluster runtime.
     """
-    species_names, reactions = _parse_bh76_res(BH76_SOURCE_DIR / ".res")
+    source_dir = gmtkn55_subset_dir("BH76")
+    species_names, reactions = _parse_bh76_res(source_dir / ".res")
     species_dicts: List[Dict[str, Any]] = []
     spin_lookup: Dict[str, int] = {}
     charge_lookup: Dict[str, int] = {}
     for sp_name in species_names:
-        sd = _build_species_dict(sp_name, BH76_SOURCE_DIR)
+        sd = _build_species_dict(sp_name, source_dir)
         species_dicts.append(sd)
         spin_lookup[sp_name] = sd["spin"]
         charge_lookup[sp_name] = sd["charge"]
@@ -373,12 +402,13 @@ def build_w411_pool_dict() -> Dict[str, Any]:
 
     Same schema as :func:`build_bh76_pool_dict`.
     """
-    species_names, reactions = _parse_w411_res(W411_SOURCE_DIR / ".res")
+    source_dir = gmtkn55_subset_dir("W4-11")
+    species_names, reactions = _parse_w411_res(source_dir / ".res")
     species_dicts: List[Dict[str, Any]] = []
     spin_lookup: Dict[str, int] = {}
     charge_lookup: Dict[str, int] = {}
     for sp_name in species_names:
-        sd = _build_species_dict(sp_name, W411_SOURCE_DIR)
+        sd = _build_species_dict(sp_name, source_dir)
         species_dicts.append(sd)
         spin_lookup[sp_name] = sd["spin"]
         charge_lookup[sp_name] = sd["charge"]

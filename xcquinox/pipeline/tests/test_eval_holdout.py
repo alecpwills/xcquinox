@@ -371,7 +371,11 @@ def test_density_errors_for_record_pbe_closed_form(monkeypatch):
     md = {
         "atom_composition": (("H", 2),),
         "rho_ref_grid": np.array([2.0, 1.0]),
-        "rho_grid": np.array([2.5, 0.5]),       # PBE density on the same grid
+        # the reference calculation's own PBE density, the baseline the
+        # model-free channel measures; the locally recomputed rho_grid is
+        # deliberately different so the source of the number is pinned
+        "rho_pbe_ref_grid": np.array([2.5, 0.5]),
+        "rho_grid": np.zeros(2),
         "grid_weights": np.array([3.0, 1.0]),
         "ref_density_method": "ccsd",
     }
@@ -390,6 +394,47 @@ def test_density_errors_for_record_pbe_closed_form(monkeypatch):
     assert out["density_l1"] == pytest.approx(0.045)
     assert out["density_eps_l1"] == pytest.approx(0.011)
     assert out["ref_density_method"] == "ccsd"
+
+
+def test_the_record_keeps_its_quadrature_bookkeeping_without_a_pbe_baseline(
+        monkeypatch):
+    """Two absences the record must not confuse. Without the reference
+    calculation's own PBE density the three model-free columns have no value
+    to carry; ``n_electrons`` and ``grid_weight_sum`` are quadrature properties
+    of the REFERENCE density and the grid, are still defined, and are what
+    makes any other normalization reconstructible from the record offline.
+
+    Oracle: the two-point grid of the closed-form case above with the
+    reference PBE density removed -- N_e = 3*2 + 1*1 = 7 and sum(w) = 4,
+    unchanged by the absence of a baseline to compare against.
+    """
+    import numpy as np
+    import xcquinox.pipeline.evaluation as ev_mod
+
+    class FakeMetric:
+        """The NN channel, which emits the same bookkeeping from the reference
+        density (``evaluation.density_eps_terms``) and does not read the PBE
+        baseline at all."""
+
+        def compute(self, model, md, solver_config=None):
+            return {"density_rmse": 0.123, "density_l1": 0.045,
+                    "density_eps_l1": 0.011, "n_electrons": 7.0,
+                    "grid_weight_sum": 4.0, "ref_density_method": "ccsd"}
+
+    monkeypatch.setattr(ev_mod, "DensityRMSEMetric", FakeMetric)
+    md = {
+        "atom_composition": (("H", 2),),
+        "rho_ref_grid": np.array([2.0, 1.0]),
+        "rho_grid": np.array([2.5, 0.5]),
+        "grid_weights": np.array([3.0, 1.0]),
+        "ref_density_method": "ccsd",
+    }
+    out = eh.density_errors_for_record(object(), md, solver_config=None)
+    for key in ("density_rmse_pbe", "density_l1_pbe", "density_eps_l1_pbe"):
+        assert out[key] is None, (key, out[key])
+    assert out["n_electrons"] == pytest.approx(7.0)
+    assert out["grid_weight_sum"] == pytest.approx(4.0)
+    assert out["density_rmse"] == pytest.approx(0.123)
 
 
 # 2026-06-20 (WS3): deterministic val/test split of the held-out pools. The val

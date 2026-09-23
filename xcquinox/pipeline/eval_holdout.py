@@ -469,11 +469,15 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
     (solver-aware; with a FULL/FIXED_J ``solver_config`` this re-runs the SCF
     to get the self-consistent NN density -- roughly doubling per-species eval
     cost WHEN refs are present, same trade the in-sample eval makes). The PBE
-    channel needs NO model: ``md['rho_grid']`` IS the PBE density on the same
-    pruned grid the CCSD reference was evaluated on (data.py precompute), so
-    it is the same weighted RMSE/L1 with rho_pbe in place of rho_nn
-    (formula: evaluation.py DensityRMSEMetric). fp64 note: the cluster eval
-    path already forces JAX_ENABLE_X64 before importing jax."""
+    channel needs NO model: it reads ``md['rho_pbe_ref_grid']``, the reference
+    calculation's own PBE density on the pruned grid the CCSD reference was
+    evaluated on, as the same weighted RMSE/L1 with rho_pbe in place of rho_nn
+    (formula: evaluation.py DensityRMSEMetric); without that density the three
+    PBE columns are None, and the locally recomputed ``md['rho_grid']`` is
+    never substituted. ``n_electrons`` and ``grid_weight_sum`` are quadrature
+    properties of the reference density and the grid, carried whether or not
+    a baseline exists. fp64 note: the cluster eval path already forces
+    JAX_ENABLE_X64 before importing jax."""
     none_result = {k: None for k in _DENSITY_RECORD_KEYS}
     comp = md.get("atom_composition") or ()
     if sum(n for _, n in comp) == 1:
@@ -484,7 +488,9 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
     nn = evaluation.DensityRMSEMetric().compute(model, md,
                                                 solver_config=solver_config)
     rmse_pbe, l1_pbe = evaluation.pbe_density_errors(md)
-    eps_pbe, n_e, wsum = evaluation.pbe_density_eps(md)
+    eps_pbe, _, _ = evaluation.pbe_density_eps(md)
+    _, n_e, wsum = evaluation.density_eps_terms(
+        md["rho_ref_grid"], md["rho_ref_grid"], md["grid_weights"])
     return {
         "density_rmse": nn.get("density_rmse"),
         "density_l1": nn.get("density_l1"),

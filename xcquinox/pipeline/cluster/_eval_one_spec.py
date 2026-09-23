@@ -192,8 +192,10 @@ def _aggregate_per_molecule(pm_rows, ae_key="AE_error_kcalmol",
         return sum(vals) / len(vals) if vals else float("nan")
 
     rho_rmse = _mean_finite(rho_key)
-    # PBE-vs-CCSD baseline density error (model-free; nan when no benchmark
-    # CCSD reference densities were wired -- the historical schema).
+    # PBE-vs-CCSD baseline density error (model-free): nan when the records
+    # carry no reference density, or a reference without its own PBE density
+    # (the training-side OEP references carry none; the baseline is never the
+    # locally recomputed twin).
     rho_rmse_pbe = _mean_finite("density_rmse_pbe")
     # n_eval: AE-contributing molecules only (matches the mae denominator).
     return mae, rho_rmse, len(ae_errs), rho_rmse_pbe

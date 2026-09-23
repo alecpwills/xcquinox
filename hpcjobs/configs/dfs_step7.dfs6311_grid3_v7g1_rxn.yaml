@@ -397,7 +397,7 @@ cluster:
   # SEAWULF_RUNBOOK.md records the max walls as short-* 4 h, medium-* 12 h,
   # long-28core 2 days and long-96core-shared "longer still"; v4gga records
   # long-40core at 48 h. Check the queue this group is submitted to with
-  #     sinfo -o "%20P %10l" -p long-40core
+  #     sinfo -o "%20P %10l" -p long-96core-shared
   # This file SHIPS the recorded long-40core figure, 48 h -- the value the
   # v4gga campaign ran at on this queue -- because an over-cap --time is
   # rejected at submit, and 72 h would refuse every task if 48 h is the cap.
