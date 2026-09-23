@@ -114,6 +114,10 @@ import sys
 import time
 from pathlib import Path
 
+from xcquinox.pipeline.holdout_channels import (CHANNEL_MODEL,
+                                                CHANNEL_OVERRIDE,
+                                                HOLDOUT_CHANNELS)
+
 # ---------------------------------------------------------------------------
 # Anchors and identities (measured on run_20260827T163330Z, 2026-08-31)
 # ---------------------------------------------------------------------------
@@ -174,16 +178,10 @@ BAND_FACTOR = 10.0
 #: source-text test so the two cannot drift.
 KCAL_PER_HA = 627.5094740631
 
-CHANNELS = ("eval_holdout", "eval_holdout_best", "eval_holdout_val_best",
-            "eval_holdout_coldstart")
-#: Checkpoint evaluated by each channel (cluster/_eval_one_spec.py:539,
-#: 631-649, 661-673).
-CHANNEL_MODEL = {
-    "eval_holdout": "model.eqx",
-    "eval_holdout_best": "model_best.eqx",
-    "eval_holdout_val_best": "model_val_best.eqx",
-    "eval_holdout_coldstart": "model.eqx",
-}
+#: Every held-out channel the eval stage writes, and the checkpoint each one
+#: evaluates (``CHANNEL_MODEL``), from the held-out channel vocabulary; a
+#: channel's solver override is applied by :func:`channel_solver_config`.
+CHANNELS = HOLDOUT_CHANNELS
 PATCH_ARTIFACTS = ("per_molecule.json", "per_reaction.json", "test_set.csv",
                    "eval_metadata.json")
 
@@ -445,7 +443,7 @@ def _fetch_command(run_dir, pending_specs) -> str:
 
 def format_survey_table(rows, run_dir) -> str:
     lines = []
-    lines.append(f"{'spec':>5}  {'channel':<24} {'state':<13} "
+    lines.append(f"{'spec':>5}  {'channel':<32} {'state':<13} "
                  f"{'E_pbe(c2)':>18}  notes")
     for r in sorted(rows, key=lambda x: (x.spec, CHANNELS.index(x.channel))):
         notes = []
@@ -768,11 +766,24 @@ def _arch_for_cell(cfg, cell):
     return arch
 
 
+def channel_solver_config(sc, channel):
+    """``sc`` under the solver override of ``channel``
+    (``holdout_channels.CHANNEL_OVERRIDE`` applied through
+    ``eval_holdout.CHANNEL_OVERRIDES``, the table the eval task and the
+    retroactive driver apply), or ``sc`` itself for a trained-protocol
+    channel."""
+    override = CHANNEL_OVERRIDE[channel]
+    if override is None:
+        return sc
+    from xcquinox.pipeline.eval_holdout import CHANNEL_OVERRIDES
+    return CHANNEL_OVERRIDES[override](sc)
+
+
 def _solver_config_for_channel(cfg, cell, channel):
     """The channel's SolverConfig, rebuilt exactly as
-    cluster/spec_builder.build_training_specs does, with the cold-start
-    channel transformed by eval_holdout.coldstart_solver_config -- the
-    same single source of truth the eval task applied. The rebuilt
+    cluster/spec_builder.build_training_specs does, with the channel's
+    solver override applied by :func:`channel_solver_config` -- the same
+    single source of truth the eval task applied. The rebuilt
     ``describe()`` is gated against the channel's recorded
     eval_metadata.json before any recompute."""
     from xcquinox.pipeline.cluster.spec_builder import (_solver_config_from_named,
@@ -784,10 +795,7 @@ def _solver_config_for_channel(cfg, cell, channel):
         orientation_lock_strength=cfg.inputs.orientation_lock_strength,
         seed_source=resolve_seed_xc(cfg.inputs, cell["arch"]),
         seed_cache_dir=getattr(cfg.inputs, "seed_cache_dir", None))
-    if channel == "eval_holdout_coldstart":
-        from xcquinox.pipeline.eval_holdout import coldstart_solver_config
-        sc = coldstart_solver_config(sc)
-    return sc
+    return channel_solver_config(sc, channel)
 
 
 def _load_model_for_channel(cfg, cell, model_path):

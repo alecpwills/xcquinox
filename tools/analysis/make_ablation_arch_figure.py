@@ -63,6 +63,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
+# The held-out channel vocabulary: the directories a figure set is scored
+# from, their labels and the reporting-channel rule every reader follows.
+from xcquinox.pipeline.holdout_channels import (  # noqa: E402
+    CHANNEL_LABEL, FIGURE_CHANNELS, REPORTING_CHANNEL, VAL_BEST_CHANNELS,
+    figure_suffix, resolve_channel)
+
 # ---------------------------------------------------------------------------
 # Reuse the sibling module's collectors + style (load by path; this directory
 # is not an importable package).
@@ -369,14 +375,23 @@ def _reaction_identity(r: Dict[str, Any]) -> Optional[Tuple]:
             tuple(sorted(str(x).casefold() for x in prod)))
 
 
+def _val_best_channel_present(run_dir: Path) -> Optional[str]:
+    """The first channel scored from the validation-best checkpoint that any
+    spec of the run carries, under whatever evaluation protocol
+    (``holdout_channels.VAL_BEST_CHANNELS``), or ``None``."""
+    for _idx, sd in ccp._spec_dirs(run_dir):
+        for channel in VAL_BEST_CHANNELS:
+            if (sd / channel).is_dir():
+                return channel
+    return None
+
+
 def _run_used_validation(run_dir: Path) -> bool:
     """True when the run demonstrably trained with a validation slice: any
-    spec carries a validation-best held-out channel. Pre-validation runs
-    (no such channel anywhere) return False and render unchanged."""
-    for _idx, sd in ccp._spec_dirs(run_dir):
-        if (sd / "eval_holdout_val_best").is_dir():
-            return True
-    return False
+    spec carries a channel scored from the validation-best checkpoint, the
+    trained-protocol one or a cold-start or converged twin. Pre-validation
+    runs (no such channel anywhere) return False and render unchanged."""
+    return _val_best_channel_present(run_dir) is not None
 
 
 def _val_reaction_identities(run_dir: Path) -> set:
@@ -416,11 +431,12 @@ def _val_reaction_identities(run_dir: Path) -> set:
             ident = _reaction_identity(e)
             if ident is not None:
                 out.add(ident)
-    if n_read == 0 and _run_used_validation(run_dir):
+    found = _val_best_channel_present(run_dir) if n_read == 0 else None
+    if found is not None:
         raise RuntimeError(
             f"{run_dir}: the run trained with a validation slice "
-            f"(eval_holdout_val_best/ present) but no readable "
-            f"validation/val_reactions.json was found -- rendering would "
+            f"(the validation-best channel {found}/ is present) but no "
+            f"readable validation/val_reactions.json was found -- rendering would "
             f"silently use a different slice. Re-pull the run with the "
             f"summaries profile (it carries /validation/), e.g. "
             f"`python -m xcquinox.pipeline.cluster pull <run> --profile "
@@ -3774,11 +3790,13 @@ def plot_parity_grid_by_subset(rows: List[Dict[str, Any]], out_path: Path,
 
 
 def build_parity_variants(run_dir: Path, outdir: Path,
-                          eval_subdir: str = "eval_holdout",
+                          eval_subdir: Optional[str] = None,
                           archs=None) -> List[Path]:
     """Render all five parity-layout candidates into ``outdir`` for comparison.
     ``archs`` restricts them to the named architectures, as in
-    :func:`build_all`."""
+    :func:`build_all`; a ``None`` ``eval_subdir`` resolves the run's reporting
+    channel as :func:`build_all` does."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     archs = _validate_archs(archs)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -8616,18 +8634,16 @@ def _disambiguated_run_labels(run_dirs: List[Path]) -> List[str]:
 
 
 def _ckpt_label(eval_subdir: str) -> str:
-    """Human tag for which checkpoint a figure set was scored from: final-step
-    weights (``eval_holdout``), the held-out-validation-best weights
-    (``eval_holdout_val_best``), or the legacy training-loss-best weights
-    (``eval_holdout_best``, no longer plotted)."""
-    return {
-        "eval_holdout": "final-step",
-        "eval_holdout_val_best": "val-best",
-        "eval_holdout_best": "train-best",
-        "eval_holdout_coldstart": "cold-start",
-        "eval_holdout_converged": "converged",
-        "eval_holdout_converged_val_best": "converged-val-best",
-    }.get(eval_subdir, "final-step")
+    """The tag a figure set carries for the channel it was scored from: the
+    checkpoint and the evaluation protocol, from
+    ``holdout_channels.CHANNEL_LABEL``. A name outside the vocabulary is
+    refused rather than tagged as the final step."""
+    try:
+        return CHANNEL_LABEL[eval_subdir]
+    except KeyError:
+        raise ValueError(
+            f"unknown held-out channel {eval_subdir!r}; a figure set is "
+            f"scored from one of {tuple(CHANNEL_LABEL)}") from None
 
 
 _BASIS_COLORS = ("#4477aa", "#cc6677", "#228833", "#ccbb44")
@@ -8809,13 +8825,16 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
 
 
 def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path,
-                                   eval_subdir: str = "eval_holdout",
+                                   eval_subdir: Optional[str] = None,
                                    archs: Optional[Sequence[str]] = None
                                    ) -> List[Path]:
     """Render the cross-basis comparison for the given run dirs (each labeled by
     its basis+DF from resolved_config.yaml). ``archs`` narrows the comparison to
     the named architectures and switches the filenames to a ``_focus`` stem, so
-    the full-union trio is never overwritten by a focused render."""
+    the full-union trio is never overwritten by a focused render. A ``None``
+    ``eval_subdir`` resolves the first run's reporting channel as
+    :func:`build_all` does."""
+    eval_subdir = _resolved_channel(run_dirs, eval_subdir)
     if archs is not None and not archs:
         raise ValueError(
             "archs must be non-empty when given (an empty filter would "
@@ -8849,10 +8868,13 @@ def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path,
 
 
 def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
-                             eval_subdir: str = "eval_holdout") -> List[Path]:
+                             eval_subdir: Optional[str] = None) -> List[Path]:
     """Render the CUMULATIVE (multi-basis) training-loss trajectories -- every
     trained cell from every run, basis by linestyle -- plus the failure-mechanism
-    diagnostic that classifies and explains each failing cell."""
+    diagnostic that classifies and explains each failing cell. A ``None``
+    ``eval_subdir`` resolves the first run's reporting channel as
+    :func:`build_all` does."""
+    eval_subdir = _resolved_channel(run_dirs, eval_subdir)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     labels = _disambiguated_run_labels(run_dirs)
@@ -8874,14 +8896,16 @@ def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
 
 
 def build_density_energy_figures(run_dir: Path, outdir: Path,
-                                 eval_subdir: str = "eval_holdout",
+                                 eval_subdir: Optional[str] = None,
                                  archs=None, *,
                                  exclude_cf: FrozenSet[str] = frozenset(),
                                  variant_note: str = "") -> List[Path]:
     """:func:`_build_density_energy_figures_inner` under a key-line scope: a
     standalone call footers the run's own architectures, a call inside
     :func:`build_all` keeps the key line build_all set, and nothing leaks
-    out."""
+    out. A ``None`` ``eval_subdir`` resolves the run's reporting channel as
+    :func:`build_all` does."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     archs_line = (_KEY_LINE_ARCHS if _KEY_LINE_ARCHS is not None
                   else _key_line_archs_of_runs([run_dir], _validate_archs(archs)))
     with _key_line_scope(archs_line):
@@ -9660,7 +9684,7 @@ def _build_density_energy_figures_inner(
 
 
 def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
-                                 eval_subdir: str = "eval_holdout",
+                                 eval_subdir: Optional[str] = None,
                                  archs=None) -> List[Path]:
     """The outlier-free siblings of a figure directory, each a second run of
     :func:`build_density_energy_figures` with filtered inputs:
@@ -9680,7 +9704,10 @@ def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
     A list is intersected with the species actually present in the held-out
     rows; an empty intersection renders nothing and says so. The architecture
     restriction is the standard directory's, so the two directories describe
-    the same cells. Nothing is compared between directories."""
+    the same cells. Nothing is compared between directories. A ``None``
+    ``eval_subdir`` resolves the run's reporting channel as :func:`build_all`
+    does."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     written: List[Path] = []
     present_rows = collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir)
     present_rows = filter_rows_by_arch(present_rows, _validate_archs(archs))
@@ -9733,7 +9760,7 @@ def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
 
 def build_per_run_diagnostics(run_dir: Path, outdir: Path,
                               basis_label: Optional[str] = None,
-                              eval_subdir: str = "eval_holdout",
+                              eval_subdir: Optional[str] = None,
                               archs=None) -> List[Path]:
     """Per-run diagnostics kept in each basis's own ``figures_<alias>/`` dir: the
     size-consistency (additivity) diagnostic over the capacity ladder at the
@@ -9741,7 +9768,10 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
     -- is worst), and the single-run training-loss trajectories. Wired into
     :func:`build_bh76w411_suite` so a fresh pull refreshes them too (they were
     previously generated by hand and went stale). ``archs`` restricts both to
-    the named architectures, as in :func:`build_all`."""
+    the named architectures, as in :func:`build_all`; a ``None``
+    ``eval_subdir`` resolves the run's reporting channel as :func:`build_all`
+    does."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     archs = _validate_archs(archs)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -9804,10 +9834,38 @@ def _resolve_run_dir(run_dir: Optional[str]) -> Path:
     return rd
 
 
+def _resolved_channel(run_dirs, eval_subdir: Optional[str]) -> str:
+    """``eval_subdir`` when given; otherwise the reporting channel resolved
+    from the run (``holdout_channels.resolve_channel``; from the first run of
+    a sequence), printed with the absent reporting channel named on a
+    fallback. Every set-level builder handed no channel resolves through this
+    one function, so two builders writing into one directory read the same
+    channel."""
+    if eval_subdir is not None:
+        return eval_subdir
+    runs = ([run_dirs] if isinstance(run_dirs, (str, Path))
+            else list(run_dirs))
+    if not runs:
+        return REPORTING_CHANNEL
+    channel = resolve_channel(runs[0])
+    note = ("" if channel == REPORTING_CHANNEL else
+            f" (the reporting channel {REPORTING_CHANNEL} is absent under "
+            f"{Path(runs[0]).name})")
+    print(f"  held-out channel: {channel}{note}")
+    return channel
+
+
 def build_all(run_dir: Path, outdir: Path,
-              eval_subdir: str = "eval_holdout",
+              eval_subdir: Optional[str] = None,
               archs=None) -> List[Path]:
     """Collect once, render every figure. Returns the written PNG paths.
+
+    ``eval_subdir`` names the held-out channel the set is scored from.
+    ``None`` resolves the run's reporting channel
+    (``holdout_channels.resolve_channel``): the cold-start validation-best
+    channel where the run carries it, else the trained protocol's
+    validation-best channel, else the warm final-step one. The channel read
+    is printed, and a fallback names the absent reporting channel.
 
     ``archs`` (an ordered iterable of :data:`ARCH_ORDER` names, or ``None``)
     restricts the whole set to those architectures. The restriction is applied
@@ -9817,6 +9875,7 @@ def build_all(run_dir: Path, outdir: Path,
     withdrawn when no rendered architecture is parented by it
     (:func:`scan_comparator_applies`). ``archs=None`` is the unrestricted
     pipeline, byte for byte."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     with _key_line_scope(None):
         return _build_all_inner(run_dir, outdir, eval_subdir=eval_subdir,
                                 archs=archs)
@@ -10016,14 +10075,17 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     prefixed with the domain (``figures_dfs_step7_svp/``) so the bh76w411 sets
     are never overwritten.
 
-    Emits TWO parallel figure sets per the checkpoint variant the cluster now
-    evaluates: the final-step set from ``eval_holdout/`` (into ``figures_<alias>/``
-    + ``figures_basis_comparison/``) and the val-best set from
-    ``eval_holdout_val_best/`` (into ``figures_<alias>_val_best/`` +
-    ``figures_basis_comparison_val_best/``) -- scored from the held-out
-    validation-best weights, which (unlike the min-training-loss checkpoint) do not
-    select the most-overfit step. The val-best set is produced for every basis whose
-    ``eval_holdout_val_best/`` data was pulled.
+    Emits one figure set per held-out channel of
+    ``holdout_channels.FIGURE_CHANNELS`` that a basis carries, the reporting
+    channel first: ``figures_<alias>_coldstart_val_best/`` (the validation-best
+    checkpoint under the cold-start protocol, the channel a campaign's numbers
+    are read from), ``figures_<alias>_coldstart/``, ``figures_<alias>/`` (the
+    final step under the trained protocol), ``figures_<alias>_val_best/``,
+    ``figures_<alias>_converged/`` and ``figures_<alias>_converged_val_best/``,
+    each with its ``figures_basis_comparison<suffix>/`` set when two or more
+    bases carry the channel. Every set is gated on cell coverage, so an absent
+    channel renders no directory, and a pull that carries no held-out channel
+    at all is refused rather than rendered empty.
 
     Prints a per-run coverage report and FAILS LOUD if a run carries an arch
     outside ``ARCH_ORDER`` (which the per-arch plots would drop); incomplete runs
@@ -10039,22 +10101,17 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     prefix = "" if domain == "bh76w411_repr" else f"{domain}_"
     runs = _newest_run_per_basis(results_root, bases, domain=domain)
     written: List[Path] = []
-    # the converged-SCF views (2026-09-07) join the loop and are gated like the
-    # val-best view: a run with no converged cells renders no such directory
-    for eval_subdir, suffix in (("eval_holdout", ""),
-                                ("eval_holdout_val_best", "_val_best"),
-                                ("eval_holdout_converged", "_converged"),
-                                ("eval_holdout_converged_val_best",
-                                 "_converged_val_best")):
-        # every view but the final-step one is gated on having cells (val-best
-        # and the two converged views alike)
-        is_secondary = eval_subdir != "eval_holdout"
+    n_sets = 0
+    # one set per channel of the vocabulary's figure list, every set gated on
+    # having cells: a basis renders exactly the channels it carries
+    for eval_subdir in FIGURE_CHANNELS:
+        suffix = figure_suffix(eval_subdir)
         ordered_runs: List[Path] = []
         for basis in bases:
             run = runs[basis]
             cov = figure_cell_coverage(run, eval_subdir=eval_subdir,
                                        archs=archs)
-            if is_secondary and cov["n_cells"] == 0:
+            if cov["n_cells"] == 0:
                 continue  # no eval of this channel pulled for this basis yet
             ordered_runs.append(run)
             print(f"[{basis} | {eval_subdir}] {cov['run']}: {cov['n_cells']} "
@@ -10102,10 +10159,10 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
             written += build_per_run_diagnostics(run, fdir, run_basis_label(run),
                                                  eval_subdir=eval_subdir,
                                                  archs=archs)
+            n_sets += 1
         if not ordered_runs:
-            if is_secondary:
-                print(f"   (no {eval_subdir}/ data found -- skipping the "
-                      f"{suffix.strip('_').replace('_', '-')} figure set)")
+            print(f"   (no {eval_subdir}/ data found -- skipping the "
+                  f"{_ckpt_label(eval_subdir)} figure set)")
             continue
         if len(ordered_runs) < 2:
             print(f"   (only one basis with {eval_subdir}/ coverage -- "
@@ -10122,6 +10179,13 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                                                       archs=comparison_archs)
         written += build_diagnostic_figures(ordered_runs, cmp_dir,
                                             eval_subdir=eval_subdir)
+    if n_sets == 0:
+        raise ValueError(
+            f"no held-out channel with an evaluated cell under "
+            f"{[str(r) for r in runs.values()]}: none of {FIGURE_CHANNELS} "
+            "carries a per_reaction.json for a rendered architecture, so the "
+            "pull holds no held-out evaluation to draw (re-pull the run with "
+            "the summaries profile, or widen --archs)")
     return written
 
 
@@ -10165,6 +10229,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "writes a basis_comparison_focus* trio restricted to "
                         "these archs (readable column count when the full "
                         "union of arch x subset cells is wide)")
+    p.add_argument("--eval-subdir", default=None,
+                   help="held-out channel of the single-run mode (default: "
+                        "the run's reporting channel, "
+                        f"{REPORTING_CHANNEL} where the run carries it, else "
+                        "the trained protocol's val-best channel, else "
+                        "eval_holdout)")
     args = p.parse_args(argv)
     archs = (tuple(a.strip() for a in args.archs.split(",") if a.strip())
              if args.archs else None)
@@ -10187,7 +10257,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     run_dir = _resolve_run_dir(args.run_dir)
     outdir = Path(args.outdir).expanduser().resolve()
     print(f"run_dir: {run_dir}")
-    written = build_all(run_dir, outdir, archs=archs)
+    written = build_all(run_dir, outdir, eval_subdir=args.eval_subdir,
+                        archs=archs)
     for pth in written:
         print(f"  wrote {pth}")
     return 0

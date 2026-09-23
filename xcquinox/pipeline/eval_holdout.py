@@ -35,6 +35,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from xcquinox.pipeline.holdout_channels import (OVERRIDE_COLDSTART,
+                                                OVERRIDE_CONVERGED)
+
 
 #: CODATA-2018 hartree -> kcal/mol. Matches
 #: ``tools/analysis/constraint_pretrain_gmtkn55_demo.KCAL_PER_HA``.
@@ -112,11 +115,12 @@ def converged_solver_config(sc):
         scf_loss_use_tail=False)
 
 
-# One table from a channel name to its solver override, shared by the
-# orchestrator, the shard workers and the retroactive tool.
+# One table from an override name (``holdout_channels.CHANNEL_OVERRIDE``) to
+# its solver override, shared by the orchestrator, the shard workers and the
+# retroactive tool.
 CHANNEL_OVERRIDES = {
-    "coldstart": coldstart_solver_config,
-    "converged": converged_solver_config,
+    OVERRIDE_COLDSTART: coldstart_solver_config,
+    OVERRIDE_CONVERGED: converged_solver_config,
 }
 
 

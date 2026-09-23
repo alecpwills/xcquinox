@@ -109,9 +109,12 @@ python -m xcquinox.pipeline.cluster pull latest --category <CATEGORY>
   To pull a specific run, replace `latest` with the run id, e.g.
   `pull run_20260622T111908Z --category dfs_step7/svp_grid2_v3/runs`.
 - **Profile (default is correct for figures):** the default `--profile summaries`
-  pulls all the JSON/npy the figures read -- `eval_holdout/**`,
-  `eval_holdout_best/**`, `eval_holdout_val_best/**`, `eval/per_molecule.json`, `losses.npy`,
-  `train_metadata.json`, `resolved_config.yaml` -- and, since 2026-08-30, the
+  pulls all the JSON/npy the figures read -- every held-out channel directory
+  (`eval_holdout/**`, `eval_holdout_best/**`, `eval_holdout_val_best/**`,
+  `eval_holdout_coldstart/**`, `eval_holdout_coldstart_val_best/**`,
+  `eval_holdout_converged/**`, `eval_holdout_converged_val_best/**`; the names are
+  `HOLDOUT_CHANNELS` in `xcquinox/pipeline/holdout_channels.py`), `eval/per_molecule.json`,
+  `losses.npy`, `train_metadata.json`, `resolved_config.yaml` -- and, since 2026-08-30, the
   weights the enhancement-factor figures forward-evaluate: `model.eqx` /
   `model_val_best.eqx` per spec with their `.class.json` records, and the
   pretrained `xnet.eqx` / `cnet.eqx` (plus the val-best pair under `xnet/` /
@@ -164,12 +167,29 @@ density units. Directories rendered before 2026-09-08 carry the older `ablation_
 `diagnostic_` stems and the `_dfs_units` suffix; the old-to-new table is `OUTPUT_NAMES` in
 `make_ablation_arch_figure.py`.
 
-Per basis (two parallel sets -- final-checkpoint and val-best):
-- `figures_dfs_step7_<alias>/`           -- final-step eval (`eval_holdout/`)
-- `figures_dfs_step7_<alias>_val_best/`  -- val-best eval (`eval_holdout_val_best/`, the held-out-validation-best checkpoint), only if that data was pulled
+Per basis, one set per held-out channel the pull carries (the list and its order are
+`FIGURE_CHANNELS` in `xcquinox/pipeline/holdout_channels.py`; a channel with no evaluated
+cell renders no directory, and a pull carrying no held-out channel at all is refused):
+- `figures_dfs_step7_<alias>_coldstart_val_best/` -- the REPORTING channel: the validation-best
+  checkpoint under the cold-start protocol (`eval_holdout_coldstart_val_best/`)
+- `figures_dfs_step7_<alias>_coldstart/`          -- the final checkpoint under the cold-start protocol
+- `figures_dfs_step7_<alias>/`                    -- final-step eval under the trained protocol (`eval_holdout/`)
+- `figures_dfs_step7_<alias>_val_best/`           -- val-best eval under the trained protocol (`eval_holdout_val_best/`)
+- `figures_dfs_step7_<alias>_converged/`, `figures_dfs_step7_<alias>_converged_val_best/` -- the
+  converged-SCF channels (the section below)
 
-Cross comparison (only when **>= 2** bases are given AND both have eval coverage):
-- `figures_dfs_step7_basis_comparison/`       (+ `_val_best`)
+Cross comparison (only when **>= 2** bases are given AND both carry the channel):
+- `figures_dfs_step7_basis_comparison<suffix>/` for the same suffixes
+
+The reporting channel. A campaign's numbers are read from `eval_holdout_coldstart_val_best/`
+(`REPORTING_CHANNEL`). A reader handed no channel -- `build_all` and the `--eval-subdir`
+default of `make_ablation_arch_figure.py` in single-run mode, `plot_scf_convergence.py`, the
+best-cell selection of `trained_fx_fc.py`, the `--eval-channel` default of
+`arm_vs_size_density.py` -- resolves it from the run's own directories (`resolve_channel`):
+the reporting channel where any spec carries it, else the trained protocol's channel of the
+same checkpoint (`eval_holdout_val_best/`, the v7 headline), else `eval_holdout/`. The
+channel read is printed, and a fallback names the absent reporting channel. The warm and
+converged channels stay as diagnostics.
 
 Outlier-free siblings of a per-basis dir (2026-09-07; the density and energy figure set of
 `build_density_energy_figures` rendered a second time from filtered inputs, the rule stated

@@ -637,11 +637,13 @@ class GridConfig:
     # eval, there IS no separate eval array to defer). Default False ->
     # byte-identical (eval as a separate array).
     inline_eval: bool = False
-    # ``eval_coldstart`` (2026-08-14): when True, each spec's held-out eval
-    # additionally writes the ``eval_holdout_coldstart`` channel -- the FINAL
-    # checkpoint re-evaluated under a cold-start trajectory diagnostic
+    # ``eval_coldstart``: when True, each spec's held-out eval additionally
+    # writes the cold-start channel pair -- the FINAL checkpoint into
+    # ``eval_holdout_coldstart`` and, when it exists, the validation-best
+    # checkpoint into ``eval_holdout_coldstart_val_best``, the reporting
+    # channel -- both re-evaluated under the cold-start override
     # (seed_source="minao", max_cycles=25, conv_tol=1e-12; mode stays FULL).
-    # Default False -> byte-identical (three channels as before).
+    # Default False -> the three trained-protocol channels alone.
     eval_coldstart: bool = False
     # ``eval_converged`` (2026-09-07): when True, each spec's held-out eval
     # additionally writes the ``eval_holdout_converged`` channel (and its

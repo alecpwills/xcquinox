@@ -194,6 +194,72 @@ def test_main_runs_both_converged_passes_when_enabled(run_dir, monkeypatch):
     assert calls[0][2].solver_config.scf_loss_use_tail is True
 
 
+def _enable_coldstart(run_dir):
+    import yaml
+    path = os.path.join(run_dir, "resolved_config.yaml")
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    cfg["eval_coldstart"] = True
+    with open(path, "w") as f:
+        yaml.safe_dump(cfg, f)
+
+
+def test_main_runs_both_coldstart_passes_when_enabled(run_dir, monkeypatch,
+                                                      capsys):
+    """Kills the mutation ``the cold-start val-best pass omitted``: the
+    reporting number is the cold-start protocol on the validation-best
+    checkpoint, so the channel needs that checkpoint as well as the final one,
+    both under the replaced solver.
+
+    The warm passes are asserted untouched in the same capture: the override
+    is applied to a copy of the spec, and a replacement applied in place would
+    evaluate the trained-protocol channels at the cold-start budget while
+    still naming them warm.
+    """
+    _enable_coldstart(run_dir)
+    _write_spec(run_dir, 0, obj=_full_mode_spec())
+    ckpt_dir = _write_model(run_dir, 0)
+    val_best = os.path.join(ckpt_dir, "model_val_best.eqx")
+    open(val_best, "wb").close()
+    _stub_insample(monkeypatch, os.path.join(ckpt_dir, "eval"))
+
+    calls = []
+    _capture_passes(monkeypatch, calls)
+    assert ev.main([run_dir, "0"]) == 0
+
+    assert [(c[0], c[1]) for c in calls] == [
+        ("model.eqx", "eval_holdout"),
+        ("model_val_best.eqx", "eval_holdout_val_best"),
+        ("model.eqx", "eval_holdout_coldstart"),
+        ("model_val_best.eqx", "eval_holdout_coldstart_val_best")]
+    assert [c[3] for c in calls] == [None, None, "coldstart", "coldstart"]
+    for c in calls[2:]:
+        sc = c[2].solver_config
+        assert sc.mode == SolverMode.FULL
+        assert sc.seed_source == "minao"
+        assert sc.seed_cache_dir is None
+        assert sc.max_cycles == eh.COLDSTART_MAX_CYCLES == 25
+        assert sc.conv_tol == eh.COLDSTART_CONV_TOL == 1e-12
+    # the two cold passes share one replaced spec object, not two replacements
+    # that happen to agree
+    assert calls[2][2] is calls[3][2]
+    # the warm passes keep the trained protocol
+    assert calls[0][2].solver_config.max_cycles == 3
+    assert calls[0][2].solver_config.seed_source == "pbe"
+    assert calls[1][2].solver_config.max_cycles == 3
+
+    # without the validation-best checkpoint the channel is the final one
+    # alone, and the stage says so rather than failing
+    os.remove(val_best)
+    calls.clear()
+    capsys.readouterr()
+    assert ev.main([run_dir, "0"]) == 0
+    assert [(c[0], c[1]) for c in calls] == [
+        ("model.eqx", "eval_holdout"),
+        ("model.eqx", "eval_holdout_coldstart")]
+    assert "model_val_best.eqx" in capsys.readouterr().out
+
+
 def _holdout_seams(monkeypatch, result=None):
     """Wire _run_held_out_eval's collaborators so it runs no SCF."""
     import xcquinox.pipeline.full_benchmark_pools as fbp

@@ -79,8 +79,10 @@ import make_ablation_arch_figure as fig
 
 view = Path.home() / "Documents/Research/xcquinox-results/runs/dfs_step7/merged_v4_arms"
 out = Path("tools/analysis/figures_dfs6311_v4_merged")
-written = fig.build_all(view, out)
-written += fig.build_density_energy_figures(view, out)
+# the final-step set is named as such: a builder handed no channel reads the
+# view's reporting channel instead (holdout_channels.resolve_channel)
+written = fig.build_all(view, out, eval_subdir="eval_holdout")
+written += fig.build_density_energy_figures(view, out, eval_subdir="eval_holdout")
 if fig.figure_cell_coverage(view, eval_subdir="eval_holdout_val_best")["n_cells"]:
     outv = Path("tools/analysis/figures_dfs6311_v4_merged_val_best")
     written += fig.build_all(view, outv, eval_subdir="eval_holdout_val_best")

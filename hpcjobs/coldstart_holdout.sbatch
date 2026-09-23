@@ -2,10 +2,11 @@
 #SBATCH --job-name=xcq_coldstart
 # long-96core-shared, NOT short-96core-shared: the short queues cap at 4 h (see
 # hpcjobs/SEAWULF_RUNBOOK.md) and this job honestly needs more -- ~26
-# completed specs x ~8x a 3-cycle channel pass each. Done-skip
-# resumability covers anything a wall-kill leaves.
+# completed specs x two passes (the final and the validation-best
+# checkpoints) x ~8x a 3-cycle channel pass each. Done-skip resumability
+# covers anything a wall-kill leaves.
 #SBATCH --partition=long-96core-shared
-#SBATCH --time=08:00:00
+#SBATCH --time=16:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
@@ -13,13 +14,16 @@
 #SBATCH --mail-user=alec.wills@stonybrook.edu
 #SBATCH --mail-type=BEGIN,END,FAIL
 
-# Retroactive cold-start channel (eval_holdout_coldstart) over the COMPLETED
-# specs of the v4 arms. Resumable: done specs are skipped, pending specs are
-# not completed yet -- safe to run beside the in-flight arrays and to
-# resubmit after they drain. Walltime: the channel runs the full 25-cycle
-# trajectory for every one of ~200 pool species per spec (conv_tol 1e-12
-# never converges early under linear mixing), so budget ~8x a single
-# 3-cycle channel pass per spec; resubmits pick up whatever remains.
+# Retroactive cold-start channel pair (eval_holdout_coldstart on the final
+# checkpoint and the reporting channel eval_holdout_coldstart_val_best on
+# the validation-best one) over the COMPLETED specs of a run. Resumable:
+# done specs are skipped, pending specs are not completed yet -- safe to run
+# beside the in-flight arrays and to resubmit after they drain. Walltime:
+# each pass runs the full 25-cycle trajectory for every one of ~200 pool
+# species per spec (conv_tol 1e-12 never converges early under linear
+# mixing), so budget ~8x a single 3-cycle channel pass per pass, two passes
+# per spec that carries a validation-best checkpoint; resubmits pick up
+# whatever remains.
 # Submit from a shell whose python resolves the xcquinox environment
 # (activation by effect, verified by the import probe).
 

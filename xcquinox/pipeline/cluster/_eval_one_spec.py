@@ -664,7 +664,13 @@ def main(argv=None) -> int:
     #   <ckpt>/eval_holdout/per_reaction.json  (per-reaction NN + PBE errors)
     # On exception: writes <ckpt>/eval_holdout/failure.json with the trace
     # and returns 0 (the in-sample artifact is the authoritative success
-    # signal for the SLURM array task).
+    # signal for the SLURM array task). The channel directories and the
+    # checkpoint files of every pass below are the held-out channel
+    # vocabulary's (imported here, after the JAX routing above).
+    from xcquinox.pipeline.holdout_channels import (
+        CHANNEL_BEST, CHANNEL_COLDSTART, CHANNEL_COLDSTART_VAL_BEST,
+        CHANNEL_CONVERGED, CHANNEL_CONVERGED_VAL_BEST, CHANNEL_VAL_BEST,
+        MODEL_BEST, MODEL_VAL_BEST, OVERRIDE_COLDSTART, OVERRIDE_CONVERGED)
     _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                        training_spec)
 
@@ -676,10 +682,10 @@ def main(argv=None) -> int:
     # set (eval_holdout_best/) -- doubling the data return. Fully isolated from
     # the final pass (own checkpoint, own output dir, own _shards). No-ops
     # silently when the run never captured a best snapshot (older runs).
-    best_path = os.path.join(checkpoint_dir, "model_best.eqx")
+    best_path = os.path.join(checkpoint_dir, MODEL_BEST)
     if os.path.isfile(best_path):
         _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, best_path,
-                           training_spec, holdout_subdir="eval_holdout_best")
+                           training_spec, holdout_subdir=CHANNEL_BEST)
     else:
         _log(idx, "no model_best.eqx -- skipping best-checkpoint held-out eval "
                   "(only eval_holdout/ produced)")
@@ -691,21 +697,23 @@ def main(argv=None) -> int:
     # the SAME test slice. No-ops silently when validation was disabled / older
     # runs never produced the snapshot. Fully isolated (own checkpoint, own dir,
     # own _shards) from the final + best passes.
-    val_best_path = os.path.join(checkpoint_dir, "model_val_best.eqx")
+    val_best_path = os.path.join(checkpoint_dir, MODEL_VAL_BEST)
     if os.path.isfile(val_best_path):
         _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, val_best_path,
-                           training_spec, holdout_subdir="eval_holdout_val_best")
+                           training_spec, holdout_subdir=CHANNEL_VAL_BEST)
     else:
         _log(idx, "no model_val_best.eqx -- skipping validation-best held-out "
                   "eval (in-loop validation disabled or older run)")
 
-    # --- 2026-08-14: OPTIONAL cold-start channel (eval_coldstart: true) ------
-    # A 4th pass on the FINAL checkpoint under the cold-start trajectory
-    # diagnostic: the spec's solver is REPLACED HERE, before dispatch, so the
-    # in-process serial-leftover tier and the serial fallback inherit the
-    # override; the shard workers apply the SAME shared helper via
-    # --coldstart (they reload the spec pickle themselves). Only FULL-mode
-    # specs qualify (the override is undefined for one-shot protocols).
+    # --- OPTIONAL cold-start channel pair (eval_coldstart: true) -------------
+    # The final checkpoint under the cold-start override and, when the
+    # validation-best checkpoint exists, that checkpoint too: the latter is
+    # the reporting channel, the channel a campaign's numbers are read from.
+    # The spec's solver is REPLACED HERE, before dispatch, so the in-process
+    # serial-leftover tier and the serial fallback inherit the override; the
+    # shard workers apply the SAME shared helper via --coldstart (they reload
+    # the spec pickle themselves). Only FULL-mode specs qualify (the override
+    # is undefined for one-shot protocols).
     if bool(getattr(cfg, "eval_coldstart", False)):
         _sc = getattr(training_spec, "solver_config", None)
         if _sc is not None and getattr(getattr(_sc, "mode", None),
@@ -717,17 +725,25 @@ def main(argv=None) -> int:
                 training_spec, solver_config=coldstart_solver_config(_sc))
             _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                                cold_spec,
-                               holdout_subdir="eval_holdout_coldstart",
-                               channel="coldstart")
+                               holdout_subdir=CHANNEL_COLDSTART,
+                               channel=OVERRIDE_COLDSTART)
+            if os.path.isfile(val_best_path):
+                _run_held_out_eval(
+                    run_dir, idx, cfg, checkpoint_dir, val_best_path,
+                    cold_spec,
+                    holdout_subdir=CHANNEL_COLDSTART_VAL_BEST,
+                    channel=OVERRIDE_COLDSTART)
+            else:
+                _log(idx, "no model_val_best.eqx -- cold-start channel on the "
+                          "final checkpoint only")
         else:
             _log(idx, "eval_coldstart requested but the spec has no FULL-mode "
                       "solver_config -- skipping the cold-start channel")
 
-    # --- 2026-09-07: OPTIONAL converged-SCF channel (eval_converged: true) --
-    # A fifth pass under a CONVERGED SCF (pyscfad backend, PBE seed, DIIS,
-    # 100 cycles at 1e-8 Ha) on the FINAL checkpoint and, when the val-best
-    # checkpoint exists, a sixth on it: the figures' headline is the
-    # validation-best channel. The spec's solver is replaced HERE, before
+    # --- OPTIONAL converged-SCF channel pair (eval_converged: true) ----------
+    # The FINAL checkpoint under a CONVERGED SCF (pyscfad backend, PBE seed,
+    # DIIS, 100 cycles at 1e-8 Ha) and, when the val-best checkpoint exists,
+    # that checkpoint too. The spec's solver is replaced HERE, before
     # dispatch, exactly as for the cold-start channel; the shard workers apply
     # the same shared override via --channel converged.
     if bool(getattr(cfg, "eval_converged", False)):
@@ -741,14 +757,14 @@ def main(argv=None) -> int:
                 training_spec, solver_config=converged_solver_config(_sc))
             _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                                conv_spec,
-                               holdout_subdir="eval_holdout_converged",
-                               channel="converged")
+                               holdout_subdir=CHANNEL_CONVERGED,
+                               channel=OVERRIDE_CONVERGED)
             if os.path.isfile(val_best_path):
                 _run_held_out_eval(
                     run_dir, idx, cfg, checkpoint_dir, val_best_path,
                     conv_spec,
-                    holdout_subdir="eval_holdout_converged_val_best",
-                    channel="converged")
+                    holdout_subdir=CHANNEL_CONVERGED_VAL_BEST,
+                    channel=OVERRIDE_CONVERGED)
             else:
                 _log(idx, "no model_val_best.eqx -- converged channel on the "
                           "final checkpoint only")

@@ -40,6 +40,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from xcquinox.pipeline.holdout_channels import (MODEL_BEST, MODEL_FINAL,
+                                                MODEL_VAL_BEST, channel_of)
+
 #: Bump when a future correctness fix / schema change should force re-processing
 #: of every spec. v2 (2026-05-31): per-molecule per-SCF-step convergence trace
 #: (scf_energy_step_<i> / scf_energy_residual_<i>) added to per_molecule.json.
@@ -56,24 +59,24 @@ _DENSITY_STAMP_SUFFIX = "+density_refs_v4"
 
 #: Checkpoint files a spec may carry (written by train.save_checkpoint) and
 #: the cluster-convention eval subdir each one's re-eval lands in.
-# The eval_holdout_coldstart channel is OUT OF SCOPE here by design: this
-# script re-runs checkpoint variants under the TRAINED protocol, and the
-# name algebra below maps checkpoint basenames to channels. The cold-start
-# channel is not a checkpoint variant (same model.eqx, overridden solver);
-# it is produced by the eval task (eval_coldstart: true) or the
-# cluster.coldstart_retro driver.
-_CHECKPOINTS = ("model", "model_best", "model_val_best")
+# The cold-start and converged channel pairs are OUT OF SCOPE here by design:
+# this script re-runs checkpoint variants under the TRAINED protocol, and the
+# mapping below names the trained-protocol channel of each checkpoint. Those
+# pairs are the same checkpoints under a solver override, produced by the eval
+# task (eval_coldstart / eval_converged) or the cluster.channel_retro driver.
+_CHECKPOINTS = tuple(name[:-len(".eqx")]
+                     for name in (MODEL_FINAL, MODEL_BEST, MODEL_VAL_BEST))
 
 
 def eval_subdir_for(checkpoint: str) -> str:
     """Eval output subdir for a checkpoint name: ``model`` -> ``eval_holdout``,
     ``model_best`` -> ``eval_holdout_best``, ``model_val_best`` ->
-    ``eval_holdout_val_best`` (the exact names the cluster eval writes and the
-    figure suite consumes)."""
+    ``eval_holdout_val_best`` (the trained-protocol channel of that checkpoint,
+    from the held-out channel vocabulary)."""
     if checkpoint not in _CHECKPOINTS:
         raise ValueError(f"unknown checkpoint {checkpoint!r}; "
                          f"expected one of {_CHECKPOINTS}")
-    return "eval_holdout" + checkpoint[len("model"):]
+    return channel_of(checkpoint + ".eqx", None)
 
 
 def effective_version(density_refs: Optional[str]) -> str:

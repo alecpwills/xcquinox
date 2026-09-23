@@ -35,9 +35,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-CHANNELS = ("eval_holdout", "eval_holdout_best", "eval_holdout_val_best",
-            "eval_holdout_coldstart", "eval_holdout_converged",
-            "eval_holdout_converged_val_best")
+from xcquinox.pipeline.holdout_channels import HOLDOUT_CHANNELS
+
+#: every held-out channel the eval stage writes, each re-finalized in place
+CHANNELS = HOLDOUT_CHANNELS
 
 
 class _MetadataSpec:

@@ -446,8 +446,12 @@ converged-eval replica.
 KNOWN: CRITERION_REGISTRY has only the energy-delta criterion; a DM-RMS
 criterion and a real early-exit (lax.while_loop or forward-only break)
 would land with it.
-TRIGGER: if the cold-start diagnostic proves informative enough to
-promote into a headline comparison.
+TRIGGER: met in part -- the cold-start channel pair (the final and the
+validation-best checkpoints) is the reporting channel of the v8
+campaigns, under the decision that every held-out species is evaluated
+by the forced 25-cycle cold start and a failure is reported. The DIIS
+replica stays open as a separate comparison; the reporting protocol is
+not changed by it.
 
 ## 21. dm_target collocation experiment for the vxc channel
 

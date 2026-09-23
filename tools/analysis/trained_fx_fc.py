@@ -105,6 +105,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arch_style import (  # noqa: E402
     arch_color, display_name, key_line, split_tag, stored_key)
 import make_cluster_pulls_figure as ccp  # noqa: E402
+from xcquinox.pipeline.holdout_channels import resolve_channel  # noqa: E402
 
 
 def _footer_with_key(footer: str, shown_names) -> str:
@@ -137,10 +138,6 @@ CHANNEL_FILENAMES = {"val_best": "model_val_best.eqx", "final": "model.eqx"}
 #: has one: ``model.eqx`` is written by every completed train task, while
 #: ``model_val_best.eqx`` exists only where the run validated.
 CHANNEL_FALLBACK = {"val_best": "final"}
-#: The held-out evaluation directory written from each channel's weights, read
-#: for the best-cell selection so the ranking is scored on the SAME weights
-#: the curves are drawn from.
-CHANNEL_EVAL_DIR = {"val_best": "eval_holdout_val_best", "final": "eval_holdout"}
 #: The held-out row and column the best cell is selected on.
 BEST_CELL_SET = "test_set_held_out_combined"
 BEST_CELL_COLUMN = "mae_nn_kcalmol"
@@ -267,12 +264,22 @@ def discover_cells(run_dir: Path, eval_channel: str,
     return found, missing
 
 
+def eval_dir_for(run_dir: Path, eval_channel: str) -> str:
+    """The held-out directory the cells of ``eval_channel`` are scored from:
+    the evaluation of that channel's weights under the run's reporting
+    protocol where the run carries it, else under the trained protocol (the
+    runs that predate the cold-start pair) -- so the ranking is scored on the
+    SAME weights the curves are drawn from
+    (``holdout_channels.resolve_channel``)."""
+    return resolve_channel(run_dir, CHANNEL_FILENAMES[eval_channel])
+
+
 def held_out_mae(run_dir: Path, index: int, width: int,
-                 eval_channel: str) -> Optional[float]:
-    """The combined held-out MAE (kcal/mol) of one cell on ``eval_channel``,
-    or ``None`` when that evaluation is not on disk."""
-    path = (spec_dir(run_dir, index, width)
-            / CHANNEL_EVAL_DIR[eval_channel] / "test_set.csv")
+                 eval_dir: str) -> Optional[float]:
+    """The combined held-out MAE (kcal/mol) of one cell from the held-out
+    directory ``eval_dir`` (:func:`eval_dir_for`), or ``None`` when that
+    evaluation is not on disk."""
+    path = spec_dir(run_dir, index, width) / eval_dir / "test_set.csv"
     try:
         with open(path, newline="") as fh:
             rows = list(csv.DictReader(fh))
@@ -828,10 +835,14 @@ def best_cells(run_dir: Path, cells: Sequence[Cell], width: int
     by_arch: Dict[Tuple[str, str], List[Cell]] = {}
     for cell in cells:
         by_arch.setdefault(_group_key(cell), []).append(cell)
+    # the directory of each channel resolved once per run, not per cell
+    eval_dirs = {channel: eval_dir_for(run_dir, channel)
+                 for channel in CHANNEL_FILENAMES}
     out: List[Tuple[Cell, Optional[float]]] = []
     unranked: List[str] = []
     for key in sorted(by_arch):
-        scored = [(held_out_mae(run_dir, c.index, width, c.channel), c)
+        scored = [(held_out_mae(run_dir, c.index, width,
+                                eval_dirs[c.channel]), c)
                   for c in by_arch[key]]
         ranked = [(m, c) for m, c in scored if m is not None]
         if ranked:
@@ -928,10 +939,11 @@ def build_all(run_dir: Path, outdir: Path, *, eval_channel: str = "val_best",
     best = [(cell, curves_by_index[cell.index], mae)
             for cell, mae in selected]
 
-    used_dirs = sorted({CHANNEL_EVAL_DIR[cell.channel]
+    eval_dirs = {channel: eval_dir_for(run_dir, channel)
+                 for channel in CHANNEL_FILENAMES}
+    used_dirs = sorted({eval_dirs[cell.channel]
                         for cell, mae in selected if mae is not None})
-    score_src = "/".join(used_dirs) if used_dirs else \
-        CHANNEL_EVAL_DIR[eval_channel]
+    score_src = "/".join(used_dirs) if used_dirs else eval_dirs[eval_channel]
     if any(p == "scan" for p in parent_by_arch.values()):
         parent_note = ("each arch drawn against its own parent: "
                        "parents.pbe_fx / parents.pbe_fc (GGA archs), "

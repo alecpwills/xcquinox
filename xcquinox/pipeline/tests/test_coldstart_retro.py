@@ -39,6 +39,28 @@ def test_spec_status_predicates(tmp_path):
     assert cr.spec_status(str(done)) == "done"
 
 
+def test_spec_status_waits_for_the_validation_best_pass(tmp_path):
+    """A spec whose validation-best checkpoint exists is ``done`` only once
+    both cold-start passes are written.
+
+    Reported ``done`` after the final pass, the spec is skipped forever and
+    the run carries no reporting channel; a killed second pass must leave the
+    spec ``ready`` so the next driver run completes it.
+    """
+    run, (_pending, spec, _done) = _mk_run(tmp_path)
+    (spec / "model.eqx").write_bytes(b"x")
+    (spec / "model_val_best.eqx").write_bytes(b"x")
+    (spec / "eval_holdout_coldstart").mkdir()
+    (spec / "eval_holdout_coldstart" / "per_reaction.json").write_text("[]")
+    assert cr.spec_status(str(spec)) == "ready"
+
+    (spec / "eval_holdout_coldstart_val_best").mkdir()
+    (spec / "eval_holdout_coldstart_val_best"
+     / "per_reaction.json").write_text("[]")
+    assert cr.spec_status(str(spec)) == "done"
+
+
+
 def test_coldstart_one_spec_skips_pending_and_done(tmp_path, monkeypatch):
     run, (pending, ready, done) = _mk_run(tmp_path)
     (done / "model.eqx").write_bytes(b"x")
@@ -53,8 +75,19 @@ def test_coldstart_one_spec_skips_pending_and_done(tmp_path, monkeypatch):
 
 
 def test_coldstart_one_spec_runs_ready_with_override(tmp_path, monkeypatch):
+    """Both cold-start passes run for a completed spec that carries the
+    validation-best checkpoint: the final checkpoint into the cold-start
+    channel and the validation-best one into the reporting channel, each under
+    the cold-start solver override.
+
+    The calls are recorded as a list rather than overwritten: a driver that
+    runs the final pass alone leaves the reporting channel unwritten for every
+    spec evaluated before the pair existed, which is the whole purpose of the
+    retroactive driver.
+    """
     run, (ready, _b, _c) = _mk_run(tmp_path)
     (ready / "model.eqx").write_bytes(b"x")
+    (ready / "model_val_best.eqx").write_bytes(b"x")
     # minimal spec with a FULL solver + a loadable resolved config
     import pickle
 
@@ -66,14 +99,13 @@ def test_coldstart_one_spec_runs_ready_with_override(tmp_path, monkeypatch):
     with open(run / "specs" / "spec_0000.spec", "wb") as f:
         pickle.dump(spec, f)
 
-    import xcquinox.pipeline.cluster.coldstart_retro as crmod
     import xcquinox.pipeline.cluster._eval_one_spec  # noqa: F401
-    calls = {}
+    calls = []
 
     def _fake_eval(rd, idx, cfg, ck, mp, ts, holdout_subdir=None,
                    channel=None):
-        calls.update(subdir=holdout_subdir, channel=channel,
-                     sc=ts.solver_config, model=os.path.basename(mp))
+        calls.append({"subdir": holdout_subdir, "channel": channel,
+                      "sc": ts.solver_config, "model": os.path.basename(mp)})
 
     monkeypatch.setattr(
         "xcquinox.pipeline.cluster._eval_one_spec._run_held_out_eval",
@@ -82,11 +114,15 @@ def test_coldstart_one_spec_runs_ready_with_override(tmp_path, monkeypatch):
         "xcquinox.pipeline.cluster.grid_config.load_grid_config",
         lambda path: object())
     assert cr.coldstart_one_spec(str(run), 0) == "ran"
-    assert calls["subdir"] == "eval_holdout_coldstart"
-    assert calls["channel"] == "coldstart"
-    assert calls["model"] == "model.eqx"
-    assert calls["sc"].seed_source == "minao"
-    assert calls["sc"].max_cycles == 25
+
+    assert [(c["model"], c["subdir"]) for c in calls] == [
+        ("model.eqx", "eval_holdout_coldstart"),
+        ("model_val_best.eqx", "eval_holdout_coldstart_val_best")]
+    for c in calls:
+        assert c["channel"] == "coldstart"
+        assert c["sc"].seed_source == "minao"
+        assert c["sc"].max_cycles == 25
+
 
 
 def test_main_dry_run_reports_without_running(tmp_path, monkeypatch, capsys):

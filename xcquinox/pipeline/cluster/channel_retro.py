@@ -12,12 +12,13 @@ touches existing channels, safe beside running arrays -- pending specs
 simply are not completed yet), and it runs on the deployed eval code, so
 new rows carry the current hold-out rule.
 
-Passes per channel: the cold-start channel evaluates the FINAL checkpoint
-only (its diagnostic is a trajectory); the converged channel evaluates the
-final checkpoint into ``eval_holdout_converged`` and, when
-``model_val_best.eqx`` exists, the validation-best one into
-``eval_holdout_converged_val_best`` -- the figures' headline is the
-val-best channel. "done" means every applicable pass carries its
+Passes per channel (``holdout_channels.override_passes``): the final
+checkpoint into the channel's final-step directory and, when
+``model_val_best.eqx`` exists, the validation-best one into its val-best
+twin -- ``eval_holdout_coldstart`` and ``eval_holdout_coldstart_val_best``
+for the cold start, the latter being the reporting channel;
+``eval_holdout_converged`` and ``eval_holdout_converged_val_best`` for the
+converged SCF. "done" means every applicable pass carries its
 ``per_reaction.json``, so a killed val-best pass leaves the spec ``ready``.
 
 Usage::
@@ -32,22 +33,27 @@ import dataclasses
 import os
 from typing import List, Optional, Sequence, Tuple
 
-# channel name -> (final-checkpoint subdir, val-best subdir or None)
+from xcquinox.pipeline.holdout_channels import (MODEL_FINAL, MODEL_VAL_BEST,
+                                                OVERRIDE_COLDSTART,
+                                                OVERRIDE_CONVERGED,
+                                                channel_of)
+
+# override name -> (final-checkpoint subdir, val-best subdir), from the
+# held-out channel vocabulary
 CHANNEL_DIRS = {
-    "coldstart": ("eval_holdout_coldstart", None),
-    "converged": ("eval_holdout_converged", "eval_holdout_converged_val_best"),
+    override: (channel_of(MODEL_FINAL, override),
+               channel_of(MODEL_VAL_BEST, override))
+    for override in (OVERRIDE_COLDSTART, OVERRIDE_CONVERGED)
 }
 
 
 def _passes(checkpoint_dir: str, channel: str) -> List[Tuple[str, str]]:
     """``[(model file, channel subdir)]`` the channel evaluates for this spec:
-    the final checkpoint always; the val-best checkpoint when the channel has
-    a val-best twin and the checkpoint exists."""
+    the final checkpoint always; the val-best checkpoint when it exists."""
     final_dir, vb_dir = CHANNEL_DIRS[channel]
-    out = [("model.eqx", final_dir)]
-    if vb_dir and os.path.isfile(os.path.join(checkpoint_dir,
-                                              "model_val_best.eqx")):
-        out.append(("model_val_best.eqx", vb_dir))
+    out = [(MODEL_FINAL, final_dir)]
+    if os.path.isfile(os.path.join(checkpoint_dir, MODEL_VAL_BEST)):
+        out.append((MODEL_VAL_BEST, vb_dir))
     return out
 
 
@@ -71,9 +77,8 @@ def spec_status(checkpoint_dir: str, channel: str = "coldstart") -> str:
     from xcquinox.pipeline.eval_holdout import assert_channel_not_sliced
     final_dir, vb_dir = CHANNEL_DIRS[channel]
     assert_channel_not_sliced(checkpoint_dir, final_dir)
-    if vb_dir:
-        assert_channel_not_sliced(checkpoint_dir, vb_dir)
-    if not os.path.isfile(os.path.join(checkpoint_dir, "model.eqx")):
+    assert_channel_not_sliced(checkpoint_dir, vb_dir)
+    if not os.path.isfile(os.path.join(checkpoint_dir, MODEL_FINAL)):
         return "pending"
     if all(_pass_done(checkpoint_dir, subdir)
            for _model, subdir in _passes(checkpoint_dir, channel)):

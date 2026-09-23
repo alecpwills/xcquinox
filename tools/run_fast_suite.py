@@ -82,7 +82,8 @@ CHUNKS: tuple[Chunk, ...] = (
         "test_cluster_pretrain.py", "test_cluster_spec_builder.py",
         "test_cluster_spec_golden.py", "test_cluster_submit_eval.py",
         "test_cluster_submit.py", "test_cluster_sync.py", "test_cluster_train_task.py",
-        "test_cluster_workflow_matrix.py", "test_coldstart_retro.py",
+        "test_cluster_workflow_matrix.py", "test_coldstart_census.py",
+        "test_coldstart_retro.py",
         "test_compile_counter_fixture.py", "test_compile_ratchet.py", "test_config.py",
         "test_conftest_hard_exit.py"), peak=23740),
     Chunk("C", _pipeline(
@@ -95,7 +96,8 @@ CHUNKS: tuple[Chunk, ...] = (
         "test_eval_holdout.py", "test_eval_probes.py", "test_evaluation.py",
         "test_external_refs_df.py", "test_external_refs.py", "test_features.py",
         "test_full_benchmark_pools.py", "test_generate_polarized_script.py",
-        "test_generate_step7_subsets.py", "test_integration_end_to_end.py",
+        "test_generate_step7_subsets.py", "test_holdout_channels.py",
+        "test_integration_end_to_end.py",
         "test_losses.py", "test_losses_step7.py",
         "test_metagga_indicator_domain.py", "test_metagga_pretrain.py",
         "test_metagga.py", "test_models.py",
@@ -103,6 +105,7 @@ CHUNKS: tuple[Chunk, ...] = (
     Chunk("D", _pipeline(
         "test_oep_per_species_tune.py", "test_oep.py", "test_oep_uks.py",
         "test_oneshot.py", "test_orientation_lock.py", "test_padding.py",
+        "test_paper_targets.py",
         "test_parallel.py", "test_parent_anchor.py", "test_parents.py",
         "test_parents_scan.py", "test_pbe_anchor.py", "test_pretrain_board_local.py",
         "test_pretrain_cloning_protocol.py", "test_pretrain_data_basis.py",
@@ -140,7 +143,8 @@ CHUNKS: tuple[Chunk, ...] = (
     Chunk("E2", _pipeline(
         "test_training_points.py", "test_train_one_spec.py", "test_train.py",
         "test_uks_atom_gradflow.py", "test_uks_oneshot.py", "test_uks_scf.py",
-        "test_uks_vxc_integration.py", "test_validate_run.py",
+        "test_uks_vxc_integration.py", "test_v7_checkpoints.py",
+        "test_validate_run.py",
         "test_vxc_padding_neutrality.py", "test_worker_hard_exit.py",
         "test_workers.py", "slow/test_scf_train.py"), peak=17500),
 )

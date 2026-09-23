@@ -139,7 +139,8 @@ xcquinox = [
 "xcquinox.pipeline.tests" = [
     "data/*.json",
     "fixtures/*.json",
-    "fixtures/*.npz"
+    "fixtures/*.npz",
+    "fixtures/v7_checkpoints/*/*"
 ]
 
 [tool.versioningit]

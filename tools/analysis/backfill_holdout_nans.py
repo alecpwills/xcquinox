@@ -56,11 +56,17 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-CHANNEL_MODELS = {
-    "eval_holdout": "model.eqx",
-    "eval_holdout_best": "model_best.eqx",
-    "eval_holdout_val_best": "model_val_best.eqx",
-}
+from xcquinox.pipeline.holdout_channels import (CHANNEL_MODEL,
+                                                CHANNEL_OVERRIDE,
+                                                HOLDOUT_CHANNELS)
+
+#: The channels the backfill repairs, and the checkpoint each evaluates: the
+#: trained-protocol channels (no solver override), since a species is
+#: recomputed under the spec's own solver. The cold-start and converged pairs
+#: are re-run by ``cluster.channel_retro`` under their overrides.
+CHANNEL_MODELS = {channel: CHANNEL_MODEL[channel]
+                  for channel in HOLDOUT_CHANNELS
+                  if CHANNEL_OVERRIDE[channel] is None}
 
 BACKUP_NAME = "per_molecule.pre_backfill.json"
 LEDGER_NAME = "backfill_ledger.json"

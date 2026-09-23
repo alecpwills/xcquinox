@@ -32,7 +32,6 @@ import argparse
 import dataclasses
 import json
 import os
-import sys
 import time
 
 import numpy as np
@@ -234,4 +233,9 @@ def main(argv=None) -> int:
 if __name__ == "__main__":
     # float64 before any JAX import, as every worker entry point sets it
     os.environ.setdefault("JAX_ENABLE_X64", "1")
-    sys.exit(main())
+    # The census is the status this process hands its caller, and JAX's
+    # atexit teardown can abort the interpreter after main() has returned
+    # it; run_and_exit flushes and leaves through os._exit, as every cluster
+    # entry point does. See cluster/_exit.py.
+    from xcquinox.pipeline.cluster._exit import run_and_exit
+    run_and_exit(main)

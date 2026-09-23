@@ -1,4 +1,4 @@
-"""Retroactive cold-start channel over a run's COMPLETED specs.
+"""Retroactive cold-start channel pair over a run's COMPLETED specs.
 
 The cold-start entry point of the generalized channel tool
 (:mod:`xcquinox.pipeline.cluster.channel_retro`), kept so the deployed job
