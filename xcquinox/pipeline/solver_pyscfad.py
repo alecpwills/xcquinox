@@ -1,0 +1,932 @@
+"""xcquinox.pipeline.solver_pyscfad: pyscfad-based SCF backend.
+
+Wraps pyscfad's dft.RKS (or dft.UKS for spin>0) with a pipeline-specific
+eval_xc callback built from AlecGGAModel.eval_exc_scalar. pyscfad is
+imported lazily inside run_pyscfad_scf so that users of the manual
+backend don't pay the import cost.
+"""
+import warnings
+
+import jax
+import jax.numpy as jnp
+from pyscf.dft import libxc as pyscf_libxc
+
+from xcquinox.pipeline.pyscf_determinism import pin_small_rho_cutoff
+from xcquinox.pipeline.solver import (
+    SolverConfig,
+    SolverMode,
+    FeaturePolicy,
+    SCFResult,
+    _oneshot_result,
+    _contract_dm_to_grid,
+    _reassemble_features,
+)
+
+
+def install_functional(mf, eval_xc_callback, xctype: str = "GGA"):
+    """Install the pipeline's ``eval_xc`` callback as the functional of a pyscfad
+    mean-field object, and return that object.
+
+    The functional is installed through PySCF's numint-level installer,
+    ``pyscf.dft.libxc.define_xc_(ni, callable, xctype)``, which sets on the numint
+    instance the attributes pyscfad's integration loops read (``_xc_type`` and
+    ``eval_xc`` in ``nr_rks`` and ``nr_uks``, with ``hybrid_coeff``, ``rsh_coeff`` and
+    ``eval_xc1`` beside them) and returns the instance, which is rebound the way the
+    mean-field method rebinds it. The mean-field method itself, ``mf.define_xc_``,
+    reaches that installer through ``mf._numint.libxc``; pyscfad 0.3.4's ``NumInt``
+    binds ``libxc`` to its own wrapper module, which carries no installer (0.1.11's
+    bound PySCF's own), so the method raises there while the numint-level route works
+    on both. The exact-exchange and NLC terms of pyscfad's ``get_veff`` are decided from
+    the mean-field's xc STRING, which stays at its default, so the installed callback
+    is the whole functional; the installer's ``hybrid_coeff`` is a contract of the
+    numint, not a switch of the Fock build.
+    """
+    mf._numint = pyscf_libxc.define_xc_(mf._numint, eval_xc_callback, xctype)
+    return mf
+
+
+def _rebuild_mol_from_mol_data(mol_data: dict):
+    """Rebuild a pyscfad gto.Mole from the metadata stashed by precompute.
+
+    Must use pyscfad.gto.Mole (not pyscf.gto.Mole) because
+    pyscfad.dft.RKS / UKS require a pyscfad-wrapped molecule object.
+    """
+    import pyscfad.gto
+    md = mol_data["mol_metadata"]
+    mol = pyscfad.gto.Mole()
+    mol.atom = md["atom"]
+    mol.basis = md["basis"]
+    mol.charge = md["charge"]
+    mol.spin = md["spin"]
+    mol.verbose = 0
+    mol.build()
+    return mol
+
+
+def _build_pyscfad_mf(mol, mol_data: dict):
+    """Instantiate the appropriate pyscfad mean-field object.
+
+    UKS for spin-polarized molecules (is_unrestricted or mol.spin != 0),
+    RKS otherwise. Callers should subsequently call install_functional(mf, ...)
+    and set mf.max_cycle / mf.conv_tol. The grid level is pinned from
+    mol_metadata when present so that pyscfad uses the same grid as the
+    precompute step, otherwise features_frozen (assembled on the
+    precompute grid) would mismatch pyscfad's per-point rho.
+
+    For UKS, pyscfad's built-in ``initialize_grids`` skips the density-based
+    grid pruning (``prune_small_rho_grids_``) because it gates on
+    ``dm.ndim == 2``. That means pyscfad's UKS grid retains more points
+    than pyscf's post-SCF grid, and the precomputed FROZEN features (which
+    were assembled on pyscf's post-prune grid) would mismatch pyscfad's
+    rho at eval_xc time. To fix this, for UKS we pre-build and prune
+    pyscfad's grid using the total DM stashed in ``mol_data`` before
+    ``mf.kernel`` runs. The RKS path is left untouched so pyscfad's usual
+    initialization flow (including ``non0tab`` bookkeeping inside
+    ``initialize_grids``) runs exactly as before.
+
+    When ``mol_data`` carries a cached ``_pyscfad_mol`` (built once at
+    precompute time), that pre-built Mole is used in preference to the
+    ``mol`` argument, this avoids ``Mole.build()`` inside any jit-traced
+    hot path (it invokes ``numpy.__array__`` and raises
+    ``TracerArrayConversionError`` under ``filter_jit``).
+    """
+    import pyscfad.dft
+    cached = mol_data.get("_pyscfad_mol")
+    if cached is not None:
+        mol = cached
+    is_uks = bool(mol_data.get("is_unrestricted", False)) or int(getattr(mol, "spin", 0)) != 0
+    if is_uks:
+        mf = pyscfad.dft.UKS(mol)
+    else:
+        mf = pyscfad.dft.RKS(mol)
+    # The grid is pruned at the density threshold the precompute's reference
+    # SCF used (the UKS branch below prunes it here, the RKS branch at the
+    # first get_veff), so the backend integrates on the precompute's
+    # quadrature whatever the release's class default (1e-7 through pyscf
+    # 2.11, 0 from 2.14).
+    pin_small_rho_cutoff(mf)
+    md = mol_data.get("mol_metadata") or {}
+    # Orientation lock: the pyscfad backend rebuilds its own mean-field and does
+    # NOT read mol_data["h_core"], so add the precomputed bias matrix (stashed by
+    # precompute) to its get_hcore. Wrap the original get_hcore so any
+    # geometry-dependence is preserved and only the constant bias is added.
+    _ol_bias = md.get("orientation_lock_bias")
+    if _ol_bias is not None:
+        import jax.numpy as jnp
+        _orig_get_hcore = mf.get_hcore
+        _ol_bias_j = jnp.asarray(_ol_bias)
+        mf.get_hcore = lambda *a, **k: _orig_get_hcore(*a, **k) + _ol_bias_j
+    grid_level = md.get("grid_level")
+    if grid_level is not None:
+        mf.grids.level = int(grid_level)
+    if is_uks:
+        from pyscfad.dft.rks import prune_small_rho_grids_
+        mf.grids.build(with_non0tab=True)
+        if mf.small_rho_cutoff > 1e-20:
+            dm_pbe = mol_data.get("dm_pbe")
+            if dm_pbe is not None:
+                import numpy as np
+                dm_np = np.asarray(dm_pbe)
+                dm_total = dm_np[0] + dm_np[1] if dm_np.ndim == 3 else dm_np
+                mf.grids = prune_small_rho_grids_(mf, mol, dm_total, mf.grids)
+    return mf
+
+
+def _maybe_rung35_proj_ao(descriptors: tuple, mol, grid_coords):
+    """Constant rung-3.5 projected-AO matrix ``A`` on ``grid_coords`` if a
+    DMRung35Descriptor is present (else ``None``). ``A`` is DM-independent, so the
+    pyscfad backend computes it ONCE per SCF on pyscfad's actual (pruned) grid and
+    reuses it for every cycle's reassemble (avoids a per-cycle PySCF integral)."""
+    from xcquinox.pipeline.descriptors import DMRung35Descriptor
+    for d in descriptors:
+        if isinstance(d, DMRung35Descriptor):
+            from xcquinox.pipeline.rung35 import compute_projected_ao
+            return jnp.asarray(compute_projected_ao(mol, grid_coords, float(d.alpha)))
+    return None
+
+
+def _maybe_rung35ms_proj_ao(descriptors: tuple, mol, grid_coords):
+    """Constant multi-width projected-AO STACK on ``grid_coords`` if a
+    DMRung35MultishellDescriptor is present (else ``None``). Same rationale as
+    the single-width twin: DM-independent, so computed once per SCF on
+    pyscfad's actual (pruned) grid rather than per cycle."""
+    from xcquinox.pipeline.descriptors import DMRung35MultishellDescriptor
+    for d in descriptors:
+        if isinstance(d, DMRung35MultishellDescriptor):
+            from xcquinox.pipeline.rung35 import compute_projected_ao_multishell
+            return jnp.asarray(
+                compute_projected_ao_multishell(mol, grid_coords,
+                                                tuple(d.alphas)))
+    return None
+
+
+def _maybe_metagga_ao_grad(descriptors: tuple, mol, grid_coords):
+    """Constant deriv=1 AO ``[ao, d/dx, d/dy, d/dz] chi_mu`` (shape ``(4, N, nao)``)
+    on ``grid_coords`` if a MetaGGAAlphaDescriptor is present (else ``None``). The AO
+    is geometry-only (DM-independent), so -- exactly like the rung-3.5 ``A`` -- the
+    pyscfad backend computes it ONCE per SCF on pyscfad's actual (pruned) grid and
+    reuses it every cycle to build ``tau = 1/2 P:(grad chi (x) grad chi)`` -> the
+    iso-orbital ``alpha``. ``np.asarray`` detaches it from any pyscfad geometry trace
+    (it is constant w.r.t. the model params the training gradient differentiates)."""
+    from xcquinox.pipeline.descriptors import MetaGGAAlphaDescriptor
+    for d in descriptors:
+        if isinstance(d, MetaGGAAlphaDescriptor):
+            import numpy as np
+            ao = np.asarray(mol.eval_gto("GTOval_sph_deriv1", np.asarray(grid_coords)))
+            return jnp.asarray(ao)
+    return None
+
+
+def _reassemble_features_on_grid(
+    descriptors: tuple,
+    dm: "jnp.ndarray",
+    s_matrix: "jnp.ndarray",
+    grid_coords: "jnp.ndarray",
+    mol,
+    rung35_proj_ao: "jnp.ndarray | None" = None,
+    rung35ms_proj_ao: "jnp.ndarray | None" = None,
+    metagga_ao: "jnp.ndarray | None" = None,
+    spin_channel: "int | None" = None,
+) -> "jnp.ndarray":
+    """Compute descriptor features from (dm, S) on a specific grid.
+
+    Used by the REASSEMBLE policy in the pyscfad backend: pyscfad's grid
+    may not match the precompute grid (pyscfad applies its own
+    small_rho_cutoff pruning), so cusp features must be recomputed on
+    pyscfad's actual grid coords. DM-statistics features are grid-
+    agnostic (tiled), so they are recomputed at ``len(grid_coords)``.
+
+    For UKS, ``dm`` may have shape ``(2, nao, nao)``. We pass the
+    spin-resolved DM unchanged to ``DMStatisticsDescriptor.compute_from_dm``
+    so the underlying ``compute_dm_features`` picks its UKS branch
+    (Pople-Nesbet 1954: D_sigma S D_sigma = D_sigma per spin). Summing
+    alpha+beta into a 2-D total DM and routing UKS through the RKS
+    idempotency branch would instead produce a non-zero,
+    physically-meaningless idempotency_error.
+
+    ``spin_channel`` selects the per-channel block of diag(P_sigma, P_sigma)
+    instead of the physical block. It is the block the exact exchange spin
+    scaling evaluates; correlation keeps ``spin_channel=None``.
+    """
+    from xcquinox.pipeline.descriptors import (
+        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
+        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor)
+    from xcquinox.features import compute_cusp_descriptor
+
+    dm_arr = jnp.asarray(dm)
+    if spin_channel is not None:
+        # Per-channel block: every density-matrix descriptor is evaluated on the
+        # symmetric doubled density diag(P_sigma, P_sigma) (Oliver and Perdew,
+        # Phys. Rev. A 20, 397 (1979)). Doubling here is sufficient for every
+        # branch below: the meta-GGA branch derives rho, sigma and tau from
+        # dm_arr itself, so it reads 2 rho_sigma, 4 sigma_sigma_sigma and
+        # 2 tau_sigma without further change.
+        from xcquinox.pipeline.descriptors import doubled_spin_dm
+        dm_arr = doubled_spin_dm(dm_arr, spin_channel)
+    # Keep dm_arr's ndim intact; compute_dm_features dispatches on it.
+
+    n_grid = int(grid_coords.shape[0])
+    if not descriptors:
+        return jnp.zeros((n_grid, 0))
+
+    nuclear_coords = jnp.asarray(mol.atom_coords())
+    nuclear_charges = jnp.asarray(mol.atom_charges())
+
+    cols = []
+    for d in descriptors:
+        if isinstance(d, CuspDescriptor):
+            # Honor the descriptor's log_transform so the pyscfad-backend eval
+            # cusp matches what training (data.py) and the cusp-using archs
+            # expect; the default raw form saturates near nuclei (feature skew).
+            cols.append(compute_cusp_descriptor(
+                grid_coords, nuclear_coords, nuclear_charges,
+                log_transform=bool(getattr(d, "log_transform", False)),
+            ))
+        elif isinstance(d, DMStatisticsDescriptor):
+            cols.append(d.compute_from_dm(
+                dm=dm_arr, s_matrix=s_matrix, n_grid=n_grid,
+            ))
+        elif isinstance(d, DMRung35Descriptor):
+            # The occupancy n_sigma = A^T P^sigma A needs A on THIS (pruned)
+            # grid. A is DM-independent; the caller normally precomputes it once
+            # per SCF (rung35_proj_ao) -- fall back to computing it here.
+            A = rung35_proj_ao
+            if A is None:
+                from xcquinox.pipeline.rung35 import compute_projected_ao
+                A = jnp.asarray(compute_projected_ao(
+                    mol, grid_coords, float(getattr(d, "alpha"))))
+            cols.append(d.compute_from_dm(proj_ao=A, dm=dm_arr))
+        elif isinstance(d, DMRung35MultishellDescriptor):
+            A = rung35ms_proj_ao
+            if A is None:
+                from xcquinox.pipeline.rung35 import compute_projected_ao_multishell
+                A = jnp.asarray(compute_projected_ao_multishell(
+                    mol, grid_coords, tuple(d.alphas)))
+            cols.append(d.compute_from_dm(proj_ao_stack=A, dm=dm_arr))
+        elif isinstance(d, MetaGGAAlphaDescriptor):
+            # Meta-GGA iso-orbital alpha = (tau - tau_W)/tau_unif, treated as a
+            # reassembled DESCRIPTOR feature (NOT native pyscfad MGGA) so the pyscfad
+            # backend matches the manual backend's functional. tau + rho/sigma come
+            # from the constant deriv=1 AO (metagga_ao, once/SCF) contracted with the
+            # LIVE DM on THIS pruned grid.
+            from xcquinox.pipeline.metagga import compute_tau_from_dm, compute_alpha
+            ao = metagga_ao
+            if ao is None:
+                import numpy as np
+                ao = jnp.asarray(np.asarray(
+                    mol.eval_gto("GTOval_sph_deriv1", np.asarray(grid_coords))))
+            ao0, ao_grad = ao[0], ao[1:4]
+            d_tot = dm_arr if dm_arr.ndim == 2 else dm_arr[0] + dm_arr[1]
+            rho = jnp.einsum("ij,gi,gj->g", d_tot, ao0, ao0)
+            nabla = 2.0 * jnp.einsum("ij,dgi,gj->gd", d_tot, ao_grad, ao0)
+            sigma = jnp.einsum("gd,gd->g", nabla, nabla)
+            tau = compute_tau_from_dm(ao_grad, dm_arr)
+            cols.append(compute_alpha(rho, sigma, tau).reshape(-1, 1))
+        else:
+            raise NotImplementedError(
+                f"_reassemble_features_on_grid does not yet know how to "
+                f"recompute {type(d).__name__}"
+            )
+    return jnp.concatenate(cols, axis=1)
+
+
+def _make_pipeline_eval_xc(model, descriptors, mol_data, policy,
+                       feature_holder=None):
+    """Return a libxc-compatible eval_xc callback that uses pipeline's XC NN.
+
+    For FROZEN policy, features are captured at construction time and
+    reused every cycle.
+
+    For REASSEMBLE policy, features are recomputed from the current DM
+    each SCF cycle. The caller must pass a mutable ``feature_holder``
+    dict that the outer SCF loop updates before each ``get_veff`` call.
+    The holder carries:
+      - ``"features_full"``: jnp.ndarray of shape (n_grid, n_features),
+        the descriptor features on pyscfad's actual grid assembled from
+        the current DM (the physical block; correlation consumes it).
+      - ``"features_full_a"`` / ``"features_full_b"``: the per-channel blocks
+        of the symmetric doubled densities diag(P_a, P_a) / diag(P_b, P_b) on
+        the same grid, which the spin-scaled exchange terms consume; ``None``
+        on a closed-shell (RKS) run, where the UKS callback is never entered.
+      - ``"offset"``: int, running offset into the full-grid feature
+        arrays. Reset to 0 at the start of each ``get_veff`` call and
+        advanced by ``block_size`` each time ``eval_xc`` is invoked.
+
+    The callback handles both RKS (spin=0) and UKS (spin=1) pyscf/pyscfad
+    numint conventions:
+      - spin=0, GGA: rho shape (4, n_grid); returns vrho (n_grid,), vsigma (n_grid,)
+      - spin=1, GGA: rho shape (2, 4, n_grid); returns vrho (n_grid, 2) and
+        vsigma (n_grid, 3) in (uu, ud, dd) ordering.
+
+    UKS uses the SOLV-01 split (see pipeline.oneshot `_uks_spin_resolved_vxc`):
+        E_xc^UKS = 0.5 (E_x[2 rho_a, 4 sigma_aa, f_a] + E_x[2 rho_b, 4 sigma_bb, f_b])
+                 +      E_c[rho_tot, sigma_tot, f_tot]
+    EXCHANGE obeys the exact spin-scaling relation (Oliver & Perdew, Phys.
+    Rev. A 20, 397 (1979)), each channel evaluated at the descriptor block
+    ``f_sigma`` of its OWN doubled density diag(P_sigma, P_sigma);
+    CORRELATION does NOT and is evaluated once on the TOTAL density with the
+    physical block ``f_tot`` (zeta=0 on the default path), because the
+    baseline ``pw92c_unpolarized_scalar`` is spin-unpolarized (von Barth &
+    Hedin, J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45, 13244 (1992)).
+    The per-spin libxc derivatives are then
+        vrho_s   = v_rho^x(2 rho_s, 4 sigma_ss, f_s) + v_rho^c(rho_tot, sigma_tot, f_tot)
+        vsigma_uu = 2 v_sigma^x(2 rho_a, 4 sigma_aa, f_a) + v_sigma^c(rho_tot)
+        vsigma_dd = 2 v_sigma^x(2 rho_b, 4 sigma_bb, f_b) + v_sigma^c(rho_tot)
+        vsigma_ud = 2 v_sigma^c(rho_tot)
+    The non-zero ``ud`` term comes entirely from the total-density
+    correlation (sigma_tot = sigma_uu + 2 sigma_ud + sigma_dd).
+
+    When ``cnet.use_spin_polarization`` is set, correlation uses the
+    zeta-dependent PW92 baseline and ``vrho_c`` becomes PER-SPIN
+    (``vrho_c_a != vrho_c_b``); ``vsigma_c`` stays shared because zeta has no
+    sigma dependence (Dick & Fernandez-Serra, PRB 104 L161109 (2021)). Flag
+    False keeps the zeta=0 shared-correlation path byte-identical.
+    """
+    from xcquinox.pipeline.descriptors import assemble_descriptor_features
+
+    features_frozen = assemble_descriptor_features(descriptors, mol_data)
+    n_features = features_frozen.shape[1]
+
+    def _slice_block(features_full, offset: int, block_size: int) -> jnp.ndarray:
+        """One block of a full-grid feature array, zero-padded on the tail.
+
+        pyscfad's ``block_loop`` may emit non-uniform block sizes, the last
+        block of an unpadded grid is smaller than NBLK, and ``non0tab`` pruning
+        can skip blocks entirely while still advancing the internal cursor. Both
+        cases produce a short slice. Padded grid points carry zero weight in the
+        downstream numint summation, so the padding value never reaches the
+        energy or the Fock matrix; only the shape contract matters.
+        """
+        features_slice = features_full[offset:offset + block_size]
+        slice_n = features_slice.shape[0]
+        if slice_n < block_size:
+            pad = jnp.zeros((block_size - slice_n, features_slice.shape[1]),
+                            dtype=features_slice.dtype)
+            features_slice = jnp.concatenate([features_slice, pad], axis=0)
+        elif slice_n > block_size:
+            # Cannot happen from a Python slice; defensive only.
+            raise ValueError(
+                "Feature slice oversized: offset="
+                f"{offset}, block_size={block_size}, slice={slice_n}, "
+                f"full grid={features_full.shape[0]}. This indicates a bug in "
+                "the slicing logic."
+            )
+        return features_slice
+
+    def _features_for_block(block_size: int):
+        """Return ``(features_tot, features_a, features_b)`` for one grid block.
+
+        ``features_a`` / ``features_b`` are the descriptor features of the
+        symmetric doubled densities diag(P_a, P_a) and diag(P_b, P_b), which the
+        spin-scaled exchange terms evaluate (Oliver and Perdew, Phys. Rev. A 20,
+        397 (1979)); ``features_tot`` is the physical block the spin-interpolated
+        correlation term consumes. On a closed-shell (RKS) run the per-channel
+        blocks are ``None`` and the RKS branch uses the total block alone.
+
+        pyscfad's ``block_loop`` splits the grid into chunks (default ~224
+        points) under ``jax.grad`` / traced execution, and may keep the whole
+        grid as one block under eager execution. The grid offset advances ONCE
+        per call, so a caller that needs more than one block must take them
+        from a single call. The holder is refreshed per cycle under REASSEMBLE
+        and stays at the seed-density blocks under FROZEN.
+
+        When no holder is supplied (empty descriptors or the legacy
+        FROZEN-on-precompute-grid path), the precompute features are returned
+        as the total block; that path has no per-channel blocks.
+        """
+        if n_features == 0:
+            empty = jnp.zeros((block_size, 0), dtype=features_frozen.dtype)
+            return empty, empty, empty
+
+        if feature_holder is not None:
+            offset = int(feature_holder["offset"])
+            tot = _slice_block(feature_holder["features_full"], offset,
+                               block_size)
+            per_spin = []
+            for key in ("features_full_a", "features_full_b"):
+                full = feature_holder.get(key)
+                per_spin.append(None if full is None
+                                else _slice_block(full, offset, block_size))
+            feature_holder["offset"] = offset + block_size
+            return tot, per_spin[0], per_spin[1]
+
+        # Legacy path: use precompute features directly. Reached only when the
+        # block loop returns the whole grid as one block AND pyscfad's grid
+        # matches the precompute grid; the holder is installed for every
+        # descriptor-carrying architecture, so no per-channel block is needed
+        # here (the UKS branch refuses to proceed without them).
+        if block_size == features_frozen.shape[0]:
+            return features_frozen, None, None
+        raise ValueError(
+            "pyscfad backend with FROZEN features requires block_loop to "
+            "return the full grid as one block, but got block_size="
+            f"{block_size} != full grid {features_frozen.shape[0]}. This "
+            "happens under jax.grad/jit tracing with descriptor-ful "
+            "architectures; use REASSEMBLE policy to resolve."
+        )
+
+    def eval_single(r, s, f):
+        return model.eval_exc_scalar(r, s, f)
+
+    # SOLV-01 split scalar energy densities for the UKS callback.
+    def eval_single_x(r, s, f):
+        return model.eval_ex_scalar(r, s, f)
+
+    def eval_single_c(r, s, f):
+        return model.eval_ec_scalar(r, s, f)
+
+    def _eval_part(fn, rho0, sigma, features):
+        """Return (e_density, de/drho, de/dsigma) for scalar energy-density
+        ``fn`` evaluated batched over the grid. Used for RKS (fn=eval_single)
+        and for the SOLV-01 split exchange / correlation pieces."""
+        e_density = jax.vmap(fn)(rho0, sigma, features)
+        drho_fn = lambda r, s, f: jax.grad(fn, argnums=0)(r, s, f)
+        dsigma_fn = lambda r, s, f: jax.grad(fn, argnums=1)(r, s, f)
+        vrho = jax.vmap(drho_fn)(rho0, sigma, features)
+        vsigma = jax.vmap(dsigma_fn)(rho0, sigma, features)
+        return e_density, vrho, vsigma
+
+    def _eval_rks(rho0, sigma, features):
+        """Return (exc_density, vrho, vsigma) where exc_density = rho * eps (NN output).
+
+        Callers divide ``exc_density`` by rho + reg to obtain libxc's
+        per-particle ``exc``; the UKS branch of the callback spin-scales
+        before dividing.
+        """
+        return _eval_part(eval_single, rho0, sigma, features)
+
+    def eval_xc_pipeline_gga(xc_code, rho, spin=0, relativity=0, deriv=1, verbose=None):
+        # Detect spin-polarized input: pyscf/libxc convention sends
+        # rho as a 2-tuple or a (2, 4, n_grid) array for spin=1 GGA and a
+        # (4, n_grid) array for spin=0. Use ``spin`` (passed by pyscfad's
+        # numint ``nr_rks`` / ``nr_uks``) as the primary signal.
+        if spin == 1 or (isinstance(rho, tuple) and len(rho) == 2):
+            import numpy as _np
+            rho_arr = jnp.asarray(_np.asarray(rho))
+            # UKS: rho[0] = (den_a, dxa, dya, dza), rho[1] = beta.
+            rho_a = rho_arr[0, 0]
+            rho_b = rho_arr[1, 0]
+            dxa, dya, dza = rho_arr[0, 1], rho_arr[0, 2], rho_arr[0, 3]
+            dxb, dyb, dzb = rho_arr[1, 1], rho_arr[1, 2], rho_arr[1, 3]
+            sigma_aa = dxa * dxa + dya * dya + dza * dza
+            sigma_bb = dxb * dxb + dyb * dyb + dzb * dzb
+            sigma_ab = dxa * dxb + dya * dyb + dza * dzb
+            # total-density gradient invariant for the correlation
+            # piece. sigma_tot = |nabla rho_tot|^2 = sigma_aa + 2 sigma_ab + sigma_bb.
+            sigma_tot = sigma_aa + 2.0 * sigma_ab + sigma_bb
+
+            # SOLV-01 split. EXCHANGE obeys the exact spin-scaling relation
+            # (Oliver and Perdew, Phys. Rev. A 20, 397 (1979)):
+            #   E_x = 0.5 (E_x[2 rho_a, 4 sigma_aa] + E_x[2 rho_b, 4 sigma_bb]),
+            # evaluated per spin, each channel at the descriptor block of its
+            # OWN doubled density diag(P_sigma, P_sigma). CORRELATION does not
+            # obey it: it is spin-interpolated and evaluated ONCE on the TOTAL
+            # density with the total block (von Barth and Hedin, J. Phys. C 5,
+            # 1629 (1972); Perdew and Wang, Phys. Rev. B 45, 13244 (1992)). When
+            # cnet.use_spin_polarization is set, correlation uses the
+            # zeta-dependent PW92 baseline and a per-spin vrho_c (Dick and
+            # Fernandez-Serra, Phys. Rev. B 104, L161109 (2021)).
+            #
+            # Use a block-sized features slice since pyscfad chunks the grid
+            # under jax.grad / jit tracing; one call yields all three blocks and
+            # advances the grid offset exactly once.
+            features_blk, features_blk_a, features_blk_b = _features_for_block(
+                int(rho_a.shape[0]))
+            if features_blk_a is None or features_blk_b is None:
+                # Only the holder-less legacy path lacks per-channel blocks.
+                # Falling back to the total block in both exchange channels
+                # would silently reinstate the superseded two-block evaluation
+                # on an open shell, so the path is refused instead.
+                raise ValueError(
+                    "UKS eval_xc without per-channel feature blocks: the "
+                    "spin-scaled exchange terms need the descriptor blocks of "
+                    "diag(P_a, P_a) and diag(P_b, P_b) (feature_holder keys "
+                    "'features_full_a' / 'features_full_b'); the holder-less "
+                    "legacy path cannot supply them."
+                )
+            rho_tot = rho_a + rho_b
+            # Exchange: per-spin, at the spin-scaled (2 rho_s, 4 sigma_ss) and
+            # the channel's own block.
+            ex_a_density, vrho_x_a, vsigma_x_a = _eval_part(
+                eval_single_x, 2.0 * rho_a, 4.0 * sigma_aa, features_blk_a,
+            )
+            ex_b_density, vrho_x_b, vsigma_x_b = _eval_part(
+                eval_single_x, 2.0 * rho_b, 4.0 * sigma_bb, features_blk_b,
+            )
+            # Correlation. When the cnet is spin-polarization-aware,
+            # eps_c depends on rho_a/rho_b through BOTH rho_tot AND
+            # zeta = (rho_a-rho_b)/rho_tot (Dick & Fernandez-Serra, PRB 104
+            # L161109 (2021)), so vrho_c is PER-SPIN. zeta has no sigma
+            # dependence, so vsigma_c stays the single total-density
+            # derivative. Flag False keeps the shared zeta=0 fast path.
+            if getattr(model.cnet, "use_spin_polarization", False):
+                def ec_spin_scalar(ra, rb, s, f):
+                    rt = ra + rb
+                    z = jnp.clip((ra - rb) / jnp.maximum(rt, 1e-300),
+                                 -1.0, 1.0)
+                    return model.eval_ec_scalar(rt, s, f, zeta=z)
+                ec_density = jax.vmap(ec_spin_scalar)(
+                    rho_a, rho_b, sigma_tot, features_blk)
+                vrho_c_a = jax.vmap(
+                    lambda ra, rb, s, f: jax.grad(ec_spin_scalar, 0)(ra, rb, s, f)
+                )(rho_a, rho_b, sigma_tot, features_blk)
+                vrho_c_b = jax.vmap(
+                    lambda ra, rb, s, f: jax.grad(ec_spin_scalar, 1)(ra, rb, s, f)
+                )(rho_a, rho_b, sigma_tot, features_blk)
+                vsigma_c = jax.vmap(
+                    lambda ra, rb, s, f: jax.grad(ec_spin_scalar, 2)(ra, rb, s, f)
+                )(rho_a, rho_b, sigma_tot, features_blk)
+            else:
+                # zeta=0 fast path: correlation once on the total density,
+                # the SAME vrho_c for both spins.
+                ec_density, vrho_c, vsigma_c = _eval_part(
+                    eval_single_c, rho_tot, sigma_tot, features_blk,
+                )
+                vrho_c_a = vrho_c
+                vrho_c_b = vrho_c
+
+            # libxc convention: E_xc = integral (rho_a + rho_b) * eps_uks(r) dr,
+            # so eps_uks is the per-particle energy density returned here.
+            # SOLV-01 split energy density:
+            #   E_density = 0.5 (ex_a_density + ex_b_density) + ec_density.
+            xc_density = 0.5 * (ex_a_density + ex_b_density) + ec_density
+            # 1/(rho_tot + 1e-18) gives O(1/eps^2) JVP at
+            # tail points (rho ≈ 0). Use jnp.where with a higher floor
+            # that masks tail contributions to 0 instead of letting the
+            # autodiff propagate amplified noise.
+            _RHO_EPS = 1e-12
+            rho_safe = jnp.maximum(rho_tot, _RHO_EPS)
+            exc = jnp.where(
+                rho_tot > _RHO_EPS,
+                xc_density / rho_safe,
+                0.0,
+            )
+
+            # vrho_s = d E_density / d rho_s.
+            #   Exchange: d/drho_a [0.5 ex(2 rho_a)] = 0.5 * 2 * vrho_x_a = vrho_x_a.
+            #   Correlation: vrho_c_a/vrho_c_b = d ec/d rho_{a,b}, IDENTICAL
+            #     for both spins on the zeta=0 fast path, PER-SPIN when the
+            #     polarized (zeta-dependent) correlation is active.
+            vrho_a = vrho_x_a + vrho_c_a
+            vrho_b = vrho_x_b + vrho_c_b
+            # vrho: (n_grid, 2) in (u, d) order.
+            vrho_stack = jnp.stack([vrho_a, vrho_b], axis=-1)
+
+            # vsigma in (uu, ud, dd) order.
+            #   Exchange: d/dsigma_aa [0.5 ex(4 sigma_aa)] = 0.5 * 4 * vsigma_x_a
+            #     = 2 vsigma_x_a (uu); zero exchange ud cross-term.
+            #   Correlation: ec depends on sigma_tot = sigma_aa + 2 sigma_ab
+            #     + sigma_bb, so d ec/d sigma_uu = vsigma_c, d ec/d sigma_ud =
+            #     2 vsigma_c, d ec/d sigma_dd = vsigma_c.
+            vsigma_uu = 2.0 * vsigma_x_a + vsigma_c
+            vsigma_ud = 2.0 * vsigma_c
+            vsigma_dd = 2.0 * vsigma_x_b + vsigma_c
+            vsigma_stack = jnp.stack([vsigma_uu, vsigma_ud, vsigma_dd], axis=-1)
+            vxc = (vrho_stack, vsigma_stack, None, None)
+            return exc, vxc, None, None
+
+        # RKS path (spin=0, GGA). rho shape: (4, n_grid).
+        rho0 = jnp.asarray(rho[0])
+        dx, dy, dz = jnp.asarray(rho[1]), jnp.asarray(rho[2]), jnp.asarray(rho[3])
+        sigma = dx * dx + dy * dy + dz * dz
+        # Pyscfad splits the grid into blocks under jax.grad / jit
+        # tracing, so size the features slice to the current block. A closed
+        # shell has one block; the per-channel slots are unused here.
+        features_blk = _features_for_block(int(rho0.shape[0]))[0]
+        exc_density, vrho, vsigma = _eval_rks(rho0, sigma, features_blk)
+        # Same low-rho JVP guard as the UKS path above.
+        _RHO_EPS = 1e-12
+        rho_safe = jnp.maximum(rho0, _RHO_EPS)
+        exc = jnp.where(
+            rho0 > _RHO_EPS,
+            exc_density / rho_safe,
+            0.0,
+        )
+        vxc = (vrho, vsigma, None, None)
+        return exc, vxc, None, None
+
+    return eval_xc_pipeline_gga
+
+
+def _cpu_device_context():
+    """Return a ``jax.default_device`` context manager pinned to the first
+    CPU device, or a no-op context when no CPU device is available.
+
+    Motivation: pyscfad's ``eigh_gen_p`` custom primitive has no CUDA
+    kernel (as of pyscfad 0.x), so ``jax.grad`` through pyscfad on GPU
+    raises ``UNIMPLEMENTED: No registered implementation for custom
+    call to cusolver_sygvd_ffi``. Wrapping the pyscfad subgraph in a
+    CPU default-device context routes all XLA lowerings to CPU, which
+    has a working kernel. Forward-only pyscfad calls that don't invoke
+    ``eigh_gen_p`` are unaffected but get pinned to CPU for consistency.
+    """
+    import contextlib
+
+    cpu_devices = jax.devices("cpu")
+    if not cpu_devices:
+        return contextlib.nullcontext()
+    return jax.default_device(cpu_devices[0])
+
+
+def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+    # pyscfad's SCF driver depends on CONCRETE numpy arrays
+    # for h_core / S / J construction (it goes through libcint via pyscf
+    # backends that do not accept JAX tracers). Calling this from inside
+    # @jit / @eqx.filter_jit produces a confusing TracerArrayConversion
+    # error deep in pyscfad. Detect tracers early and raise a clear
+    # message explaining the constraint.
+    import jax
+    # Scan ALL likely-traced keys, not just the first
+    # present one: stopping after the first hit would miss
+    # tracers in dm_pbe/j_matrix when rho_grid (concrete) preceded them.
+    candidate_keys = (
+        "dm_pbe", "j_matrix", "rho_grid", "ao_grid", "s_matrix", "h_core",
+    )
+    if any(
+        key in mol_data and isinstance(mol_data[key], jax.core.Tracer)
+        for key in candidate_keys
+    ):
+        raise RuntimeError(
+            "run_pyscfad_scf cannot be called from inside @jit / "
+            "@eqx.filter_jit: pyscfad's SCF driver requires concrete "
+            "numpy/jnp arrays for libcint integral construction. Wrap "
+            "the caller without JIT, or use SolverMode.ONESHOT (which is "
+            "fully traceable)."
+        )
+    # ONESHOT doesn't enter pyscfad at all, skip the CPU pin.
+    if config.mode == SolverMode.ONESHOT:
+        return _oneshot_result(model, mol_data)
+    # Pin the whole pyscfad subgraph (including eval_xc_callback
+    # construction, which captures jnp arrays) to CPU so that jax.grad
+    # through the pyscfad-specific eigh_gen primitive works. See
+    # `_cpu_device_context` for the rationale.
+    with _cpu_device_context():
+        return _run_pyscfad_scf_impl(config, model, mol_data)
+
+
+def _reject_dm_dependent_descriptors(model, policy) -> None:
+    """Refuse to build a knowingly-wrong V_xc on the pyscfad backend.
+
+    For any descriptor whose features depend on the density matrix, the exact
+    potential carries a third chain-rule term,
+
+        V_xc += sum_g w_g (de_xc/dfeatures)_g . d features_g / dP,
+
+    which the MANUAL backend assembles (``oneshot.feature_response_vxc``). The
+    pyscfad backend cannot: ``eval_xc_pipeline_gga`` is a libxc-compatible per-point
+    callback returning ``(exc, vrho, vsigma)``, and pyscf's numint builds the
+    Fock matrix from those three arrays alone. There is no channel through that
+    interface for a GLOBAL matrix term, and ``_features_for_block`` chunks the
+    grid, so the term would additionally need cross-block accumulation.
+
+    Carrying it requires overriding ``get_veff`` instead of ``eval_xc``: compute
+    the per-point ``de/dfeatures`` while looping the blocks, accumulate
+    ``sum_g w_g (de/df)_g . df_g/dP`` across blocks in the AO basis, symmetrize,
+    and add the result to the veff numint returns. That override is deliberately
+    not built yet -- the DM-dependent descriptor it would serve is itself not
+    yet valid (``dm_entropy`` has no usable gradient at a converged density), so
+    building it now would check one unverified path against another.
+
+    Until then this raises rather than silently returning a potential that is
+    not the derivative of the energy. FROZEN policy is exempt: the features are
+    constant in P, the extra term is identically zero, and the existing
+    per-point callback is already exact.
+    """
+    if policy == FeaturePolicy.FROZEN:
+        return
+    offenders = [type(d).__name__ for d in model.descriptors
+                 if hasattr(type(d), "compute_from_dm")]
+    if not offenders:
+        return
+    raise NotImplementedError(
+        "run_pyscfad_scf: architecture carries density-matrix-dependent "
+        f"descriptor(s) {offenders} under {policy}, but the pyscfad backend "
+        "assembles V_xc through a per-point libxc-style eval_xc callback that "
+        "cannot carry the de/dfeatures . dfeatures/dP term. The returned V_xc "
+        "would not be the functional derivative of E_xc, so the SCF would "
+        "converge a density that does not minimise its own energy. Use "
+        "SolverBackend.MANUAL, which assembles this term exactly, or "
+        "FeaturePolicy.FROZEN, where the term vanishes by construction."
+    )
+
+
+def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+    from xcquinox.pipeline.descriptors import assemble_descriptor_features
+
+    import pyscfad.dft  # noqa: F401, lazy import
+
+    policy = config.effective_feature_policy
+    descriptors = model.descriptors
+
+    _reject_dm_dependent_descriptors(model, policy)
+
+    # Prefer the Mole cached in mol_data by precompute (avoids Mole.build()
+    # inside any jit-traced hot path). Fall back to rebuilding from metadata
+    # when the cache is absent (e.g., older mol_data dicts).
+    cached_mol = mol_data.get("_pyscfad_mol")
+    if cached_mol is not None:
+        mol = cached_mol
+    else:
+        warnings.warn(
+            "mol_data does not carry a cached _pyscfad_mol; rebuilding "
+            "pyscfad.gto.Mole inside run_pyscfad_scf. This will fail under "
+            "@eqx.filter_jit. Re-run precompute_fixed_density_data to cache "
+            "the Mole.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        mol = _rebuild_mol_from_mol_data(mol_data)
+    mf = _build_pyscfad_mf(mol, mol_data)
+    if bool(getattr(config, "density_fit", False)):
+        # pyscfad's own density fitting (a _DFHF wrapper that copies the
+        # mean-field's attributes), applied before the grid, the functional
+        # and the get_veff wrap below, so the Coulomb term of this SCF sits
+        # on the DF footing training and the CCSD references used. A non-DF
+        # config keeps the full-integral Coulomb.
+        mf = mf.density_fit(auxbasis=getattr(config, "auxbasis", None))
+
+    # When descriptors are present, pyscfad's grid may differ from the
+    # precompute grid (pyscfad applies its own small_rho_cutoff pruning),
+    # so descriptor features must live on pyscfad's actual grid. We
+    # install a ``feature_holder`` closure shared with the eval_xc
+    # callback. For UKS, _build_pyscfad_mf already built + pruned
+    # mf.grids. For RKS we eagerly call initialize_grids here so
+    # mf.grids.coords is populated before we wrap get_veff.
+    #
+    # FROZEN: features are computed once from dm_pbe on pyscfad's grid
+    #         and never updated.
+    # REASSEMBLE: get_veff wrapper (below) refreshes features from the
+    #         current DM on every cycle.
+    feature_holder = None
+    _rung35_proj_ao = None
+    _rung35ms_proj_ao = None
+    _metagga_ao = None
+    if descriptors:
+        is_uks = bool(mol_data.get("is_unrestricted", False)) or int(getattr(mol, "spin", 0)) != 0
+        if not is_uks:
+            mf.initialize_grids(mol, mol_data["dm_pbe"])
+        # Constant rung-3.5 projected-AO A + meta-GGA deriv=1 AO on pyscfad's actual
+        # (pruned) grid, computed once and reused every cycle (None unless the arch
+        # uses them). Geometry is fixed across the SCF, so both are cycle-invariant.
+        _rung35_proj_ao = _maybe_rung35_proj_ao(descriptors, mol, mf.grids.coords)
+        _rung35ms_proj_ao = _maybe_rung35ms_proj_ao(descriptors, mol,
+                                                    mf.grids.coords)
+        _metagga_ao = _maybe_metagga_ao_grad(descriptors, mol, mf.grids.coords)
+        _s_matrix = jnp.asarray(mol_data["s_matrix"])
+        _grid_coords = jnp.asarray(mf.grids.coords)
+
+        def _blocks_on_grid(dm_value, mol_value):
+            """Total block plus, for an open shell, the two per-channel blocks
+            of the symmetric doubled densities diag(P_a, P_a) / diag(P_b, P_b),
+            all on pyscfad's actual grid. The grid, the overlap and the three
+            cached constant precomputes are fixed across the SCF."""
+            common = dict(
+                descriptors=descriptors,
+                s_matrix=_s_matrix,
+                grid_coords=_grid_coords,
+                mol=mol_value,
+                rung35_proj_ao=_rung35_proj_ao,
+                rung35ms_proj_ao=_rung35ms_proj_ao,
+                metagga_ao=_metagga_ao,
+            )
+            total = _reassemble_features_on_grid(dm=dm_value, **common)
+            if not is_uks:
+                return total, None, None
+            return (
+                total,
+                _reassemble_features_on_grid(dm=dm_value, spin_channel=0,
+                                             **common),
+                _reassemble_features_on_grid(dm=dm_value, spin_channel=1,
+                                             **common),
+            )
+
+        _tot0, _a0, _b0 = _blocks_on_grid(mol_data["dm_pbe"], mol)
+        feature_holder = {
+            "features_full": _tot0,
+            "features_full_a": _a0,
+            "features_full_b": _b0,
+            "offset": 0,
+        }
+
+    eval_xc_callback = _make_pipeline_eval_xc(
+        model=model,
+        descriptors=descriptors,
+        mol_data=mol_data,
+        policy=policy,
+        feature_holder=feature_holder,
+    )
+
+    install_functional(mf, eval_xc_callback, "GGA")
+    mf.max_cycle = int(config.max_cycles)
+    mf.conv_tol = float(config.conv_tol)
+
+    # Wrap get_veff so the block offset is reset to 0 before pyscfad's
+    # numint enters block_loop (each get_veff call == one full pass over
+    # the grid). For REASSEMBLE, additionally refresh the three full-grid
+    # blocks from the current DM. For FROZEN with a holder, only the offset
+    # reset runs; the blocks stay at their initial (dm_pbe) values.
+    if feature_holder is not None:
+        original_get_veff = mf.get_veff
+
+        def _holder_get_veff(mol_=None, dm=None, *args, **kwargs):
+            # Pass the caller-supplied ``mol_`` through
+            # to ``_reassemble_features_on_grid`` and the original
+            # ``get_veff`` rather than substituting the closed-over
+            # ``mol``. Pyscfad's SCF driver passes the live ``mol``
+            # explicitly; using the closure variable would silently
+            # ignore any geometry/basis change pyscfad introduces (e.g.
+            # mol updates inside its scan). Fall back to the closed-over
+            # ``mol`` only when the caller passes ``None``.
+            mol_eff = mol_ if mol_ is not None else mol
+            if policy == FeaturePolicy.REASSEMBLE and dm is not None:
+                (feature_holder["features_full"],
+                 feature_holder["features_full_a"],
+                 feature_holder["features_full_b"]) = _blocks_on_grid(
+                    dm, mol_eff)
+            feature_holder["offset"] = 0
+            return original_get_veff(mol_eff, dm, *args, **kwargs)
+
+        mf.get_veff = _holder_get_veff
+
+    if config.mode == SolverMode.FIXED_J:
+        # pyscfad UKS get_veff calls ks.get_j(mol, dm_total_2d, hermi), the
+        # spin DMs are summed before the Coulomb build (Coulomb is spin-blind),
+        # so get_j returns a 2D matrix. For RKS, j_matrix is already 2D. For
+        # UKS, the precompute stored j_matrix as (2, nao, nao) (per-spin J),
+        # and the total J that enters the Fock build is the sum over spins.
+        j_pinned_raw = mol_data["j_matrix"]
+        j_pinned_arr = jnp.asarray(j_pinned_raw)
+        if j_pinned_arr.ndim == 3 and j_pinned_arr.shape[0] == 2:
+            J_pinned = j_pinned_arr[0] + j_pinned_arr[1]
+        else:
+            J_pinned = j_pinned_arr
+
+        def fixed_get_j(mol_=None, dm=None, hermi=1, **kwargs):
+            return J_pinned
+
+        mf.get_j = fixed_get_j
+
+    # pyscfad's SCF kernel does not persist the actual iteration count on
+    # the mean-field object (``mf.cycles`` is the input parameter that
+    # pyscfad reads as an upper bound, not a tracker, it stays at its
+    # initial value 0 after kernel()). We install a callback into pyscfad's
+    # inner _scf loop to count iterations directly. The callback runs once
+    # per cycle and sees the loop-local ``cycle`` index in its ``envs`` dict.
+    cycle_counter = [0]
+    energy_history: list[float] = []
+
+    def _count_cycles_cb(envs):
+        # ``cycle`` in pyscfad's _scf loop is 0-based; record the 1-based
+        # count so that a successful single-iteration convergence reports 1.
+        cycle_counter[0] = int(envs.get("cycle", cycle_counter[0] - 1)) + 1
+        # Capture per-cycle total energy when pyscfad exposes it. Different
+        # pyscfad/pyscf versions key this as ``e_tot`` or ``etot``; we accept
+        # either and silently skip if neither is present (the metric falls
+        # back to a degenerate trace in that case).
+        e_step = envs.get("e_tot", envs.get("etot"))
+        if e_step is None:
+            mf_local = envs.get("mf")
+            if mf_local is not None:
+                e_step = getattr(mf_local, "e_tot", None)
+        if e_step is not None:
+            try:
+                energy_history.append(float(e_step))
+            except (TypeError, ValueError):
+                pass
+
+    mf.callback = _count_cycles_cb
+    mf.kernel(dm0=mol_data["dm_pbe"])
+
+    D_final = jnp.asarray(mf.make_rdm1())
+    E_final = jnp.asarray(mf.e_tot)
+    cycles_run = jnp.int32(cycle_counter[0])
+    converged = jnp.bool_(bool(mf.converged))
+    features_used = assemble_descriptor_features(descriptors, mol_data)
+    # Pad the history to ``max_cycles`` with NaNs so callers can stack
+    # traces from different SCFs into a fixed-shape array. The length of
+    # ``energy_history`` corresponds to the actual cycles executed; trailing
+    # NaNs mark cycles that never ran (early convergence).
+    # SolverConfig always defines ``max_cycles``; a
+    # ``getattr(config, "max_cycles", ...)`` default branch would be
+    # unreachable. Use the field directly so a missing attribute fails
+    # loudly instead of silently substituting ``len(energy_history)``.
+    max_cyc = int(config.max_cycles)
+    pad_len = max(max_cyc, len(energy_history))
+    if energy_history:
+        # No ``dtype=jnp.float64`` pin here. Under
+        # the suite's ``jax_enable_x64=True`` default a pin changes
+        # nothing, but under x32 it would force a silent dtype
+        # promotion that breaks downstream metric reductions.
+        trace_arr = jnp.full((pad_len,), jnp.nan)
+        trace_arr = trace_arr.at[: len(energy_history)].set(jnp.asarray(energy_history))
+    else:
+        trace_arr = None
+
+    return SCFResult(
+        density_matrix=D_final,
+        total_energy=E_final,
+        cycles_run=cycles_run,
+        converged=converged,
+        features_used=features_used,
+        energy_trace=trace_arr,
+    )

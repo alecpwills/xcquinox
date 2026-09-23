@@ -1,0 +1,17 @@
+# xcquinox.pipeline.cluster -- rsync filter rules for the "full" pull profile.
+#
+# Mirrors the ENTIRE run dir, including the SLURM /logs/ tree. Use when you need
+# the trained model.eqx checkpoints locally (paper-figure re-evaluation, re-running
+# analysis that loads the actual networks) OR the SLURM `.out`/`.err` logs to
+# diagnose a failed run off-cluster (compile OOMs, tracebacks, dependency/exit-code
+# failures live only in the logs). `summaries` stays lean and still drops /logs/;
+# reach for `full` when you want the complete picture.
+#
+# Loaded via `rsync --filter='. <abs path>/full.filter'`. Rules apply with the
+# run dir (`run_<UTC>Z/`) as the transfer root.
+
+# --- include everything, no exclusions ------------------------------------
+# The `***` matches the dir itself and every path below it, so the whole run
+# dir -- logs/, scripts/, specs/, every *.eqx, and any future top-level dir --
+# is transferred. (Contrast summaries.filter, which opts artifacts in one by one.)
++ /***

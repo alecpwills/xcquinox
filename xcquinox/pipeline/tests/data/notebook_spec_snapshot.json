@@ -1,0 +1,119 @@
+{
+  "notebook_builder_path": "notebooks/_build_gga_training_dfs_subsets_notebook.py",
+  "notebook_content_sha256": "785e45665a1546f56cdcdc26f9d0b34b3ef73ea9717a54e62951e1cfb226c028",
+  "notebook_sha": "01c4dfd91a0972bda348548041753fd3adf8b558",
+  "schema_version": 1,
+  "spec": {
+    "atom_energies": {
+      "Al": -242.346,
+      "B": -24.65391,
+      "Be": -14.66736,
+      "C": -37.845,
+      "Cl": -460.148,
+      "F": -99.7339,
+      "H": -0.5,
+      "Li": -7.4781,
+      "N": -54.5892,
+      "Na": -162.2546,
+      "O": -75.0673,
+      "P": -341.259,
+      "S": -398.1095,
+      "Si": -289.359
+    },
+    "grid_cell": {
+      "arch": "deep_combined_attn",
+      "loss": "L5_gradnorm_vxc_step7",
+      "metric": "l2",
+      "solver": "oneshot",
+      "subset_size": 2
+    },
+    "hyperparameters": {
+      "grad_clip": 1.0,
+      "lr_decay_start": 0.2,
+      "lr_end": 1e-05,
+      "lr_start": 0.01,
+      "n_steps": 100,
+      "pbe_anchor_weight": 0.0,
+      "seed": 42
+    },
+    "loss_kwargs": {
+      "aux_only_names": [],
+      "bh76_reactions": [],
+      "density_per_electron": false,
+      "density_weight": 0.1,
+      "ip13_pairs": [],
+      "regularize_atom_syms": [
+        "H",
+        "Li"
+      ],
+      "solver_config": {
+        "feature_policy": null,
+        "max_cycles": 0,
+        "mode": "ONESHOT"
+      },
+      "vxc_weight": 0.01
+    },
+    "loss_name": "L5_gradnorm_vxc_step7",
+    "molecules": [
+      {
+        "atom": "H 0.000000 0.000000 0.000000",
+        "atom_composition": {
+          "H": 1
+        },
+        "basis": "def2-svp",
+        "charge": 0,
+        "external_data_path_is_set": false,
+        "grid_level": 1,
+        "name": "H",
+        "spin": 1
+      },
+      {
+        "atom": "H 0.000000 0.000000 0.371395; H 0.000000 0.000000 -0.371395",
+        "atom_composition": {
+          "H": 2
+        },
+        "basis": "def2-svp",
+        "charge": 0,
+        "external_data_path_is_set": false,
+        "grid_level": 1,
+        "name": "H2",
+        "spin": 0
+      },
+      {
+        "atom": "Li 0.000000 0.000000 0.000000",
+        "atom_composition": {
+          "Li": 1
+        },
+        "basis": "def2-svp",
+        "charge": 0,
+        "external_data_path_is_set": false,
+        "grid_level": 1,
+        "name": "Li",
+        "spin": 1
+      },
+      {
+        "atom": "N 0.000000 0.000000 0.549396; N 0.000000 0.000000 -0.549396",
+        "atom_composition": {
+          "N": 2
+        },
+        "basis": "def2-svp",
+        "charge": 0,
+        "external_data_path_is_set": false,
+        "grid_level": 1,
+        "name": "N2",
+        "spin": 0
+      }
+    ],
+    "solver_config": {
+      "feature_policy": null,
+      "max_cycles": 0,
+      "mode": "ONESHOT"
+    },
+    "targets": {
+      "H": -0.5,
+      "H2": 0.1743401496298263,
+      "Li": -7.4781,
+      "N2": 0.364052611406682
+    }
+  }
+}

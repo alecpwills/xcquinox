@@ -1,0 +1,227 @@
+# =============================================================================
+# workflow_matrix_template.yaml -- the one-architecture tiny identity of the
+# per-architecture workflow matrix
+# =============================================================================
+#
+# NOT a campaign config. This grid exists to run the harness stage sequence
+# (submit dry-run -> datagen -> pretrain -> certificate -> preflight -> train
+# -> eval -> validate_run) end to end, per architecture, in minutes, so a
+# wiring defect is found before any YAML of a real campaign is rendered.
+# Nothing it produces is a physics result: 3 training steps and 50 pretraining
+# steps on two atoms fit nothing.
+#
+# Rendered by ``cluster.workflow_matrix.write_matrix_yaml``, which replaces the
+# CHANGE_ME values programmatically (arch, the three path fields). As shipped,
+# the file loads with ``load_grid_config`` and fails ``validate_grid_semantics``
+# on the placeholder architecture, so an unedited copy cannot be submitted.
+#
+# Identity, fixed by the spec: def2-svp, grid level 1, the cached subset ledger
+# (notebooks/checkpoints_step7/alpha_on/subset_index_log.json) and the cached
+# CCSD external references, which the renderer COPIES into the work root. The
+# cache must never be the working copy: ``external_refs.precompute_all`` writes
+# a ``_run_log_<UTC>.json`` into its cache directory on every call and
+# ``run_oep_cascade`` may rewrite a species npz, so a run working in the cache
+# would edit the inputs of the next one.
+#
+# PREREQUISITE: both cached inputs are UNTRACKED -- .gitignore excludes
+# notebooks/checkpoints_step7/ -- so a fresh clone, a git worktree and the
+# cluster checkout carry neither of them. That directory has to be staged into
+# the tree, from a machine that holds it, before the matrix can run.
+# =============================================================================
+
+# One architecture, two grid cells: subset sizes 1 and 2 of the JSD ledger
+# (jsd/1 = H2O; jsd/2 = HLi + the OH+N2 -> H+N2O barrier), so the matrix covers
+# a pure atomization cell and a mixed atomization/barrier cell. Solver oneshot:
+# a single non-self-consistent pass, the cheapest path that still exercises the
+# whole spec/eval plumbing.
+sweep:
+  arch: [CHANGE_ME_ARCH]
+  loss: [L5_gradnorm_vxc_step7]
+  metric: [jsd]
+  subset_size: [1, 2]
+  solver: [oneshot]
+
+solvers:
+  oneshot:
+    mode: ONESHOT
+    max_cycles: 0
+
+# 3 optimization steps. validate_every 0 keeps the held-out validation slice
+# out of the run (it would need inputs.val_refs_dir and a staged density-only
+# slice); checkpoint_every 0 keeps the resume machinery out of it.
+hyperparams:
+  n_steps: 3
+  lr_start: 0.01
+  lr_end: 0.00001
+  lr_decay_start: 0.2
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  validate_every: 0
+  checkpoint_every: 0
+  seed: 42
+
+# benchmark_refs_dir and val_refs_dir stay UNSET: the first would submit a
+# standalone CCSD reference job for the held-out pool, the second would stage a
+# validation slice. Neither is part of the workflow assertion.
+inputs:
+  external_refs_dir: /nonexistent/CHANGE_ME/external_refs
+  subset_ledger_path: /nonexistent/CHANGE_ME/subset_index_log.json
+  basis: def2-svp
+  grid_level: 1
+  output_root: /nonexistent/CHANGE_ME/runs
+  # The matrix runs at grid level 1 and pretrains on O, whose 3P term that
+  # quadrature does not resolve, so the data generator refuses the build
+  # unless the run waives it: two draws of those rows are two different files
+  # under one manifest identity. Waived with its reason, as the generator
+  # requires. The orientation lock is left unstated and therefore takes the
+  # calibrated 3e-5; were it set to 0.0 the fidelity certificate would still
+  # evaluate degenerate free atoms at 3e-5 while the pretraining rows sat at
+  # 0.0.
+  allow_irreproducible_degenerate: true
+  irreproducible_degenerate_reason: >-
+    example / workflow-verification identity at grid level 1; never a campaign
+
+# 50 pretraining steps on H (2S = 1) and O (2S = 2): one spin-1 and one spin-2
+# open shell, enough for the generator to write every descriptor column
+# (cusp, dm, rung35, rung35 multishell, meta-GGA alpha) plus the (s, alpha)
+# mesh, so one data file serves every architecture in the registry.
+pretrain:
+  data_dir: /nonexistent/CHANGE_ME/pretrain_data
+  n_steps: 50
+  lr_start: 0.01
+  lr_end: 0.00001
+  lr_decay_start: 0.2
+  grad_clip: 1.0
+  seed: 42
+  loss_weighting: integration
+  atoms:
+    H: 1
+    O: 2
+  # --- pretraining protocol ------------------------------------------------
+  # Stated at the values this matrix runs at, which are the pre-protocol
+  # defaults, so a copy of this file is a complete statement of the protocol
+  # it exercises rather than a set of invisible defaults. The campaign-v6
+  # value follows each one, as in grid_step7.yaml; the matrix does NOT track
+  # it, because the matrix is a wiring check and every knob it moves away from
+  # the default is a second thing that can fail here for reasons that have
+  # nothing to do with the wiring.
+  #
+  # The SET is `atoms` above (H and O), so both set switches are off.
+  dfs_set: false            # v6: true
+  pool_atoms: false         # v6: true
+  # The DENSITY the targets sit on. Deliberately "pbe" rather than "auto":
+  # auto would build a SCAN-density file for a meta-GGA architecture, which is
+  # a second reference SCF per system on top of the one this matrix needs, and
+  # the SCAN UKS of an open p-shell atom does not converge at this identity
+  # (def2-svp, grid level 1) under pyscf's defaults.
+  parent_density: pbe       # v6: auto
+  # The open-shell exchange FOOTING. "total" keeps one row block, which is
+  # what the 50-step run needs to exercise the loss; "spin_channel" is a
+  # different row set and a different data identity.
+  exchange_footing: total   # v6: spin_channel
+  # The synthetic (r_s, s, alpha) mesh's share of the total integration
+  # weight, at the generator's own constant.
+  mesh_fraction: 0.3        # v6: 0.3
+  # The OBJECTIVE: the point-wise enhancement-factor residual alone. The
+  # campaign runs the same weight, 0.0, which is exact under the parent
+  # anchor (model.parent_anchor).
+  energy_term_weight: 0.0   # v6: 0.0, exact under model.parent_anchor
+  # VALIDATION and the stop criterion, both OFF. The matrix pretrains on two
+  # free atoms, and the split holds out MULTI-NUCLEUS systems only, so a
+  # non-zero fraction would hold out nothing here and the monitor would score
+  # an empty set; with the fraction at 0 there is no validation to time and
+  # `validate_every` never fires within the 50 steps.
+  validation_fraction: 0.0  # v6: 0.2
+  validation_seed: 0        # v6: 0
+  validate_every: 50        # v6: 50
+  patience: 0               # v6: 10
+
+# SLURM fields are rendered but never submitted: the matrix runs `submit` in
+# its default dry-run to create the run directory and resolved config, then
+# invokes each stage module directly.
+#
+# mail_user and mail_type are deliberately BLANK. This is a recorded deviation
+# from the standing rule that every cluster job script carries the Stony Brook
+# address on BEGIN/END/FAIL: no script rendered from this file is ever queued,
+# so there is no submission, completion or failure to report, and a blank mail
+# block keeps a matrix config from being mistaken for a production one. A
+# shipped example carrying a real address would also mail that person from
+# anybody's copy of the repository.
+cluster:
+  partition: ""
+  time: "00:30:00"
+  cpus_per_task: 4
+  array_throttle: 1
+  eval_array_throttle: 1
+  max_concurrent_tasks: 2
+  max_array_size: 1000
+  device: cpu
+  conda_env: ""
+  conda_profile: ""
+  mail_user: ""
+  mail_type: NONE
+  account: ""
+  # Serial held-out eval: the sliced pool is six species, and the matrix runs
+  # several architectures at once, so a worker ladder would oversubscribe.
+  eval_workers: 1
+  preflight_time: "00:30:00"
+  eval_time: "00:30:00"
+  pretrain_time: "00:30:00"
+
+domain_profile: dfs_step7
+on_precompute_failure: abort
+bh76_mode: reaction_energy
+# Matches the production arms: the polarized cnet, and therefore the
+# zeta-carrying pretrain_data_polarized.npz that datagen generates.
+use_polarized_correlation: true
+# The separate eval array is rendered rather than folded into the train script,
+# so `submit` produces the same five scripts the matrix executes as five
+# stages.
+inline_eval: false
+defer_eval: false
+# --- the model class --------------------------------
+# Stated at the campaign-v6 class -- anchored to the parent, on the DFS
+# coordinates -- so the matrix is the workflow check of the anchor
+# (V6): the certificate it computes is then a real
+# measurement of the anchored class, expected to PASS at the oracle floor at
+# initialization and after the 50 steps. The legacy class the recorded
+# campaigns (v4, v5) ran under is rendered by setting the two keys to false
+# and legacy; the polarized correlation network the anchor requires is
+# already on above.
+model:
+  parent_anchor: true             # v6: true (legacy class: false)
+  descriptor_coordinates: dfs     # v6: dfs (legacy class: legacy)
+
+# Certificate tolerances stay at their binding defaults (tol_AE = 1.0 kcal/mol,
+# tol_atom = 1.0 mHa, grid_config.FidelityConfig), so the certificate is a real
+# measurement with a real verdict. It is computed at the identity THIS FILE
+# renders -- def2-svp, grid level 1, no density fitting -- because
+# `fidelity.run_identity` and `fidelity.build_oracle_set` both read
+# `cfg.inputs`, and `validate_run` refuses a certificate whose identity block
+# differs from the config's; the verdict therefore belongs to that identity and
+# not to the campaign's 6-311++G(3df,2pd) / grid 3. What this
+# block waives is the ENFORCEMENT, and only that: 50 pretraining steps on two
+# atoms cannot reproduce the parent functional to 1.0 kcal/mol, so FAIL is the
+# EXPECTED verdict here. With `enforce: false` the certificate is still computed
+# and written with that FAIL on record, and the on-node gates -- the preflight
+# sweep (cluster/_preflight.py) and the train task (cluster/_train_task.py),
+# both through `fidelity.gate_certificate` -- log the waiver and continue
+# instead of blocking, which is the only way this configuration reaches the
+# train and eval stages it exists to exercise. A MISSING certificate is not
+# waived by anything: the gates refuse it, because there is then no record of
+# what was measured.
+#
+# `enforce: false` is accepted only with a non-empty prose `override_reason`
+# (grid_config.validate_grid_semantics and _build_fidelity), which is copied
+# verbatim into every certificate the run writes and re-checked there by the
+# gates. The waiver reaches the on-node gates and nothing else: validate_run,
+# merge_v4_arms and the figure loaders require a PASS certificate regardless of
+# this flag, so a run rendered from this template can never become a
+# quantitative result. There is no environment-variable bypass.
+fidelity:
+  enforce: false
+  override_reason: "workflow matrix: wiring check at a 50-step pretrain, never a campaign"

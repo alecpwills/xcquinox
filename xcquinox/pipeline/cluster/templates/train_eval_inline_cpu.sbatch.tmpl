@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=${JOB_NAME}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
+${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --array=0-${ARRAY_MAX}%${THROTTLE}
+#SBATCH --signal=B:TERM@${SIGTERM_GRACE}
+#SBATCH --output=${RUN_DIR}/logs/train_eval_%A_%a.out
+${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
+set -uo pipefail
+# NOTE: NOT `set -e` -- we intentionally tolerate eval failure so the train
+# checkpoint (already on disk from _train_task) survives a crash in
+# _eval_one_spec. See the `|| true` guard on the eval invocation below.
+
+# --- conda activation ------------------------------------------------------
+${CONDA_ACTIVATION}
+
+# --- thread caps -----------------------------------------------------------
+# 2026-07-06: train_eval's linear algebra runs through XLA/JAX, so these BLAS/OMP
+# pools are pre-spawned but IDLE. Pinning each to the full core count starved LLVM's
+# parallel codegen during the big dfs6311 compile: `pthread_create failed: Resource
+# temporarily unavailable` -> rc -6/-11 (classified oom) after training already ran.
+# Give the idle pools a small, node-scaled slice (~1/12 of the node's cores -> 8 on
+# a 96-core node, 2 on a 28-core node) and leave the rest of the thread budget for
+# XLA's runtime pool + LLVM codegen. The slice is derived from SLURM_CPUS_ON_NODE (the
+# whole-node core count under --exclusive), NOT SLURM_CPUS_PER_TASK: the latter is the
+# --cpus-per-task value (24 here), which mis-scaled the cap to 24/12=2 on a 96-core node.
+CORES="$${SLURM_CPUS_ON_NODE:-$$(nproc --all)}"
+BLAS_THREADS=$$(( CORES / 12 )); [ "$$BLAS_THREADS" -ge 1 ] || BLAS_THREADS=1
+export OMP_NUM_THREADS="$$BLAS_THREADS"
+export MKL_NUM_THREADS="$$BLAS_THREADS"
+export OPENBLAS_NUM_THREADS="$$BLAS_THREADS"
+echo "[thread-caps] CORES=$$CORES -> OMP/MKL/OPENBLAS=$$BLAS_THREADS (idle in train_eval; XLA+LLVM keep the rest)"
+${BENCH_REFS_ENV_LINE}
+${SEED_ENV_LINES}
+# --- glibc allocator -------------------------------------------------------
+# Cap malloc arenas at 2 (glibc default: 8 x cores = 768 on a 96-core node).
+# glibc parks freed heap on per-arena free lists instead of returning it to
+# the OS; under the ~100-thread XLA/BLAS runtime this freed-but-cached heap
+# held a ~200 GB resident floor in the dfs6311 train worker (job 2093139:
+# live-buffer census pinned at 23.5 GB while RSS sat near 200 GB) and
+# OOM-killed most of the padded 6-311++G(3df,2pd)/grid3 sweep on 251.6 GB
+# nodes. Two arenas cut the floor to ~86 GB (HWM 219 -> 108 GB) at unchanged
+# throughput over a full 200-epoch rerun (job 2093577). Must be exported
+# before the interpreter starts -- glibc reads it at first malloc, so an
+# in-process setenv is too late; the worker subprocess inherits it.
+export MALLOC_ARENA_MAX=2
+echo "[malloc] MALLOC_ARENA_MAX=$$MALLOC_ARENA_MAX"
+
+# --- JAX/XLA CPU backend ---------------------------------------------------
+# XLA_FLAGS reaches every compile in the worker (nothing in the train/eval path
+# overrides it). `--xla_llvm_disable_expensive_passes=true` and
+# `--xla_backend_optimization_level=1` trim LLVM codegen effort and peak memory
+# for the large 6-311++G(3df,2pd)+grid3 kernels; results-neutral (compiler
+# effort only, not the math). These flags are only a MARGINAL help (~1-5% peak
+# RSS in local measurement) -- the primary compile-memory fix is the per-molecule
+# de-fusing of the training step (each molecule's SCF compiles at per-molecule
+# size instead of the whole group fused into one kernel; see
+# _run_per_molecule_loop in train.py and L5GradnormVxcStep7 in losses.py).
+# `--xla_cpu_parallel_codegen_split_count` was measured and deliberately NOT set
+# (no memory benefit, ~50% slower compile).
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true --xla_force_host_platform_device_count=1 --xla_llvm_disable_expensive_passes=true --xla_backend_optimization_level=1"
+
+# --- train task ------------------------------------------------------------
+# 2026-05-29 inline-eval mode: this single SLURM task does BOTH train AND
+# eval for the spec at $$SLURM_ARRAY_TASK_ID. This shell MUST survive the train
+# phase to run eval afterward, so the worker cannot be `exec`'d as the batch
+# PID (as the non-inline templates do). Consequently a wall-clock
+# `--signal=B:TERM@grace` is delivered to THIS shell, not the worker. We run the
+# worker in the background and forward SIGTERM to its PID via a trap, so the
+# worker's grace handler (_train_task._install_sigterm_handler) still fires and
+# writes the timeout failure.json -- matching the non-inline exec'd behavior.
+# Raise the per-user process/thread ceiling if node policy permits (extra
+# pthread_create headroom for LLVM codegen); harmless where the hard limit forbids it.
+ulimit -u unlimited 2>/dev/null || true
+python -m xcquinox.pipeline.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID} &
+train_pid=$$!
+trap 'echo "[inline-eval] forwarding SIGTERM to train pid $${train_pid}"; kill -TERM $${train_pid} 2>/dev/null' TERM
+wait $${train_pid}
+train_exit=$$?
+# `wait` returns 128+signum when interrupted by the trapped SIGTERM; re-wait
+# until the worker has actually exited so we capture ITS real exit code (and the
+# grace handler has had time to write failure.json).
+while [ $${train_exit} -ge 128 ] && kill -0 $${train_pid} 2>/dev/null; do
+  wait $${train_pid}
+  train_exit=$$?
+done
+trap - TERM
+echo "[inline-eval] _train_task exit code: $${train_exit}"
+
+# Only run eval if train succeeded. A failed train means no model.eqx for
+# _eval_one_spec to load; skip and exit with the train's status code.
+if [ "$${train_exit}" -eq 0 ]; then
+  echo "[inline-eval] running _eval_one_spec inline ..."
+  python -m xcquinox.pipeline.cluster._eval_one_spec ${RUN_DIR} $${SLURM_ARRAY_TASK_ID} || \
+    echo "[inline-eval] WARNING: _eval_one_spec failed (train checkpoint preserved)"
+fi
+
+exit $${train_exit}

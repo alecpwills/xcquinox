@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=${JOB_NAME}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
+${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --array=0-${ARRAY_MAX}%${THROTTLE}
+#SBATCH --signal=B:TERM@${SIGTERM_GRACE}
+#SBATCH --output=${RUN_DIR}/logs/train_%A_%a.out
+${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
+set -euo pipefail
+
+# --- conda activation ------------------------------------------------------
+${CONDA_ACTIVATION}
+${SEED_ENV_LINES}
+
+# --- thread caps -----------------------------------------------------------
+export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+
+# --- glibc allocator -------------------------------------------------------
+# Cap malloc arenas at 2: glibc's per-arena free lists held a ~200 GB
+# resident floor of freed-but-cached heap in the dfs6311 train worker; two
+# arenas cut it to ~86 GB at unchanged throughput. Full rationale in
+# train_eval_inline_cpu.sbatch.tmpl. Exported before the interpreter starts
+# (glibc reads it at first malloc); the worker subprocess inherits it.
+export MALLOC_ARENA_MAX=2
+echo "[malloc] MALLOC_ARENA_MAX=$$MALLOC_ARENA_MAX"
+
+# --- JAX/XLA CPU backend ---------------------------------------------------
+# XLA_FLAGS reaches every compile in the worker (nothing in the train/eval path
+# overrides it). `--xla_llvm_disable_expensive_passes=true` and
+# `--xla_backend_optimization_level=1` trim LLVM codegen effort and peak memory
+# for the large 6-311++G(3df,2pd)+grid3 kernels; results-neutral (compiler
+# effort only, not the math). These flags are only a MARGINAL help (~1-5% peak
+# RSS in local measurement) -- the primary compile-memory fix is the per-molecule
+# de-fusing of the training step (each molecule's SCF compiles at per-molecule
+# size instead of the whole group fused into one kernel; see
+# _run_per_molecule_loop in train.py and L5GradnormVxcStep7 in losses.py).
+# `--xla_cpu_parallel_codegen_split_count` was measured and deliberately NOT set
+# (no memory benefit, ~50% slower compile).
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true --xla_force_host_platform_device_count=1 --xla_llvm_disable_expensive_passes=true --xla_backend_optimization_level=1"
+
+# --- train task ------------------------------------------------------------
+# exec so the worker (PID == batch-step PID) receives the #SBATCH
+# --signal=B:TERM@<grace> wall-clock pre-kill signal and its SIGTERM handler
+# can record a timeout failure.json. Without exec the signal hits this shell,
+# not the Python process, and the grace handler never fires.
+exec python -m xcquinox.pipeline.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID}

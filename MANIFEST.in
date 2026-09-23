@@ -1,0 +1,3 @@
+include LICENSE README.md CODE_OF_CONDUCT.md
+
+global-exclude *.py[cod] __pycache__ *.so

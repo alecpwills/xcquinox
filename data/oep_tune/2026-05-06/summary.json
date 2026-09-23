@@ -1,0 +1,123 @@
+{
+  "started_at_utc": "2026-05-06T20:46:32.010257+00:00",
+  "ended_at_utc": "2026-05-06T20:56:47.166238+00:00",
+  "best_per_species": {
+    "Be": {
+      "trial_idx": 1,
+      "settings": {
+        "aux_basis": "def2-svp-jkfit",
+        "grid_level": 1,
+        "regularization": 0.001,
+        "conv_tol": 0.005,
+        "target_floor": 0.005
+      },
+      "density_error_min": 0.004630373555087823,
+      "wall_clock_s": 0.7823607921600342
+    },
+    "C+": {
+      "trial_idx": 0,
+      "settings": {
+        "aux_basis": "def2-tzvp-jkfit",
+        "grid_level": 1,
+        "inner_damp": 0.1,
+        "level_shift": 0.5,
+        "conv_tol": 0.015,
+        "target_floor": 0.015
+      },
+      "density_error_min": 0.013957127726915087,
+      "wall_clock_s": 1.3281376361846924
+    },
+    "F2": {
+      "trial_idx": 0,
+      "settings": {
+        "aux_basis": "def2-svp-jkfit",
+        "grid_level": 1,
+        "regularization": 0.0001,
+        "conv_tol": 0.01,
+        "target_floor": 0.01
+      },
+      "density_error_min": 0.00942609326320735,
+      "wall_clock_s": 4.894463777542114
+    },
+    "F2O": {
+      "trial_idx": 0,
+      "settings": {
+        "aux_basis": "def2-tzvp-jkfit",
+        "grid_level": 1,
+        "regularization": 0.001,
+        "conv_tol": 0.005,
+        "target_floor": 0.005
+      },
+      "density_error_min": 0.004842877254013861,
+      "wall_clock_s": 409.6230409145355
+    },
+    "HF": {
+      "trial_idx": 0,
+      "settings": {
+        "aux_basis": "def2-svp-jkfit",
+        "regularization": 0.0001,
+        "conv_tol": 0.005,
+        "target_floor": 0.005
+      },
+      "density_error_min": 0.004134282870252033,
+      "wall_clock_s": 5.710939645767212
+    },
+    "HS": {
+      "trial_idx": 0,
+      "settings": {
+        "aux_basis": "def2-tzvp-jkfit",
+        "inner_damp": 0.1,
+        "level_shift": 0.5,
+        "conv_tol": 0.015,
+        "target_floor": 0.015
+      },
+      "density_error_min": 0.011905339124837646,
+      "wall_clock_s": 2.473649024963379
+    },
+    "N2O": {
+      "trial_idx": 0,
+      "settings": {
+        "aux_basis": "def2-tzvp-jkfit",
+        "grid_level": 1,
+        "regularization": 0.001,
+        "conv_tol": 0.005,
+        "target_floor": 0.005
+      },
+      "density_error_min": 0.004698680839700114,
+      "wall_clock_s": 91.93033647537231
+    },
+    "O3": {
+      "trial_idx": 0,
+      "settings": {
+        "aux_basis": "def2-tzvp-jkfit",
+        "grid_level": 1,
+        "regularization": 0.001,
+        "conv_tol": 0.01,
+        "target_floor": 0.01
+      },
+      "density_error_min": 0.009218198857828541,
+      "wall_clock_s": 89.6183249950409
+    }
+  },
+  "n_trials_run": {
+    "Be": 2,
+    "C+": 1,
+    "F2": 1,
+    "F2O": 1,
+    "HF": 1,
+    "HS": 1,
+    "N2O": 1,
+    "O3": 1
+  },
+  "short_circuited": [
+    "Be",
+    "C+",
+    "F2",
+    "F2O",
+    "HF",
+    "HS",
+    "N2O",
+    "O3"
+  ],
+  "failed_target_floor": []
+}

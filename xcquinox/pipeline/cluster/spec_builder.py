@@ -1,0 +1,820 @@
+"""xcquinox.pipeline.cluster.spec_builder: generic spec assembly for the HPC harness.
+
+This module is the de-notebooked, domain-agnostic extraction of "Cell A" of
+``notebooks/_build_gga_training_dfs_subsets_notebook.py``: the logic that assembles
+:class:`xcquinox.pipeline.TrainingSpec` (and the matching :class:`TestSpec`)
+objects from a chosen subset of :class:`TrainingPoint` objects.
+
+It deliberately carries no ``step7`` / notebook-stage naming: a
+:class:`~xcquinox.pipeline.cluster.domain.DomainProfile` supplies every physics
+table (atomic energies, kcal/Ha, BH76/IP13 extractors), a
+:class:`~xcquinox.pipeline.cluster.grid_config.GridConfig` supplies the swept axes
++ hyperparameters, and the caller supplies the full ``TrainingPoint`` pool plus
+the EXISTING subset ledger.
+
+The subset_ledger schema
+------------------------
+``build_training_specs`` consumes the EXISTING ``subset_index_log.json`` dict
+produced by the (already-finished) subset-selection pre-process, handed
+through verbatim by :func:`xcquinox.pipeline.cluster.inputs.prepare_inputs`. Its
+schema is::
+
+    {
+        "<metric>/<subset_size>": {            # e.g. "l2/3"
+            "chosen_indices": [<int>, ...],    # provenance only
+            "metric_value": <float>,           # provenance only
+            "point_kinds": [<kind>, ...],      # provenance only
+            "point_names": [<name>, ...],      # the chosen TrainingPoint names
+            "tag": "bin<NN>"                   # provenance only
+        },
+        ...
+    }
+
+Notes:
+- The harness resolves a cell's training points by name from
+  ``entry["point_names"]`` against the supplied ``points`` pool. It does NOT
+  use ``chosen_indices``: those are positional into a pool list and are not
+  robust to pool reordering; ``point_names`` is the stable key.
+- There is NO ``pool_fingerprint`` and NO top-level wrapper, the ledger is a
+  bare dict of ``"<metric>/<r>"`` entries. The safety net against a stale
+  ledger is name resolution itself: if the pool genuinely differs, a
+  ``point_name`` will not resolve and ``build_training_specs`` fails loudly.
+- An entry's ``point_names`` MUST be present and non-empty. A missing key or
+  an empty list is treated as a malformed ledger entry and raises ``ValueError``
+  immediately: a real subset always has ≥1 point.
+"""
+import dataclasses
+import os
+import warnings
+
+from xcquinox.pipeline.config import (MoleculeSpec, TrainingSpec, TestSpec,
+                                  apply_model_block)
+from xcquinox.pipeline.training_points import (
+    species_union_from_points,
+    _atom_anchor_atoms,
+)
+from xcquinox.pipeline.solver import SolverConfig, SolverMode, FeaturePolicy
+from xcquinox.pipeline import get_architecture
+
+
+def _load_full_held_out_pools(basis="def2-svp", grid_level=1, refs_dir=None):
+    """Seam wrapping ``full_benchmark_pools.load_full_held_out_pools`` (module-
+    level so the WS3 validation-attachment tests can stub the heavy pool load)."""
+    from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
+    return load_full_held_out_pools(basis=basis, grid_level=grid_level,
+                                    refs_dir=refs_dir)
+
+
+# ---------------------------------------------------------------------------
+# ASE Atoms -> MoleculeSpec helpers (ports of the notebook's _-prefixed forms)
+# ---------------------------------------------------------------------------
+
+def atoms_to_pyscf_str(at) -> str:
+    """Convert an ASE ``Atoms`` object's positions to a pyscf-format atom string.
+
+    Positions are emitted in Angstrom (pyscf's default unit).
+    """
+    syms = at.get_chemical_symbols()
+    pos = at.get_positions()  # Angstrom, pyscf default unit
+    parts = [
+        f"{s} {x:.6f} {y:.6f} {z:.6f}"
+        for s, (x, y, z) in zip(syms, pos)
+    ]
+    return "; ".join(parts)
+
+
+def atoms_to_mol_spec(at, basis, grid_level, external_refs_dir, name=None) -> MoleculeSpec:
+    """Convert an ASE ``Atoms`` entry to a :class:`MoleculeSpec`.
+
+    Faithful port of the notebook's ``_atoms_to_mol_spec``. The
+    ``MoleculeSpec.name`` is the Hill formula by default (consistent across the
+    training pool, BH76 reaction species, and IP13 ionization pairs); the
+    optional ``name`` kwarg overrides it (used e.g. for IP13 cations like
+    ``'Li+'`` / ``'C+'`` which carry an explicit ``info['name']``).
+
+    The external CCSD reference ``.npz`` is wired via ``external_data_path``
+    when ``<external_refs_dir>/<name>.npz`` exists on disk; otherwise it stays
+    ``None`` (species outside the pre-compute set, or a first run before the
+    reference files were generated).
+
+    Parameters
+    ----------
+    at : ase.Atoms
+        The molecule geometry. ``at.info`` may carry ``name`` / ``dfs_hill`` /
+        ``charge`` / ``spin``.
+    basis : str
+        pyscf basis-set name.
+    grid_level : int | None
+        pyscf DFT grid level pinned on the spec.
+    external_refs_dir : str | os.PathLike
+        Directory holding per-species ``<name>.npz`` external reference files.
+    name : str | None
+        Explicit MoleculeSpec name override.
+
+    Returns
+    -------
+    MoleculeSpec
+    """
+    from collections import Counter
+
+    if name is None:
+        # Lookup order matches the notebook: info['name'] (set explicitly by
+        # TrainingPoint species, IP13 cations carry 'Li+'/'C+', AE compounds
+        # carry their Hill formula) -> dfs_hill -> Hill formula.
+        name = (
+            at.info.get("name")
+            or at.info.get("dfs_hill")
+            or at.get_chemical_formula()
+        )
+    charge = int(at.info.get("charge", 0))
+    spin = int(at.info.get("spin", 0))
+    atom_str = atoms_to_pyscf_str(at)
+    comp_raw = Counter(at.get_chemical_symbols())
+    # Wire the external CCSD reference path when present; None otherwise.
+    ext_npz = os.path.join(str(external_refs_dir), f"{name}.npz")
+    external_data_path = ext_npz if os.path.isfile(ext_npz) else None
+    return MoleculeSpec.from_dict(
+        name=name,
+        atom=atom_str,
+        basis=basis,
+        charge=charge,
+        spin=spin,
+        atom_composition=dict(comp_raw),
+        grid_level=grid_level,
+        external_data_path=external_data_path,
+    )
+
+
+# ---------------------------------------------------------------------------
+# targets / aux-only classification (ports of the notebook's Cell A logic)
+# ---------------------------------------------------------------------------
+
+def classify_aux_only(mol_specs, ae_ref_kcalmol) -> tuple:
+    """Return the sorted tuple of polyatomic ``MoleculeSpec`` names that are
+    aux-only, i.e. present so the BH76 channel can compute reaction
+    energies, but NOT members of the AE channel.
+
+    A polyatomic (composition sum > 1) is aux-only iff its name has no entry in
+    ``ae_ref_kcalmol`` (the per-AE-point reference dict). Without this
+    classification, ``_ae_losses`` would include those species with a 0.0
+    target and the relative-error denominator would blow up.
+    """
+    return tuple(sorted(
+        ms.name for ms in mol_specs
+        if sum(dict(ms.atom_composition).values()) > 1
+        and ms.name not in ae_ref_kcalmol
+    ))
+
+
+def build_targets(mol_specs, ae_ref_kcalmol, domain) -> dict:
+    """Build the ``targets`` dict for a :class:`TrainingSpec`.
+
+    Faithful port of the notebook's Cell A ``targets`` construction:
+
+    - Single atom (composition sum == 1): the ``domain.atom_energies``
+      total energy for that element (same anchor as ``atom_energies``); 0.0
+      fallback if the element is absent from the table.
+    - AE compound (polyatomic with an ``ae_ref_kcalmol`` entry): the
+      atomization energy converted Ha = kcal / ``domain.kcal_per_ha``.
+    - Aux polyatomic (polyatomic with NO ``ae_ref_kcalmol`` entry, a BH76
+      reaction species): 0.0 placeholder. ``classify_aux_only`` excludes it
+      from the AE channel so the placeholder is never read by the loss.
+
+    Parameters
+    ----------
+    mol_specs : Sequence[MoleculeSpec]
+    ae_ref_kcalmol : dict[str, float | None]
+        AE reference values (kcal/mol) keyed by MoleculeSpec name.
+    domain : DomainProfile
+        Supplies ``atom_energies`` and ``kcal_per_ha``.
+
+    Returns
+    -------
+    dict[str, float]
+    """
+    targets: dict = {}
+    for ms in mol_specs:
+        comp_sum = sum(dict(ms.atom_composition).values())
+        if comp_sum == 1:
+            sym = next(iter(dict(ms.atom_composition)))
+            targets[ms.name] = domain.atom_energies.get(sym, 0.0)
+        else:
+            ae_kc = ae_ref_kcalmol.get(ms.name)
+            targets[ms.name] = (
+                ae_kc / domain.kcal_per_ha if ae_kc is not None else 0.0
+            )
+    return targets
+
+
+# ---------------------------------------------------------------------------
+# Ledger lookup + solver-config materialization
+# ---------------------------------------------------------------------------
+
+def _ledger_key(metric: str, subset_size: int) -> str:
+    """The ``subset_index_log.json`` entry key for a ``(metric, r)`` pair."""
+    return f"{metric}/{int(subset_size)}"
+
+
+def _coerce_enum(enum_cls, token):
+    """Resolve ``token`` to an ``enum_cls`` member by VALUE or by NAME.
+
+    Config files spell solver mode / feature policy as the uppercase enum NAME
+    (e.g. ``ONESHOT``, ``FULL``, ``REASSEMBLE``: matching the notebook's
+    ``SolverMode.ONESHOT`` references), while unit tests and the enums' own
+    ``__call__`` use the lowercase VALUE (``oneshot``/``full``/``reassemble``).
+    Accept either so a config's name-form string does not blow up at
+    spec-build time (the preflight stage). Raises a clear ``ValueError`` naming
+    the enum and the valid options when ``token`` is neither.
+    """
+    try:
+        return enum_cls(token)          # by value, e.g. "oneshot"
+    except ValueError:
+        pass
+    try:
+        return enum_cls[token]          # by name, e.g. "ONESHOT"
+    except KeyError:
+        valid = [f"{m.name}/{m.value}" for m in enum_cls]
+        raise ValueError(
+            f"{token!r} is not a valid {enum_cls.__name__}, expected one of "
+            f"(name/value): {valid}"
+        )
+
+
+def resolve_seed_xc(inputs, arch_name: str) -> str:
+    """The per-cell SCF seed functional ("pbe" or "scan") for ``arch_name``.
+
+    ``inputs.seed_xc`` is authoritative: "pbe"/"scan" pass through verbatim
+    (the default "pbe" keeps every arch -- including a pending mgga arm
+    resubmitted after deployment -- on the pre-seeding protocol); "auto"
+    derives the rung baseline from the architecture registry
+    (rungs.seed_xc_for_arch: the meta-GGA family seeds SCAN, everything
+    else PBE). Shared by spec building and run validation so the two agree
+    by construction.
+    """
+    mode = getattr(inputs, "seed_xc", "pbe") or "pbe"
+    if mode == "auto":
+        from xcquinox.pipeline.rungs import seed_xc_for_arch
+        return seed_xc_for_arch(arch_name)
+    if mode not in ("pbe", "scan"):
+        raise ValueError(
+            f"inputs.seed_xc must be 'pbe'/'scan'/'auto', got {mode!r}")
+    return mode
+
+
+def _solver_config_from_named(named, *, density_fit: bool = False,
+                              auxbasis: str | None = None,
+                              orientation_lock_strength: float | None = None,
+                              seed_source: str = "pbe",
+                              seed_cache_dir: str | None = None
+                              ) -> SolverConfig:
+    """Materialize a :class:`SolverConfig` from a :class:`SolverNamed`.
+
+    ``SolverNamed`` stores ``mode`` / ``feature_policy`` as plain strings (the
+    config's uppercase enum NAME or the lowercase VALUE); this coerces them to
+    the ``SolverMode`` / ``FeaturePolicy`` enums, accepting either spelling.
+    ``density_fit``/``auxbasis`` come from the run's ``inputs`` so the whole
+    sweep shares the same Coulomb backend.
+    """
+    mode = _coerce_enum(SolverMode, named.mode)
+    fp = (
+        _coerce_enum(FeaturePolicy, named.feature_policy)
+        if named.feature_policy is not None
+        else None
+    )
+    # Only override the mixer when the named solver specifies one, so existing
+    # solvers keep SolverConfig's linear/alpha-0.5 default. When a custom mixer
+    # IS selected, always override mixer_kwargs too (-> () when unspecified) so
+    # the chosen mixer uses its OWN __init__ defaults rather than inheriting
+    # SolverConfig's {'alpha': 0.5}, which a non-linear mixer (e.g.
+    # DecayingLinearMixer) has no 'alpha' arg for and would crash _build_mixer.
+    mixer_overrides = {}
+    if named.mixer_name is not None:
+        mixer_overrides["mixer_name"] = named.mixer_name
+        mixer_overrides["mixer_kwargs"] = (
+            named.mixer_kwargs if named.mixer_kwargs is not None else ()
+        )
+    return SolverConfig(
+        mode=mode,
+        max_cycles=named.max_cycles,
+        scf_grad_checkpoint=named.scf_grad_checkpoint,
+        feature_policy=fp,
+        density_fit=density_fit,
+        auxbasis=auxbasis,
+        scf_loss_use_tail=named.scf_loss_use_tail,
+        scf_loss_tail=named.scf_loss_tail,
+        scf_loss_weight_power=named.scf_loss_weight_power,
+        freeze_on_convergence=named.freeze_on_convergence,
+        # Run-level inputs.orientation_lock_strength is authoritative (so the SCF
+        # matches the references); fall back to the per-solver value when the
+        # caller does not pass it (non-cluster / demo use).
+        orientation_lock_strength=(
+            orientation_lock_strength if orientation_lock_strength is not None
+            else named.orientation_lock_strength),
+        seed_source=seed_source,
+        seed_cache_dir=seed_cache_dir,
+        **mixer_overrides,
+    )
+
+
+def _checkpoint_dir(run_dir: str, idx: int, n: int) -> str:
+    """Absolute ``<run_dir>/checkpoints/spec_<idx>`` with the same zero-pad
+    scheme as ``materialize._spec_filename`` (``max(4, len(str(N-1)))``)."""
+    width = max(4, len(str(n - 1))) if n > 0 else 4
+    return os.path.join(
+        os.path.abspath(run_dir), "checkpoints", f"spec_{idx:0{width}d}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main builders
+# ---------------------------------------------------------------------------
+
+def _val_mol_spec_from_held_out(ms, *, basis, grid_level, val_refs_dir):
+    """Rebuild a held-out-pool MoleculeSpec as a VALIDATION MoleculeSpec.
+    The geometry/charge/spin/composition come straight from the held-out spec.
+
+    FIX 4 (WS3-INPUTS-01): ``external_data_path`` is ALWAYS None. In-loop
+    validation scores reaction energies only, and its MoleculeData is rebuilt at
+    train time by :func:`xcquinox.pipeline.data.precompute_fixed_density_data`, which
+    runs its OWN PBE SCF and -- for validation -- consumes NO external reference
+    (no dm_target / rho_ref / E_ref). The old wiring pointed at
+    ``<val_refs_dir>/<name>.npz``, a file the preflight never created (its SCF
+    precompute wrote ``_intermediates/<name>_g..._scf.npz`` instead), so it never
+    resolved and supplied no key validation uses. ``val_refs_dir`` is retained in
+    the signature only to keep the caller stable."""
+    return MoleculeSpec.from_dict(
+        name=ms.name,
+        atom=ms.atom,
+        basis=basis,
+        charge=int(getattr(ms, "charge", 0)),
+        spin=int(getattr(ms, "spin", 0)),
+        atom_composition=dict(ms.atom_composition),
+        grid_level=grid_level,
+        external_data_path=None,
+    )
+
+
+def _attach_validation_slice(spec, cfg, run_dir):
+    """Attach the held-out VALIDATION slice (MoleculeSpecs + reactions path) to a
+    TrainingSpec. WS3.
+
+    No-op (returns ``spec`` unchanged) when in-loop validation is not configured:
+    ``cfg.inputs.val_refs_dir`` unset, OR ``spec.validate_every <= 0``, OR the
+    staged ``<run_dir>/validation/val_reactions.json`` is absent (e.g. the
+    preflight val-slice staging has not run). Otherwise build the val
+    MoleculeSpecs from the held-out pools (same val species the preflight staged,
+    pointing at ``val_refs_dir``) and set ``validation_molecules`` +
+    ``validation_reactions_path`` on the spec."""
+    val_refs_dir = getattr(cfg.inputs, "val_refs_dir", None)
+    if not val_refs_dir or int(getattr(spec, "validate_every", 0)) <= 0:
+        return spec
+    val_json = os.path.join(run_dir, "validation", "val_reactions.json")
+    if not os.path.isfile(val_json):
+        return spec
+
+    import json
+    with open(val_json) as f:
+        val_rxns = json.load(f)
+    wanted = set()
+    for r in val_rxns:
+        wanted |= set(r.get("reactants", ())) | set(r.get("products", ()))
+
+    mols_by_name, _reactions = _load_full_held_out_pools(
+        basis=cfg.inputs.basis, grid_level=cfg.inputs.grid_level)
+    val_mols = tuple(
+        _val_mol_spec_from_held_out(
+            mols_by_name[n], basis=cfg.inputs.basis,
+            grid_level=cfg.inputs.grid_level, val_refs_dir=val_refs_dir)
+        for n in sorted(wanted) if n in mols_by_name
+    )
+    return dataclasses.replace(
+        spec, validation_molecules=val_mols,
+        validation_reactions_path=val_json)
+
+
+def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None):
+    """Assemble one :class:`TrainingSpec` per :class:`GridCell`.
+
+    Parameters
+    ----------
+    points : Sequence[TrainingPoint]
+        The full training-point pool (e.g. from ``build_dfs_pool_points``).
+    subset_ledger : dict
+        The EXISTING ``subset_index_log.json`` dict, see the module docstring
+        for the schema. Keys are ``"<metric>/<subset_size>"`` strings; the
+        cell's training points are resolved by name from ``point_names``.
+    cfg : GridConfig
+        Harness config, supplies the swept axes, hyperparameters, named
+        solver configs, and the ``pretrain`` stage config.
+    domain : DomainProfile
+        Physics tables (atom energies, kcal/Ha, BH76/IP13 extractors,
+        regularizer atom symbols).
+    run_dir : str
+        Absolute run directory; checkpoint dirs are placed under it.
+    cells : list[GridCell] | None
+        Optional subset of grid cells to build. ``None`` (default) builds the
+        full ``expand_grid(cfg)``.
+
+    Returns
+    -------
+    list[tuple[GridCell, TrainingSpec]]
+        In index order. Construction is side-effect-free, ``from_dicts`` does
+        not call ``validate()``; a later module runs ``spec.validate()``.
+
+    Raises
+    ------
+    ValueError
+        If a ``(metric, subset_size)`` grid cell has no ledger entry, or if a
+        ledger entry names a training point absent from the ``points`` pool.
+    """
+    from xcquinox.pipeline.cluster.grid_config import (
+        expand_grid, pretrain_checkpoint_dir,
+    )
+    from xcquinox.pipeline.balancing import GradNormConfig
+
+    # --- name -> TrainingPoint resolution ----------------------------------
+    points_by_name: dict = {}
+    for tp in points:
+        if tp.name in points_by_name:
+            raise ValueError(
+                f"training-point pool has a duplicate name {tp.name!r}; "
+                "names must be unique so the name-based ledger resolves "
+                "unambiguously."
+            )
+        points_by_name[tp.name] = tp
+
+    # --- per-AE-point reference dict (kcal/mol) ----------------------------
+    ae_ref_kcalmol = {
+        tp.name: tp.metadata.get("ae_kcalmol")
+        for tp in points
+        if tp.kind == "ae"
+    }
+    # Predicted-atom reaction-form AE points (bh76-kind, ae_form tag; see
+    # training_points._ae_reaction_point_from_atoms) keep a REAL AE
+    # reference here so build_targets/eval scoring see the true value, but
+    # their names are FORCED into aux_only_names below: the fixed-anchor AE
+    # channel must stay zero for them (they train through the BH76 reaction
+    # channel with predicted atom energies instead).
+    ae_rxn_names = {
+        tp.name for tp in points
+        if tp.kind == "bh76"
+        and tp.metadata.get("ae_form") == "predicted_atom_reaction"
+    }
+    ae_ref_kcalmol.update({
+        tp.name: tp.metadata.get("e_rxn_ref")
+        for tp in points if tp.name in ae_rxn_names
+    })
+
+    if cells is None:
+        cells = expand_grid(cfg)
+    n = len(cells)
+
+    hp = cfg.hyperparams
+    out: list = []
+    for idx, cell in enumerate(cells):
+        ledger_key = _ledger_key(cell.metric, cell.subset_size)
+        if ledger_key not in subset_ledger:
+            raise ValueError(
+                f"subset_ledger has no entry for (metric={cell.metric!r}, "
+                f"subset_size={cell.subset_size}), key {ledger_key!r} is "
+                "absent. Every grid cell's (metric, subset_size) pair must be "
+                "present in the existing subset_index_log.json ledger."
+            )
+        entry = subset_ledger[ledger_key]
+        if "point_names" not in entry or not entry["point_names"]:
+            raise ValueError(
+                f"subset_ledger entry {ledger_key!r} is malformed: "
+                "'point_names' key is absent or empty. Every ledger entry "
+                "must carry a non-empty 'point_names' list, a real subset "
+                "always has ≥1 point."
+            )
+        point_names = entry["point_names"]
+        missing = [pn for pn in point_names if pn not in points_by_name]
+        if missing:
+            raise ValueError(
+                f"subset_ledger entry {ledger_key!r} names training points "
+                f"not present in the pool: {missing}. The ledger and the "
+                "training-point pool are out of sync, the ledger was "
+                "selected against a different pool; regenerate it (or pass "
+                "the matching pool)."
+            )
+        chosen_points = [points_by_name[pn] for pn in point_names]
+
+        # mol_specs = deduped species union of every chosen point.
+        sp_atoms = species_union_from_points(chosen_points)
+        mol_specs = tuple(
+            atoms_to_mol_spec(
+                at,
+                basis=cfg.inputs.basis,
+                grid_level=cfg.inputs.grid_level,
+                external_refs_dir=cfg.inputs.external_refs_dir,
+            )
+            for at in sp_atoms
+        )
+
+        # Dick atomic-regularizer completeness. The L5 loss anchors the Dick
+        # (2021) atomic regularizer on neutral single-atom MoleculeSpecs for
+        # every symbol in ``domain.regularize_atom_syms`` (== ('H', 'Li')), and
+        # its CFG-02 validation rejects any spec missing one of those anchors.
+        # An AE point only contributes an atom anchor for a regularized element
+        # that appears IN its compound (see training_points._ae_point_from_atoms),
+        # so a subset with no Li-bearing species (e.g. any size-1 subset of an
+        # H-only point) would omit the Li anchor and crash loss construction.
+        # Inject the neutral ground-state anchor for any regularized symbol
+        # absent from the chosen species union, built via the SAME helper the
+        # natural AE path uses, so an injected anchor is byte-identical to a
+        # naturally-occurring one. This holds the Dick regularizer constant
+        # across all subset sizes; symbols already present (the case for every
+        # currently-passing spec) are left untouched.
+        present_single_atom_syms = {
+            next(iter(dict(ms.atom_composition)))
+            for ms in mol_specs
+            if sum(dict(ms.atom_composition).values()) == 1
+        }
+        missing_reg_syms = [
+            s for s in domain.regularize_atom_syms
+            if s not in present_single_atom_syms
+        ]
+        if missing_reg_syms:
+            mol_specs = mol_specs + tuple(
+                atoms_to_mol_spec(
+                    _atom_anchor_atoms(s),
+                    basis=cfg.inputs.basis,
+                    grid_level=cfg.inputs.grid_level,
+                    external_refs_dir=cfg.inputs.external_refs_dir,
+                )
+                for s in missing_reg_syms
+            )
+
+        targets = build_targets(mol_specs, ae_ref_kcalmol, domain)
+        # Reaction-form AE compounds are aux for the fixed-anchor AE channel
+        # (they have REAL targets for eval scoring, so classify_aux_only
+        # alone would leave them in the channel and double-count their
+        # energy against the Chakravorty anchors).
+        aux_only_names = tuple(sorted(
+            set(classify_aux_only(mol_specs, ae_ref_kcalmol))
+            | {ms.name for ms in mol_specs if ms.name in ae_rxn_names}
+        ))
+
+        # BH76 / IP13 loss inputs come ONLY from the chosen points.
+        bh76_ha = [
+            domain.bh76_meta_to_loss_dict(tp)
+            for tp in chosen_points
+            if tp.kind == "bh76"
+        ]
+        ip13_ha = [
+            domain.ip13_meta_to_loss_dict(tp)
+            for tp in chosen_points
+            if tp.kind == "ip13"
+        ]
+
+        solver_cfg = _solver_config_from_named(
+            cfg.solvers[cell.solver],
+            density_fit=cfg.inputs.density_fit,
+            auxbasis=cfg.inputs.auxbasis,
+            orientation_lock_strength=cfg.inputs.orientation_lock_strength,
+            # per-rung seeding: resolved per cell from the arch registry
+            # ("auto") or forced run-wide ("pbe"/"scan"); default "pbe"
+            seed_source=resolve_seed_xc(cfg.inputs, cell.arch),
+            seed_cache_dir=getattr(cfg.inputs, "seed_cache_dir", None),
+        )
+
+        loss_kwargs = {
+            "bh76_reactions": bh76_ha,
+            "ip13_pairs": ip13_ha,
+            "aux_only_names": aux_only_names,
+            "regularize_atom_syms": tuple(domain.regularize_atom_syms),
+            "solver_config": solver_cfg,
+            "vxc_weight": hp.vxc_weight,
+            "density_weight": hp.density_weight,
+            # survives the per-molecule loop's weight overrides (it copies
+            # loss_kwargs and only forces the *_weight knobs to 1.0)
+            "density_per_electron": hp.density_per_electron,
+        }
+
+        # Run-level spin-polarized-correlation toggle: rebuild the named arch
+        # spin-polarization-aware so training+eval use the zeta-dependent PW92c
+        # baseline. Default False -> the registry arch is used unchanged.
+        arch_cfg = get_architecture(cell.arch)
+        if getattr(cfg, "use_polarized_correlation", False):
+            arch_cfg = dataclasses.replace(arch_cfg, use_polarized_correlation=True)
+        # The run's model block -- the parent anchor and the descriptor
+        # coordinates -- through the one helper every resolver of a run's
+        # architecture uses (the pretrain stage, the certificate, the run
+        # validator), so the spec's arch is the identity those stages build.
+        model_block = getattr(cfg, "model", None)
+        if model_block is not None:
+            arch_cfg = apply_model_block(arch_cfg, model_block)
+
+        spec = TrainingSpec.from_dicts(
+            arch=arch_cfg,
+            molecules=mol_specs,
+            targets=targets,
+            atom_energies=dict(domain.atom_energies),
+            loss_name=cell.loss,
+            loss_kwargs=loss_kwargs,
+            solver_config=solver_cfg,
+            # The pretrain stage writes one checkpoint per architecture to the
+            # run-scoped ``<run_dir>/pretrain/<arch>/``; that directory IS this
+            # cell's pretrained checkpoint. Derived through the SAME helper the
+            # pretrain worker uses so the two sides cannot drift. validate()
+            # only checks the path when the dir exists, so building specs before
+            # the pretrain stage runs is fine, the preflight runs
+            # pretrain-then-validate.
+            pretrain_checkpoint=pretrain_checkpoint_dir(run_dir, cell.arch),
+            checkpoint_dir=_checkpoint_dir(run_dir, idx, n),
+            n_steps=hp.n_steps,
+            lr_start=hp.lr_start,
+            lr_end=hp.lr_end,
+            lr_decay_start=hp.lr_decay_start,
+            grad_clip=hp.grad_clip,
+            weight_decay=hp.weight_decay,
+            seed=hp.seed,
+            balancing=GradNormConfig(alpha=hp.gradnorm_alpha),
+            pbe_anchor_weight=hp.pbe_anchor_weight,
+            pbe_anchor_sample=None,
+            # Honor the configured knob. Default False (HyperParams default)
+            # keeps the mixed-pool subset design, which injects only the H/Li
+            # atom anchors above; a config may opt into TrainingSpec.validate's
+            # strict all-referenced-atoms-anchored check by setting it True.
+            require_atom_anchors=hp.require_atom_anchors,
+            update_scheme=hp.update_scheme,
+            pad_group_to_common_shape=hp.pad_group_to_common_shape,
+            channel_weights=hp.channel_weights,
+            # WS3 (2026-06-20): in-loop held-out validation cadence + early-stop,
+            # threaded from HyperParams like weight_decay. validate_every=0 (the
+            # default) is a no-op; validation_molecules / validation_reactions_path
+            # are attached separately by _attach_validation_slice when the run
+            # configures a val_refs_dir.
+            val_frac=hp.val_frac,
+            validate_every=hp.validate_every,
+            patience=hp.patience,
+            early_stop_min_delta=hp.early_stop_min_delta,
+            # WS5 (2026-06-20): periodic-resume checkpoint cadence, threaded like
+            # validate_every. checkpoint_every=0 (default) is a no-op.
+            checkpoint_every=hp.checkpoint_every,
+            # 2026-09-08, the dpyscf-parity arm: the optimizer choice, its
+            # plateau controller and the per-update seed mixture.
+            optimizer=hp.optimizer,
+            plateau_patience=hp.plateau_patience,
+            plateau_factor=hp.plateau_factor,
+            seed_mix_atomic=hp.seed_mix_atomic,
+        )
+        # WS3: attach the held-out validation slice (no-op unless val_refs_dir +
+        # validate_every>0 + a staged val_reactions.json under run_dir).
+        spec = _attach_validation_slice(spec, cfg, run_dir)
+        out.append((cell, spec))
+    return out
+
+
+def build_test_spec(
+    training_spec,
+    run_dir,
+    idx,
+    domain,
+    *,
+    holdout_molecules: "tuple | None" = None,
+    holdout_targets: "dict | None" = None,
+) -> TestSpec:
+    """Build the :class:`TestSpec` matching a trained :class:`TrainingSpec`.
+
+    By default, eval molecules are taken directly from
+    ``training_spec.molecules`` (post the mixed-pool refactor, that IS the chosen
+    species union, no ``subset.traj`` is read).  **This is in-distribution
+    evaluation**: the eval set equals the training set.  It is not a
+    generalization estimate.  A :class:`RuntimeWarning` is emitted whenever this
+    default path is used, so the in-distribution nature is never silently
+    mistaken for held-out performance.
+
+    To evaluate on a held-out or external molecule set, pass
+    ``holdout_molecules``: a tuple of :class:`~xcquinox.pipeline.config.MoleculeSpec`
+    objects.  When provided, the returned :class:`TestSpec` uses those molecules
+    instead of the training set, and no warning is emitted.
+
+    The ``reference_ae_kcalmol`` metric kwarg is built from the EVAL molecules
+    against an eval-matched target source × ``domain.kcal_per_ha`` for compound
+    molecules only: ``training_spec.targets_dict`` on the in-distribution path,
+    and ``holdout_targets`` (name -> Ha) on the held-out path. (Building held-out
+    references from the training targets would silently leave held-out compounds
+    unscored, since they are absent from the training set.)
+
+    Parameters
+    ----------
+    training_spec : TrainingSpec
+    run_dir : str
+        Absolute run directory; checkpoint/eval dirs are placed under it.
+    idx : int
+        The spec's array-task index, selects ``spec_<idx>``.
+    domain : DomainProfile
+        Supplies ``atom_energies`` and ``kcal_per_ha``.
+    holdout_molecules : tuple[MoleculeSpec, ...] | None, optional
+        When provided, the returned :class:`TestSpec` evaluates on these
+        molecules instead of the training set.  When ``None`` (default), the
+        training molecules are used and a :class:`RuntimeWarning` is emitted to
+        flag the in-distribution nature of the evaluation.
+    holdout_targets : dict[str, float] | None, optional
+        Held-out atomization-energy references (name -> Ha), used ONLY on the
+        held-out path to build ``reference_ae_kcalmol`` for the held-out
+        compounds.  Required for held-out AE scoring; if omitted while
+        ``holdout_molecules`` is given, a :class:`RuntimeWarning` is emitted and
+        AE error is not scored for the held-out set.
+
+    Returns
+    -------
+    TestSpec
+    """
+    # Reconstruct the zero-padded spec dir from the same scheme materialize
+    # uses, but anchored on run_dir so the path is absolute & deterministic
+    # regardless of how the TrainingSpec's checkpoint_dir was set.
+    base = os.path.basename(training_spec.checkpoint_dir.rstrip("/"))
+    # Cross-wire guard (CODE-2/CODE-3 round-4): the path is derived from the
+    # training spec's own checkpoint_dir basename, but it MUST correspond to the
+    # array index ``idx`` the caller is materializing, otherwise a test spec
+    # could silently point at a different spec's checkpoint. ``base`` is
+    # ``spec_<zero-padded idx>``; assert its integer matches ``idx``.
+    try:
+        _base_idx = int(base.split("_")[-1])
+    except (ValueError, IndexError):
+        raise ValueError(
+            f"build_test_spec: checkpoint_dir basename {base!r} is not the "
+            f"expected 'spec_<idx>' form; cannot verify it matches idx={idx}."
+        )
+    if _base_idx != idx:
+        raise ValueError(
+            f"build_test_spec: spec↔checkpoint cross-wire, checkpoint_dir "
+            f"basename {base!r} (index {_base_idx}) != requested idx={idx}."
+        )
+    ckpt_dir = os.path.join(
+        os.path.abspath(run_dir), "checkpoints", base
+    )
+    model_checkpoint = os.path.join(ckpt_dir, "model.eqx")
+    output_dir = os.path.join(ckpt_dir, "eval")
+
+    if holdout_molecules is None:
+        eval_molecules = training_spec.molecules
+        # In-distribution path: AE references come from the training targets,
+        # which are keyed by exactly these molecules.
+        ref_targets = training_spec.targets_dict
+        warnings.warn(
+            "build_test_spec: eval molecules are the TRAINING molecules "
+            "(in-distribution evaluation, not a held-out generalization "
+            "estimate). Pass holdout_molecules to evaluate on an "
+            "external set.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    else:
+        eval_molecules = holdout_molecules
+        # Held-out path: AE references MUST come from the held-out set's own
+        # targets (Ha), NOT training_spec.targets_dict: held-out compounds are
+        # by construction absent from the training targets, so using the
+        # training targets would silently leave every held-out compound without
+        # an AE reference and AtomizationEnergyMetric would skip it (the whole
+        # point of held-out AE scoring). Fail loud if they were not supplied.
+        ref_targets = dict(holdout_targets or {})
+        if not ref_targets:
+            warnings.warn(
+                "build_test_spec: holdout_molecules provided without "
+                "holdout_targets: atomization-energy references are "
+                "unavailable for the held-out set, so AE error will NOT be "
+                "scored for held-out compounds. Pass holdout_targets (name -> Ha) "
+                "to enable held-out AE scoring.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    # Exclude AUX-ONLY species whose target is the 0.0 PLACEHOLDER (BH76/IP13
+    # reaction polyatomics with no real AE reference). Mirrors the training
+    # loss, which drops them via classify_aux_only; without this the eval AE
+    # metric scores their full atomization energy against a 0.0 reference (the
+    # CH4 ~+440 / HF ~+150 kcal/mol artifact). aux_only_names is carried in the
+    # TrainingSpec's loss_kwargs by build_training_specs. Reaction-form AE
+    # compounds (ae_as_reactions) are ALSO aux for the training channel but
+    # carry a REAL target -- those must still be scored at eval time, hence
+    # the placeholder test is on the target VALUE, not aux membership alone.
+    aux_only = set(training_spec.loss_kwargs_dict.get("aux_only_names", ()))
+    # Build references from the EVAL molecules (not the training set) against the
+    # eval-matched target source, so the held-out path scores the held-out set.
+    reference_ae_kcalmol: dict = {}
+    for ms in eval_molecules:
+        comp_sum = sum(dict(ms.atom_composition).values())
+        if comp_sum <= 1 or ms.name not in ref_targets:
+            continue
+        tgt = ref_targets[ms.name]
+        if ms.name in aux_only and not tgt:
+            continue                       # 0.0/None placeholder -> not scored
+        reference_ae_kcalmol[ms.name] = tgt * domain.kcal_per_ha
+
+    return TestSpec.from_dicts(
+        arch=training_spec.arch,
+        model_checkpoint=model_checkpoint,
+        molecules=eval_molecules,
+        metrics=("total_energy", "atomization_energy",
+                 "density_rmse", "scf_convergence"),
+        metric_kwargs={
+            "atomization_energy": {"reference_ae_kcalmol": reference_ae_kcalmol},
+        },
+        atom_energies=dict(domain.atom_energies),
+        output_dir=output_dir,
+        solver_config=training_spec.solver_config,
+    )

@@ -1,0 +1,821 @@
+# Runbook: pull cluster trainings + regenerate figures (dfs_step7)
+
+**v4 campaign shortcut (2026-08-10):** the three-arm v4 flight has its own
+one-command wrapper -- `bash tools/analysis/pull_and_plot_v4.sh` pulls
+every arm that exists on the cluster, renders the per-arm figure suites, and
+builds the merged cross-arm view (`merge_v4_arms.py`: renumbered spec
+symlinks + a composed manifest, so every collector works unchanged) into
+`tools/analysis/figures_dfs6311_v4_merged/` (+ `_val_best/`), now with
+the full figure families -- the merged set is the primary one-plot-all-arms
+product, with PBE and SCAN reference lines on the energy figures. Safe at
+any level of completion; re-run it as more cells land. `--plot-only` skips
+the pull. SCAN reference lines need the SCAN caches in
+`~/Documents/Research/xcquinox-results/scan_pool_6311ppg3df2pd_g3/`
+(mirror of the cluster dir of the same name; the wrapper seeds each arm's
+newest run dir from there, and the merged view propagates them).
+
+**Purpose:** a step-by-step, copy-paste runbook -- you can follow it mechanically. Run the blocks in order; each step says how to verify it
+worked before moving on. The only step that can require a *code* change is the
+`ARCH_ORDER` guard (Step 2, "If it fails") -- that one, ask the author.
+
+All commands run **locally** (your laptop/workstation), in the conda env that has
+`xcquinox` importable (e.g. `conda activate xcq`), from the repo root
+`~/Documents/Research/xcquinox`. The pull uses `ssh`/`rsync` to SeaWulf; you do
+**not** log in to the cluster for any of this.
+
+---
+
+## TL;DR (the whole thing)
+
+```bash
+conda activate xcq
+cd ~/Documents/Research/xcquinox
+export XCQUINOX_CLUSTER_HOST=seawulf          # your ~/.ssh/config Host alias
+
+# 1. PULL the runs you want figures for. The standard refresh is ONE command:
+#    one ssh shot discovers every run with file activity in the last 30 days
+#    under --remote-root (scope with --category, tune with --days), then ONE
+#    rsync pulls them all over the same authenticated connection and prints a
+#    per-run inventory of the figure-critical artifacts.
+python -m xcquinox.pipeline.cluster pull auto --category dfs_step7
+
+#    Single runs still pull by stamp or 'latest' per category:
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/svp_grid2_v3/runs
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/svp_grid2_v3_full25/runs
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/dfs6311_grid3_v3/runs
+
+# 2. REGENERATE figures (per-run sets + cross comparison):
+python tools/analysis/make_ablation_arch_figure.py --suite \
+    --domain dfs_step7 --bases svp_grid2_v3,svp_grid2_v3_full25,dfs6311_grid3_v3 \
+    --outroot tools/analysis
+# -> tools/analysis/figures_dfs_step7_svp_v3/  (+ _val_best)
+#    tools/analysis/figures_dfs_step7_svp_v3_full25/  (+ _val_best)
+#    tools/analysis/figures_dfs_step7_dfs6311_grid3_v3/  (+ _val_best)
+#    tools/analysis/figures_dfs_step7_basis_comparison/  (+ _val_best)
+```
+
+That's the common case. Details, other comparisons, verification, and
+troubleshooting below.
+
+---
+
+## 0. One-time local setup
+
+1. **conda env** with `xcquinox` importable: `conda activate xcq` (the same env
+   you run the tests in). Verify: `python -c "import xcquinox; print('ok')"`.
+2. **ssh alias** (so rsync reuses one connection). In `~/.ssh/config`:
+   ```
+   Host seawulf
+       HostName login.seawulf.stonybrook.edu
+       User awills
+       ControlMaster auto
+       ControlPath ~/.ssh/cm-%r@%h:%p
+       ControlPersist 10m
+   ```
+   then `export XCQUINOX_CLUSTER_HOST=seawulf` (add to `~/.bashrc`). If you skip
+   this, pass `--host login.seawulf.stonybrook.edu` to every `pull`/`list-runs`.
+3. **Defaults you do NOT need to set** (the harness already uses them):
+   - remote scratch root `XCQUINOX_CLUSTER_REMOTE_ROOT` = `/gpfs/scratch/awills/xcquinox_runs`
+   - local results root `XCQUINOX_CLUSTER_LOCAL_ROOT` = `~/Documents/Research/xcquinox-results/runs`
+   The figure script's `--results-root` defaults to that SAME local root, so a
+   pull lands exactly where the figures look. Keep them aligned.
+
+---
+
+## 1. Pull the updated trainings (cluster -> local)
+
+### The runs and their `--category` (subdir under the remote scratch root)
+
+| Run (what it is) | `--category` | local landing dir | figure basis alias |
+|---|---|---|---|
+| **v3** 3x16 + adamw-WD + val/early-stop, full_3 SCF (the decoupling A/B) | `dfs_step7/svp_grid2_v3/runs` | `.../runs/dfs_step7/svp_grid2_v3/runs/run_*` | `svp_v3` |
+| **full25** same as v3 but 25-cycle SCF (ceiling fix) | `dfs_step7/svp_grid2_v3_full25/runs` | `.../dfs_step7/svp_grid2_v3_full25/runs/run_*` | `svp_v3_full25` |
+| **4x32 baseline** (the over-capacity reference, `run_20260611T022820Z`) | `dfs_step7/svp_grid2/runs` | `.../dfs_step7/svp_grid2/runs/run_*` | `svp` |
+| **tzvpd+DF** (def2-tzvpd + density fitting) | `dfs_step7/tzvpd_grid2_df/runs` | `.../dfs_step7/tzvpd_grid2_df/runs/run_*` | `tzvpd_df` |
+| **dfs6311 v3** 6-311++G(3df,2pd) grid-3 + DF (the DFS-paper basis, production) | `dfs_step7/dfs6311_grid3_v3/runs` | `.../dfs_step7/dfs6311_grid3_v3/runs/run_*` | `dfs6311_grid3_v3` |
+
+> The "basis" is just the directory name under `dfs_step7/`. The figure script
+> turns it into an output-dir alias by deleting `_grid2` (`svp_grid2_v3` ->
+> `svp_v3`); `_grid3` names pass through unchanged (`dfs6311_grid3_v3` keeps its
+> full name, matching the on-disk `figures_dfs_step7_dfs6311_grid3_v3*` dirs).
+> Pull whichever runs you want to plot.
+
+### Pull command
+
+```bash
+python -m xcquinox.pipeline.cluster pull latest --category <CATEGORY>
+```
+- `latest` resolves to the newest `run_<UTC>Z` under that category on the cluster.
+  To pull a specific run, replace `latest` with the run id, e.g.
+  `pull run_20260622T111908Z --category dfs_step7/svp_grid2_v3/runs`.
+- **Profile (default is correct for figures):** the default `--profile summaries`
+  pulls all the JSON/npy the figures read -- `eval_holdout/**`,
+  `eval_holdout_best/**`, `eval_holdout_val_best/**`, `eval/per_molecule.json`, `losses.npy`,
+  `train_metadata.json`, `resolved_config.yaml` -- and, since 2026-08-30, the
+  weights the enhancement-factor figures forward-evaluate: `model.eqx` /
+  `model_val_best.eqx` per spec with their `.class.json` records, and the
+  pretrained `xnet.eqx` / `cnet.eqx` (plus the val-best pair under `xnet/` /
+  `cnet/`) per arch. It still **skips** `model_best.eqx`, the `resume_*.eqx`
+  set and the pretrain trajectory snapshots. Add `--profile full` only for
+  those or for the SLURM logs.
+- Add `--dry-run` first if you want to see what rsync would transfer.
+
+### See what's on the cluster before pulling
+
+```bash
+python -m xcquinox.pipeline.cluster list-runs   # groups every run by category
+```
+
+### Verify the pull worked (figures need held-out eval JSON)
+
+```bash
+ls ~/Documents/Research/xcquinox-results/runs/dfs_step7/svp_grid2_v3/runs/*/checkpoints/spec_*/eval_holdout/per_reaction.json | head
+```
+If that lists files, you have held-out coverage and figures will render. If it's
+empty, the run hasn't produced held-out eval yet (train_eval still running, or
+you pulled too early) -- wait and re-pull. (A still-training run pulls fine; the
+figures just draw the not-yet-evaluated cells as hatched/incomplete, never crash.)
+
+---
+
+## 2. Regenerate the figures
+
+One command renders **every figure family** for the runs you name. It reads only
+the pulled JSON -- no SCF, no model weights, fast (seconds-minutes).
+
+```bash
+python tools/analysis/make_ablation_arch_figure.py --suite \
+    --domain dfs_step7 \
+    --bases <comma-separated basis subdirs> \
+    --outroot tools/analysis
+```
+- `--results-root` defaults to `~/Documents/Research/xcquinox-results/runs` (where
+  pulls land) -- usually omit it.
+- Each `--bases` entry must already be pulled (Step 1), else you get
+  `FileNotFoundError: no run_* dir under ...`.
+- It uses the **newest** pulled `run_*` per basis.
+
+### What it writes (under `--outroot`, i.e. `tools/analysis/`)
+
+File names (2026-09-08): the prefix states which evaluation set a figure reads -- `holdout_`
+(the held-out benchmark reactions and species), `insample_` (the training molecules),
+`training_` (the training log) -- and the suffix `_eps` marks the DFS Eq. 20 per-electron
+density units. Directories rendered before 2026-09-08 carry the older `ablation_` /
+`diagnostic_` stems and the `_dfs_units` suffix; the old-to-new table is `OUTPUT_NAMES` in
+`make_ablation_arch_figure.py`.
+
+Per basis (two parallel sets -- final-checkpoint and val-best):
+- `figures_dfs_step7_<alias>/`           -- final-step eval (`eval_holdout/`)
+- `figures_dfs_step7_<alias>_val_best/`  -- val-best eval (`eval_holdout_val_best/`, the held-out-validation-best checkpoint), only if that data was pulled
+
+Cross comparison (only when **>= 2** bases are given AND both have eval coverage):
+- `figures_dfs_step7_basis_comparison/`       (+ `_val_best`)
+
+Outlier-free siblings of a per-basis dir (2026-09-07; the density and energy figure set of
+`build_density_energy_figures` rendered a second time from filtered inputs, the rule stated
+in the footer note of every held-out density figure; `README_density_figures.md` decodes them):
+- `figures_dfs_step7_<alias>_excl_t1/`          -- when the run dir carries `t1_diagnostics.json`
+  (written by the benchmark-refs backfill): species with a CCSD T1 diagnostic above the
+  file's threshold are dropped in every cell
+- `figures_dfs_step7_<alias>_excl_unconverged/` -- converged-SCF channels only: species whose NN
+  SCF did not converge in at least one cell are dropped
+- `figures_dfs_step7_<alias>_excl_tail/`        -- whenever the run has a recurring held-out tail:
+  species above 1.5 x PBE in at least half of their cells, and in at least two, are dropped in
+  every cell (a
+  diagnostic view selected by the trained functionals' own errors, stated in the footer)
+Every per-basis dir (and every sibling) also carries `holdout_density_tail.csv`: the species
+above 1.5 x PBE in each cell with their SCF diagnostics and T1 when known. The siblings render
+only when the list names a species present in the held-out rows; a console line says so
+otherwise.
+
+Each per-basis dir contains: the arch-aware ablation set (parity, MAE-by-arch,
+arch×subset heatmap, MAE-vs-subset), held-out energy/density figures, the five
+parity-layout variants, per-run size-consistency / training-loss diagnostics (the total loss and, from `aux_log.pkl`, the per-channel losses at their trained weights per architecture, `training_loss_channels_<arch>.png`, 2026-09-08),
+and the DFS Eq. 21 combined energy-density figure + per-cell CSV
+(`holdout_ed_combined.png` / `.csv`; held-out only, rendered when
+the pulled `eval_holdout*/per_molecule.json` carries the NN + PBE density
+columns -- skipped with a console note otherwise, in which case a stale file
+from an earlier render may persist).
+
+The six figures whose bars come from the shared per-(arch, subset_size) panel
+helper land twice: the linear file and a `_logy` sibling carrying the SAME data
+on a logarithmic y axis, for reading panels in which one architecture's bars run
+hundreds of kcal/mol and squash the rest. The linear files and every CSV are
+unchanged. The six siblings are `holdout_energy_mae_wtmad2_logy.png`,
+`insample_overview_logy.png`,
+`holdout_overview[_eps]_logy.png`, and
+`holdout_by_pool_3x3[_eps]_logy.png`. Among the single-file bar
+figures, `holdout_energy_by_rung.png` (two per-rung series, not per-cell bars)
+keeps its linear file and `holdout_energy_mae_by_arch.png` keeps its log file. On the
+log panels only the top edge of a bar carries its value -- a logarithmic axis
+has no zero, so the bars stand on the frame floor rather than on zero and their
+areas mean nothing.
+
+Each per-basis dir also gets two overview composites plus a standalone density
+trend: `holdout_overview.png` (per-pool + 2-subset WTMAD-2
+bars over the NN-vs-PBE density parity, the iso-ED decomposition, and the ED
+headline; rendered whenever the held-out density figure renders, with
+placeholder panels when the ED anchors are missing, and its log-y sibling
+`holdout_overview_logy.png` alongside),
+`holdout_density_by_arch.png` (the per-arch held-out density trend
+vs subset_size as its own figure; same gate), and
+`insample_overview.png` (in-sample AE + density; always rendered,
+with its log-y sibling `insample_overview_logy.png`;
+final-checkpoint data, so its panels are identical in the final and val-best
+dirs). The per-channel 3x3 `holdout_by_pool_3x3.png` rides the same
+held-out-density gate (WTMAD-2 / density parity / ED as columns
+BH76 | W4-11 | combined, each channel's ED gamma self-calibrated from its own
+PBE anchors, with `holdout_by_pool_3x3.csv` and the log-y sibling
+`holdout_by_pool_3x3_logy.png` alongside), and the
+enriched combined-channel standalone `holdout_ed_decomposition.png` (iso-ED
+contour family, beats-PBE shading, per-arch subset trajectories) rides the
+stricter ED-anchor gate of the ED figure; the standalone per-channel parity
+`holdout_density_parity_by_pool.png` (the 3x3's former parity row,
+three channel panels in one shared frame) rides the same gate. When the
+pull additionally carries the Eq. 20 eps columns (Sec. 4), both dirs gain
+the DFS-units twins -- `holdout_ed_combined_eps.png`,
+`holdout_ed_decomposition_eps.png`,
+`holdout_overview_eps.png` (+ `_logy`),
+`holdout_by_pool_3x3_eps.png` + `.csv` (+ `_logy`; ALL BARS: eps
+density-error row + combined-metric row under one shared gamma, stamped
+in-panel), `holdout_density_parity_by_pool_eps.png`, and the IN-SAMPLE
+twin of the 3x3, `insample_by_pool_3x3_eps.png` + `.csv` (+ `_logy`; 2026-09-08:
+each cell's own training reactions, formed from the final checkpoint's
+species energies in `eval/per_molecule.json` against the reaction references
+of `train_metadata.json`, and its training molecules' eps, against PBE on the
+same reactions and molecules; final checkpoint only, unfiltered in the
+variant directories);
+coverage disclosures stamped in the note bands; the 3x3 twin's shared
+gamma makes its combined metric comparable across channels. The held-out figures carry
+a dataset footer line stating what the held-out eval is (live name-dedup
+reaction counts per pool + density species coverage); the energy figures
+carry the reactions clause too, and the full-pool PBE/SCAN baselines in the
+grey footers are labeled as full-pool. Every label on the density/energy
+figures and every ED CSV column is decoded in `README_density_figures.md`,
+and the held-out set's exact constituents (every test/validation reaction by
+name, the density species, the atoms skipped) are enumerated in
+`HOLDOUT_SET.md` (both under `docs/notes/`).
+
+### The specific comparisons you'll want
+
+```bash
+# (a) the two new clean runs (v3 full_3 vs full25 25-cycle SCF):
+python tools/analysis/make_ablation_arch_figure.py --suite \
+    --domain dfs_step7 --bases svp_grid2_v3,svp_grid2_v3_full25 --outroot tools/analysis
+
+# (b) the decoupling A/B (3x16 v3 vs the 4x32 baseline) -- pull svp_grid2 first:
+python tools/analysis/make_ablation_arch_figure.py --suite \
+    --domain dfs_step7 --bases svp_grid2,svp_grid2_v3 --outroot tools/analysis
+
+# (c) everything you've pulled, all per-run sets in one call:
+python tools/analysis/make_ablation_arch_figure.py --suite \
+    --domain dfs_step7 --bases svp_grid2,svp_grid2_v3,svp_grid2_v3_full25,tzvpd_grid2_df \
+    --outroot tools/analysis
+```
+
+> NOTE: per-basis dirs are uniquely named (by alias) so they accumulate across
+> calls, but `figures_dfs_step7_basis_comparison/` is a **shared** dir -- the most
+> recent `--suite` call's comparison overwrites it. For a focused 2-way
+> comparison figure, run that pair on its own (as in (a)/(b)).
+
+> CONVENIENCE: `tools/analysis/regen_dfs_step7_basis_comparison.py` is a thin
+> guarded launcher for the svp-vs-tzvpd comparison specifically -- it refuses with
+> a clear message until BOTH `svp_grid2` and `tzvpd_grid2_df` are pulled, then
+> calls the command above. Use it only for that svp-vs-tzvpd pair.
+
+### If it fails
+
+- **`FileNotFoundError: no run_* dir under .../<basis>/runs`** -- you named a basis
+  you haven't pulled. Pull it (Step 1) or drop it from `--bases`.
+- **`... has archs not in ARCH_ORDER [..]`** (raises, does not draw) -- a run
+  contains an architecture the figures don't know how to order/color. This needs
+  a **code change**: add the registry key to `_DISPLAY_ORDER` and `_STORED_ORDER`
+  (and a color in the palette block) in `arch_style.py`; the shown name is
+  derived from the registry entry by `xcquinox/pipeline/arch_names.py` and needs no
+  entry of its own. The `deep_*_3x16` twins are already registered; you'd only
+  hit this for a brand-new arch. If unsure, ask the author rather than guess.
+- **A figure names `deep_3x16` and `deep0_3x16`, or `deep_2x8`, and the run's
+  manifest says `medium`, `deep_3x16`, `shallow`** -- not a mismatch. Figures,
+  tables and file names use the SHOWN name derived from the registry
+  configuration (`deep` = Glorot start, `deep0` = last layer zeroed, size suffix
+  = depth x width; `README_density_figures.md` Section 3 has the table); the run
+  directories, manifests and checkpoints keep the registry key, which every CSV
+  carries beside the shown name as `arch_stored`. `--archs` accepts either
+  spelling, with one rule for the two names that are both a registry key and
+  a shown name: `deep_3x16` and `deep_attn_3x16` are read in the SHOWN sense
+  (the registry's `medium` and `medium_attn`); the registry's `deep_3x16`
+  and `deep_attn_3x16` are selected as `deep0_3x16` and `deep0_attn_3x16`.
+  A restriction that matches no cell of the run is refused, with the run's
+  architectures named. The v6 parent-anchored runs show the tag `[anchored]`
+  on the name.
+- **"only one basis with eval coverage -- skipping the basis-comparison set"** --
+  expected when you pass one basis (or the 2nd basis has no `eval_holdout/` yet).
+  Per-run figures still render; pull the other basis to get the comparison.
+
+---
+
+## 3. (Optional) Local re-eval -- only if you need to re-score weights locally
+
+The figures above use the **cluster-side** held-out eval (`eval_holdout/`), so you
+normally never re-eval locally. If you do need to (e.g. re-score `model.eqx` with
+a changed eval setting):
+1. Pull with weights: `pull <run> --category <cat> --profile full` (adds
+   `model.eqx`; large). Narrow to specific specs with `--specs 0,3,7`.
+2. Run `python tools/analysis/reeval_holdout_fixed.py ...` (see its `--help`).
+   This is CPU-heavy (runs SCF) -- prefer a background run, and it does not need a code change.
+
+---
+
+## 4. DFS-units density error (eps) + gamma calibration -- deployment + backfill
+
+The eval emits the DFS Letter Eq. 20 per-electron L1 density error
+(`density_eps_l1`, `density_eps_l1_pbe`, with `n_electrons` /
+`grid_weight_sum` bookkeeping) alongside the grid-weighted RMSE. When those
+columns are present in a pull, `holdout_ed_combined.csv` gains a
+`wtmad2_eps_gamma_dfs` leg (ED with the Letter's published gamma = 1084.87
+kcal/mol, dimensionally valid on eps units) -- and a `wtmad2_eps_gamma_fit`
+leg when the nonempirical calibration cache (below) sits in the pulled run
+dir -- plus DFS-units twins of every ED surface:
+`holdout_ed_combined_eps.png` (published-gamma panel +
+own-axes-fit panel when the cache resolves, placeholder otherwise),
+`holdout_ed_decomposition_eps.png`,
+`holdout_overview_eps.png`, and
+`holdout_by_pool_3x3_eps.png` + `.csv` (all bars; per-channel
+eps legs under one shared gamma -- the own-axes fit when the calibration
+cache resolves, the published slope otherwise, stamped in-panel; the CSV
+carries both; both bar figures also in their `_logy` form), and
+`holdout_density_parity_by_pool_eps.png`
+(per-species eps parity, shared frame) -- each with the eps coverage
+disclosures stamped in its note band (partially-covered pulls name the
+missing cells on the figure). Pulls without the columns produce
+byte-identical artifacts; the skipped `_eps` twins are announced with
+the standard stale-file warning.
+
+**DEPLOYMENT GATE:** `xcquinox/pipeline/evaluation.py` and
+`xcquinox/pipeline/eval_holdout.py` are live-imported by a running sweep's eval
+chain. Deploy only after the active run completes (`sacct -j <train jobid>`
+shows a terminal state), else later specs' eval schema differs from earlier
+ones within the same run.
+
+```bash
+# (a) deploy the eval + calibration files (AFTER the sweep completes): the files reach the
+#     cluster through git, never by file copy -- merge the branch, then on the cluster
+ssh "$swpath"
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox && git pull
+
+# (b) six-functional calibration pool (PW91/PBE/TPSS/revTPSS/SCAN/PBE0;
+#     resumable -- a resubmit after timeout continues). On the cluster:
+sbatch ~/xcquinox/hpcjobs/nonempirical_pool.sbatch
+
+# (c) when the job's DONE line appears, pull the cache next to the pulled
+#     run dir the figures read (gamma-fit leg then renders automatically):
+rsync -av "$swpath":/gpfs/scratch/awills/nonempirical_pool_6311ppg3df2pd_g3/nonempirical_pool_6-311++G_3df_2pd_.json \
+      <local pulled run dir>/
+```
+
+**Backfill for already-trained specs** (they were evaluated before the eps
+columns existed): local re-eval on a full-profile pull --
+
+```bash
+# val-best weights (what the *_val_best figures plot); model / model_best
+# are independent stamps, run each you need:
+python tools/analysis/reeval_holdout_fixed.py \
+    --run-dir <local pulled run dir> \
+    --checkpoint model_val_best \
+    --density-refs <local benchmark refs dir>
+# run-level PBE table (model-free, no weights needed) gains the eps columns:
+python tools/analysis/reeval_holdout_fixed.py \
+    --run-dir <local pulled run dir> \
+    --density-refs <local benchmark refs dir> --pbe-density-only
+```
+
+The density stamp is now `+density_refs_v4` (eps columns) -- specs stamped
+`v3` re-process automatically; refs-free stamps are untouched by refs-free
+re-runs, as before. CPU-heavy (runs SCF): background it, do not race a live
+training.
+
+---
+
+## Quick reference
+
+| Task | Command |
+|---|---|
+| list cluster runs | `python -m xcquinox.pipeline.cluster list-runs` (grouped by category) |
+| pull (all active runs) | `python -m xcquinox.pipeline.cluster pull auto --category dfs_step7` |
+| pull (figures, one run) | `python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/<basis>/runs` |
+| pull (weights too) | `... pull latest --category ... --profile full` |
+| verify pull | `ls .../runs/dfs_step7/<basis>/runs/*/checkpoints/spec_*/eval_holdout/per_reaction.json` |
+| figures | `python tools/analysis/make_ablation_arch_figure.py --suite --domain dfs_step7 --bases <...> --outroot tools/analysis` |
+
+Figures are regenerated artifacts -- the `figures_*` dirs are not version
+controlled. Re-run the suite any time after a fresh pull.
+
+---
+
+## v7 (2026-09-02): the functional-cloning campaign -- pull + figures
+
+The v7 trio (unanchored cloning per arXiv:2605.10331, barrier-height BH76
+objective) lands under three new categories. Pull and figures are the
+standard machinery -- the pull is category-driven and the figure collectors
+read whatever architectures the run dirs carry -- so the only v7-specific
+content is the category names and output dirs:
+
+```bash
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_size/runs
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g2a_families_core/runs
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g2_families_mgga/runs
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_c25/runs
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_dfsparity/runs
+
+python tools/analysis/merge_family_runs.py
+python tools/analysis/make_ablation_arch_figure.py --suite --domain dfs_step7 --bases v7_family --outroot tools/analysis
+```
+
+### The merged family view (2026-09-09): one figure set over every finished cell
+
+The runs are not drawn one figure set each. `tools/analysis/family_runs.yaml` lists
+the runs that form the campaign (category, `latest` or a run name, the registry keys to
+take, the protocol tag shown on the cells' names, whether the run's certified
+pre-training directories are the canonical ones), and
+`tools/analysis/merge_family_runs.py` composes them into ONE view directory,
+`~/Documents/Research/xcquinox-results/runs/dfs_step7/v7_family/runs/run_<stamp>`
+(renumbered symlinks to the runs' spec directories, a composed `manifest.json` whose
+cells carry the run's cell plus the tag, the carried pretrain directories, the first
+run's `resolved_config.yaml`, the marker `MERGED_RUNS.txt` with the inventory). The suite
+then renders that view once as the basis token `v7_family`:
+`figures_dfs_step7_v7_family` (final channel), `_val_best`, `_excl_tail`,
+`_val_best_excl_tail`, and the converged views when that channel exists. A run enters
+the figures by one entry in the list and by nothing else; a listed run that is not
+pulled refuses the merge (it never silently drops a run), a run whose production
+identity (basis, density fitting, grid level, parent anchor) differs from the first
+entry's is refused, and a run with no cells yet is admitted with a note and enters as
+its cells land. The two arms carry the tags `25 cycles` and `dpyscf parity`, so their
+cells sit beside the size group's under `deep_3x16 [25 cycles]` and
+`deep_3x16 [dpyscf parity]`. The merge prints one inventory line per run and exits 1
+when no cell is evaluated; it also refuses a view lacking an evaluated cell of any
+listed run (a stale view after a pull: rerun the merge).
+
+The optimized and pre-training figures run on the view too, into the family
+directories:
+
+```bash
+JAX_PLATFORMS=cpu python tools/analysis/trained_fx_fc.py --run-dir <view> --eval-channel val_best --outdir reports/v7/figures_dfs_step7_v7_family_val_best
+JAX_PLATFORMS=cpu python tools/analysis/trained_fx_fc.py --run-dir <view> --eval-channel final --outdir reports/v7/figures_dfs_step7_v7_family
+python tools/analysis/plot_pretraining_curves.py <view> -o reports/v7/figures_dfs_step7_v7_family_pretrain/pretrain_curves.png
+JAX_PLATFORMS=cpu python tools/analysis/pretrain_fx_fc.py --run-dir <view> --outdir reports/v7/figures_dfs_step7_v7_family_pretrain
+JAX_PLATFORMS=cpu python tools/analysis/plot_certificate_summary.py --runs g1=<g1 run> --runs g2a=<g2a run> --runs mgga=<mgga run> --out reports/v7/figures_dfs_step7_v7_family_pretrain/certificate_summary.png
+python tools/analysis/arm_vs_size_density.py --run-dir <view> --eval-channel val_best --family-dir reports/v7/figures_dfs_step7_v7_family_val_best
+```
+
+The view's `pretrain/` holds the carried (PASS) directories only, so the certificate
+summary reads the source runs, where a FAIL (the meta-GGA group's) is visible. The
+tracked figure sets are the family ones; the per-run sets of the earlier refreshes are
+no longer regenerated.
+
+`arm_vs_size_density.py` answers the 25-cycle question species by species: every
+arm cell (a manifest cell with a protocol tag) against the size cell of the same stored
+architecture and subset, on the held-out density rows the suite's reader returns. It writes
+`arm_vs_size_density.csv` (subset, arm, species, the two twin-collapsed RMSEs, their ratio
+arm / size, the eps values, cycles, convergence, the recurring-tail flag) and
+`arm_vs_size_density.png` (per subset the sorted ratios of each arm on a log axis, the tail
+species as hollow markers, the counts and medians in the legend) into the family set, and
+prints the deck table's LaTeX rows from the set's two pool CSVs and the caveat that names each
+cell's SCF cycle budget and converged count (the arms were evaluated with 25 cycles, the size
+cells with 3, so the comparison is not a functional-against-functional one until the
+converged channel exists). An arm the channel has not evaluated is skipped with one line.
+
+(`pull auto --category dfs_step7` also discovers the v7 runs by activity.)
+Outputs land at `figures_dfs_step7_v7_family*` (the section above).
+
+### Building the report PDFs from their markdown (2026-09-09)
+
+`REPORT_v7_<date>.md` (the full report) and `SUMMARY_v7_<date>.md` (the short
+form) are the tracked sources; their `.tex` and `.pdf` are built by the
+repository's translator, which needs xelatex (DejaVu fonts) and Pillow:
+
+```bash
+python tools/analysis/md_to_tex.py reports/v7/REPORT_v7_2026-09-15.md --date 2026-09-15 --pdf
+python tools/analysis/md_to_tex.py reports/v7/SUMMARY_v7_2026-09-15.md --date 2026-09-15 --pdf
+```
+
+Before the build, the per-cell tables between the documents' marker lines are
+regenerated from the family CSVs and, for the three view tables of the report's Sec. 4.6
+(the training losses and the validation checks from the view's `aux_log.pkl` files through
+the suite's own collector; the in-sample density fit from `eval/per_molecule.json` and the
+same logs), over the cells of the in-sample CSV (66 trained on 2026-09-15) where the
+held-out tables follow the held-out CSV (64 evaluated); `--view` names the family view
+directory the figures were rendered from:
+
+```bash
+python tools/analysis/report_tables.py --view <view> --splice reports/v7/REPORT_v7_2026-09-15.md reports/v7/SUMMARY_v7_2026-09-15.md
+```
+
+The title defaults to the markdown's `#` heading (`--title` overrides it); the
+`.tex` is written beside the markdown, the figure paths in the markdown are
+relative to that directory, and `--pdf` runs xelatex twice there and removes
+the auxiliary files. Headings keep the markdown's own section numbers, tables
+that do not fit the portrait line go on landscape pages with their caption, and
+figures at least twice as wide as tall go on landscape pages at the full line
+width (the module docstring states the rules and their calibration).
+
+### The training-subset selection record (2026-09-09)
+
+The subsets every v7 cell trains on were chosen in 2026-06 by exhaustive
+Jensen-Shannon minimization against the 26-point DFS pool (the ledger
+`notebooks/checkpoints_step7/alpha_on/subset_index_log.json`). The figure and
+table that document them are recomputed from the shipped caches, every
+divergence checked against the ledger to 1e-9 (a mismatch is an error):
+
+```bash
+JAX_PLATFORMS=cpu python tools/analysis/plot_subset_jsd.py
+```
+
+Defaults: the ledger above, the reference histogram
+`notebooks/checkpoints_step7/alpha_on/dfs_pool_full_hist/reference.npz`, the
+per-species descriptor caches `notebooks/checkpoints_step7/subset_descriptors/`
+(`--ledger`, `--reference`, `--descriptors` and `--outdir` override them; `--show-r` picks the
+subsets overlaid on the marginal panels, default 1 7 26). Writes
+`reports/v7/figures_dfs_step7_v7_subsets/subset_jsd_vs_full.png` (panel
+a: the divergence against the subset size, total and per marginal; b-d: the
+three reference marginals as probability mass functions with the chosen
+subsets overlaid) and `subset_table.csv` (one row per size: the members, the
+species union, the kind counts, the ledger and recomputed divergences and the
+three marginal terms). The package import pulls jaxlib; the script itself runs
+no JAX.
+
+### The converged-SCF channel and the T1 backfill (2026-09-07)
+
+The density review of 2026-09-07 found the held-out density metric comparing an unconverged NN density
+(three fixed cycles) with the converged PBE density. The `eval_holdout_converged` channel (and
+its `_val_best` twin) evaluates each checkpoint under a converged SCF on the pyscfad backend
+(PBE seed, DIIS, up to 100 cycles at 1e-8 Ha, the trained density fitting kept); the T1
+diagnostic stored with the CCSD references gives the model-free multireference list. Both are
+retroactive over the 25 completed v7 cells. Command sheet, run in this order from the local
+repo root and then on the cluster:
+
+```bash
+# the files reach the cluster through git, never by file copy: merge the branch, then on the cluster
+ssh "$swpath"
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox && git pull
+```
+
+On the cluster, from the repo root with the parity environment active:
+
+```bash
+sbatch hpcjobs/converged_retro.sbatch
+sbatch hpcjobs/t1_backfill.sbatch
+```
+
+`converged_retro.sbatch` first runs a preflight (the shard worker on h2o, bn and RKT17 of spec
+0 under the converged override; h2o must converge, all three must record their cycle counts)
+and refuses to start the retro line otherwise; the retro line covers both v7 arms' newest
+runs, final and val-best checkpoints, and is resumable (a spec whose val-best pass was killed
+reads as ready and runs that pass alone). `t1_backfill.sbatch` rewrites every reference file
+lacking the diagnostic and writes `t1_diagnostics.json` into each run dir. When both jobs have
+mailed END, pull and regenerate:
+
+```bash
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g1_size/runs
+python -m xcquinox.pipeline.cluster pull latest --category dfs_step7/dfs6311_grid3_v7g2a_families_core/runs
+python tools/analysis/merge_family_runs.py
+python tools/analysis/make_ablation_arch_figure.py --suite --domain dfs_step7 --bases v7_family --outroot tools/analysis
+```
+
+The suite then renders `figures_<alias>_converged` and `figures_<alias>_converged_val_best`
+beside the warm sets, the `_excl_t1` siblings from the pulled T1 table (the merge writes the
+view's `t1_diagnostics.json` from the first contributing run's table, a later run's table
+having to agree with it on every shared species and the threshold and adding the species only
+it names; the marker line of `MERGED_RUNS.txt` records `t1: carried`, `t1: agrees with
+<category>` (`, adds N species` when it extends the table), `t1: skipped (no cells)` or
+`t1: none` per run), and the `_excl_unconverged` siblings of the converged
+views. A converged channel keeps every species with its `scf_converged` flag; the collector
+prints the unconverged count per spec. A cell of a run listed with a protocol tag is filed by
+every per-architecture figure, `trained_fx_fc.py` included, under its tagged shown name
+(`trained_fx_fc_deep_3x16 [25 cycles].png`), and the curves CSV carries the tag in its
+`protocol` column beside the shown `arch`.
+At partial coverage the suite runs on whatever cells have landed and
+skips the basis comparison until two bases carry cells. The optimized
+enhancement factors are a separate script, one call per checkpoint channel
+into the matching figure directory (the family view, the section above):
+
+```bash
+JAX_PLATFORMS=cpu python tools/analysis/trained_fx_fc.py --run-dir <view> --eval-channel val_best --outdir reports/v7/figures_dfs_step7_v7_family_val_best
+JAX_PLATFORMS=cpu python tools/analysis/trained_fx_fc.py --run-dir <view> --eval-channel final --outdir reports/v7/figures_dfs_step7_v7_family
+```
+
+The family figure sets (suite plus trained_fx_fc outputs) are tracked in
+full at partial coverage as the campaign's visible progress (64 evaluated
+cells on 2026-09-15); the shared basis-comparison sets stay untracked
+(regenerated on every suite call). A run whose architecture fails its
+certificate refuses the merge, and with it the whole family set: an
+uncertified architecture never enters the campaign's figures, and the
+coupling is deliberate (a failed group is removed from `family_runs.yaml`,
+or its certificate is fixed, by decision and not by a silent drop).
+Before the train arrays complete, the artifact worth pulling is the
+pretrain stage itself: each run's `pretrain/<arch>/fidelity_certificate.json`
+states whether the clone reproduced its parent (the campaign's gate), and
+`pretrain/<arch>/pretrain_metadata.json` carries `best_step` / `steps_run`
+/ the validation history for reading the cloning trajectory.
+
+### Pretrain-stage quick-look figures (before any training lands)
+
+```bash
+python tools/analysis/plot_pretraining_curves.py <view> -o reports/v7/figures_dfs_step7_v7_family_pretrain/pretrain_curves.png
+JAX_PLATFORMS=cpu python tools/analysis/pretrain_fx_fc.py --run-dir <view> --outdir reports/v7/figures_dfs_step7_v7_family_pretrain
+```
+
+The first is the per-arch loss trajectories; the second draws the LEARNED
+F_x/F_c over the parent's curves with difference panels -- under the
+unanchored cloning class this is the direct is-it-learning visual. The view
+carries the certified (PASS) pre-training directories only; the evidence
+behind a FAILED certificate is rendered from the run itself into a
+subdirectory named for it, so the decision on that group can be read:
+
+```bash
+python tools/analysis/plot_pretraining_curves.py <mgga run dir> -o reports/v7/figures_dfs_step7_v7_family_pretrain/uncertified_mgga/pretrain_curves.png
+JAX_PLATFORMS=cpu python tools/analysis/pretrain_fx_fc.py --run-dir <mgga run dir> --outdir reports/v7/figures_dfs_step7_v7_family_pretrain/uncertified_mgga
+```
+
+The certificate summary (mean |dAE| bars + per-species max markers per
+architecture, gate lines read from the certificates' own tolerances, FAIL
+hatching, flagged species; CSV written beside the PNG) compares rounds:
+
+```bash
+JAX_PLATFORMS=cpu python tools/analysis/plot_certificate_summary.py \
+    --runs v7=<v7 run dir> --runs v7=<second v7 run dir> \
+    --runs legacy=<pre-protocol run dir> \
+    --out reports/v7/figures_dfs_step7_v7_family_pretrain/certificate_summary.png
+```
+
+A repeated label merges disjoint architecture sets under one color; the
+figure states whichever gate each certificate recorded, so a re-pull after
+an on-cluster regate switches the drawn gate lines automatically.
+
+### Reaction-energy control arm (2026-09-04): submit, copy the g1 clones, release
+
+`hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_rxn.yaml` is the g1 size group
+with `bh76_mode: reaction_energy` and nothing else changed (pin
+`test_v7g1_rxn_control_arm_mirrors_g1_except_the_bh76_objective`). Its
+cells start from the g1 run's certified clones, copied into the new run
+before its pretrain array can start; the pretrain keep-gate then accepts
+each directory (identity, parent, model class and network digests agree;
+the version cross-check is vacuous on the cluster) and exits 0 in seconds.
+On the cluster, from the repo root after `git pull`:
+
+```bash
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox
+git pull
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_rxn.yaml --partition long-40core --max-nodes 1 --train-time "48:00:00" --submit
+```
+
+Then, before the pretrain array can start (it waits on datagen, but hold it
+anyway):
+
+```bash
+R=/gpfs/scratch/awills/xcquinox_runs/dfs_step7
+NEW=$(ls -d $R/dfs6311_grid3_v7g1_rxn/runs/run_* | tail -1)
+PRE=$(python -c "import json,sys; print([j['array_job_id'] for j in json.load(open('$NEW/jobs.json')) if j['kind']=='pretrain'][0])")
+scontrol hold $PRE
+mkdir -p $NEW/pretrain
+cp -a $R/dfs6311_grid3_v7g1_size/runs/run_20260902T145245Z/pretrain/. $NEW/pretrain/
+ls $NEW/pretrain/*/fidelity_certificate.json
+scontrol release $PRE
+```
+
+Each pretrain task's log then reads `pretrain KEPT: ... already holds
+xnet.eqx + cnet.eqx and a certificate this node's gate releases`; a task
+that instead reads `pretraining from scratch` means the copy was not in
+place, and the run's clones are then its own refits (record it). Pull and
+figures follow the v7 lines above with the category
+`dfs_step7/dfs6311_grid3_v7g1_rxn/runs`; the comparison against the g1 arm
+is cell by cell on the same held-out slice.
+
+### The 25-cycle arm (2026-09-07): submit on the 96-core queue, copy the g1 clones, release
+
+`hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_c25.yaml` is the g1 medium column at
+subset sizes 7, 12, 15, 18 and 26 trained on `solvers.full_25` (25 SCF cycles per
+update) for 100 epochs with validation every 10 epochs, on a 96 h wall; every
+other value is the g1 file's (pin
+`test_v7g1_c25_arm_mirrors_g1_except_the_25_cycle_keys`). Its cells start from
+the g1 run's certified clones, copied in before the pretrain array can start,
+exactly as the control arm's do. The queue is the 96-core extended partition
+(7-day QOS cap; the config carries no partition, as for every v7 file), and the
+train wall goes on the submit line with `--max-nodes 1` (one node at a time,
+as the control arm; a larger N lets up to the config's throttle of 4 cells
+run at once). On the cluster, from the repo root after `git pull`:
+
+```bash
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox
+git pull
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_c25.yaml --partition extended-96core --max-nodes 1 --train-time "96:00:00" --submit
+```
+
+Then, before the pretrain array can start (it waits on datagen, but hold it
+anyway):
+
+```bash
+R=/gpfs/scratch/awills/xcquinox_runs/dfs_step7
+NEW=$(ls -d $R/dfs6311_grid3_v7g1_c25/runs/run_* | tail -1)
+PRE=$(python -c "import json,sys; print([j['array_job_id'] for j in json.load(open('$NEW/jobs.json')) if j['kind']=='pretrain'][0])")
+scontrol hold $PRE
+mkdir -p $NEW/pretrain
+cp -a $R/dfs6311_grid3_v7g1_size/runs/run_20260902T145245Z/pretrain/. $NEW/pretrain/
+ls $NEW/pretrain/*/fidelity_certificate.json
+scontrol release $PRE
+```
+
+Each pretrain task's log then reads `pretrain KEPT: ...`; a task that instead
+reads `pretraining from scratch` means the copy was not in place, and the run's
+clones are then its own refits (record it). Pull and figures follow the v7 lines
+above with the category `dfs_step7/dfs6311_grid3_v7g1_c25/runs`; the comparison
+against the g1 arm is cell by cell on the same held-out slices and, once
+`cluster/channel_retro.py --channel converged` has run over both runs, on the
+converged channel.
+
+### The dpyscf-parity arm (2026-09-08): submit on the 96-core queue, copy the g1 clones, release
+
+`hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml` is the 25-cycle
+arm's file with the reference protocol's remaining settings: every cycle run
+(no convergence freeze; the energy window, the last 10 of 25 cycles, is the
+executed dpyscf window already and stays), the executed
+mixer schedule (first mix 0.6), the per-update seed mixture with the minao
+guess, dpyscf's Adam at 1e-4 with coupled L2 1e-6 under the plateau controller
+(patience 10, factor 0.1, floor 1e-7), no potential term and the DFS weight
+0.01 on the barrier and IP groups (pin
+`test_v7g1_dfsparity_arm_mirrors_c25_except_the_parity_keys`). Its cells start
+from the g1 run's certified clones, copied in before the pretrain array can
+start, exactly as the two other arms. On the cluster, from the repo root after
+`git pull`:
+
+```bash
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox
+git pull
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml --partition extended-96core --max-nodes 1 --train-time "96:00:00" --submit
+```
+
+Then, before the pretrain array can start (it waits on datagen, but hold it
+anyway):
+
+```bash
+R=/gpfs/scratch/awills/xcquinox_runs/dfs_step7
+NEW=$(ls -d $R/dfs6311_grid3_v7g1_dfsparity/runs/run_* | tail -1)
+PRE=$(python -c "import json,sys; print([j['array_job_id'] for j in json.load(open('$NEW/jobs.json')) if j['kind']=='pretrain'][0])")
+scontrol hold $PRE
+mkdir -p $NEW/pretrain
+cp -a $R/dfs6311_grid3_v7g1_size/runs/run_20260902T145245Z/pretrain/. $NEW/pretrain/
+ls $NEW/pretrain/*/fidelity_certificate.json
+scontrol release $PRE
+```
+
+The reading is the ladder g1 (3 cycles) -> arm A (25 cycles) -> this arm (25
+cycles under the reference protocol), cell by cell on the same held-out slices;
+the warm and cold-start channels evaluate each arm under its own trained SCF
+protocol (this arm without the freeze), so the protocol-identical comparison
+across the three runs is the converged channel once `cluster/channel_retro.py
+--channel converged` has run over them; the pull category is
+`dfs_step7/dfs6311_grid3_v7g1_dfsparity/runs`. Each run's `aux_log.pkl` carries
+one `__plateau__` row per epoch with the learning rate the controller set, and
+`train_metadata.json` states `optimizer`, `seed_mix_atomic` and the solver's
+`freeze_on_convergence` and `mixer_kwargs.step_offset`.
+
+### Certificate gate changes on a LIVE run (2026-09-03 flow)
+
+A gate-policy change (e.g. the two-tier `tol_AE_aggregate: mae` +
+`tol_AE_max_backstop`) applies to certificates already on disk WITHOUT
+refits: `regate-certificates` re-verdicts each one from its recorded
+measurements, writes full provenance into the file, and updates the run's
+`resolved_config.yaml` fidelity block. Run ON THE CLUSTER from the repo
+root after a `git pull`:
+
+```text
+python -m xcquinox.pipeline.cluster regate-certificates <run_dir> \
+    --config hpcjobs/configs/<the run's tracked yaml> --apply
+```
+
+Exit 0 = every architecture's certificate exists and ends PASS; exit 1
+lists what is missing or still failing (rerun after in-flight fits land --
+the command is idempotent). SLURM side: `afterok` on a pretrain array that
+already contains a failed task is permanently unsatisfiable, so BEFORE the
+array completes, reroute and hold --
+
+```bash
+scontrol update job=<preflight id> dependency=afterany:<pretrain array id>
+scontrol update job=<train id> dependency=afterok:<preflight id>
+scontrol hold <preflight id>
+```
+
+-- then `scontrol release <preflight id>` once the regate exits 0; the
+train array follows on its own. A chain that was already
+dependency-killed is rebuilt with `resubmit-preflight <run_dir> --submit`
+instead: the completed-pretraining keep-gate sees the regated PASS
+certificates and the pretrain tasks exit 0 in seconds.
+
+ARCHIVE NOTE (2026-09-02): every figure set produced from the
+pre-remediation trainings (the reaction-energy BH76 substitution, the
+padded V_xc denominators, the scoped-regularizer defect, and the anchored
+v6 method), together with the two reports built on them
+(`REPORT_pretraining_evolution`, `REPORT_problem_species`, .md and .pdf),
+was removed from the repository and kept on disk under
+`tools/analysis/figures_archive/` (gitignored; reports under
+`figures_archive/reports/`). Rebuilding those PDFs requires restoring the
+archived paths; the archived PDFs are the frozen record.

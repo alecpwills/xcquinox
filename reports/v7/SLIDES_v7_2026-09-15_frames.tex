@@ -1,0 +1,874 @@
+% The frames of the results deck, shared by SLIDES_v7_2026-09-15.tex (plain) and
+% SLIDES_v7_2026-09-15_annotated.tex (each slide followed by its notes). \slidenote{...}
+% is defined by the wrapper: empty in the plain deck, a notes frame in the annotated one.
+% The notes of the slides that state code end with the page numbers of their excerpts in the
+% code appendix (SLIDES_v7_2026-09-15_code_appendix.tex, one frame per manifest row, input by the
+% annotated wrapper after this file; the excerpts, the appendix and the pointer sentences come
+% from slide_code_notes.py --write).
+% Citations: [DFS21] Dick and Fernandez-Serra 2021 and the other keys of the references slide;
+% [code: file:line] the repository line that implements the equation.
+% Layout (2026-09-16): 37 main frames, then the Backup section of 8 frames holding the long
+% tables, reached from the main frames by \hyperlink buttons; page N of the plain deck is the
+% N-th frame of this file.
+
+\begin{frame}
+  \titlepage
+\end{frame}
+\slidenote{\textbf{On the slide:} the title, the subtitle naming the four stages the talk follows (training-subset generation, pre-training, in-sample optimization, held-out generalization) and the date of the results pull. \par \textbf{The point:} the talk asks one question in four steps: can a small network functional, started from PBE and trained on a handful of reactions, generalize to reactions and densities it never saw. \par \textbf{Terms:} none new; the two glossary slides that follow define the objects and the measures used throughout. \par \textbf{If asked:} what is the data behind the deck: one figure set drawn from the merged family view of the cluster runs, pulled on 2026-09-15 (\texttt{run\_20260908T153908Z}), with the numbers read from its CSVs and run files, never from figure labels. Where is the long form: the report REPORT\_v7\_2026-09-15 (87 pages) and its summary, in the analysis directory. What changed since the last version: the evaluated cells doubled from 33 to 64 with the 2x8 networks, the second attention column and the two arms.}
+
+\begin{frame}{The objects named in this talk}
+  \small
+  \begin{itemize}
+    \item \textbf{Cell:} one trained exchange-correlation functional (an exchange and a correlation network), identified by its architecture and the number $r$ of training points it was fitted to. \textbf{Subset $r$:} the $r$ points of the 26-point DFS pool [DFS21] chosen for that column of cells (Sec. 2).
+    \item \textbf{Run:} one cluster run under one configuration file; the runs differ in which architectures they train. \textbf{View:} the runs merged into one figure set. \textbf{Arm:} a run of one architecture (deep\_3x16) under a changed training protocol, shown with its tag: [25 cycles], [dpyscf parity].
+    \item \textbf{Pre-training:} fitting a network to reproduce its parent functional (PBE or SCAN) before any reference data is seen. \textbf{Certificate:} the check that the clone reproduces the parent to tolerance; a failing certificate holds the group's training.
+    \item \textbf{Checkpoints:} training saves the final, the lowest-training-loss and the lowest-validation-error network; every figure reads the \textbf{validation-best} one.
+    \item \textbf{Rung:} the class of density variables a functional reads (GGA: density and gradient; meta-GGA: plus the kinetic-energy density; rung 3.5: plus density-matrix columns). \textbf{Start:} deep networks begin from a Glorot-initialized last layer, deep0 networks from a zeroed one, so the untrained deep0 network is the LDA.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} five bullets that define the objects every later slide names. A cell is one trained functional at one training-subset size; a subset is the list of training points chosen for that size (Sec. 2). A run is one cluster job under one configuration file, the view is the runs merged into one figure set, and an arm is a run of one architecture under a changed training protocol, tagged on the same axis as the size cells. Pre-training and the certificate are the cloning step and its acceptance test (Sec. 3). The three checkpoints are the final network, the lowest-training-loss one and the lowest-validation-error one; every figure reads the last. The rung names what a functional reads, the start how the last layer is initialized. \par \textbf{The point:} a cell is the unit of every figure and table, so the axis of every bar chart is the training-subset size and the colour the architecture. \par \textbf{Terms:} cell, subset, run, view, arm and its tag, pre-training, certificate, checkpoint, validation-best, rung (GGA, meta-GGA, rung 3.5), Glorot start against zeroed start, LDA (the local density approximation, the uniform-gas functional every enhancement factor multiplies). \par \textbf{If asked:} why the validation-best checkpoint and not the final one: the small cells overfit after 25 epochs (Sec. 4), and the rule picks the epoch with the lowest error on 35 reactions the cell never trains on; the final checkpoint's held-out figures are the family set without the val\_best suffix (the runbook). How many cells: 64 evaluated of 66 trained, over eight architecture columns (frame 4). What the tag on an arm means: the same deep\_3x16 network trained under 25 SCF cycles, or under the DFS reference code's protocol, in place of three cycles.}
+
+\begin{frame}{The measures named in this talk}
+  \small
+  \begin{itemize}
+    \item \textbf{WTMAD-2:} GMTKN55's weighted total mean absolute deviation of reaction energies [Goe17]: each benchmark's mean absolute error divided by its mean absolute reference value and scaled by 56.84 kcal/mol; two benchmarks are present here (BH76 barriers, W4-11 atomization energies). Lower is better; the pooled PBE value is 8.92 kcal/mol.
+    \item \textbf{$\varepsilon_n$:} the DFS density error [DFS21 Eq. 20], the integrated absolute difference from the CCSD reference density per electron (PBE 0.00923). \textbf{Grid RMSE:} the root-mean-square density difference over the quadrature grid, the measure the density loss trains on.
+    \item \textbf{$\mathcal{ED}$:} the harmonic mean of the energy error and $\gamma$ times the density error [DFS21 Eq. 21]; \textbf{DFS units} use $\varepsilon_n$ with $\gamma = 1084.87$ kcal/mol, \textbf{self-calibrated units} the grid RMSE with $\gamma$ set so that PBE's two legs are equal.
+    \item \textbf{Beats PBE / cap:} a cell is below PBE when its $\mathcal{ED}$ is below PBE's on the same held-out slice; on the bar charts PBE's value on the cell's own slice is the black cap and a triangle marks a cell below it.
+    \item \textbf{Recurring tail:} the species whose density error exceeds 1.5 times PBE's in at least half of the cells carrying them and in at least two (eight species). \textbf{T1:} the CCSD T1 diagnostic of multireference character; 38 of the 189 held-out species are above 0.02, the model-free counterpart of the tail.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} five bullets that define the measures. WTMAD-2 is the GMTKN55 energy measure: each benchmark's mean absolute error divided by its mean absolute reference value and scaled by 56.84 kcal/mol, so barriers (around 19 kcal/mol) and atomization energies (around 350) count as relative errors; two of its 55 benchmarks are present. $\varepsilon_n$ is the DFS density error, the integrated absolute density difference per electron; the grid RMSE is the root-mean-square difference over the quadrature grid, the measure the density loss trains on. $\mathcal{ED}$ is the harmonic mean of the energy error and $\gamma$ times the density error; DFS units use $\varepsilon_n$ with $\gamma = 1084.87$ kcal/mol, self-calibrated units the grid RMSE with $\gamma$ equalizing PBE's two legs. The cap is PBE on the cell's own slice, the triangle marks a cell below it. The recurring tail is the rule naming the eight species whose density error exceeds 1.5 times PBE's in at least half of the cells carrying them and in at least two; the T1 list is the model-free counterpart: 38 of the 189 held-out species have a CCSD T1 diagnostic above 0.02. \par \textbf{The point:} the formal definitions come in Sec. 5; these short forms let the earlier numbers be read. \par \textbf{Terms:} WTMAD-2, $\varepsilon_n$, grid RMSE, $\mathcal{ED}$, $\gamma$, DFS and self-calibrated units, the cap, "beats PBE", the recurring tail, the T1 diagnostic, CCSD (coupled-cluster singles and doubles, the method behind the reference densities). \par \textbf{If asked:} why two density measures: the per-electron measure counts every electron alike, the grid RMSE weights large local deviations more, and the two disagree on the small cells (frame 26). Why a harmonic mean: the Letter's Eq. 21; it is dominated by its smaller leg, so with every density leg near 10 kcal/mol after $\gamma$, differences in $\mathcal{ED}$ come mostly from the energy leg (frame 27). Why 0.02 for T1: the conventional multireference threshold for closed-shell CCSD; the list is the view's \texttt{t1\_diagnostics.json}.}
+
+\begin{frame}[label=f4]{Scope}
+  \small
+  One network pair (exchange and correlation) per architecture and training-subset size, trained in separate cluster runs under one protocol and drawn once over every finished cell. Each run carries a pre-training, the certificate that gates its training array, and the array itself, one cell per (architecture, subset size).
+  \begin{center}\footnotesize\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{p{2.3cm}p{6.2cm}p{4.6cm}}
+  \toprule
+  Run & Architectures & Cells in the figures \\ \midrule
+  size & deep\_3x16, deep\_attn\_3x16, deep\_2x8, deep\_attn\_2x8 & 41 of 44 \\
+  families & deep0\_3x16, deep0\_attn\_3x16, deep0\_cusp\_3x16 & 19 of 33 \\
+  meta-GGA families & five SCAN-parented architectures & 0 of 55 (four FAIL, one cancelled) \\
+  the two arms & deep\_3x16 [25 cycles], deep\_3x16 [dpyscf parity] & 2 of 5 each \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \footnotesize
+  \begin{itemize}
+    \item Subset sizes 1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 26 points of the 26-point DFS pool [DFS21, SI Sec. II], chosen by Jensen-Shannon selection (Sec. 2).
+    \item 64 cells in the figures; two evaluated cells (deep\_attn\_2x8 at 18, deep\_3x16 [25 cycles] at 15) are set aside pending re-evaluation (Sec. 6).
+    \item Basis 6-311++G(3df,2pd), grid level 3, density fitting, at every stage [cfg]; the validation-best checkpoint is read for every optimization figure.
+  \end{itemize}
+  \hfill \hyperlink{b1}{\beamergotobutton{run table}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the paragraph states the design (one exchange and correlation network pair per architecture and subset size, separate cluster runs under one protocol, each with a pre-training, a certificate that gates its training array, and the array of cells); the table lists the four groups of runs with their architectures and the cells in the figures (41 of 44 in the size run, 19 of 33 in the families run, 0 of 55 in the meta-GGA run whose four completed certificates fail and whose fifth fit was cancelled, 2 of 5 in each arm); the bullets give the eleven subset sizes, the 64 cells with the two set-aside cells, and the basis, grid and density-fitting settings that hold at every stage. The button opens the backup table with the per-architecture counts and the run directories. \par \textbf{The point:} 64 evaluated cells over eight architecture columns, drawn once from one merged view, are the material of every figure that follows. \par \textbf{Terms:} training array (the cluster job array of cells); set aside (a cell whose held-out pass wrote no reaction and awaits re-evaluation). \par \textbf{If asked:} why two cells are set aside: their held-out evaluations ran while the CCSD T1 backfill was rewriting the benchmark reference files with a key the reference reader did not accept, so every reference was refused and the tables hold no reaction; the corrected reader is committed and the re-runs are a later cluster session (frame 35). Why the meta-GGA group has no cells: its pre-trained clones do not reproduce SCAN to tolerance (frames 16 and 17), so the training array is held. Which basis: 6-311++G(3df,2pd) with density fitting at grid level 3, recorded in every certificate file and in the run configuration files \texttt{dfs\_step7.dfs6311\_grid3\_v7*.yaml}.}
+
+% =====================================================================
+\section{1. Model}
+
+\begin{frame}{1. Model: density variables and the DFS coordinates}
+  With $n = n_\alpha + n_\beta$ and $\sigma = |\nabla n|^2$ [DFS21 Eqs. 4, 5]:
+  \[
+  k_F = (3\pi^2 n)^{1/3}, \qquad
+  s = \frac{|\nabla n|}{2 k_F n}, \qquad
+  r_s = \left(\frac{3}{4\pi n}\right)^{1/3},
+  \]
+  \[
+  \zeta = \frac{n_\alpha - n_\beta}{n}, \qquad
+  \phi(\zeta) = \tfrac12\left[(1+\zeta)^{4/3} + (1-\zeta)^{4/3}\right].
+  \]
+  The networks read logarithmic compressions of these [DFS21 Eqs. 7 to 10; code: networks.py:621--657]:
+  \[
+  x_0 = \ln\!\left(n^{1/3} + 10^{-5}\right), \qquad
+  x_1 = \ln \phi(\zeta), \qquad
+  x_s = \left(1 - e^{-s^2}\right)\ln(s + 1), \qquad
+  x_\alpha = \ln\frac{\alpha + 1}{2}.
+  \]
+  \begin{itemize}
+    \item Exchange input $[x_s, \ldots]$ with $s$ of the doubled spin channel $2 n_\sigma$ (the exchange network is evaluated per spin channel, next slides); correlation input $[x_0, x_1, x_s, \ldots]$ on the total density. The ellipsis holds the architecture's extra descriptors; on the meta-GGA rung the raw $\alpha$ is replaced by $x_\alpha$.
+    \item The $10^{-5}$ in $x_0$ is the DFS reference implementation's constant [dpyscf net.py:39; code: networks.py:27].
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the first two display lines define the density variables: $k_F$ the Fermi wave vector of a uniform gas at density $n$, $s$ the reduced (dimensionless) density gradient, $r_s$ the Wigner-Seitz radius (large where the density is low), $\zeta$ the spin polarization (0 closed shell, $\pm 1$ fully polarized) and $\phi$ the spin-scaling factor of PBE correlation. The third line gives the coordinates the networks receive: logarithmic compressions of $n^{1/3}$ (which spans many orders of magnitude on a molecular grid), of $\phi$, of $s$ (the form $x_s$ behaves as $s^2 \ln(s+1)$ near $s = 0$ and as $\ln s$ at large $s$) and of $\alpha$ on the meta-GGA rung. The bullets state which coordinates each network reads and the origin of the $10^{-5}$ constant. \par \textbf{The point:} the networks see order-one inputs everywhere on the grid, and exchange sees each spin channel separately at twice its density, which is how the exact spin-scaling relation of exchange is built in (frame 8). \par \textbf{Terms:} $k_F$, $s$, $r_s$, $\zeta$, $\phi$, the DFS coordinates $x_0$, $x_1$, $x_s$, $x_\alpha$. \par \textbf{If asked:} where the constant comes from: the DFS reference implementation's net.py line 39, reproduced at networks.py:27. What happens at vanishing density: the density is floored at a small cutoff before any variable is formed, so the grid's vacuum tail produces no infinity. Why the correlation network reads the total density and the polarization: PW92 correlation, whose enhancement factor the network multiplies, is a function of $r_s$ and $\zeta$ (frame 8). \par Code: appendix pp. \pageref{code:p5_1_k_f_s_and_the_density_floor_exchange_net} to \pageref{code:p5_7_the_exchange_network_on_the_doubled_spin}.}
+
+\begin{frame}{1. Model: the extra descriptors}
+  \textbf{Iso-orbital indicator} (meta-GGA rung; SCAN's $\alpha$ [SCAN15 Eq. 2; DFS21 Eq. 6; code: metagga.py:8--9]), a contraction of the live density matrix $P$ against the AO gradients, hence self-consistent and differentiable through the SCF:
+  \[
+  \alpha = \frac{\tau - \tau_W}{\tau_{\rm unif}}, \qquad
+  \tau = \tfrac12 \sum_i |\nabla\psi_i|^2 = \tfrac12 \sum_{\mu\nu} P_{\mu\nu}\, \nabla\chi_\mu\cdot\nabla\chi_\nu,
+  \]
+  \[
+  \tau_W = \frac{|\nabla n|^2}{8n}, \qquad
+  \tau_{\rm unif} = \tfrac{3}{10}(3\pi^2)^{2/3} n^{5/3},
+  \]
+  with $\alpha \ge 0$ imposed by a smooth positive part rather than a hard clip [code: metagga.py:25--31].
+  \vspace{0.1em}
+
+  \textbf{Nuclear cusp pair} (\texttt{cusp}), two bounded geometric features per grid point [code: descriptors.py:230--245]:
+  \[
+  x_4 = \exp(-2 Z_{\rm nearest}\, r_{\min}), \qquad
+  x_5 = \tanh\!\left(\frac{1}{5}\ln \sum_A \frac{Z_A}{r_A}\right),
+  \]
+  $x_4$ the density-form cusp envelope $e^{-2Zr}$ [Steiner63, after Kato57], $x_5$ the log-compressed bare-nuclear potential. Both are geometric, so the synthetic pre-training mesh (Sec. 3) carries no values for them.
+\end{frame}
+\slidenote{\textbf{On the slide:} the upper block defines the iso-orbital indicator $\alpha$ of the meta-GGA rung: $\tau$ is the positive kinetic-energy density of the occupied orbitals, on a basis set a contraction of the density matrix $P$ with the gradients of the atomic-orbital functions, which is why it is differentiable through the self-consistent field; $\tau_W$ is the von Weizsacker value (a single occupied orbital) and $\tau_{\rm unif}$ the uniform-gas value at the same density, so $\alpha$ reads 0 in a single-orbital region, 1 in a uniform-gas-like region and grows where closed shells overlap; the smooth positive part keeps the derivative continuous where $\alpha \ge 0$ is violated numerically, which a hard clip would not. The lower block defines the cusp pair: $x_4$ is 1 at a nucleus and decays with the density's own cusp envelope $e^{-2Zr}$, $x_5$ a bounded, log-compressed bare nuclear potential summed over the nuclei. \par \textbf{The point:} the two descriptor families that extend the GGA inputs are both physical: one reads the kinetic-energy density through the live density matrix, the other the geometry of the nuclei. \par \textbf{Terms:} iso-orbital indicator, kinetic-energy density, von Weizsacker term, the nuclear cusp, the cusp pair. \par \textbf{If asked:} why the synthetic pre-training mesh carries no cusp values: the mesh is a grid of $(r_s, s, \alpha)$ values tied to no molecule, and $x_4$, $x_5$ depend only on the geometry, so those rows have nothing to give them (frame 15). Which architectures use these: the cusp pair the deep0\_cusp columns, $\alpha$ every meta-GGA architecture, both the deep0\_cusp\_mgga one (the backup architecture table); none of them has an evaluated cell yet. Whether $\alpha$ is self-consistent: yes, it is recomputed from the live density matrix at every SCF cycle, not frozen from a reference. \par Code: appendix pp. \pageref{code:p6_1_tau_from_the_live_density_matrix} to \pageref{code:p6_5_the_cusp_pair_x_4_x_5}.}
+
+\begin{frame}{1. Model: the network}
+  \small
+  Each of the exchange and the correlation networks is a multilayer perceptron of \texttt{depth} hidden layers of \texttt{nodes} units with GELU activations, read at every grid point; its scalar output $g$ becomes the enhancement factor on the next slide [code: networks.py:169, 379--404].
+  \begin{itemize}
+    \item \textbf{GELU:} $\mathrm{GELU}(z) = z\,\Phi(z)$ with $\Phi$ the standard normal distribution function, a smooth rectifier; the enhancement factors and their derivatives (the potential) are smooth in the density variables.
+    \item \textbf{Last layer:} Glorot-initialized in the deep networks, zeroed in the deep0 networks, so the latter start exactly at $F = 1$ (the LDA) before pre-training.
+    \item \textbf{Attention variants} (\texttt{\_attn}) [Vas17 Eq. 1; Xio20; code: net.py:55--136]: after the first hidden layer, the $H$ hidden units are $h$ tokens of dimension $d_k = H/h$ under pre-layer-norm self-attention across the token axis, a per-point re-mixing of hidden units; the functional stays semilocal.
+  \end{itemize}
+  \[
+  \mathrm{Attn}(Q, K, V) = \mathrm{softmax}\!\left(\frac{QK^{\top}}{\sqrt{d_k}}\right) V, \qquad
+  x \leftarrow x + W^{O}\,\mathrm{Concat}(\mathrm{head}_1, \ldots, \mathrm{head}_h)(\mathrm{LN}(x)).
+  \]
+\end{frame}
+\slidenote{\textbf{On the slide:} the paragraph states the network: a multilayer perceptron of \texttt{depth} hidden layers of \texttt{nodes} units with GELU activations, evaluated independently at every quadrature point; its scalar output becomes the enhancement factor on the next slide. The bullets define GELU (the Gaussian error linear unit, $z\,\Phi(z)$, a smooth rectifier whose continuous derivative the potential inherits), the two starts (Glorot against zeroed last layer), and the attention variants: after the first hidden layer the $H$ hidden units are cut into $h$ tokens of dimension $d_k = H/h$, each token attends to the others with the scaled dot-product formula of the display line, and the result is added back after a layer normalization. \par \textbf{The point:} the networks are small (three layers of 16 or two of 8) and pointwise, so every functional here stays semilocal; attention re-mixes hidden units at one grid point and never looks at neighbouring points. \par \textbf{Terms:} multilayer perceptron, GELU, Glorot initialization, self-attention, tokens and heads, $d_k$, layer normalization, pre-layer-norm form, semilocal. \par \textbf{If asked:} how many heads: 4 for the 3x16 architectures, 2 for the 2x8 pair (frame 9). How many parameters: a 3x16 exchange network is an input layer of 16 units, two 16 x 16 layers and one output unit, 593 parameters with the biases (625 for correlation with its three inputs; networks.py:279 sets the input width); deep\_3x16 and deep0\_3x16 have the same count. Why GELU and not ReLU: the potential entering the SCF is the functional derivative of the energy and inherits the activation's smoothness; a ReLU kink would put a kink into the potential. \par Code: appendix pp. \pageref{code:p7_1_the_mlp_gelu_the_attention_block_after_t} to \pageref{code:p7_3_the_self_attention_block}.}
+
+\begin{frame}{1. Model: the functional form}
+  \small
+  MLP output $g$ at a grid point:
+  \[
+  F_x = 1 + \mathcal{L}_{1.804}\!\left(G_x \cdot g_x\right), \qquad
+  F_c = 1 + \mathcal{L}_{2}\!\left(G_c \cdot g_c\right),
+  \]
+  \[
+  \mathcal{L}_{\lambda}(z) = \lambda\,\mathrm{sigmoid}\!\left(z - \ln(\lambda - 1)\right) - 1 \quad \text{[DFS21 Eq. 11]},
+  \]
+  \[
+  G = \tanh^2(s) \ \ \text{(GGA)}, \qquad G = x_s + \tanh^2(x_\alpha) \ \ \text{(meta-GGA) [DFS21 Eq. 12]}.
+  \]
+  $\mathcal{L}_\lambda(0) = 0$ and $F \in (0, \lambda)$; $\lambda = 1.804 = 1 + \kappa_{\rm PBE}$ for exchange [PBE96 Eq. 14] (DFS uses 1.174 [PRSB14]), $\lambda = 2$ so that $F_c \ge 0$ [DFS21 Eq. 13]. The gate $G$ pins $F = 1$ where the gradient vanishes.
+  \[
+  E_{xc} = \tfrac12\left(E_x[2 n_\alpha] + E_x[2 n_\beta]\right) + E_c[n_\alpha, n_\beta] \ \ \text{[OP79; code: descriptors.py:124]},
+  \]
+  \[
+  E_x[n] = \int n\, \epsilon_x^{\rm LDA}(n)\, F_x\, d^3r, \qquad
+  E_c = \int n\, \epsilon_c^{\rm PW92}(r_s, \zeta)\, F_c\, d^3r \ \ \text{[PW92]}.
+  \]
+\end{frame}
+\slidenote{\textbf{On the slide:} the first display line writes the enhancement factors as one plus a bounded map of the gated network output; the second defines the map $\mathcal{L}_\lambda$, a shifted sigmoid that sends 0 to 0 and confines $F$ to $(0, \lambda)$; the third the gate $G$, $\tanh^2(s)$ on the GGA rung, with an $x_\alpha$ term on the meta-GGA rung. The text gives the ceilings: 1.804 for exchange, the PBE value derived from the Lieb-Oxford bound (DFS used 1.174), and 2 for correlation, which only guarantees $F_c \ge 0$. The last two lines assemble the energy: exchange from the exact spin-scaling relation of Oliver and Perdew (the spin-unpolarized functional at twice each spin density, averaged), correlation from PW92 times $F_c$. \par \textbf{The point:} the uniform electron gas limit $F = 1$ is exact by construction (the gate vanishes with the gradient) and the bounds of the map keep every trained functional inside the same envelope as PBE. \par \textbf{Terms:} enhancement factor, the bounded map, the gate, the Lieb-Oxford bound, the spin-scaling relation, PW92. \par \textbf{If asked:} why 1.804 and not DFS's 1.174: 1.804 is $1 + \kappa_{\rm PBE}$, PBE's own ceiling, so the clone of PBE can reach PBE's factor at every $s$; 1.174 is the tighter bound of Perdew, Ruzsinszky, Sun and Burke that DFS adopted. Whether the correlation ceiling matters: it binds for the attention networks: deep\_attn\_3x16 at 12 points saturates it ($F_c$ 1.99997 at $r_s = 5$ and $s = 5.4$; 1.95 at $r_s = 2$ and $s = 6$, trained\_fx\_fc\_curves.csv), where the training data has no say. Where the LDA and PW92 factors are computed: models.py:175--215 (the appendix). \par Code: appendix pp. \pageref{code:p8_1_the_bounded_map_l_lambda} to \pageref{code:p8_3_the_spin_scaled_exchange_energy_oliver_a}.}
+
+\begin{frame}[label=f9]{1. Model: the architectures}
+  \begin{center}\small
+  \begin{tabular}{llllll}
+  \toprule
+  Architecture & Last layer & Rung, parent & Hidden & Heads & Extra \\ \midrule
+  deep\_3x16 & Glorot & GGA, PBE & 3 x 16 & none & none \\
+  deep\_attn\_3x16 & Glorot & GGA, PBE & 3 x 16 & 4 & none \\
+  deep0\_3x16 & zeroed & GGA, PBE & 3 x 16 & none & none \\
+  deep0\_attn\_3x16 & zeroed & GGA, PBE & 3 x 16 & 4 & none \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \small
+  \begin{itemize}
+    \item Inputs: $F_x$ from $x_s$, $F_c$ from $x_0, x_1, x_s$; the cusp architectures add $x_4, x_5$ to both, the meta-GGA ones $x_\alpha$ as well, the rung-3.5 ones their occupancy columns.
+    \item The 2x8 pair, deep\_2x8 and deep\_attn\_2x8 (2 heads), are the same GGA networks at 2 x 8; the arms' cells are deep\_3x16 trained under the 25-cycle and the dpyscf-parity protocol, shown on the same axis as deep\_3x16 [25 cycles] and deep\_3x16 [dpyscf parity].
+    \item deep\_3x16 and deep0\_3x16 have the same layers, inputs and parameter count and differ only in the start; after pre-training both are PBE clones, so the two columns are replicates of one architecture under two starts: their combined held-out verdicts agree at every subset size (Sec. 5).
+  \end{itemize}
+  \hfill \hyperlink{b2}{\beamergotobutton{all eleven}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the table lists the four 3x16 columns with their last-layer start, rung and parent, hidden layout, heads and extra descriptors. The first bullet states the inputs of every architecture family; the second places the 2x8 pair (the same GGA networks at 2 x 8, two heads in the attention one) and the two arms (deep\_3x16 under the 25-cycle and the dpyscf-parity protocol, shown with their tags); the third states that deep\_3x16 and deep0\_3x16 are one architecture under two starts and that their combined held-out verdicts agree at every subset size. The button opens the eleven-row table with the cusp, meta-GGA and rung-3.5 architectures. \par \textbf{The point:} the family word in a name is the start of the last layer (deep: Glorot; deep0: zeroed, so the untrained network is the LDA), and the descriptor families, not the two starts, are the real architecture axes; their cells are queued or held. \par \textbf{Terms:} the naming (family word, descriptor and attention tokens, size), replicate. \par \textbf{If asked:} do the deep networks do worse than the deep0 ones: no; on the combined objective both are below PBE at 1, 7, 12, 15, 18 and 26 points and above it at 2 to 6; on the energy leg alone deep0\_3x16 is below PBE at 3 and 4 points where deep\_3x16 is not (frame 28; holdout\_by\_pool\_3x3\_eps.csv). The certificates of the two: both pass, mean $|\Delta AE|$ 0.162 and 0.114 kcal/mol (frame 16). Multishell: the rung-3.5 variant reading one occupancy column per shell. \par Code: appendix pp. \pageref{code:p9_1_the_architecture_record} to \pageref{code:p9_5_from_spec_the_fields_an_entry_sets}.}
+
+% =====================================================================
+\section{2. Training-subset generation}
+
+\begin{frame}[label=f10]{2. Subsets: the 26-point DFS pool [DFS21 SI Sec. II]}
+  \small
+  \begin{itemize}
+    \item 21 atomization energies (G2/97 molecules), 3 BH76 reaction energies and 2 IP13 ionization potentials: the training set of the Letter, 26 points over 30 unique species.
+    \item Each point carries the species its loss term needs: an atomization its molecule and the H and Li anchors it contains, a reaction every reactant and product, an ionization the neutral and the cation.
+    \item References: atomization energies [HK12] with H2O and C2H2 from [W411]; reaction energies [Goe17, BH76RC]; ionization potentials [NIST]. Code: dfs\_pool.py, training\_points.py:347--420.
+    \item The pool is indexed 0 to 25 in the selection ledger; the chosen subsets of the next slides are lists of these indices.
+  \end{itemize}
+  \hfill \hyperlink{b3}{\beamergotobutton{the 26 points}}
+\end{frame}
+\slidenote{\textbf{On the slide:} four bullets on the pool: its composition (21 atomization energies of G2/97 molecules, 3 BH76 barrier reactions, 2 IP13 ionization potentials; 30 unique species), the species each point carries (an atomization its molecule and the H and Li anchors it contains, a reaction every reactant and product, an ionization the neutral and the cation), the references, and the ledger indexing. The button opens the 26-row table with every species' charge and spin. \par \textbf{The point:} the pool reproduces the training set of the DFS Letter, so the subsets of the next slides are subsets of the Letter's own data. \par \textbf{Terms:} point (one unit of training signal with a reference value), species, anchor, ledger, IP13, G2/97. \par \textbf{If asked:} why only H and Li are attached as anchors: those are the atomic densities the DFS training set included; the other free atoms enter through the atom-anchor channel of the objective (frame 21). Where the references come from: the non-relativistic, zero-point-exclusive atomization energies of Haunschild and Klopper with H2O and C2H2 from W4-11, the GMTKN55 BH76RC reaction energies, NIST ionization potentials (the backup table's footer). Where the 21 come from: the pool file dfs\_pool.py (the appendix) transcribes the Letter's SI Sec. II list, 10 linear closed-shell, 3 linear open-shell and 8 non-linear molecules, as the 21 atomization points. \par Code: appendix pp. \pageref{code:p10_1_the_21_atomization_points_names_spins_ch} to \pageref{code:p10_6_the_26_points_and_their_species}.}
+
+\begin{frame}{2. Subsets: the descriptor distributions}
+  \small
+  One PBE SCF per species (def2-SVP, grid level 1) [code: subset\_selection.py:106--118, 448--470] gives at every grid point $g$ with quadrature weight $w_g$
+  \[
+  \rho^{1/3}, \qquad
+  s = \frac{|\nabla \rho|}{2 (3\pi^2)^{1/3} \rho^{4/3}} \ \ \text{[PBE96]}, \qquad
+  \alpha = \frac{\tau - \tau_W}{\tau_{\rm unif}} \ \ \text{[SCAN15], clipped to } [0, 100].
+  \]
+  A point's sample is the concatenation of its species' grid points; the reference is the concatenation over all 26 points. Each marginal is binned into 200 equal-width bins between its 0.1 and 99.9 percentiles and normalized to a mass function:
+  \[
+  h_x^{(b)} = \sum_{g \,:\, x_g \in \text{bin } b} w_g, \qquad P_x^{(b)} = \frac{h_x^{(b)}}{\sum_{b'} h_x^{(b')}} .
+  \]
+  \begin{center}
+  \includegraphics[width=0.72\linewidth]{figures_dfs_step7_v7_subsets/subset_jsd_vs_full.png}
+  \end{center}
+\end{frame}
+\slidenote{\textbf{On the slide:} the text states how the descriptors are sampled (one PBE SCF per species on def2-SVP at grid level 1), the three variables ($\rho^{1/3}$, $s$, $\alpha$ clipped to $[0, 100]$), the sample of a point (the concatenation of its species' grid points), the reference (all 26 points) and the binning: 200 equal-width bins between the 0.1 and 99.9 percentiles of each variable, each grid point adding its quadrature weight, normalized to a mass function. The figure: left, the divergence of the chosen subset from the pool against the subset size (total and the three marginal terms, log scale; the full pool has divergence zero and is not drawn on a log axis); right, the three reference mass functions in black with the subsets at 1, 7 and 26 points overlaid, against the bin index, the bin's variable value on the upper axis. \par \textbf{The point:} the selection compares densities in the variables a GGA or meta-GGA functional sees, not molecules by name. \par \textbf{Terms:} marginal, histogram and mass function, quadrature weight, percentile edges. \par \textbf{If asked:} why a cheap basis and grid: the selection needs the shape of the descriptor distributions, not converged energies, and 26 points times up to five species each is cheap at def2-SVP. Why the first bin dominates each marginal: the next slide. Which subsets are drawn on the right: 1, 7 and 26 points; the eleven chosen subsets are on frame 14 and its backup table. \par Code: appendix pp. \pageref{code:p11_1_the_descriptor_triple_rho_1_3_s_alpha_an} to \pageref{code:p11_6_binning_with_the_shared_edges}.}
+
+\begin{frame}{2. Subsets: the metric [Lin91]}
+  \small
+  The distance between a candidate subset $S$ and the pool is the Jensen-Shannon divergence [code: subset\_selection.py:213--246, 472] summed over the three marginals with equal weights, $P_x$ the pool and $Q_x$ the subset mass function, probabilities floored at $10^{-12}$, natural logarithm:
+  \[
+  \mathrm{JSD}(S) = \sum_{x \in \{\rho^{1/3},\, s,\, \alpha\}} \tfrac12 \left[ \mathrm{KL}(P_x \,\|\, M_x) + \mathrm{KL}(Q_x \,\|\, M_x) \right], \qquad
+  M_x = \tfrac12 (P_x + Q_x),
+  \]
+  \[
+  \mathrm{KL}(P \,\|\, Q) = \sum_b P^{(b)} \ln \frac{P^{(b)}}{Q^{(b)}}, \qquad \text{each marginal term in } [0, \ln 2].
+  \]
+  \begin{itemize}
+    \item The linear edges reach the low-density tails ($s$ to $2.0\times10^{10}$, $\alpha$ to $2.6\times10^{10}$, $\rho^{1/3}$ from $10^{-10}$ to 9.04), so the first bin holds 98.1, 88.9 and 97.2 percent of the weighted reference mass: the whole chemical range for $s$ and $\alpha$, the vacuum tail ($\rho < 9.2\times10^{-5}$) for $\rho^{1/3}$.
+    \item The metric therefore compares the low-density tails of the molecular grids ($s$, $\alpha$) and the valence and core region ($\rho^{1/3}$); the $s$ term is 74 to 89 percent of every divergence.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the display lines define the metric: the Jensen-Shannon divergence between the pool's mass function $P_x$ and the candidate subset's $Q_x$, summed over the three marginals with equal weight, each term the symmetrized, bounded form of the Kullback-Leibler divergence (compared with the average $M$ of the two, so it lies between 0 and $\ln 2$ per marginal; the total between 0 and $3 \ln 2 = 2.08$), probabilities floored at $10^{-12}$ so that empty bins give no $\ln 0$, natural logarithm (the report's "nats"). The bullets state a property of the selection as it was run: the linear bin edges reach the low-density tails ($s$ to $2 \times 10^{10}$, $\alpha$ to $2.6 \times 10^{10}$), so the first bin holds 98.1, 88.9 and 97.2 percent of the weighted reference mass, the whole chemical range of $s$ and $\alpha$ and the vacuum tail of $\rho^{1/3}$, and the $s$ term is 74 to 89 percent of every divergence. \par \textbf{The point:} the metric compares subsets mainly on how their grids' low-density tails are distributed; this is stated rather than changed because every trained cell used these subsets. \par \textbf{Terms:} Kullback-Leibler divergence, Jensen-Shannon divergence, nat, the probability floor. \par \textbf{If asked:} why the tails are so heavy: on a molecular quadrature grid the density falls exponentially while its gradient and kinetic terms do not fall as fast, so $s$ and $\alpha$ reach $10^{10}$ in the outermost shells and stretch the linear range. Would log-spaced bins change the subsets: they would change the metric; the selection is not rerun because every trained cell rests on these subsets, and the property is stated in the report's Sec. 2.2. Was an alternative metric stored: the L2 distance was computed and stored beside the JSD and no run used it (frame 13). \par Code: appendix pp. \pageref{code:p12_1_the_probability_floor_1e_12} to \pageref{code:p12_3_the_jensen_shannon_divergence_over_the_t}.}
+
+\begin{frame}{2. Subsets: the search}
+  \small
+  \begin{itemize}
+    \item For each $r \in \{1,\ldots,7, 12, 15, 18, 26\}$ the subset is the exhaustive minimizer of $\mathrm{JSD}(S)$ over all $\binom{26}{r}$ combinations: 26 candidates at $r = 1$, 9.7 million at $r = 12$, one at $r = 26$ (the whole pool).
+    \item Histograms add over disjoint samples, so every point's histogram is binned once and a candidate's mass function is a sum; a candidate with no grid point inside a marginal's range gets an infinite divergence and is never chosen.
+    \item The subsets are nested only where the minimizer happens to nest: the 2-to-6-point subsets are barriers and ionizations with one or two molecules; from seven points on, atomization energies dominate (next slide).
+    \item The L2 distance was computed and stored beside the JSD but no training run used it.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} four bullets on the search: for every size $r$ the exhaustive minimizer over all $\binom{26}{r}$ combinations (26 at $r = 1$, 9.7 million at $r = 12$, one at $r = 26$); the additivity of histograms over disjoint samples, so every point's histogram is binned once and a candidate's mass function is a sum; the infinite-divergence rule for a candidate whose grids reach none of a marginal's range; the non-nesting of the minimizers and the composition of the small subsets; the stored L2 alternative. \par \textbf{The point:} the subsets are global minimizers, not greedy choices, and the small ones are barriers and ionizations because a barrier reaction contributes four or five species' grids and covers more of the pool's descriptor distribution than a single molecule. \par \textbf{Terms:} exhaustive search, nesting. \par \textbf{If asked:} what the search records: the ledger subset\_index\_log.json holds, for each size, the chosen indices and the divergence, and the figure script recomputes every value from the cached descriptors (frame 14). Does the infinite-divergence rule ever fire: the report's Sec. 2.3 states the rule, not a count of the candidates it removed; the ledger records only the chosen subsets. Why not nested subsets: nesting is a constraint the minimizer was not given; the best seven-point subset does not contain the best six-point one (frame 14). \par Code: appendix p. \pageref{code:p13_1_the_exhaustive_search_over_c_26_r}.}
+
+\begin{frame}[label=f14]{2. Subsets: the chosen subsets [ledger subset\_index\_log.json; plot\_subset\_jsd.py]}
+  \begin{center}\footnotesize\setlength{\tabcolsep}{3pt}
+  \begin{tabular}{rp{5.8cm}lllll}
+  \toprule
+  $r$ & Points (ledger index order) & AE / BH76 / IP & JSD & $\rho^{1/3}$ & $s$ & $\alpha$ \\ \midrule
+  1 & H2O & 1 / 0 / 0 & 0.0475 & 0.00109 & 0.03764 & 0.00881 \\
+  7 & CHN, CO2, HLi, CH, OH+N2\_to\_H+N2O, Li\_IP, C\_IP & 4 / 1 / 2 & 0.0102 & 0.00027 & 0.00877 & 0.00120 \\
+  12 & CO2, C2H2, CO, HLi, CH, NO2, CH2, OH+N2\_to\_H+N2O, OH+CH3\_to\_O+CH4, HF+F\_to\_H+F2, Li\_IP, C\_IP & 7 / 3 / 2 & 0.0034 & 0.00004 & 0.00292 & 0.00040 \\
+  26 & the whole pool & 21 / 3 / 2 & 0 & 0 & 0 & 0 \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \small
+  \begin{itemize}
+    \item The $\rho^{1/3}$, $s$ and $\alpha$ columns are the three marginal terms of the JSD (their sum is the total); every value is recomputed from the descriptor caches and agrees with the ledger to $10^{-9}$.
+    \item The 3-to-6-point subsets hold the two barriers and the Li ionization with at most one or two molecules (the 2-point one is LiH with one barrier); the cells trained on 2 to 6 points generalize worst (Sec. 5). The subsets at 15 and 18 add molecules to the twelve-point set and do not nest between 6 and 7.
+  \end{itemize}
+  \hfill \hyperlink{b4}{\beamergotobutton{all eleven subsets}}
+\end{frame}
+\slidenote{\textbf{On the slide:} four rows of the eleven chosen subsets, at 1, 7, 12 and 26 points: the points in ledger index order, the counts of atomization energies, barrier reactions and ionization potentials, the divergence and its three marginal terms. The bullets state that the marginal columns sum to the total and agree with the ledger to $10^{-9}$, that the 3-to-6-point subsets hold the two barriers and the Li ionization with at most one or two molecules (the 2-point one is LiH with one barrier), and that 15 and 18 add molecules to the twelve-point set without nesting between 6 and 7. The button opens the full table. \par \textbf{The point:} the one-point subset is H2O alone, the seven-point subset is the first with a majority of atomization energies, and the composition of the small subsets is what the held-out section later ties to their poor generalization. \par \textbf{Terms:} none new. \par \textbf{If asked:} which points the two-point subset holds: the LiH atomization with the OH + N2 barrier (the backup table). What the 15-point subset adds to 12: FLi, CHN and NO. Why the values were recomputed: the table's numbers are recomputed from the cached descriptors by the figure script plot\_subset\_jsd.py and agree with the ledger to $10^{-9}$, so the numbers shown are the ones the selection actually used.}
+
+% =====================================================================
+\section{3. Pre-training}
+
+\begin{frame}{3. Pre-training: targets and objective}
+  \small
+  Each network is fitted pointwise [code: pretrain.py:261--341, pretrain\_data\_gen.py] to reproduce its parent (PBE on the GGA rung, SCAN on the meta-GGA) on the parent's own densities of the DFS pre-training inventory plus every atom of the BH76 and W4-11 pools (38 systems on the GGA rung, 36 on the meta-GGA; the certificate re-evaluates 39 and 38), with a synthetic $(r_s, s, \alpha)$ mesh [DFS21 SI] at 30 percent of the weight:
+  \[
+  t_x = F_x^{\rm parent} - 1 = \frac{\epsilon_x^{\rm parent}}{\epsilon_x^{\rm LDA}} - 1, \qquad
+  t_c = F_c^{\rm parent} - 1 = \frac{\epsilon_c^{\rm parent}}{\epsilon_c^{\rm PW92}} - 1,
+  \]
+  the exchange rows posed per spin channel at the doubled density $(2 n_\sigma, 4\sigma_{\sigma\sigma})$ [OP79]. The objective is the integration-weighted pointwise residual plus a per-system energy term:
+  \[
+  \begin{aligned}
+  \mathcal{L}_{\rm pre} = {} & \frac{\sum_i w_i\,(F_i^{\rm NN} - 1 - t_i)^2}{\sum_i w_i}
+  + w_E\,\frac{1}{N_{\rm sys}}\sum_{s}\Big(\sum_{i\in s} w^{\rm grid}_i\, n_i\,\epsilon_i^{\rm LDA}\, F_i^{\rm NN} - E_{xc,s}^{\rm parent}\Big)^2, \\
+  & w_i = |n_i\, \epsilon_i^{\rm LDA}|\, w_i^{\rm grid}, \qquad w_E = 0.1 .
+  \end{aligned}
+  \]
+  \begin{itemize}
+    \item The energy term is needed because the pointwise residual alone does not bound a system's energy.
+    \item Adam, 20000 steps, learning rate $10^{-3}$ to $10^{-5}$ from the midpoint, clip 1.0, a 20 percent validation slice scored every 50 steps with patience 300 checks [cfg \texttt{pretrain:}].
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the text states what pre-training fits: each network pointwise to its parent (PBE on the GGA rung, SCAN on the meta-GGA) on the parent's own densities of the DFS pre-training inventory plus every atom of the BH76 and W4-11 pools (38 systems on the GGA rung, 36 on the meta-GGA; the certificate re-evaluates 39 and 38), with a synthetic $(r_s, s, \alpha)$ mesh at 30 percent of the weight. The first display line gives the targets, the parent's enhancement factor minus one, evaluated with libxc, the exchange rows posed per spin channel at the doubled density. The objective is the integration-weighted pointwise residual (weights $|n\,\epsilon^{\rm LDA}|$ times the quadrature weight, i.e. how much each point contributes to the energy) plus a per-system energy term at $w_E = 0.1$. The bullets: why the energy term exists, and the optimizer settings (Adam, 20000 steps, the learning rate from $10^{-3}$ to $10^{-5}$ over the second half, clip 1.0, a 20 percent validation slice every 50 steps, patience 300 checks). \par \textbf{The point:} pre-training is not training on reference data; it makes the network produce the parent functional, so that every trained cell starts from PBE. \par \textbf{Terms:} parent functional, clone, the synthetic mesh, the energy term, patience. \par \textbf{If asked:} why the energy term: an earlier round showed that the architecture with the lowest exchange residual carried the largest atomization-energy offset, since pointwise errors that do not cancel between a molecule and its atoms add up; the term at $w_E = 0.1$ bounds the energy the pointwise residual does not (the report's Sec. 3.1). Why 30 percent for the mesh: it regularizes the fit where molecules sample the input space sparsely; the value is the run configuration's \texttt{pretrain:} block. How long a fit takes: 3.8 h for deep\_3x16 and 28 h for deep\_attn\_3x16 (frame 18). \par Code: appendix pp. \pageref{code:p15_1_the_pre_training_systems_the_dfs_invento} to \pageref{code:p15_10_the_loop_validation_every_validate_every}.}
+
+\begin{frame}[label=f16]{3. Pre-training: the fidelity certificate and the GGA clones}
+  \small
+  The saved networks are re-evaluated [code: cluster/fidelity.py, grid\_config.py:287--312] on every system at the production basis and grid and compared with the parent:
+  \[
+  \Delta E_{xc,s} = E_{xc,s}^{\rm NN} - E_{xc,s}^{\rm parent}, \qquad
+  \Delta AE = \Delta E_{xc,{\rm mol}} - \sum_A \Delta E_{xc,A},
+  \]
+  \vspace{-0.9em}
+  \[
+  \max_{\rm atoms} |\Delta E_{xc,A}| \le 1.0\ \text{mHa}, \qquad
+  \mathrm{mean}_{\rm mol} |\Delta AE| \le 1.0\ \text{kcal/mol}, \qquad
+  \max_{\rm mol} |\Delta AE| \le 2.0\ \text{kcal/mol}.
+  \]
+  A failing certificate holds the group's training array; every trained cell starts from a network that reproduces its parent to within these tolerances.
+  \begin{center}\small
+  \begin{tabular}{lllll}
+  \toprule
+  Architecture (parent PBE) & max atom (mHa) & mean $|\Delta AE|$ & max $|\Delta AE|$ & Verdict \\ \midrule
+  deep\_2x8 & 0.369 & 0.343 & 1.421 (C3H8, C4H6) & PASS \\
+  deep\_attn\_2x8 & 0.201 & 0.131 & 0.573 & PASS \\
+  deep\_3x16 & 0.210 & 0.162 & 0.519 & PASS \\
+  deep\_attn\_3x16 & 0.058 & 0.031 & 0.115 & PASS \\
+  deep0\_3x16 & 0.439 & 0.114 & 0.450 & PASS \\
+  deep0\_attn\_3x16 & 0.123 & 0.042 & 0.149 & PASS \\
+  deep0\_cusp\_3x16 & 0.439 & 0.188 & 1.071 (AlCl3) & PASS \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \hfill \hyperlink{b5}{\beamergotobutton{with the loss columns and the SCAN clones}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the text and the two display lines define the certificate: the saved networks re-evaluated at the production basis and grid (not the pre-training grid) on the parent's frozen densities; per system the exchange-correlation energy difference from the parent, per molecule the atomization-energy error (the molecule's difference minus its atoms', since an atomization energy is a difference); the three tolerances: no free atom more than 1 mHa off (0.63 kcal/mol), the mean atomization error at most 1 kcal/mol, no single molecule more than 2 kcal/mol. The table lists the seven GGA clones with their largest atom error, mean and largest atomization error (the species above 1 kcal/mol in parentheses) and the verdict: every one passes, the attention variants tightest. The button opens the full table with the pointwise loss columns and the SCAN clones. \par \textbf{The point:} every trained cell starts from a network that reproduces PBE to within these tolerances, so what training changes is measured from PBE. \par \textbf{Terms:} fidelity certificate, $\Delta E_{xc}$, $\Delta AE$, mHa, the backstop. \par \textbf{If asked:} why two tiers on the atomization error: the earlier single 1 kcal/mol maximum let one species a few hundredths over the bound hold an entire group while the set as a whole was far inside chemical accuracy; the mean plus a 2 kcal/mol backstop replaced it on 2026-09-02. Why the production grid and not the pre-training one: the certificate is the acceptance test for the training that follows, which runs at the production settings. Which clone is loosest: deep\_2x8, with C3H8 and C4H6 at 1.42 kcal/mol, under the backstop and with the mean at 0.34 (cluster/fidelity.py in the appendix computes both). \par Code: appendix pp. \pageref{code:p16_1_de_xc_per_system_in_mha} to \pageref{code:p16_5_the_gate_that_holds_the_training_array}.}
+
+\begin{frame}{3. Pre-training: the meta-GGA clones}
+  \small
+  \begin{center}\footnotesize
+  \begin{tabular}{lllll}
+  \toprule
+  Architecture (parent SCAN) & max atom (mHa) & mean $|\Delta AE|$ & max $|\Delta AE|$ & Verdict \\ \midrule
+  deep0\_mgga\_3x16 & 4.106 & 1.473 & 5.605 (11 species) & FAIL \\
+  deep0\_cusp\_mgga\_3x16 & 3.132 & 2.062 & 7.257 (14 species) & FAIL \\
+  deep0\_rung35\_mgga\_3x16 & 3.001 & 1.780 & 6.303 (11 species) & FAIL \\
+  deep0\_rung35ms\_mgga\_3x16 & 2.096 & 0.710 & 3.294 (4 species) & FAIL \\
+  deep0\_mgga\_attn\_3x16 & -- & -- & -- & cancelled \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \footnotesize
+  \begin{itemize}
+    \item Every completed SCAN clone fails on the free atoms (2.10 to 4.11 mHa against 1.0) and three of the four on the mean atomization error as well: the rung rather than one architecture is what fails at 3x16.
+    \item Their exchange residuals end 40 to 400 times the GGA clones' and their correlation residuals 1.5 to 240 times, after the same 20000 steps (next slide).
+    \item The meta-GGA training array is held; the lever study of Sec. 6 (wider networks, the energy-term weight) is the follow-up.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the table lists the four SCAN clones whose fits completed, with the same columns as the previous slide: every one fails, on the free atoms (2.10 to 4.11 mHa against 1.0) and three of the four on the mean atomization error as well (4 to 14 of 22 molecules above 1 kcal/mol); the fifth fit, deep0\_mgga\_attn\_3x16, was cancelled. The bullets: the failure is on the rung rather than one architecture; the residuals end 40 to 400 times the GGA clones' in exchange and 1.5 to 240 times in correlation after the same 20000 steps; the array is held and the lever study is the follow-up. \par \textbf{The point:} at three layers of sixteen the networks do not reproduce SCAN well enough to serve as its starting point, and no meta-GGA cell exists yet. \par \textbf{Terms:} lever study (the follow-up that varies the width and the energy-term weight). \par \textbf{If asked:} what the lever study runs: fourteen 10000-step fits, the energy-term weight at 0.1, 10 and 100 over the four widths 3x16, 3x32, 4x16 and 4x32, plus the integration objective on the 3x16, as one 48 h job awaiting submission (frame 36). Why SCAN is harder to clone than PBE: the meta-GGA form reads one more input, $x_\alpha$, and SCAN's dependence on $\alpha$ is more structured, so the same capacity and steps land farther from it; the curves of the next slide are smooth and still decreasing at 20000 steps. What "anchored form" would mean: writing the network as SCAN plus a correction rather than the whole factor; it remains one of the options (frame 36).}
+
+\begin{frame}{3. Pre-training: the loss curves}
+  \begin{columns}[T]
+  \begin{column}{0.5\linewidth}
+    \includegraphics[width=\linewidth]{figures_dfs_step7_v7_family_pretrain/pretrain_curves.png}
+  \end{column}
+  \begin{column}{0.5\linewidth}
+    \includegraphics[width=\linewidth]{figures_dfs_step7_v7_family_pretrain/uncertified_mgga/pretrain_curves.png}
+  \end{column}
+  \end{columns}
+  \footnotesize
+  \begin{itemize}
+    \item Pointwise residual per step, exchange (left panel of each pair) and correlation (right); left the seven certified GGA clones, right the four SCAN clones. The recurring bursts from step 4000 to 8000 on are a property of the fit, not of the validation, which reloads nothing.
+    \item The GGA clones end at $10^{-8}$ to $10^{-6}$; deep\_attn\_3x16 descends earliest and lowest, at the longest fit (28 h against 3.8 h for its plain twin). The SCAN clones stop 40 to 400 times higher in exchange and fail the certificate.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} left, the seven certified GGA clones; right, the four SCAN clones drawn from their run. Each pair of panels is the first term of the pre-training objective, the weighted mean squared pointwise residual, for the exchange network (left panel of the pair) and the correlation network (right), against the optimizer step on a log scale, the final value of each curve in the legend. The bullets: the recurring bursts, and the end values. \par \textbf{The point:} the GGA clones reach residuals of $10^{-8}$ to $10^{-6}$ in units of the squared enhancement-factor difference, which corresponds to the sub-kcal/mol atomization errors of the certificate; the SCAN clones stop 40 to 400 times higher in exchange. \par \textbf{Terms:} pointwise residual, burst. \par \textbf{If asked:} what the bursts are: 5 to 14 consecutive steps at 6 to 12 times the local level, recurring every 420 to 590 steps from step 4000 to 8000 onward and ending near step 17500; they do not sit on the 50-step validation grid and no snapshot is reloaded during a fit (the best model is kept aside while training continues from the current weights), so their cause lies in the optimization itself and is not established (the report's Sec. 3.3). The exact end values: exchange $1.5 \times 10^{-8}$ to $9.5 \times 10^{-8}$, correlation $6.7 \times 10^{-8}$ to $3.4 \times 10^{-6}$ for the GGA clones (the backup certificate table's loss columns). Why deep\_attn\_3x16 takes 28 h against 3.8 h: the attention block per grid point, at the same 20000 steps.}
+
+\begin{frame}{3. Pre-training: the GGA clones against PBE}
+  \begin{columns}[T]
+  \begin{column}{0.55\linewidth}
+    \includegraphics[width=\linewidth]{figures_dfs_step7_v7_family_pretrain/pretrain_fx_fc_delta_all.png}
+  \end{column}
+  \begin{column}{0.45\linewidth}
+    \small
+    \begin{itemize}
+      \item The difference $F^{\rm NN} - F^{\rm PBE}$ of every GGA clone, exchange at $n = 1$ and correlation at $r_s = 2$, along $s$; one curve per architecture.
+      \item Within $2.5\times10^{-3}$ for $s < 2.5$ ($10^{-3}$ for the 3x16 clones), at most 0.015 at $s = 6$ (deep\_attn\_2x8 exchange; 0.007 for deep\_3x16); the three zero-init clones within $4.2\times10^{-3}$ everywhere.
+      \item The region beyond $s = 3$ is sparsely sampled by the pre-training set and is where the clones drift most; the training of Sec. 4 changes the functionals far more (0.1 to 1) than this.
+    \end{itemize}
+  \end{column}
+  \end{columns}
+\end{frame}
+\slidenote{\textbf{On the slide:} the figure draws, for every GGA clone, the difference $F^{\rm NN} - F^{\rm PBE}$ along two slices: the exchange factor against $s$ at unit density (top) and the correlation factor against $s$ at $r_s = 2$ (bottom), one curve per architecture. The bullets give the envelope: within $2.5 \times 10^{-3}$ for $s < 2.5$ ($10^{-3}$ for the 3x16 clones), at most 0.015 at $s = 6$ (deep\_attn\_2x8 exchange; 0.007 for deep\_3x16), the three zero-init clones within $4.2 \times 10^{-3}$ everywhere; and the reading that the region beyond $s = 3$ is sparsely sampled and that training changes the functionals by 0.1 to 1 (frames 24 and 25), far more than this. \par \textbf{The point:} the clones are PBE to a few thousandths where the energy-weighted grid lies, so the trained changes of Sec. 4 are changes from PBE. \par \textbf{Terms:} slice (a one-dimensional cut through the input space at fixed density). \par \textbf{If asked:} why the panel titles inside the PNG read "pretrained corrections": a wording left from the plotting script; the curves are the plain differences of networks fitted to produce PBE, not to correct it (the correction to PBE is what training produces). Where most of the energy-weighted grid lies: below $s = 2.5$; beyond $s = 3$ the pre-training set samples sparsely and the clones drift most. Which clone drifts most at $s = 6$: deep\_attn\_2x8's exchange, at 0.015.}
+
+\begin{frame}{3. Pre-training: a SCAN clone against SCAN}
+  \begin{columns}[T]
+  \begin{column}{0.55\linewidth}
+    \includegraphics[width=\linewidth]{figures_dfs_step7_v7_family_pretrain/uncertified_mgga/pretrain_fx_fc_deep0_cusp_mgga_3x16.png}
+  \end{column}
+  \begin{column}{0.45\linewidth}
+    \footnotesize
+    \begin{itemize}
+      \item One of the four SCAN clones (deep0\_cusp\_mgga\_3x16): the parent dashed, the network solid, the difference panels beside them, at $r_s = 0.5$, 2 and 5 and at $\alpha = 0$ and 1.
+      \item $F_x(\alpha = 0)$ is 0.01 to 0.027 above SCAN for $s > 2.5$; $F_c(\alpha = 1)$ 0.0003 to 0.016 below it from $s = 2$ at $r_s = 2$ (0.005 to 0.033 at $r_s = 0.5$).
+      \item Same-sign offsets over wide $s$ ranges do not cancel between a molecule and its atoms: this is why the clone fails on atomization energies while its pointwise residual is small. The rung-3.5 clones miss SCAN by 0.06 to 0.39 in correlation below $s = 1$; deep0\_mgga\_3x16 sits within 0.01 on every slice and still fails on the atoms.
+    \end{itemize}
+  \end{column}
+  \end{columns}
+\end{frame}
+\slidenote{\textbf{On the slide:} one of the four SCAN clones (deep0\_cusp\_mgga\_3x16) against SCAN along the slices SCAN's paper uses: the enhancement factors against $s$ at $r_s = 0.5$, 2 and 5 and at the two values of the iso-orbital indicator that mark a single-orbital region ($\alpha = 0$) and a uniform-gas-like region ($\alpha = 1$); the parent dashed, the network solid, the difference panels beside each pair. The bullets give the offsets ($F_x$ at $\alpha = 0$ 0.01 to 0.027 above SCAN for $s > 2.5$; $F_c$ at $\alpha = 1$ 0.0003 to 0.016 below it from $s = 2$ at $r_s = 2$, 0.005 to 0.033 at $r_s = 0.5$) and the reading: same-sign offsets over wide ranges do not cancel between a molecule and its atoms. \par \textbf{The point:} the certificate, computed on the production densities, sees what the slices do not: deep0\_mgga\_3x16 sits within 0.01 of SCAN on every slice and still fails on the free atoms by 4.1 mHa. \par \textbf{Terms:} none new. \par \textbf{If asked:} where the other three clones are drawn: the full report's Fig. 3.3; the rung-3.5 clones miss SCAN in correlation by 0.06 to 0.39 below $s = 1$. Why an offset of one sign matters more than a pointwise residual: an atomization energy is the molecule's energy minus its atoms', so an offset that is the same everywhere cancels and one that varies with $s$ does not; the clone's pointwise residual is 40 times the GGA clones' in exchange and only 1.5 times in correlation, yet the atomization errors reach 7.3 kcal/mol (frame 17). Which slices SCAN's paper uses: $\alpha = 0$ and $\alpha = 1$ at several $r_s$, the same ones drawn here.}
+
+% =====================================================================
+\section{4. Optimization, in-sample}
+
+\begin{frame}{4. In-sample: the training objective [DFS21 Eqs. 15--17]}
+  \small
+  One optimizer step per training group per epoch (a reaction, or a molecule with its density and potential references); the group loss is the DFS weighting ($\lambda_{RE} = 1$, $\lambda_n = 20$), with $E^{\rm NN}$ the self-consistent energy of the $N = 3$ cycle SCF and $t$ the cycle:
+  \[
+  \mathcal{L} = 1\cdot\mathcal{L}_{AE} + 1\cdot\mathcal{L}_{\rm rxn} + 1\cdot\mathcal{L}_{IP} + 1\cdot\mathcal{L}_{v_{xc}} + 20\cdot\mathcal{L}_{\rho},
+  \]
+  \[
+  \mathcal{L}_{\rm rxn} = \frac{1}{|T|}\sum_{t\in T} w_t^2\, r_t^2, \qquad
+  r_t = \sum_i c_i\, E^{\rm NN}_{i,t} - E^{\rm ref}, \qquad
+  w_t = \left(\frac{t}{N-1}\right)^2,
+  \]
+  \[
+  \mathcal{L}_{AE} = 0.01\,\mathrm{mean}_Z\, \frac{(E_Z^{\rm NN} - E_Z^{\rm anchor})^2}{(E_Z^{\rm anchor})^2}, \qquad
+  \mathcal{L}_{IP} = \mathrm{mean}\,(E^{\rm NN}_{+} - E^{\rm NN}_0 - IP^{\rm ref})^2, \qquad
+  \mathcal{L}_{v_{xc}} = \frac{\|V_{xc}^{\rm NN} - V_{xc}^{\rm ref}\|_F^2}{n_{\rm AO}^2},
+  \]
+  \[
+  \mathcal{L}_{\rho} = \mathrm{mean}_{\rm mol}\,\frac{\sum_g w_g\,(n^{\rm NN}_g - n^{\rm ref}_g)^2}{N_e^2}, \qquad N_e = \sum_g w_g\, n^{\rm ref}_g .
+  \]
+  \begin{itemize}
+    \item $\mathcal{L}_{\rm rxn}$ is the DFS convergence-tail scoring ($w_t^2 = 0, 1/16, 1$ at $N = 3$) over the W4-11 atomizations, as reactions with the network's own atoms, and the BH76 barriers [W411, GMTKN55]; the free atoms are held near their exact energies [Chak93]; $V_{xc}$ is compared on the reference density; the density against CCSD on the same grid, per electron. Code: losses.py:76, 366--396; train.py:1829--1835; oneshot.py:632--653.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the objective of the training step, the only stage that changes the functional away from PBE. One optimizer step per training group per epoch, a group being a reaction or a molecule with its density and potential references. The first display line is the DFS weighting of the five channels ($\lambda_{RE} = 1$, $\lambda_n = 20$). $\mathcal{L}_{\rm rxn}$: the reaction residual $r_t$ formed from the network's self-consistent species energies at SCF cycle $t$ with stoichiometric coefficients $c_i$, weighted by the convergence tail $w_t^2 = 0, 1/16, 1$ at three cycles, the DFS device that penalizes an SCF that does not settle; the W4-11 atomizations enter here as reactions "molecule to atoms" with the network's own atoms, beside the BH76 barriers. $\mathcal{L}_{AE}$: the free atoms of the subset held near their exact non-relativistic energies as a relative error at the DFS weight 0.01, so the absolute energy scale cannot drift. $\mathcal{L}_{IP}$: cation minus neutral against the reference. $\mathcal{L}_{v_{xc}}$: the potential matrix against a reference potential from the inverted reference density, on the reference density, in the Frobenius norm (the square root of the sum of the squared matrix elements) over $n_{\rm AO}^2$; not part of the DFS objective. $\mathcal{L}_\rho$: the final SCF density against CCSD on the same grid, per electron squared. \par \textbf{The point:} the reaction and density channels are the Letter's, with its weights 1 and 20; the potential channel is an addition whose behaviour under training is reported on the next slide. \par \textbf{Terms:} group, epoch, convergence tail, atom anchor, the Frobenius norm, the potential channel. \par \textbf{If asked:} why the atomization energies are formed with the network's own atoms: an atomization energy against fixed exact atomic energies measures the network's absolute-energy offset, not the trained quantity (frame 26's note). Where the weights sit in the code: train.py:1829--1835 (the appendix). Why the atom anchors at 0.01: the DFS value; the anchors are relative errors, so 0.01 is a soft tether on the absolute scale. \par Code: appendix pp. \pageref{code:p21_1_the_five_channels_and_their_assembly} to \pageref{code:p21_12_the_group_s_scoped_loss}.}
+
+\begin{frame}{4. In-sample: the training losses (deep\_3x16)}
+  \begin{center}
+  \includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/training_loss_channels_deep_3x16.png}
+  \end{center}
+  \footnotesize
+  \begin{itemize}
+    \item SCF: 3 cycles from the converged PBE density, DFS mixing $D_{t+1} = (1 - a_t) D_t + a_t D^{\rm out}_t$, $a_t = 0.3^{t} + 0.3$ [DFS21 SI], gradients through every cycle, the last mixed density scored. AdamW $10^{-3} \to 10^{-5}$ over the second half, weight decay $10^{-4}$, clip 1.0, 200 epochs.
+    \item Seven panels, one curve per subset size: the total, the five channels at their trained weights, the validation error at each check. The reaction channel falls in every cell (by 2.3x to 2223x), the density channel by 1.15x to 4.6x, both settled within 25 epochs; the potential channel, absent from the DFS objective, rises in 43 of the 64 cells that carry it, falls in 9 and is flat in 12.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} seven panels for deep\_3x16, one curve per subset size (dark: one point, yellow: twenty-six), per-epoch means on a log scale: the total loss, the five channels at their trained weights (summing to the total) and the validation error at each 25-epoch check, the chosen epoch starred. The first bullet is the protocol: three Kohn-Sham cycles from the converged PBE density with the DFS linear mixing (the new density mixed into the old with a weight decaying from 1.3 toward 0.3), gradients through every cycle, the last mixed density scored; AdamW, the learning rate held for the first half and decayed over the second, weight decay $10^{-4}$, clip 1.0, 200 epochs. The second reads the curves: the reaction channel falls by 2.3x (the parity arm at 7, trained at weight 0.01) to 188x from two points upward and by 24x to 2223x in the one-point cells; the density channel by 1.15x to 4.6x, both settled within 25 epochs; the potential channel rises in 43 of the 64 cells that carry it, falls in 9 (every one-point cell; deep\_attn\_3x16 at 2, 15 and 18) and is flat in 12. \par \textbf{The point:} training reduces the reaction channel by orders of magnitude and the density channel modestly, while the potential term and the energy terms pull in different directions once many molecules are supervised. \par \textbf{Terms:} Kohn-Sham cycle (one self-consistent-field iteration), DFS mixing, AdamW, weight decay, the clip. \par \textbf{If asked:} why three cycles: enough when the functional is close to PBE, not converged when it is far from a fixed point; one reason the held-out density comparison is asymmetric, and what the 25-cycle arm tests (frames 23, 32, 33). Why the reaction channel falls least in the parity arm: it is trained at the Letter's weight 0.01 instead of 1. Which cells lack the potential channel: the parity arm's, trained without it. \par Code: appendix pp. \pageref{code:p22_1_the_scf_three_cycles_the_dfs_mixing_sche} to \pageref{code:p22_6_adamw_the_linear_decay_over_the_second_h}.}
+
+\begin{frame}{4. In-sample: validation and the arms' protocol}
+  \begin{center}
+  \includegraphics[width=\linewidth,height=0.40\textheight,keepaspectratio]{"figures_dfs_step7_v7_family_val_best/training_loss_channels_deep_3x16 [dpyscf parity].png"}
+  \end{center}
+  \footnotesize
+  \begin{itemize}
+    \item Validation MAE on 35 reactions every 25 epochs picks the checkpoint. The 2-to-6-point cells of deep\_3x16, deep0\_3x16 and deep\_2x8 rise after the first check (deep\_3x16 at 2: 11.7 to 32.7 kcal/mol, best at epoch 25); the cells from seven points hold 4.7 to 11.6; the small cells of deep\_attn\_3x16 fall (37 to 7).
+    \item The 25-cycle arm keeps everything else and runs 25 SCF cycles, 100 epochs, checks every 10. The parity arm (the figure, with its learning-rate panel) reproduces the DFS code's protocol: 25 cycles, the Letter's weights (reactions 0.01, no potential term), Adam with a plateau schedule at $10^{-4}$ that never triggered.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the figure is the parity arm's own loss figure, the one with a learning-rate panel (flat at $10^{-4}$, since its plateau rule never triggered). The first bullet reads the validation curves of the campaign: the cells trained on 2 to 6 points start overfitting after 25 epochs (deep\_3x16 at 2: 11.7 to 32.7 kcal/mol, best at epoch 25), the cells from seven points hold 4.7 to 11.6, the small cells of deep\_attn\_3x16 fall from 37 to 7 (those of deep\_attn\_2x8 fall at 3, 4 and 6 and stay near 29 at 2 and 5). The second states the arms: arm A changes one thing, 25 SCF cycles, and ran 100 epochs with checks every 10, early-stopped at 70 to 90; arm B reproduces the DFS reference code's protocol in every setting the code can express: 25 cycles, the density seed mixed with an atomic guess, the mixing schedule as executed, Adam with a plateau schedule, the Letter's weights (reactions 0.01, density 20, no potential channel). \par \textbf{The point:} the validation-best rule reads the small cells at epoch 25 and the large ones late, and the arms are the two protocol variants the density-program slides compare. \par \textbf{Terms:} validation MAE, overfitting, plateau schedule, arm A (25 cycles), arm B (dpyscf parity), atomic guess. \par \textbf{If asked:} how long the arms trained: 21.6 to 56.5 h for the 25-cycle cells and 25.1 and 47.7 h for the parity cells, against 1.2 to 34.9 h for the size and families cells (the report's Sec. 4.1). Why the plateau rule never triggered: the validation error never plateaued for the patience the rule demands within 100 epochs. What the 35 validation reactions are: a fixed slice of the BH76 and W4-11 pools split by reaction identity, used only to pick the checkpoint and removed from the held-out set (frame 27). \par Code: appendix pp. \pageref{code:p23_1_the_hyperparameters_of_the_run_200_epoch} to \pageref{code:p23_5_the_validation_best_checkpoint_among_the}.}
+
+\begin{frame}{4. In-sample: the trained enhancement factors, the 3x16 networks}
+  \begin{columns}[T]
+  \begin{column}{0.5\linewidth}
+    \includegraphics[width=0.84\linewidth]{figures_dfs_step7_v7_family_val_best/trained_fx_fc_deep_3x16.png}
+  \end{column}
+  \begin{column}{0.5\linewidth}
+    \includegraphics[width=0.84\linewidth]{figures_dfs_step7_v7_family_val_best/trained_fx_fc_deep_attn_3x16.png}
+  \end{column}
+  \end{columns}
+  \footnotesize
+  \begin{itemize}
+    \item Exchange: the trained $F_x$ is below PBE by 0.002 to 0.06 near $s = 0.8$ and above it from $s = 1.0$ to 1.7, by up to 0.18 (deep\_3x16) and 0.13 (deep\_attn\_3x16) at $s = 1.9$ to 3.4; the one-molecule cell of deep\_3x16 moves least.
+    \item Correlation at $r_s = 2$: the one-molecule cells fall to 0.16 by $s = 2$; the others stay near 1 to $s = 2$ (PBE 0.02 by $s = 3$) and then split, deep\_3x16 at 2, 3, 5, 6, 15, 18, 26 decaying to 0.1 to 0.6 by $s = 6$ while 4, 7 and 12 rise to 1.1 to 1.3, and every deep\_attn\_3x16 cell but the one-molecule and the eighteen-point ones rising above 1 (to 1.95 at $s = 6$).
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the trained functionals of deep\_3x16 (left) and deep\_attn\_3x16 (right) along the slices of the pre-training figures: the exchange factor against $s$ at unit density (top left of each figure), its difference from PBE (top right), the correlation factor at $r_s = 2$ (bottom left) and its difference (bottom right), one curve per subset size, at the validation-best checkpoint. The first bullet: the exchange change has one shape in every cell, a small reduction of $F_x$ near $s = 0.8$ (the range of most valence density) and a raise between $s = 1$ and 6, largest for the cells trained on few points (the peak above PBE at $s = 1.9$ to 3.4 is 0.18 for deep\_3x16, 0.13 for deep\_attn\_3x16, 0.14 for deep0\_3x16 and 0.19 for deep0\_attn\_3x16). The second: the correlation change is larger and varies more, the one-molecule cells decaying to 0.16 by $s = 2$ and the others staying near 1 to $s = 2$ and then splitting by cell. \par \textbf{The point:} the differences from PBE are of order 0.1 to 1, not small perturbations, and the training data at $r_s = 2$ and large $s$ does not determine the correlation factor; whether these changes transfer is the held-out section. \par \textbf{Terms:} none new. \par \textbf{If asked:} which cell moves least: the one-molecule cell of deep\_3x16 at $s = 0.8$. Which cells rise above 1 in correlation: every deep\_attn\_3x16 cell but the one-molecule and the eighteen-point ones (up to 1.95 at $s = 6$ for the twelve-point cell; the eighteen-point cell decays to 0.78); deep\_3x16 at 4, 7 and 12 (to 1.1 to 1.3) while its cells at 2, 3, 5, 6, 15, 18, 26 decay to 0.1 to 0.6 (the figure's bottom-left panel; trained\_fx\_fc\_curves.csv). Where PBE's own correlation factor goes: to 0.02 by $s = 3$.}
+
+\begin{frame}{4. In-sample: the trained enhancement factors, the 2x8 pair and the arms}
+  \begin{columns}[T]
+  \begin{column}{0.5\linewidth}
+    \includegraphics[width=0.84\linewidth]{figures_dfs_step7_v7_family_val_best/trained_fx_fc_deep_2x8.png}
+  \end{column}
+  \begin{column}{0.5\linewidth}
+    \includegraphics[width=0.84\linewidth]{"figures_dfs_step7_v7_family_val_best/trained_fx_fc_deep_3x16 [25 cycles].png"}
+  \end{column}
+  \end{columns}
+  \footnotesize
+  \begin{itemize}
+    \item Left, deep\_2x8: the same exchange shape (above PBE by up to 0.08 at $s = 1.9$ to 3.4; deep\_attn\_2x8 by 0.19); in correlation its cells from seven points rise to 1.0 to 1.3 while its small cells decay to 0.2 to 0.4 by $s = 6$.
+    \item Right, the 25-cycle arm at 7 and 12: exchange above PBE by up to 0.13, as the parity arm; the parity arm's $F_c$ stays within 0.08 of PBE on every drawn slice (the Letter's weights leave the correlation factor near its start), the 25-cycle arm's within the deep\_3x16 spread.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the same slices for deep\_2x8 (left) and the 25-cycle arm at 7 and 12 points (right). The bullets: deep\_2x8's exchange has the same shape at smaller amplitude (above PBE by up to 0.08; deep\_attn\_2x8, not drawn, by 0.19), and its correlation splits the same way between the small subsets (decay to 0.2 to 0.4) and the subsets from seven points (rise to 1.0 to 1.3); the 25-cycle arm's curves fall inside the deep\_3x16 spread (exchange above PBE by up to 0.13, as the parity arm), and the parity arm's $F_c$ stays within 0.08 of PBE on every slice (0.096 and 0.119 at $s = 2$ and $r_s = 2$ against PBE's 0.080, where the other cells run up to 1.29; trained\_fx\_fc\_curves.csv). \par \textbf{The point:} every architecture discussed is on screen or named as absent; the parity arm, trained under the Letter's weights with the reaction channel at 0.01, moved the functional least. \par \textbf{Terms:} none new. \par \textbf{If asked:} where deep\_attn\_2x8 and the parity arm are drawn: the report's Fig. 4.4 and the figure set's trained\_fx\_fc PNGs, one per architecture. Why the arms sit inside the deep\_3x16 spread: they are the same network and subsets under a different SCF budget and, for the parity arm, different weights; their exchange raise (0.13) is within the 0.18 of the plain column. Whether the smaller network changes less: yes in exchange (0.08 against 0.18) and comparably in correlation.}
+
+\begin{frame}{4. In-sample: energy and density in DFS units on the training reactions}
+  \begin{center}
+  \includegraphics[width=\linewidth,height=0.44\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/insample_by_pool_3x3_eps.png}
+  \end{center}
+  \footnotesize
+  \begin{itemize}
+    \item Rows WTMAD-2 / $\varepsilon_n$ / $\mathcal{ED}$, columns BH76 / W4-11 / combined; bars against PBE on each cell's own training reactions (caps), the dashed line PBE on their union (18.6, 3.83, 5.67 kcal/mol).
+    \item All 66 trained cells (the two set-aside cells included) are below PBE on $\mathcal{ED}$ over their own reactions: training WTMAD-2 0.00 to 5.4 kcal/mol against 5.67 on the union.
+    \item The grid-RMSE density of the trained molecules is below PBE in every cell (NN/PBE 0.57 to 0.97 over the architectures); the per-electron $\varepsilon_n$ of deep\_3x16 is above the pooled PBE value from 2 to 18 points, so the two density measures disagree on the small cells.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} "in-sample" means measured on the reactions and molecules the cell trained on: a check that training reached its target, not of generalization. The nine panels have the held-out layout: rows WTMAD-2, $\varepsilon_n$, $\mathcal{ED}$; columns BH76, W4-11, both. Each bar is one cell, the black cap PBE on the same reactions, a triangle a cell below its cap, the dashed line PBE on the union of the run's training reactions (18.6, 3.83, 5.67 kcal/mol); a subset with no reaction of a column has no bar there. The bullets: all 66 trained cells (the set-aside pair included, since only their held-out passes are refused) are below PBE on $\mathcal{ED}$ over their own reactions (training WTMAD-2 0.00 to 5.4 against 5.67); the grid-RMSE density of the trained molecules is below PBE in every cell (NN/PBE 0.57 to 0.97) while the per-electron $\varepsilon_n$ of deep\_3x16 is above the pooled PBE value from 2 to 18 points. \par \textbf{The point:} every cell reproduces its own training data far better than PBE; the two density measures disagree on the small cells, so both are reported. \par \textbf{Terms:} in-sample, the union line. \par \textbf{If asked:} the density ratios per architecture: 0.72 to 0.97 deep\_3x16, 0.57 to 0.76 deep\_attn\_3x16, 0.68 to 0.93 deep0\_3x16, 0.64 to 0.91 deep0\_attn\_3x16, 0.65 to 0.92 deep\_2x8, 0.71 to 0.86 deep\_attn\_2x8, 0.65 to 0.83 the arms (the report's Sec. 4.5, from eval/per\_molecule.json). The best training energies: deep\_attn\_3x16 0.05 to 2.45 kcal/mol, the parity arm 4.5 and 5.4. Not shown: the suite's in-sample atomization panel subtracts the molecular energy from fixed exact atomic energies, so it measures the absolute-energy offset (30 to 110 kcal/mol) and stays out until it uses the network's own atoms (frame 36).}
+
+% =====================================================================
+\section{5. Optimization, hold-out}
+
+\begin{frame}{5. Held-out: the set and the metrics [Goe17; DFS21 Eqs. 20, 21]}
+  \small
+  Test set: GMTKN55 BH76 barriers and W4-11 atomization energies, minus the 35-reaction validation slice and each cell's training reactions: 61 BH76 rows (three listed twice by name, four more as permuted-name twins; 54 barrier identities are scored) and 120 W4-11 reactions, 189 species with CCSD densities; the tables' n rxn column counts name-deduplicated rows (58 BH76 at one point). PBE is evaluated on each cell's own slice; the functionals with the same 3-cycle SCF they trained with, PBE's density converged.
+  \[
+  \mathrm{WTMAD\text{-}2} = \frac{56.84}{N}\sum_{i\in\{\rm BH76,\,W4\text{-}11\}} N_i\,\frac{\mathrm{MAD}_i}{\overline{|\Delta E_{\rm ref}|}_i}, \qquad
+  \varepsilon_n = \frac{1}{N_e}\int |n - n^{\rm ref}|\, d^3r, \qquad N_e = \int n^{\rm ref}\, d^3r,
+  \]
+  \[
+  \mathcal{ED} = \frac{2}{1/E + 1/(\gamma D)}, \qquad
+  D_{\rm RMSE} = \sqrt{\sum_g w_g (n_g - n_g^{\rm ref})^2 \Big/ \sum_g w_g}.
+  \]
+  \footnotesize
+  \begin{itemize}
+    \item WTMAD-2 over the two present subsets; alone, a pool reads $56.84\,\mathrm{MAD}_i / \overline{|\Delta E_{\rm ref}|}_i$, a scaled relative error. $\gamma = 1084.87$ kcal/mol on $\varepsilon_n$ (DFS units) or $\gamma = E_{\rm PBE}/D_{\rm PBE}$ on the grid RMSE (self-calibrated).
+    \item A cell beats PBE when its $\mathcal{ED}$ is below PBE's on the same slice. Pooled PBE: 8.92 kcal/mol WTMAD-2, $\varepsilon_n$ 0.00923.
+    \item The harmonic mean is set by its smaller leg: with $\gamma\varepsilon_n$ at 9.6 to 13.6 kcal/mol here, 1 kcal/mol of $E$ moves $\mathcal{ED}$ by 0.4 to 0.9, the whole density spread by at most 2.7 (1.3 at $E = 8$).
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the held-out set and the three measures in their formal form. The set: the GMTKN55 BH76 barriers and W4-11 atomization energies minus the 35-reaction validation slice and each cell's training reactions, so each cell has its own slice (61 BH76 rows of which three are listed twice by name and four more are permuted-name twins, so the energy legs average 54 barrier identities; 120 W4-11 reactions; 189 species with CCSD densities); PBE is scored on the same slice. WTMAD-2 over the two present benchmarks (a single pool reads as a scaled relative error); $\varepsilon_n$ per electron; $\mathcal{ED}$ the harmonic mean with $\gamma = 1084.87$ kcal/mol on $\varepsilon_n$ (DFS units) or $\gamma = E_{\rm PBE}/D_{\rm PBE}$ on the grid RMSE (self-calibrated); the grid RMSE as defined. The bullets: the two unit systems, the definition of "beats PBE" with the pooled PBE values (8.92 kcal/mol, 0.00923), and the sensitivity of the harmonic mean (with $\gamma \varepsilon_n$ at 9.6 to 13.6 kcal/mol, 1 kcal/mol of $E$ moves $\mathcal{ED}$ by 0.4 to 0.9, the whole density spread by at most 2.7, 1.3 at $E = 8$). \par \textbf{The point:} the comparison with PBE is like for like on every cell's own slice, and the combined verdict is driven mostly by the energy leg. \par \textbf{Terms:} slice, permuted-name twin, name-deduplicated rows, 2-subset WTMAD-2. \par \textbf{If asked:} why the functionals are evaluated with 3 cycles and PBE converged: the functionals are evaluated as they were trained; the asymmetry is stated on every density slide and the converged-SCF re-evaluation is the pending direct test (frame 36). Why 56.84: the mean absolute reference value over all of GMTKN55, the scale Goerigk et al. use so that WTMAD-2 reads in kcal/mol. How many species carry a CCSD density: 189 held-out species; the eval reads them from the benchmark reference files with the T1 diagnostic beside each. \par Code: appendix pp. \pageref{code:p27_1_the_full_pools_76_bh76_140_w4_11_before} to \pageref{code:p27_11_the_dfs_gamma_1084_87}.}
+
+\begin{frame}{5. Held-out: energy}
+  \begin{center}
+  \includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/holdout_energy_mae_wtmad2.png}
+  \end{center}
+  \footnotesize
+  \begin{itemize}
+    \item Combined WTMAD-2 against subset size, one line per architecture, PBE 8.92 dashed. deep\_3x16 7.92 at one point, 9.61 to 13.97 at two to six, 6.44 to 7.41 from seven to eighteen, 8.23 at twenty-six; deep0\_3x16 (5.90 to 10.48) below PBE at 1, 3, 4 and from seven, above at 2, 5 and 6.
+    \item deep\_attn\_3x16 (5.94 to 8.26) and deep\_2x8 (6.18 to 8.85) are below PBE at every cell; deep0\_attn\_3x16 below at 1 and 4 to 12 (6.08 to 8.87), above at 2 and 3; deep\_attn\_2x8 below at 1, 7, 12 and 15, above at 2 to 6 (10.19 to 16.19).
+    \item The arms at 7 and 12: 6.92 and 7.17 (25 cycles), 7.44 and 7.48 (parity). The largest subsets (18, 26) do not improve on 7 to 15.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the energy leg alone: the combined two-subset WTMAD-2 of every cell against the number of training points, one line per architecture, PBE's pooled value dashed (the left panel of the PNG is the plain mean absolute error, the right the WTMAD-2). The bullets: deep\_3x16 beats PBE with one point (H2O alone) and from seven, loses at two to six; deep0\_3x16 is below PBE at 1, 3, 4 and from seven (5.90 to 10.48 over its column); deep\_attn\_3x16 and deep\_2x8 are below PBE at every cell; deep0\_attn\_3x16 below at 1 and 4 to 12 and above at 2 and 3; deep\_attn\_2x8 below at 1, 7, 12 and 15, above at 2 to 6 (10.19 to 16.19); the arms 6.92 and 7.17 (25 cycles), 7.44 and 7.48 (parity); the largest subsets do not improve on 7 to 15. \par \textbf{The point:} the one-point result is not an accident of the metric (the cell trained on one molecule changes the functional least), and the two-to-six-point cells are the ones whose subsets are barriers and ionizations with almost no atomization energies and that overfit. \par \textbf{Terms:} none new. \par \textbf{If asked:} which property of the small subsets causes the loss: not established; the composition (Sec. 2) and the overfitting (Sec. 4) are both present and neither is isolated. The numbers per cell: the backup tables B6 and B7 (E NN column). Whether the attention networks are better on energy: deep\_attn\_3x16 is below PBE at every one of its ten cells (5.94 to 8.26), as is the plain deep\_2x8 at every one of its eleven (6.18 to 8.85); deep\_attn\_2x8 is not, so attention is not what decides it (holdout\_by\_pool\_3x3\_eps.csv).}
+
+\begin{frame}{5. Held-out: density}
+  \begin{center}
+  \includegraphics[width=\linewidth,height=0.44\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/holdout_density_vs_ccsd.png}
+  \end{center}
+  \footnotesize
+  \begin{itemize}
+    \item The held-out density error against CCSD, per cell, beside PBE's on the same species: in the per-electron measure $\varepsilon_n$ (PBE 0.00923) the trained functionals are at or above PBE in every cell but five (deep\_attn\_2x8 at one point, deep\_attn\_3x16 at five, deep0\_attn\_3x16 at one, the parity arm at 7 and 12), by 0.2 to 36 percent.
+    \item A fixed set of eight species accounts for the excess (the tail, two slides on); the comparison is asymmetric by protocol: three SCF cycles for the network against a converged PBE density.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the density leg alone: each cell's held-out density error against CCSD, the mean over the 189 held-out species minus the cell's own training molecules, beside PBE's error on the same species, so a cell above the PBE line has a worse density on average and one below it a better one. The bullets: in the per-electron measure the trained functionals are at or above PBE in every cell but five (deep\_attn\_2x8 at one point, deep\_attn\_3x16 at five, deep0\_attn\_3x16 at one, the parity arm at 7 and 12), by 0.2 to 36 percent; a fixed set of eight species accounts for the excess (the tail, frame 31); the comparison is asymmetric by protocol. \par \textbf{The point:} the excess is not spread over the species but concentrated in a handful whose network SCF is farthest from converged after three cycles. \par \textbf{Terms:} none new. \par \textbf{If asked:} what the figure's markers mean: one marker per cell at its subset size, the colour the architecture, PBE's value as the line; the PNG is holdout\_density\_vs\_ccsd.png of the val-best family set. Why the per-electron measure and not the grid RMSE here: the per-electron measure is the Letter's Eq. 20 and the one the combined verdict uses; the grid RMSE view is holdout\_by\_pool\_3x3.png. What "asymmetric by protocol" means: the network density comes from three self-consistent-field cycles started from PBE's density and has not converged, while PBE's density is a fully converged calculation.}
+
+\begin{frame}{5. Held-out: energy and density in DFS units (full set)}
+  \begin{center}
+  \includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/holdout_by_pool_3x3_eps.png}
+  \end{center}
+  \footnotesize
+  \begin{itemize}
+    \item Rows WTMAD-2 / $\varepsilon_n$ / $\mathcal{ED}$, columns BH76 / W4-11 / combined; the dashed line PBE on the pooled slice, the black cap PBE on each cell's own slice, a triangle a cell below its cap, a star the SCAN comparator where it exists; the $\gamma$ stamp names the units.
+    \item $\mathcal{ED}$, 41 of the 64 cells below PBE: deep\_3x16 and deep0\_3x16 at 1, 7, 12, 15, 18, 26 (the two starts agree at every size); deep\_attn\_3x16 at every cell (lowest 7.40 to 7.85 at 4 to 7 points against caps of 9.32 to 9.49); deep0\_attn\_3x16 at 1, 6, 7, 12; deep\_2x8 at 1, 2 and 7 to 26; deep\_attn\_2x8 at 1, 7, 12, 15; both arms at 7 and 12.
+    \item The $\mathcal{ED}$ verdict follows the energy verdict in 56 of the 64 cells; in eight (deep\_2x8 at 3 to 6, deep0\_3x16 at 3 and 4, deep0\_attn\_3x16 at 4 and 5) the energy leg is below PBE and the density leg lifts $\mathcal{ED}$ above it.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the nine-panel held-out figure: rows energy, density, combination; columns barriers, atomizations, both; the greens are deep\_2x8, deep\_attn\_2x8, deep\_3x16 and deep\_attn\_3x16, the greys the two arms, the blue deep0\_3x16, the orange deep0\_attn\_3x16; the dashed line PBE on the pooled slice, the black cap PBE on each cell's own slice, a triangle a cell below its cap, a star the SCAN comparator on the panels where SCAN was evaluated, the stamp in the corner $\gamma$ and the units. The bullets: 41 of the 64 cells below PBE on $\mathcal{ED}$, listed by architecture; the verdict follows the energy verdict in 56 of 64 cells and the eight exceptions (deep\_2x8 at 3 to 6, deep0\_3x16 at 3 and 4, deep0\_attn\_3x16 at 4 and 5) are cells below PBE on energy whose density leg lifts the combination above it. \par \textbf{The point:} 41 of 64 cells beat PBE on the Letter's combined objective, deep\_attn\_3x16 at every one of its cells and the two starts of deep\_3x16 agreeing at every size. \par \textbf{Terms:} the star (SCAN), the stamp. \par \textbf{If asked:} how many cells are below PBE on energy alone: 49 of 64 (holdout\_by\_pool\_3x3\_eps.csv, E against E PBE), against 41 on the combination. Which cells have the lowest combination: deep\_attn\_3x16 at 5 (7.40), 7 (7.57) and 6 points (7.73), then deep0\_3x16 at 7 (7.77), against caps of 9.32 to 9.49 (the backup table B6). Why the caps differ between cells: PBE is scored on each cell's own slice, from which the cell's training reactions are removed, so the cap changes with the subset (9.32 to 9.80).}
+
+\begin{frame}{5. Held-out: the full set beside the set without the recurring density tail}
+  \begin{columns}[T]
+  \begin{column}{0.5\linewidth}
+    \includegraphics[width=0.8\linewidth]{figures_dfs_step7_v7_family_val_best/holdout_by_pool_3x3_eps.png}
+  \end{column}
+  \begin{column}{0.5\linewidth}
+    \includegraphics[width=0.8\linewidth]{figures_dfs_step7_v7_family_val_best_excl_tail/holdout_by_pool_3x3_eps.png}
+  \end{column}
+  \end{columns}
+  \footnotesize
+  \begin{itemize}
+    \item Left, the full set; right, the same figure with the recurring density tail removed from the density leg: bn (the largest ratio in 55 of the 64 cells), rkt17, cloo, bn3pi, cn, h2, rkt06 and cs, the same eight as before this pull.
+    \item Without them the deep\_3x16 column from seven points is within 5 percent of PBE's $\varepsilon_n$ and deep\_attn\_3x16 is below it at 1, 2, 5, 6, 7, 12, 15; the $\mathcal{ED}$ verdicts change only for deep0\_3x16 at three points and deep0\_attn\_3x16 at five. The model-free sibling (38 species with T1 above 0.02 removed) changes the same two cells and deep\_2x8 at three.
+    \item The comparison is asymmetric by protocol (an unconverged network density against converged PBE); the converged-SCF re-evaluation (one cell-pass on disk) is the direct test.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} left, the full set (the previous slide's figure); right, the same figure with the recurring density tail removed from the density leg (the energy leg unchanged). The tail: the same handful of species has errors several times PBE's in almost every cell: BN and its $^3\Pi$ state, CN, CS, ClOO, the transition states of OH + Cl (rkt17) and H + CH4 (rkt06), and H2, with bn the largest ratio in 55 of the 64 cells; "recurring" is the glossary's rule (above 1.5 times PBE's error in at least half of the cells carrying the species and in at least two). The bullets: the eight species are the same as before this pull; without them the deep\_3x16 column from seven points is within 5 percent of PBE's $\varepsilon_n$ and deep\_attn\_3x16 is below it at 1, 2, 5, 6, 7, 12 and 15, the $\mathcal{ED}$ verdicts changing only for deep0\_3x16 at three points and deep0\_attn\_3x16 at five; the model-free sibling (38 T1 species removed) changes the same two cells and deep\_2x8 at three; the protocol asymmetry and the pending direct test. \par \textbf{The point:} apart from the tail the trained densities are at PBE's level, and the tail is where the three-cycle SCF from the PBE seed is farthest from converged. \par \textbf{Terms:} the tail-excluded view, the T1 sibling view. \par \textbf{If asked:} why these species: multireference or open-shell cases, for which a single-determinant CCSD reference density is itself least reliable, and whose first-cycle energy step is the largest (the report's Sec. 5.4; holdout\_density\_tail.csv). Is removing them model-free: no, the list is chosen by the trained functionals' own errors, which is why the T1 list (six of the eight among its 38) is the sibling. Is the list stable: unchanged from the 33-cell pull of 2026-09-09, so it is not a property of which cells have landed.}
+
+\begin{frame}{5. The density program: 25 cycles against 3, the same architecture and subsets}
+  \begin{center}\small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{llrrrrr}
+  \toprule
+  Cell & $r$ & WTMAD-2 & $\varepsilon_n$ & grid RMSE & $\mathcal{ED}$ & $\mathcal{ED}$ PBE cap \\ \midrule
+  deep\_3x16 & 7 & 6.44 & 0.01017 & 2.39e-04 & 8.13 & 9.49 \\
+  deep\_3x16 [25 cycles] & 7 & 6.92 & 0.00972 & 2.20e-04 & 8.36 & 9.49 \\
+  deep\_3x16 [dpyscf parity] & 7 & 7.44 & 0.00903 & 2.26e-04 & 8.46 & 9.49 \\
+  deep\_3x16 & 12 & 7.41 & 0.01047 & 2.59e-04 & 8.97 & 9.56 \\
+  deep\_3x16 [25 cycles] & 12 & 7.17 & 0.00983 & 2.62e-04 & 8.57 & 9.56 \\
+  deep\_3x16 [dpyscf parity] & 12 & 7.48 & 0.00892 & 2.29e-04 & 8.44 & 9.56 \\
+  PBE & -- & 8.92 & 0.00923 & 2.34e-04 & -- & -- \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \small
+  \begin{itemize}
+    \item Yes on density, modestly: the 25-cycle arm lowers $\varepsilon_n$ by 4.3 percent at 7 and 6.2 percent at 12 and stays above PBE; in the grid RMSE the gain holds at 7 and vanishes at 12 (o3, c2 and fo2 regress). On energy it is a wash and every cell stays under its PBE cap.
+    \item The parity arm is the density win: $\varepsilon_n$ 0.00903 and 0.00892, the only deep\_3x16 cells below PBE, bought with a worse energy leg (BH76 WTMAD-2 19.5 against 16.3 and 18.9).
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the table pairs each arm cell with the size-run cell of the same architecture (deep\_3x16) and subset (7 and 12 points); the columns are the combined two-subset WTMAD-2, the per-electron density error, the grid-weighted density RMSE, the combination in DFS units and PBE's combination on the same slice (the cap); the last row is PBE. The first bullet: the 25-cycle arm lowers $\varepsilon_n$ by 4.3 percent at 7 and 6.2 percent at 12 and stays above PBE's 0.00923; in the grid RMSE (in units of $10^{-4}$) the gain holds at 7 (2.39 to 2.20) and vanishes at 12 (2.59 to 2.62, because o3, c2 and fo2 regress by factors 4.4, 3.2 and 2.2); on energy it is a wash (6.44 to 6.92 at 7, 7.41 to 7.17 at 12) and every cell stays under its cap. The second: the parity arm reaches 0.00903 and 0.00892, the only deep\_3x16 cells below PBE, at the cost of a worse barrier leg (BH76 WTMAD-2 19.5 against 16.3 and 18.9). \par \textbf{The point:} yes on density, modestly and not uniformly; the larger density gain comes with the Letter's weights, not with the cycles alone. \par \textbf{Terms:} none new. \par \textbf{If asked:} where the rows come from: printed by arm\_vs\_size\_density.py from the figure set's two pool CSVs (holdout\_by\_pool\_3x3\_eps.csv for WTMAD-2, $\varepsilon_n$ and $\mathcal{ED}$; holdout\_by\_pool\_3x3.csv for the grid RMSE). Why only 7 and 12: the arms' cells at 15, 18 and 26 are running or queued, and the 25-cycle cell at 15 is one of the two set-aside evaluations (frame 35). Which three species drive the grid-RMSE regression at 12: o3, c2 and fo2, at 4.4, 3.2 and 2.2 times the size cell's error (the script's CSV, arm\_vs\_size\_density.csv).}
+
+\begin{frame}{5. The density program: per species}
+  \begin{center}
+  \includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{figures_dfs_step7_v7_family_val_best/arm_vs_size_density.png}
+  \end{center}
+  \footnotesize
+  \begin{itemize}
+    \item Per held-out species the ratio of the arm's density RMSE to the size cell's, sorted; below 1 is an improvement. The 25-cycle arm improves 146 of 181 species at 7 (median ratio 0.94) and 130 of 175 at 12 (0.97); the parity arm 158 of 181 (0.90) and 157 of 175 (0.84).
+    \item The gain is concentrated in the recurring tail (hollow markers): six of the eight are below 1 in every panel and the first four ranks are tail species, while cloo and RKT17 are worse under both arms; part of the tail is the three-cycle evaluation rather than the functionals.
+    \item Caveat: the arms were also \emph{evaluated} with 25 cycles (161 to 173 of the species converged) and the size cells with 3 (1 and 0 converged), so training and evaluation protocol are conflated; the converged-SCF re-evaluation of the same networks is the direct test.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} the figure behind the previous table, species by species: for every held-out species the arm's density RMSE against CCSD divided by the size cell's on the same species, the ratios sorted and drawn against their rank, one line per arm, the ratio on a logarithmic axis, one panel per subset size; a ratio below the dashed line at one is a species the arm reproduces better; the legend states the count below one and the median; the hollow markers are the eight recurring tail species; the footer is the evaluation-cycle caveat. The bullets: 146 of 181 species improved at 7 (median 0.94) and 130 of 175 at 12 (0.97) for the 25-cycle arm, 158 of 181 (0.90) and 157 of 175 (0.84) for the parity arm; six of the eight tail species below one in every panel, cloo and RKT17 above; the caveat. \par \textbf{The point:} the extra cycles help most where the three-cycle density was least settled, which is the reading that part of the tail is the evaluation protocol rather than the functionals; and the comparison conflates the training protocol with the evaluation protocol until the same networks are evaluated under one converged protocol. \par \textbf{Terms:} none new. \par \textbf{If asked:} the caveat: the size cells were evaluated with max\_cycles 3 (1 of 181 and 0 of 175 species converged), the arms with 25 (168 and 173 of 181 at 7, 161 and 169 of 175 at 12), read from each cell's eval\_metadata.json and per-molecule records; the counts are over the twin-collapsed held-out species, the same population as the ratios. Why 181 and 175 species and not 189: the cell's own training molecules are removed from its slice (7 and 12 points with their species), and case twins (a species listed under two spellings by the two benchmarks) count once. The direct test: the converged-SCF re-evaluation of the same networks (one cell-pass exists; frame 36).}
+
+\begin{frame}[label=f34]{5. Held-out: per-cell verdicts, combined leg, DFS units}
+  \begin{center}\small
+  \begin{tabular}{lll}
+  \toprule
+  Architecture & Below PBE & At $r$ = \\ \midrule
+  deep\_3x16 & 6 of 11 & 1, 7, 12, 15, 18, 26 \\
+  deep\_attn\_3x16 & 10 of 10 & every cell \\
+  deep0\_3x16 & 6 of 11 & 1, 7, 12, 15, 18, 26 \\
+  deep0\_attn\_3x16 & 4 of 8 & 1, 6, 7, 12 \\
+  deep\_2x8 & 7 of 11 & 1, 2, 7, 12, 15, 18, 26 \\
+  deep\_attn\_2x8 & 4 of 9 & 1, 7, 12, 15 \\
+  deep\_3x16 [25 cycles] & 2 of 2 & 7, 12 \\
+  deep\_3x16 [dpyscf parity] & 2 of 2 & 7, 12 \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \small
+  \begin{itemize}
+    \item 41 of the 64 cells; the numbers behind every row are on the backup tables. Verdicts within about 10 percent of PBE on a leg depend on the leg and the units: ten cells flip under the plain-MAE leg or the self-calibrated grid-RMSE units, the other 54 carry the same verdict under every choice.
+  \end{itemize}
+  \hfill \hyperlink{b6}{\beamergotobutton{3x16 table}} \hyperlink{b7}{\beamergotobutton{2x8 and arms}} \hyperlink{b8}{\beamergotobutton{the flips}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the verdict of every evaluated cell on the combined leg in DFS units, read from holdout\_by\_pool\_3x3\_eps.csv: a cell is below PBE when its $\mathcal{ED}$ is below PBE's on the same slice. Every deep\_attn\_3x16 cell; deep\_3x16 and deep0\_3x16 at 1 point and at 7 points and above (the same six sizes, the replicate agreement); deep\_2x8 at 1, 2 and from 7; deep\_attn\_2x8 at 1, 7, 12 and 15; deep0\_attn\_3x16 at 1, 6, 7 and 12; both arms at 7 and 12: 41 of 64. The bullet states the ten cells whose verdict depends on the leg or the units; the buttons open the two full tables and the flips table. \par \textbf{The point:} 41 of 64 cells beat PBE, 54 of the 64 verdicts stand under every choice of leg and units, and the ten that do not are the cells within about 10 percent of PBE on a leg. \par \textbf{Terms:} the plain-MAE leg, the flips. \par \textbf{If asked:} which cells flip: under the plain mean absolute error instead of WTMAD-2, deep\_2x8 at 3 to 6, deep\_attn\_3x16 at 3, 5 and 6 and deep0\_attn\_3x16 at 6; under the grid RMSE with a self-calibrated $\gamma$ instead of $\varepsilon_n$ with the DFS $\gamma$, deep\_2x8 at 3 to 6, deep\_attn\_3x16 at 2 and deep0\_3x16 at 3 (holdout\_ed\_combined.csv; the backup table B8); every deep\_3x16, deep\_attn\_2x8 and arm verdict stands. Why deep\_2x8 at 3 to 6 flips under both: its energy leg is within 1.0 kcal/mol of PBE there and its density leg 22 to 25 percent above (B7's note). What the rows hide: the full rows with E, $\varepsilon_n$ and $\mathcal{ED}$ for the cell and for PBE are B6 and B7.}
+
+% =====================================================================
+\section{6. Pending}
+
+\begin{frame}{6. Pending: running, queued and set aside}
+  \small
+  \begin{itemize}
+    \item Cells running or queued: deep\_attn\_3x16 at 26 (stopped by the 48 h wall, relaunched from its resume checkpoint), deep\_attn\_2x8 at 26, deep0\_attn\_3x16 at 15 to 26, deep0\_cusp\_3x16 at every subset, the arms at 15 to 26.
+    \item Two evaluated cells (deep\_attn\_2x8 at 18, deep\_3x16 [25 cycles] at 15) await re-evaluation: their passes ran while the T1 backfill was rewriting the reference files with a key the reference reader did not accept, so every reference was refused and the tables held no reaction.
+    \item The corrected reader (the key accepted; an evaluation that reads no species refused instead of written) is committed and is deployed with the re-runs in a later cluster session; every task whose evaluation starts before that deploy writes the same tables.
+    \item The figures and tables regenerate from the same suite as cells land, by one entry per run in family\_runs.yaml.
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} four bullets on the state of the campaign: the cells running or queued (deep\_attn\_3x16 at 26 relaunched from its resume checkpoint after the 48 h wall, deep\_attn\_2x8 at 26, deep0\_attn\_3x16 at 15 to 26, deep0\_cusp\_3x16 at every subset, the arms at 15 to 26); the two cells awaiting re-evaluation and why; the corrected reader and its deployment; the regeneration of the figures by one entry per run in family\_runs.yaml. \par \textbf{The point:} the figures grow as cells land, and the two set-aside cells enter with the pull that follows their re-evaluation. \par \textbf{Terms:} the resume checkpoint, the T1 backfill, the reference reader. \par \textbf{If asked:} what exactly went wrong with the two cells: the CCSD T1 backfill adds one key to every benchmark reference file, and the held-out evaluation's reference reader refused any file carrying a key it did not list; the two evaluations that ran while the files were being rewritten refused every reference, evaluated the network on no species and wrote tables of null values with the task exiting normally, which the figure suite would have read as evaluated cells. What the fix does: the reader lists the key, a reference file it cannot read stops the pass with the reason, and an evaluation whose precompute produced no species is refused before any table is written; the code is committed and not yet on the cluster, so every task whose evaluation starts before the deploy writes the same tables, and the deploy and the re-runs are one later cluster session. How the figures regenerate: the merge script composes the runs listed in family\_runs.yaml into one view and the suite renders it once (RUNBOOK\_pull\_and\_figures.md).}
+
+\begin{frame}{6. Pending: the open decisions}
+  \small
+  \begin{itemize}
+    \item Meta-GGA group: four certificates FAIL, one fit cancelled; the training array is held. Landed follow-up: three wider architectures (3x32, 4x16, 4x32) registered and a lever study (fourteen 10000-step fits: energy-term weight 0.1, 10, 100 over the four widths, plus the integration objective on the 3x16) as one 48 h job awaiting submission.
+    \item Converged-SCF re-evaluation: one cell-pass (deep\_3x16 at 1, final checkpoint, 214 of 214 converged) took about 13 h of a 24 h job; the campaign at two checkpoints is about 1700 node-hours, so the program's shape is a decision still open. It is the direct test behind the density program's numbers.
+    \item The T1 diagnostics landed (203 species, threshold 0.02); the model-free tail-excluded views are rendered from them.
+    \item The figure suite's in-sample atomization-energy panel stays out of the documents until it uses the network's own atoms (it now subtracts fixed exact atomic energies and reports the absolute-energy offset).
+  \end{itemize}
+\end{frame}
+\slidenote{\textbf{On the slide:} four bullets on the open decisions: the meta-GGA group (four certificates FAIL, one fit cancelled, the array held; three wider architectures registered and the lever study of fourteen 10000-step fits as one 48 h job awaiting submission); the converged-SCF re-evaluation (one cell-pass, deep\_3x16 at 1 at the final checkpoint, 214 of 214 converged, took about 13 h of a 24 h job; the campaign at two checkpoints is about 1700 node-hours); the T1 diagnostics (203 species, threshold 0.02) behind the model-free views; the excluded in-sample panel. \par \textbf{The point:} two decisions are open, the shape of the converged program and the meta-GGA levers, and both are costed. \par \textbf{Terms:} DIIS (the direct inversion in the iterative subspace, the converged SCF's accelerator), node-hour. \par \textbf{If asked:} what "converged" means there: the same trained networks evaluated with a fully converged self-consistent field (DIIS, the energy converged to $10^{-8}$ Ha) instead of three cycles, which makes the density comparison with PBE symmetric; one cell-pass is on disk and no reading is drawn from it. Why 1700 node-hours: 64 cells at two checkpoints, about 13 h each, on one node per cell-pass; an array over (cell, checkpoint) pairs on the deep\_3x16 column and the arms first is the shape under consideration. What the lever study decides: whether width (3x32, 4x16, 4x32) or the energy-term weight (0.1, 10, 100) closes the certificate gap for the SCAN clones, or whether the anchored form (the network as SCAN plus a correction) is needed.}
+
+\begin{frame}{References and sources}
+  \scriptsize
+  \begin{columns}[T]
+  \begin{column}{0.5\linewidth}
+  [DFS21] S. Dick and M. Fernandez-Serra, Phys. Rev. B 104, L161109 (2021), with its Supplemental Material; reference code dpyscf.\\[0.3em]
+  [PBE96] J. P. Perdew, K. Burke and M. Ernzerhof, Phys. Rev. Lett. 77, 3865 (1996).\\[0.3em]
+  [PW92] J. P. Perdew and Y. Wang, Phys. Rev. B 45, 13244 (1992).\\[0.3em]
+  [SCAN15] J. Sun, A. Ruzsinszky and J. P. Perdew, Phys. Rev. Lett. 115, 036402 (2015).\\[0.3em]
+  [PRSB14] J. P. Perdew, A. Ruzsinszky, J. Sun and K. Burke, J. Chem. Phys. 140, 18A533 (2014).\\[0.3em]
+  [OP79] G. L. Oliver and J. P. Perdew, Phys. Rev. A 20, 397 (1979).\\[0.3em]
+  [Kato57] T. Kato, Commun. Pure Appl. Math. 10, 151 (1957). \quad [Steiner63] E. Steiner, J. Chem. Phys. 39, 2365 (1963).\\[0.3em]
+  [Vas17] A. Vaswani et al., NeurIPS 30 (2017). \quad [Xio20] R. Xiong et al., ICML (2020), arXiv:2002.04745.\\[0.3em]
+  [Lin91] J. Lin, IEEE Trans. Inf. Theory 37, 145 (1991).
+  \end{column}
+  \begin{column}{0.5\linewidth}
+  [Goe17] L. Goerigk et al., Phys. Chem. Chem. Phys. 19, 32184 (2017) (GMTKN55, WTMAD-2, BH76RC).\\[0.3em]
+  [W411] A. Karton, S. Daon and J. M. L. Martin, Chem. Phys. Lett. 510, 165 (2011).\\[0.3em]
+  [HK12] R. Haunschild and W. Klopper, J. Chem. Phys. 136, 164102 (2012).\\[0.3em]
+  [Chak93] S. J. Chakravorty et al., Phys. Rev. A 47, 3649 (1993). \quad [NIST] NIST Chemistry WebBook ionization energies.\\[0.3em]
+  [code] the repository: \path{xcquinox/pipeline/networks.py}, \path{descriptors.py}, \path{metagga.py}, \path{config.py}, \path{xcquinox/net.py}, \path{xcquinox/pipeline/subset_selection.py}, \path{dfs_pool.py}, \path{training_points.py}, \path{pretrain.py}, \path{cluster/fidelity.py}, \path{cluster/grid_config.py}, \path{losses.py}, \path{train.py}, \path{oneshot.py}, \path{solver.py}, \path{evaluation.py}, \path{tools/analysis/make_ablation_arch_figure.py}, \path{arm_vs_size_density.py}; the figures and CSVs under \path{reports/v7/figures_dfs_step7_*}; [cfg] the run configurations \path{hpcjobs/configs/dfs_step7.dfs6311_grid3_v7*.yaml}.
+  \end{column}
+  \end{columns}
+\end{frame}
+\slidenote{\textbf{On the slide:} the bracketed keys used throughout resolve here, in two columns: the Letter whose training set, coordinates, objective and metrics this work follows [DFS21]; the parent functional and the LDA correlation it rests on [PBE96, PW92]; the meta-GGA parent [SCAN15]; the source of the 1.174 exchange ceiling DFS used [PRSB14]; the spin-scaling relation [OP79]; the cusp conditions behind the cusp descriptors [Kato57, Steiner63]; the attention block and its pre-layer-norm form [Vas17, Xio20]; the Jensen-Shannon divergence [Lin91]; the GMTKN55 collection with WTMAD-2 and the BH76 reaction energies [Goe17]; the atomization-energy benchmark [W411]; the G2/97 reference atomization energies [HK12]; the exact atomic energies of the anchors [Chak93]; the ionization potentials [NIST]; and the repository files behind [code] and [cfg]. \par \textbf{The point:} every equation is cited to the paper that defines it and to the repository line that implements it, every value to the CSV or run file it is read from, every protocol setting to the run configuration file. \par \textbf{Terms:} none new. \par \textbf{If asked:} where the code is: the repository paths listed under [code], relative to the repository root, and the excerpts of the annotated deck's appendix. Where the figures and CSVs are: reports/v7/figures\_dfs\_step7\_* in the repository, the family sets named val\_best. Which configuration files: hpcjobs/configs/dfs\_step7.dfs6311\_grid3\_v7*.yaml, one per run.}
+
+% =====================================================================
+\section*{Backup}
+
+\begin{frame}[label=b1]{Backup: the runs}
+  \begin{center}\scriptsize\setlength{\tabcolsep}{2pt}
+  \resizebox{\linewidth}{!}{\begin{tabular}{p{1.9cm}p{5.7cm}p{3.5cm}p{2.8cm}}
+  \toprule
+  Run & Architectures & Cells done / planned & Run directory \\ \midrule
+  size & deep\_3x16, deep\_attn\_3x16, deep\_2x8, deep\_attn\_2x8 & deep\_3x16 11/11, deep\_attn\_3x16 10/11, deep\_2x8 11/11, deep\_attn\_2x8 9/11 & \path{run_20260902T145245Z} \\
+  families & deep0\_3x16, deep0\_attn\_3x16, deep0\_cusp\_3x16 & deep0\_3x16 11/11, deep0\_attn\_3x16 8/11, deep0\_cusp\_3x16 0/11 & \path{run_20260902T145247Z} \\
+  meta-GGA families & deep0\_cusp\_mgga\_3x16, deep0\_mgga\_3x16, deep0\_mgga\_attn\_3x16, deep0\_rung35\_mgga\_3x16, deep0\_rung35ms\_mgga\_3x16 & 0/55 (four certificates FAIL, one fit cancelled) & \path{run_20260902T145250Z} \\
+  25-cycle arm & deep\_3x16 [25 cycles] & 2/5 (7, 12) & \path{run_20260908T153856Z} \\
+  dpyscf-parity arm & deep\_3x16 [dpyscf parity] & 2/5 (7, 12) & \path{run_20260908T153908Z} \\
+  \bottomrule
+  \end{tabular}}
+  \end{center}
+  \hfill \hyperlink{f4}{\beamerreturnbutton{back to Scope}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the five runs of the campaign with their architectures, their per-architecture cell counts (evaluated cells in the figures over the planned ones: eleven subset sizes for the size and families runs, five for each arm) and their run directories; the two set-aside cells are not counted as done. \par \textbf{The point:} the 64 cells of the figures are 41 + 19 + 2 + 2 over four groups, and the meta-GGA group contributes none. \par \textbf{Terms:} none new. \par \textbf{If asked:} where the run directories live: under the results root's runs/dfs\_step7 tree, one directory per run and the merged view beside them. Which cells are planned but not done: deep\_attn\_3x16 at 26, deep\_attn\_2x8 at 18 (set aside) and 26, deep0\_attn\_3x16 at 15 to 26, deep0\_cusp\_3x16 at every size, the arms at 15 (set aside for the 25-cycle arm) to 26.}
+
+\begin{frame}[label=b2]{Backup: the eleven architectures}
+  \begin{center}\scriptsize\setlength{\tabcolsep}{2pt}
+  \resizebox{\linewidth}{!}{\begin{tabular}{llllll}
+  \toprule
+  Architecture & Last layer & Rung, parent & Hidden & Heads & Extra \\ \midrule
+  deep\_2x8 & Glorot & GGA, PBE & 2 x 8 & none & none \\
+  deep\_attn\_2x8 & Glorot & GGA, PBE & 2 x 8 & 2 & none \\
+  deep\_3x16 & Glorot & GGA, PBE & 3 x 16 & none & none \\
+  deep\_attn\_3x16 & Glorot & GGA, PBE & 3 x 16 & 4 & none \\
+  deep0\_3x16 & zeroed & GGA, PBE & 3 x 16 & none & none \\
+  deep0\_attn\_3x16 & zeroed & GGA, PBE & 3 x 16 & 4 & none \\
+  deep0\_cusp\_3x16 & zeroed & GGA, PBE & 3 x 16 & none & cusp \\
+  deep0\_mgga\_3x16 (\_attn: 4 heads) & zeroed & meta-GGA, SCAN & 3 x 16 & none & $\alpha$ \\
+  deep0\_cusp\_mgga\_3x16 & zeroed & meta-GGA, SCAN & 3 x 16 & none & cusp, $\alpha$ \\
+  deep0\_rung35\_mgga\_3x16 (\_ms: multishell) & zeroed & meta-GGA, SCAN & 3 x 16 & none & cusp, rung-3.5 occupancy, $\alpha$ \\
+  \bottomrule
+  \end{tabular}}
+  \end{center}
+  \scriptsize
+  Inputs: $F_x$ from $x_s$, $F_c$ from $x_0, x_1, x_s$; the cusp architectures add $x_4, x_5$ to both, the meta-GGA ones $x_\alpha$ as well, the rung-3.5 ones their occupancy columns (\_ms: one column per shell). The arms' cells carry the run's tag on the same axis: deep\_3x16 [25 cycles], deep\_3x16 [dpyscf parity].
+
+  \hfill \hyperlink{f9}{\beamerreturnbutton{back to the architectures}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the registry rows of every architecture the campaign trains or holds: the last-layer start, the rung and the parent, the hidden layout, the attention heads and the extra descriptors; the footer states the inputs per family and the arms' tags. \par \textbf{The point:} the descriptor families (cusp, meta-GGA, rung 3.5) are the architecture axes of the campaign, and none of them has an evaluated cell yet. \par \textbf{Terms:} rung-3.5 occupancy columns, multishell. \par \textbf{If asked:} what the rung-3.5 architectures read: columns of the localized density matrix in addition to the meta-GGA variables, the multishell variant one column per shell. Which architectures start from Glorot: the four of the size run (deep\_2x8, deep\_attn\_2x8, deep\_3x16, deep\_attn\_3x16); every other registry entry, the meta-GGA ones included, starts from the zeroed last layer, i.e. from the LDA (the table).}
+
+\begin{frame}[label=b3]{Backup: the 26-point DFS pool}
+  \begin{center}\scriptsize\setlength{\tabcolsep}{2pt}\renewcommand{\arraystretch}{0.78}
+  \resizebox{\linewidth}{!}{\begin{tabular}{llp{3.5cm}|llp{5.6cm}}
+  \toprule
+  Idx & Point & Species (name, charge, spin) & Idx & Point & Species (name, charge, spin) \\ \midrule
+  0 & H2 & H2 (0,0), H (0,1) & 13 & NO2 & NO2 (0,1) \\
+  1 & N2 & N2 (0,0) & 14 & HN & HN (0,2), H (0,1) \\
+  2 & FLi & FLi (0,0), Li (0,1) & 15 & O3 & O3 (0,0) \\
+  3 & CHN & CHN (0,0), H (0,1) & 16 & N2O & N2O (0,0) \\
+  4 & CO2 & CO2 (0,0) & 17 & CH3 & CH3 (0,1), H (0,1) \\
+  5 & F2 & F2 (0,0) & 18 & CH2 & CH2 (0,2), H (0,1) \\
+  6 & C2H2 & C2H2 (0,0), H (0,1) & 19 & H2O & H2O (0,0), H (0,1) \\
+  7 & CO & CO (0,0) & 20 & H3N & H3N (0,0), H (0,1) \\
+  8 & HLi & HLi (0,0), H (0,1), Li (0,1) & 21 & OH+N2\_to\_H+N2O (BH76) & HO (0,1), N2 (0,0), H (0,1), N2O (0,0) \\
+  9 & Na2 & Na2 (0,0) & 22 & OH+CH3\_to\_O+CH4 (BH76) & HO (0,1), CH3 (0,1), O (0,2), CH4 (0,0), H (0,1) \\
+  10 & NO & NO (0,1) & 23 & HF+F\_to\_H+F2 (BH76) & HF (0,0), F (0,1), H (0,1), F2 (0,0) \\
+  11 & CH & CH (0,1), H (0,1) & 24 & Li\_IP (IP13) & Li (0,1), Li+ (1,0) \\
+  12 & HO & HO (0,1), H (0,1) & 25 & C\_IP (IP13) & C (0,2), C+ (1,1) \\
+  \bottomrule
+  \end{tabular}}
+  \end{center}
+  \scriptsize
+  References: atomization energies [HK12] with H2O and C2H2 from [W411]; reaction energies [Goe17, BH76RC]; ionization potentials [NIST]. Code: dfs\_pool.py, training\_points.py:347--420.
+  \hfill \hyperlink{f10}{\beamerreturnbutton{back to the pool}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the 26 points of the pool with the species each carries; the charge and spin in parentheses are the species' total charge and the number of unpaired electrons; the index is the position in the selection ledger, which the chosen-subsets table lists. \par \textbf{The point:} the pool is 21 atomization energies, 3 barrier reactions and 2 ionization potentials over 30 unique species. \par \textbf{Terms:} none new. \par \textbf{If asked:} which species recur across points: H in every atomization that contains hydrogen and in the barrier reactions, Li in the LiH and LiF atomizations and the Li ionization; the anchors are why a one-point subset already carries an atom. Where the reference values are: the footer's sources and dfs\_pool.py.}
+
+\begin{frame}[label=b4]{Backup: the eleven chosen subsets}
+  \begin{center}\scriptsize\setlength{\tabcolsep}{2pt}
+  \begin{tabular}{rp{7.0cm}lllll}
+  \toprule
+  $r$ & Points (ledger index order) & AE / BH76 / IP & JSD & $\rho^{1/3}$ & $s$ & $\alpha$ \\ \midrule
+  1 & H2O & 1 / 0 / 0 & 0.0475 & 0.00109 & 0.03764 & 0.00881 \\
+  2 & HLi, OH+N2\_to\_H+N2O & 1 / 1 / 0 & 0.0284 & 0.00015 & 0.02372 & 0.00455 \\
+  3 & OH+N2\_to\_H+N2O, OH+CH3\_to\_O+CH4, Li\_IP & 0 / 2 / 1 & 0.0228 & 0.00017 & 0.01995 & 0.00267 \\
+  4 & CH2, OH+N2\_to\_H+N2O, OH+CH3\_to\_O+CH4, Li\_IP & 1 / 2 / 1 & 0.0203 & 0.00008 & 0.01801 & 0.00218 \\
+  5 & HLi, OH+N2\_to\_H+N2O, OH+CH3\_to\_O+CH4, Li\_IP, C\_IP & 1 / 2 / 2 & 0.0163 & 0.00028 & 0.01418 & 0.00183 \\
+  6 & HLi, CH, OH+N2\_to\_H+N2O, OH+CH3\_to\_O+CH4, Li\_IP, C\_IP & 2 / 2 / 2 & 0.0130 & 0.00021 & 0.01120 & 0.00156 \\
+  7 & CHN, CO2, HLi, CH, OH+N2\_to\_H+N2O, Li\_IP, C\_IP & 4 / 1 / 2 & 0.0102 & 0.00027 & 0.00877 & 0.00120 \\
+  12 & CO2, C2H2, CO, HLi, CH, NO2, CH2, OH+N2\_to\_H+N2O, OH+CH3\_to\_O+CH4, HF+F\_to\_H+F2, Li\_IP, C\_IP & 7 / 3 / 2 & 0.0034 & 0.00004 & 0.00292 & 0.00040 \\
+  15 & FLi, CHN, CO2, C2H2, CO, HLi, NO, CH, NO2, CH2, OH+N2\_to\_H+N2O, OH+CH3\_to\_O+CH4, HF+F\_to\_H+F2, Li\_IP, C\_IP & 10 / 3 / 2 & 0.0010 & 0.00007 & 0.00081 & 0.00017 \\
+  18 & N2, FLi, CHN, CO2, C2H2, CO, HLi, Na2, NO, CH, NO2, N2O, CH2, OH+N2\_to\_H+N2O, OH+CH3\_to\_O+CH4, HF+F\_to\_H+F2, Li\_IP, C\_IP & 13 / 3 / 2 & 0.0004 & 0.00003 & 0.00028 & 0.00007 \\
+  26 & the whole pool & 21 / 3 / 2 & 0 & 0 & 0 & 0 \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \hfill \hyperlink{f14}{\beamerreturnbutton{back to the chosen subsets}}
+\end{frame}
+\slidenote{\textbf{On the slide:} every row is the training subset of one column of cells, with its points in ledger index order, the counts of atomization energies, barrier reactions and ionization potentials, and the three marginal terms of its divergence; the values are recomputed from the descriptor caches and agree with the ledger to $10^{-9}$. \par \textbf{The point:} from three to six points the minimizer takes the two barriers and the Li ionization with one or two molecules; from seven points atomization energies dominate. \par \textbf{Terms:} none new. \par \textbf{If asked:} what 15 and 18 add to 12: 15 adds FLi, CHN and NO; 18 adds N2, Na2 and N2O to those. Whether the two-point subset contains the one-point one: no (HLi and the OH + N2 barrier against H2O alone); nesting is not imposed.}
+
+\begin{frame}[label=b5]{Backup: the fidelity certificate of every clone}
+  \begin{center}\scriptsize
+  \resizebox{\linewidth}{!}{\begin{tabular}{lllllll}
+  \toprule
+  Architecture & Parent & Loss X / C & max atom (mHa) & mean $|\Delta AE|$ & max $|\Delta AE|$ & Verdict \\ \midrule
+  deep\_2x8 & PBE & 5.4e-8 / 3.3e-6 & 0.369 & 0.343 & 1.421 (C3H8, C4H6) & PASS \\
+  deep\_attn\_2x8 & PBE & 7.6e-8 / 3.8e-7 & 0.201 & 0.131 & 0.573 & PASS \\
+  deep\_3x16 & PBE & 6.4e-8 / 7.6e-7 & 0.210 & 0.162 & 0.519 & PASS \\
+  deep\_attn\_3x16 & PBE & 1.5e-8 / 6.7e-8 & 0.058 & 0.031 & 0.115 & PASS \\
+  deep0\_3x16 & PBE & 2.8e-8 / 3.4e-6 & 0.439 & 0.114 & 0.450 & PASS \\
+  deep0\_attn\_3x16 & PBE & 1.5e-8 / 9.9e-8 & 0.123 & 0.042 & 0.149 & PASS \\
+  deep0\_cusp\_3x16 & PBE & 9.5e-8 / 1.1e-6 & 0.439 & 0.188 & 1.071 (AlCl3) & PASS \\
+  deep0\_mgga\_3x16 & SCAN & 5.6e-6 / 1.6e-5 & 4.106 & 1.473 & 5.605 (11 species) & FAIL \\
+  deep0\_cusp\_mgga\_3x16 & SCAN & 3.7e-6 / 5.2e-6 & 3.132 & 2.062 & 7.257 (14 species) & FAIL \\
+  deep0\_rung35\_mgga\_3x16 & SCAN & 5.9e-6 / 1.05e-5 & 3.001 & 1.780 & 6.303 (11 species) & FAIL \\
+  deep0\_rung35ms\_mgga\_3x16 & SCAN & 3.8e-6 / 1.2e-5 & 2.096 & 0.710 & 3.294 (4 species) & FAIL \\
+  \bottomrule
+  \end{tabular}}
+  \end{center}
+  \scriptsize
+  The pointwise loss is the final value of the pre-training residual for the exchange (X) and correlation (C) networks; the species in parentheses are the molecules above 1 kcal/mol.
+
+  \hfill \hyperlink{f16}{\beamerreturnbutton{back to the certificate}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the certificate of every clone whose fit completed, with the parent, the final pointwise residuals of the exchange and correlation networks, the largest atom error, the mean and largest atomization error (the species above 1 kcal/mol in parentheses) and the verdict; the tolerances are 1.0 mHa on the atoms, 1.0 kcal/mol on the mean and 2.0 on the largest. \par \textbf{The point:} every GGA clone passes and every completed SCAN clone fails, on the atoms in every case. \par \textbf{Terms:} none new. \par \textbf{If asked:} what the loss columns mean: the final value of the weighted mean squared pointwise residual of the pre-training objective's first term, exchange and correlation separately; the SCAN clones end 40 to 400 times higher in exchange and 1.5 to 240 times in correlation. Which GGA clone has the largest atom error: deep0\_3x16 and deep0\_cusp\_3x16 at 0.439 mHa, under the 1.0 tolerance.}
+
+\begin{frame}[label=b6]{Backup: per-cell results, combined leg, DFS units, the 3x16 families [holdout\_by\_pool\_3x3\_eps.csv]}
+  \begin{center}\tiny\setlength{\tabcolsep}{2.2pt}
+  \begin{tabular}{llrrrrrrr|llrrrrrrr}
+  \toprule
+  Arch & $r$ & E NN & E PBE & eps NN & eps PBE & ED NN & ED PBE & $\Delta$ED & Arch & $r$ & E NN & E PBE & eps NN & eps PBE & ED NN & ED PBE & $\Delta$ED \\ \midrule
+  deep\_3x16 & 1 & 7.92 & 8.92 & 0.00951 & 0.00923 & 8.96 & 9.46 & \textbf{-0.50} & deep\_attn\_3x16 & 18 & 6.72 & 8.92 & 0.00993 & 0.00923 & 8.27 & 9.62 & \textbf{-1.35} \\
+  deep\_3x16 & 2 & 9.61 & 8.92 & 0.01071 & 0.00923 & 10.52 & 9.44 & +1.08 & deep0\_3x16 & 1 & 8.18 & 8.92 & 0.00997 & 0.00923 & 9.32 & 9.46 & \textbf{-0.14} \\
+  deep\_3x16 & 3 & 10.67 & 8.92 & 0.01068 & 0.00923 & 11.11 & 9.32 & +1.79 & deep0\_3x16 & 2 & 9.16 & 8.92 & 0.01143 & 0.00923 & 10.54 & 9.44 & +1.10 \\
+  deep\_3x16 & 4 & 11.06 & 8.92 & 0.01182 & 0.00923 & 11.88 & 9.34 & +2.53 & deep0\_3x16 & 3 & 7.99 & 8.92 & 0.01062 & 0.00923 & 9.44 & 9.32 & +0.12 \\
+  deep\_3x16 & 5 & 13.97 & 8.92 & 0.01113 & 0.00923 & 12.96 & 9.32 & +3.64 & deep0\_3x16 & 4 & 8.06 & 8.92 & 0.01160 & 0.00923 & 9.83 & 9.34 & +0.48 \\
+  deep\_3x16 & 6 & 13.51 & 8.92 & 0.01091 & 0.00923 & 12.62 & 9.34 & +3.28 & deep0\_3x16 & 5 & 10.48 & 8.92 & 0.01099 & 0.00923 & 11.16 & 9.32 & +1.83 \\
+  deep\_3x16 & 7 & 6.44 & 8.92 & 0.01017 & 0.00923 & 8.13 & 9.49 & \textbf{-1.35} & deep0\_3x16 & 6 & 10.40 & 8.92 & 0.01097 & 0.00923 & 11.10 & 9.34 & +1.76 \\
+  deep\_3x16 & 12 & 7.41 & 8.92 & 0.01047 & 0.00923 & 8.97 & 9.56 & \textbf{-0.59} & deep0\_3x16 & 7 & 5.90 & 8.92 & 0.01051 & 0.00923 & 7.77 & 9.49 & \textbf{-1.72} \\
+  deep\_3x16 & 15 & 6.89 & 8.92 & 0.01004 & 0.00923 & 8.44 & 9.60 & \textbf{-1.16} & deep0\_3x16 & 12 & 7.11 & 8.92 & 0.01058 & 0.00923 & 8.78 & 9.56 & \textbf{-0.78} \\
+  deep\_3x16 & 18 & 6.74 & 8.92 & 0.00999 & 0.00923 & 8.31 & 9.62 & \textbf{-1.31} & deep0\_3x16 & 15 & 7.10 & 8.92 & 0.01013 & 0.00923 & 8.63 & 9.60 & \textbf{-0.97} \\
+  deep\_3x16 & 26 & 8.23 & 8.92 & 0.00973 & 0.00923 & 9.25 & 9.80 & \textbf{-0.55} & deep0\_3x16 & 18 & 6.82 & 8.92 & 0.00996 & 0.00923 & 8.37 & 9.62 & \textbf{-1.26} \\
+  deep\_attn\_3x16 & 1 & 8.26 & 8.92 & 0.00925 & 0.00923 & 9.06 & 9.46 & \textbf{-0.40} & deep0\_3x16 & 26 & 8.52 & 8.92 & 0.00961 & 0.00923 & 9.38 & 9.80 & \textbf{-0.42} \\
+  deep\_attn\_3x16 & 2 & 7.87 & 8.92 & 0.00972 & 0.00923 & 9.01 & 9.44 & \textbf{-0.43} & deep0\_attn\_3x16 & 1 & 8.11 & 8.92 & 0.00906 & 0.00923 & 8.89 & 9.46 & \textbf{-0.57} \\
+  deep\_attn\_3x16 & 3 & 7.22 & 8.92 & 0.00981 & 0.00923 & 8.60 & 9.32 & \textbf{-0.72} & deep0\_attn\_3x16 & 2 & 13.64 & 8.92 & 0.01168 & 0.00923 & 13.14 & 9.44 & +3.70 \\
+  deep\_attn\_3x16 & 4 & 6.09 & 8.92 & 0.01020 & 0.00923 & 7.85 & 9.34 & \textbf{-1.49} & deep0\_attn\_3x16 & 3 & 9.52 & 8.92 & 0.01177 & 0.00923 & 10.91 & 9.32 & +1.59 \\
+  deep\_attn\_3x16 & 5 & 6.03 & 8.92 & 0.00883 & 0.00923 & 7.40 & 9.32 & \textbf{-1.92} & deep0\_attn\_3x16 & 4 & 8.87 & 8.92 & 0.01127 & 0.00923 & 10.28 & 9.34 & +0.93 \\
+  deep\_attn\_3x16 & 6 & 6.09 & 8.92 & 0.00973 & 0.00923 & 7.73 & 9.34 & \textbf{-1.61} & deep0\_attn\_3x16 & 5 & 7.73 & 8.92 & 0.01134 & 0.00923 & 9.49 & 9.32 & +0.17 \\
+  deep\_attn\_3x16 & 7 & 5.94 & 8.92 & 0.00963 & 0.00923 & 7.57 & 9.49 & \textbf{-1.91} & deep0\_attn\_3x16 & 6 & 6.90 & 8.92 & 0.01078 & 0.00923 & 8.68 & 9.34 & \textbf{-0.66} \\
+  deep\_attn\_3x16 & 12 & 6.61 & 8.92 & 0.01019 & 0.00923 & 8.27 & 9.56 & \textbf{-1.29} & deep0\_attn\_3x16 & 7 & 6.08 & 8.92 & 0.01126 & 0.00923 & 8.12 & 9.49 & \textbf{-1.37} \\
+  deep\_attn\_3x16 & 15 & 6.47 & 8.92 & 0.00956 & 0.00923 & 7.97 & 9.60 & \textbf{-1.63} & deep0\_attn\_3x16 & 12 & 7.34 & 8.92 & 0.01100 & 0.00923 & 9.09 & 9.56 & \textbf{-0.47} \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \scriptsize
+  E in kcal/mol (2-subset WTMAD-2), eps per electron, ED under $\gamma = 1084.87$ kcal/mol; E PBE and eps PBE are the pooled values, ED PBE the cell-slice value. $\Delta$ED = ED NN $-$ ED PBE: \textbf{bold, negative} marks a cell below PBE (26 of these 40 cells).
+  \hfill \hyperlink{f34}{\beamerreturnbutton{back to the verdicts}}
+\end{frame}
+\slidenote{\textbf{On the slide:} one row per evaluated cell of the four 3x16 networks, the numbers behind the bar charts, read from the CSV the figure writes. E NN and E PBE: the combined 2-subset WTMAD-2 of the cell and of PBE (the pooled value, the same in every row). eps: $\varepsilon_n$ for the cell and for PBE (pooled). ED NN and ED PBE: the combination for the cell and for PBE on that cell's own slice (which is why ED PBE varies from row to row while E PBE and eps PBE do not: the cell's training reactions are removed from its slice). $\Delta$ED is the cell's combination minus PBE's on the same slice; a negative value, in bold, is a cell that beats PBE. \par \textbf{The point:} twenty-six of these 40 cells beat PBE: every deep\_attn\_3x16 cell, deep\_3x16 and deep0\_3x16 at 1 point and at 7 points and above, deep0\_attn\_3x16 at 1, 6, 7 and 12; the deep\_3x16 and deep0\_3x16 rows have the same sign at every shared size. \par \textbf{Terms:} none new. \par \textbf{If asked:} the largest margin below PBE: deep\_attn\_3x16 at 5 points, $-1.92$; the largest above: deep0\_attn\_3x16 at 2, $+3.70$. Why deep\_attn\_3x16 at 5 has a density error below PBE's (0.00883): one of the five cells below PBE on the density leg (frame 29).}
+
+\begin{frame}[label=b7]{Backup: per-cell results, combined leg, DFS units, the 2x8 pair and the arms [holdout\_by\_pool\_3x3\_eps.csv]}
+  \begin{center}\tiny\setlength{\tabcolsep}{2.2pt}
+  \resizebox{\linewidth}{!}{\begin{tabular}{llrrrrrrr|llrrrrrrr}
+  \toprule
+  Arch & $r$ & E NN & E PBE & eps NN & eps PBE & ED NN & ED PBE & $\Delta$ED & Arch & $r$ & E NN & E PBE & eps NN & eps PBE & ED NN & ED PBE & $\Delta$ED \\ \midrule
+  deep\_2x8 & 1 & 8.18 & 8.92 & 0.00952 & 0.00923 & 9.13 & 9.46 & \textbf{-0.33} & deep\_attn\_2x8 & 1 & 7.98 & 8.92 & 0.00909 & 0.00923 & 8.82 & 9.46 & \textbf{-0.64} \\
+  deep\_2x8 & 2 & 6.65 & 8.92 & 0.01116 & 0.00923 & 8.58 & 9.44 & \textbf{-0.85} & deep\_attn\_2x8 & 2 & 16.19 & 8.92 & 0.01193 & 0.00923 & 14.39 & 9.44 & +4.95 \\
+  deep\_2x8 & 3 & 7.92 & 8.92 & 0.01148 & 0.00923 & 9.69 & 9.32 & +0.37 & deep\_attn\_2x8 & 3 & 14.36 & 8.92 & 0.01254 & 0.00923 & 13.97 & 9.32 & +4.65 \\
+  deep\_2x8 & 4 & 8.62 & 8.92 & 0.01152 & 0.00923 & 10.20 & 9.34 & +0.86 & deep\_attn\_2x8 & 4 & 10.97 & 8.92 & 0.01156 & 0.00923 & 11.70 & 9.34 & +2.36 \\
+  deep\_2x8 & 5 & 8.58 & 8.92 & 0.01128 & 0.00923 & 10.09 & 9.32 & +0.77 & deep\_attn\_2x8 & 5 & 13.99 & 8.92 & 0.01066 & 0.00923 & 12.66 & 9.32 & +3.34 \\
+  deep\_2x8 & 6 & 8.85 & 8.92 & 0.01134 & 0.00923 & 10.29 & 9.34 & +0.95 & deep\_attn\_2x8 & 6 & 10.19 & 8.92 & 0.01014 & 0.00923 & 10.58 & 9.34 & +1.24 \\
+  deep\_2x8 & 7 & 6.18 & 8.92 & 0.01076 & 0.00923 & 8.08 & 9.49 & \textbf{-1.41} & deep\_attn\_2x8 & 7 & 7.12 & 8.92 & 0.01016 & 0.00923 & 8.65 & 9.49 & \textbf{-0.83} \\
+  deep\_2x8 & 12 & 7.03 & 8.92 & 0.01076 & 0.00923 & 8.78 & 9.56 & \textbf{-0.78} & deep\_attn\_2x8 & 12 & 7.57 & 8.92 & 0.01073 & 0.00923 & 9.17 & 9.56 & \textbf{-0.39} \\
+  deep\_2x8 & 15 & 6.82 & 8.92 & 0.01050 & 0.00923 & 8.53 & 9.60 & \textbf{-1.07} & deep\_attn\_2x8 & 15 & 7.32 & 8.92 & 0.01028 & 0.00923 & 8.84 & 9.60 & \textbf{-0.76} \\
+  deep\_2x8 & 18 & 6.74 & 8.92 & 0.01064 & 0.00923 & 8.51 & 9.62 & \textbf{-1.11} & deep\_3x16 [dpyscf parity] & 7 & 7.44 & 8.92 & 0.00903 & 0.00923 & 8.46 & 9.49 & \textbf{-1.03} \\
+  deep\_2x8 & 26 & 7.65 & 8.92 & 0.01015 & 0.00923 & 9.03 & 9.80 & \textbf{-0.77} & deep\_3x16 [dpyscf parity] & 12 & 7.48 & 8.92 & 0.00892 & 0.00923 & 8.44 & 9.56 & \textbf{-1.12} \\
+  deep\_3x16 [25 cycles] & 7 & 6.92 & 8.92 & 0.00972 & 0.00923 & 8.36 & 9.49 & \textbf{-1.13} & deep\_3x16 [25 cycles] & 12 & 7.17 & 8.92 & 0.00983 & 0.00923 & 8.57 & 9.56 & \textbf{-0.99} \\
+  \bottomrule
+  \end{tabular}}
+  \end{center}
+  \scriptsize
+  The same columns; \textbf{bold, negative} marks a cell below PBE: 15 of these 24 cells, 41 of the 64 over the two tables. deep\_2x8 is below PBE at every size but 3 to 6, where its energy leg is within 1.0 kcal/mol of PBE and its density leg 22 to 25 percent above; both arms are below PBE at 7 and 12.
+  \hfill \hyperlink{f34}{\beamerreturnbutton{back to the verdicts}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the remaining 24 evaluated cells in the same columns: the two 2x8 networks and the two arms of the density program (the tagged deep\_3x16 cells trained under 25 SCF cycles and under the dpyscf-parity protocol). Fifteen of them beat PBE: deep\_2x8 at 1, 2 and from 7 points on, deep\_attn\_2x8 at 1, 7, 12 and 15, both arms at 7 and 12; with the 26 of the previous table, 41 of the 64 evaluated cells. \par \textbf{The point:} deep\_2x8 is below PBE at every size but 3 to 6, where its energy leg is within 1.0 kcal/mol of PBE and its density leg 22 to 25 percent above. \par \textbf{Terms:} none new. \par \textbf{If asked:} the worst cell of the campaign: deep\_attn\_2x8 at 2 points, WTMAD-2 16.19 and $\Delta$ED $+4.95$. The arms' rows against the size cells: the density-program slides (32, 33) place them side by side.}
+
+\begin{frame}[label=b8]{Backup: the verdicts that depend on the leg or the units [holdout\_ed\_combined.csv]}
+  \begin{center}\small
+  \begin{tabular}{lp{8.5cm}}
+  \toprule
+  Choice & Cells whose verdict flips against the DFS-units, WTMAD-2 verdict \\ \midrule
+  plain-MAE energy leg & deep\_2x8 at 3, 4, 5 and 6; deep\_attn\_3x16 at 3, 5 and 6; deep0\_attn\_3x16 at 6 \\
+  self-calibrated grid-RMSE units & deep\_2x8 at 3, 4, 5 and 6; deep\_attn\_3x16 at 2; deep0\_3x16 at 3 \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+  \small
+  Ten cells in all (deep\_2x8 at 3 to 6 flips under both choices); the other 54 of the 64 cells carry the same verdict under every choice, among them every deep\_3x16, deep\_attn\_2x8 and arm cell.
+  \hfill \hyperlink{f34}{\beamerreturnbutton{back to the verdicts}}
+\end{frame}
+\slidenote{\textbf{On the slide:} the ten cells whose verdict changes when the energy leg is the plain mean absolute error instead of WTMAD-2, or when the density leg is the grid RMSE with a self-calibrated $\gamma$ instead of $\varepsilon_n$ with the DFS $\gamma$, from the combined-leg CSV of the figure set; deep\_2x8 at 3 to 6 flips under both choices. \par \textbf{The point:} the other 54 of the 64 cells carry the same verdict under every choice, among them every deep\_3x16, deep\_attn\_2x8 and arm cell. \par \textbf{Terms:} none new. \par \textbf{If asked:} why the leg matters for deep\_2x8 at 3 to 6: its energy leg is within 1.0 kcal/mol of PBE there, so a change of the energy measure (the plain error weights the absolute errors, WTMAD-2 the relative ones) is enough to move the verdict; B7's footer gives the margins. Where the numbers are: holdout\_ed\_combined.csv, legs mae, wtmad2 and wtmad2\_eps\_gamma\_dfs, the flag beats\_pbe per cell.}

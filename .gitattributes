@@ -1,0 +1,2 @@
+xcquinox/_version.py export-subst
+*.ipynb -linguist-detectable

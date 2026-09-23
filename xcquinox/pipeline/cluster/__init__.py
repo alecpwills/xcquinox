@@ -1,0 +1,114 @@
+"""xcquinox.pipeline.cluster: HPC (SLURM) training-harness sub-package.
+
+Re-exports the harness layers: grid_config, domain, materialize, spec_builder,
+inputs, job_tracking, and submit, plus the stage entrypoints (_preflight,
+_train_task, _eval_one_spec, __main__). See ``__all__`` for the full set of
+exported names.
+"""
+from xcquinox.pipeline.cluster.grid_config import (
+    GridConfig,
+    GridCell,
+    SweepAxes,
+    SolverNamed,
+    HyperParams,
+    InputPaths,
+    ClusterResources,
+    load_grid_config,
+    expand_grid,
+    validate_grid_semantics,
+    VALID_METRICS,
+)
+from xcquinox.pipeline.cluster.domain import (
+    DomainProfile,
+    get_domain_profile,
+    DOMAIN_PROFILES,
+    ATOMIC_ENERGIES_CHAKRAVORTY,
+    KCAL_PER_HA,
+    bh76_meta_to_loss_dict,
+    ip13_meta_to_loss_dict,
+)
+from xcquinox.pipeline.cluster.materialize import (
+    write_spec_atomic,
+    materialize_specs,
+    write_manifest,
+)
+from xcquinox.pipeline.cluster.spec_builder import (
+    build_training_specs,
+    build_test_spec,
+    atoms_to_pyscf_str,
+    atoms_to_mol_spec,
+    build_targets,
+    classify_aux_only,
+)
+from xcquinox.pipeline.cluster.inputs import (
+    prepare_inputs,
+    StagedInputs,
+)
+from xcquinox.pipeline.cluster.job_tracking import (
+    reduce_outcomes,
+    append_job_record,
+    read_job_records,
+    mark_superseded,
+    SlurmTransientError,
+    _run_slurm,
+)
+from xcquinox.pipeline.cluster.submit import (
+    render_sbatch,
+    submit_jobs,
+)
+from xcquinox.pipeline.cluster._preflight import (
+    main as preflight_main,
+)
+from xcquinox.pipeline.cluster._train_task import (
+    main as train_task_main,
+)
+from xcquinox.pipeline.cluster._eval_one_spec import (
+    main as eval_one_spec_main,
+)
+from xcquinox.pipeline.cluster.__main__ import (
+    main as cli_main,
+)
+
+__all__ = [
+    "GridConfig",
+    "GridCell",
+    "SweepAxes",
+    "SolverNamed",
+    "HyperParams",
+    "InputPaths",
+    "ClusterResources",
+    "load_grid_config",
+    "expand_grid",
+    "validate_grid_semantics",
+    "VALID_METRICS",
+    "DomainProfile",
+    "get_domain_profile",
+    "DOMAIN_PROFILES",
+    "ATOMIC_ENERGIES_CHAKRAVORTY",
+    "KCAL_PER_HA",
+    "bh76_meta_to_loss_dict",
+    "ip13_meta_to_loss_dict",
+    "write_spec_atomic",
+    "materialize_specs",
+    "write_manifest",
+    "build_training_specs",
+    "build_test_spec",
+    "atoms_to_pyscf_str",
+    "atoms_to_mol_spec",
+    "build_targets",
+    "classify_aux_only",
+    "prepare_inputs",
+    "StagedInputs",
+    "reduce_outcomes",
+    "append_job_record",
+    "read_job_records",
+    "mark_superseded",
+    "SlurmTransientError",
+    "_run_slurm",
+    "render_sbatch",
+    "submit_jobs",
+    "preflight_main",
+    "train_task_main",
+    "eval_one_spec_main",
+    "cli_main",
+]

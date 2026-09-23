@@ -1,0 +1,161 @@
+[build-system]
+requires = ["setuptools>=61.0", "versioningit~=2.0"]
+build-backend = "setuptools.build_meta"
+
+# Self-descriptive entries which should always be present
+# https://packaging.python.org/en/latest/specifications/declaring-project-metadata/
+[project]
+name = "xcquinox"
+description = "A machine learning framework using the equinox library for learning XC functionals with JAX."
+dynamic = ["version"]
+readme = "README.md"
+authors = [
+    { name = "Alec Wills", email = "alec.wills@stonybrook.edu" }
+]
+license = { text = "MIT" }
+# See https://pypi.org/classifiers/
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+requires-python = ">=3.12"
+# Every third-party library the package imports, read from the code by
+# tools/test_packaging.py rather than from memory. The floor of each library the cluster
+# parity environment pins is that environment's version: the current stack around pyscfad
+# 0.3.4, the one coherent set the resolver reaches from it (2026-09-21), and the stack the
+# v8 program runs on; the v7 campaigns ran on the previous stack (jax 0.7.0, pyscf 2.11.0,
+# pyscfad 0.1.11, numpy 2.3). No upper bound
+# is written here: a library's own bounds (pyscfad's jax<0.11) are the resolver's to
+# enforce. The parity file is requirements.txt, the exact pins of every library here and
+# of their binary halves. The interpreter floor is the one numpy 2.5 and scipy 1.18 carry
+# (pyscfad 0.3.4 and jax 0.10.2 admit 3.11, the resolver finds no numpy 2.5 there).
+dependencies = [
+    "ase>=3.29.0",
+    "equinox>=0.13.8",
+    "jax>=0.10.2",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "optax>=0.2.8",
+    "pyscf>=2.14.0",
+    "pyscfad>=0.3.4",
+    "pyyaml>=6.0.3",
+    "scipy>=1.18.1",
+    "tqdm>=4.70.1",
+]
+
+# The cluster harness, which the jobs also reach as `python -m xcquinox.pipeline.cluster`.
+[project.scripts]
+xcquinox-cluster = "xcquinox.pipeline.cluster.__main__:main"
+
+# Update the urls once the hosting is set up.
+[project.urls]
+"Source" = "https://github.com/alecpwills/xcquinox/"
+"Documentation" = "https://xcquinox.readthedocs.io/"
+
+[project.optional-dependencies]
+# What the repository's own tests import beyond the runtime set: the notebook builders and
+# their round-trip (nbformat, nbclient), the kernel the end-to-end notebook runs execute in
+# (ipykernel: the kernel named python3 is the interpreter running the tests only when its
+# own ipykernel provides it), the figure suite's broken-axis panels and the translator's
+# image measurements (brokenaxes, pillow), and the post-processing tool's tables (pandas).
+# tools/test_packaging.py holds this list to what the test paths import.
+test = [
+  "pytest>=7.0",
+  "pytest-cov",
+  "nbformat>=5.9",
+  "nbclient>=0.9",
+  "ipykernel>=6.29",
+  "pandas>=2.0",
+  "pillow>=10.0",
+  "brokenaxes>=0.6",
+]
+docs = [
+  "sphinx>=7.0",
+  "myst-parser>=2.0",
+  "sphinx-rtd-theme>=2.0",
+  "sphinxcontrib-mermaid>=0.9",
+]
+
+# The test configuration lives here and nowhere else. Nothing is deselected by default: the
+# slow items are part of the suite, and the default deselection let a slow-only pin go stale
+# unnoticed (a validated-full-pool baseline drifted through a semantics change because
+# nothing ever ran it). Pass -m "not slow" by hand for a fast loop; the workflow does, since
+# a hosted runner cannot carry them.
+[tool.pytest.ini_options]
+testpaths = [
+    "xcquinox/tests",
+    "xcquinox/pipeline/tests",
+    "tools",
+    "notebooks",
+    "hpcjobs",
+]
+addopts = "--strict-markers"
+markers = [
+    "slow: a test whose run time is minutes rather than seconds",
+    "oracle: a per-architecture oracle of the cluster workflow matrix, run there per architecture and deselected from the routine suite",
+]
+
+[tool.setuptools]
+# This subkey is a beta stage development and keys may change in the future, see https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html for more details
+#
+# As of version 0.971, mypy does not support type checking of installed zipped
+# packages (because it does not actually import the Python packages).
+# We declare the package not-zip-safe so that our type hints are also available
+# when checking client code that uses our (installed) package.
+# Ref:
+# https://mypy.readthedocs.io/en/stable/installed_packages.html?highlight=zip#using-installed-packages-with-mypy-pep-561
+zip-safe = false
+# Let setuptools discover the package in the current directory,
+# but be explicit about non-Python files.
+# See also:
+#   https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html#setuptools-specific-configuration
+# Note that behavior is currently evolving with respect to how to interpret the
+# "data" and "tests" subdirectories. As of setuptools 63, both are automatically
+# included if namespaces is true (default), even if the package is named explicitly
+# (instead of using 'find'). With 'find', the 'tests' subpackage is discovered
+# recursively because of its __init__.py file, but the data subdirectory is excluded
+# with include-package-data = false and namespaces = false.
+include-package-data = false
+[tool.setuptools.packages.find]
+namespaces = false
+where = ["."]
+
+# Ref https://setuptools.pypa.io/en/latest/userguide/datafiles.html#package-data
+[tool.setuptools.package-data]
+xcquinox = [
+    "py.typed",
+    "data/README.md",
+    "data/haunschild_g2/*"
+]
+"xcquinox.pipeline" = [
+    "data/*.json"
+]
+"xcquinox.pipeline.cluster" = [
+    "templates/*.sbatch.tmpl",
+    "examples/*.yaml",
+    "filters/*.filter"
+]
+# the fixtures the package's own tests read, so that a source distribution can run them
+"xcquinox.pipeline.tests" = [
+    "data/*.json",
+    "fixtures/*.json",
+    "fixtures/*.npz"
+]
+
+[tool.versioningit]
+default-version = "1+unknown"
+
+[tool.versioningit.format]
+distance = "{base_version}+{distance}.{vcs}{rev}"
+dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
+distance-dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
+
+[tool.versioningit.vcs]
+# The method key:
+method = "git"  # <- The method name
+# Parameters to pass to the method:
+match = ["*"]
+default-tag = "1.0.0"
+
+[tool.versioningit.write]
+file = "xcquinox/_version.py"

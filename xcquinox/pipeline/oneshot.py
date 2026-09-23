@@ -1,0 +1,1226 @@
+"""xcquinox.pipeline.oneshot: fast pure-JAX one-shot prediction.
+
+Implements THE SPEC §6.3:
+  - fixed_density_total_energy (A/D1 losses, evaluation metrics)
+  - oneshot_dm_prediction_fast (B/C/D2/D3 losses)
+  - oneshot_grid_density (C/D3 grid losses, DensityRMSEMetric)
+  - oneshot_total_energy (Harris diagnostic, research only)
+  - compute_exc_nn, compute_vxc_nn (internal helpers)
+"""
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from xcquinox.pipeline.descriptors import assemble_descriptor_features
+
+# Numerical-regularization constants (DEGENERACY_REG, SYM_BREAK_SHIFT) are
+# defined in ``solver`` to maintain a single source of truth across all SCF
+# backends; duplicated copies could silently diverge. Re-exported here for
+# backwards compatibility with
+# ``from xcquinox.pipeline.oneshot import DEGENERACY_REG`` callers.
+from xcquinox.pipeline.solver import (
+    DEGENERACY_REG,
+    SYM_BREAK_SHIFT,
+    SolverBackend,
+    _sym_break_diag,
+)
+
+
+@eqx.filter_jit
+def compute_exc_nn(model, rho, sigma, features, grid_weights):
+    """Integrate NN XC energy density: E_xc^NN = sum(weights * exc).
+
+    model.eval_exc returns rho * epsilon_xc, so NO extra rho factor here.
+    Returns a JAX scalar (jit/grad-safe).
+
+    JIT-cached: keyed on (model architecture pytree structure, input shapes).
+    Calling this with a different model instance of the same architecture
+    skips re-tracing, critical for the eval sweep that loads 72
+    checkpoints sharing two architectures.
+    """
+    exc = model.eval_exc(rho, sigma, features)
+    return jnp.sum(exc * grid_weights)
+
+
+def _exc_scalar_for_part(model, part):
+    """Return the scalar energy-density callable for the requested ``part``.
+
+    the UKS V_xc must be built from the SPLIT energy density,
+    exchange spin-scaled per Oliver & Perdew (PRA 20, 397 (1979)), but
+    correlation evaluated on the TOTAL density (zeta=0; von Barth & Hedin,
+    J. Phys. C 5, 1629 (1972); PW92, PRB 45, 13244 (1992)). Selecting which
+    scalar to JVP lets the same V_xc assembler produce the exchange-only,
+    correlation-only, or combined potential.
+
+    ``part="xc"`` (default) reproduces the pre-SOLV-01 combined behavior so
+    RKS callers are byte-identical.
+    """
+    if part == "xc":
+        return lambda r, s, f: model.eval_exc_scalar(r, s, f)
+    if part == "x":
+        return lambda r, s, f: model.eval_ex_scalar(r, s, f)
+    if part == "c":
+        return lambda r, s, f: model.eval_ec_scalar(r, s, f)
+    raise ValueError(
+        f"compute_vxc_nn: part must be 'xc', 'x', or 'c'; got {part!r}."
+    )
+
+
+def compute_vxc_nn(
+    model,
+    rho,
+    sigma,
+    features,
+    ao_grid,
+    grid_weights,
+    nabla_rho=None,
+    ao_grad=None,
+    lda_only=False,
+    part="xc",
+) -> jnp.ndarray:
+    """Assemble the NN XC potential matrix V_xc, dispatching to the
+    JIT-compiled core.
+
+    ``part`` selects which scalar energy density is JVP'd:
+    ``"xc"`` (default, combined, byte-identical to pre-SOLV-01 and used by
+    RKS), ``"x"`` (exchange-only ``eval_ex_scalar``), or ``"c"``
+    (correlation-only ``eval_ec_scalar``). The UKS path uses "x" per spin
+    (spin-scaled) and "c" once on the total density.
+
+    ``AlecGGAModel`` is a GGA functional: its XC energy depends on
+    ``sigma = |nabla rho|^2``, so a physically correct V_xc must include
+    the GGA ``v_sigma`` term. Rather than silently dropping ``v_sigma``
+    (returning LDA-only V_xc, which is physically wrong for a GGA model),
+    this function refuses to do so unless the caller explicitly opts in.
+
+    Contract
+    --------
+    * ``lda_only=False`` (default) + both ``nabla_rho`` and ``ao_grad``
+      provided -> full GGA V_xc (V_rho + V_sigma).
+    * ``lda_only=False`` + either GGA input missing -> ``ValueError``
+      (the silent-LDA footgun is gone).
+    * ``lda_only=True`` -> explicit, genuinely-LDA path: only ``V_rho`` is
+      assembled and the GGA inputs are ignored. Use this only when you
+      truly want the LDA-like ``v_rho`` contribution in isolation.
+    """
+    if lda_only:
+        return _compute_vxc_nn_lda(
+            model, rho, sigma, features, ao_grid, grid_weights, part)
+    if nabla_rho is None or ao_grad is None:
+        raise ValueError(
+            "compute_vxc_nn: AlecGGAModel is a GGA functional, so a correct "
+            "V_xc requires the GGA inputs nabla_rho and ao_grad. Both were "
+            "not supplied (nabla_rho is "
+            f"{'set' if nabla_rho is not None else 'None'}, ao_grad is "
+            f"{'set' if ao_grad is not None else 'None'}). Refusing to "
+            "silently return LDA-only V_xc (the v_sigma term would be "
+            "dropped, which is physically wrong for a GGA model). Pass both "
+            "GGA inputs, or set lda_only=True to explicitly request the "
+            "LDA-only v_rho contribution."
+        )
+    return _compute_vxc_nn_gga(
+        model, rho, sigma, features, ao_grid, grid_weights, nabla_rho, ao_grad,
+        part,
+    )
+
+
+@eqx.filter_jit
+def _compute_vxc_nn_lda(model, rho, sigma, features, ao_grid, grid_weights,
+                        part="xc"):
+    return _compute_vxc_nn_core(
+        model, rho, sigma, features, ao_grid, grid_weights,
+        nabla_rho=None, ao_grad=None, part=part,
+    )
+
+
+@eqx.filter_jit
+def _compute_vxc_nn_gga(model, rho, sigma, features, ao_grid, grid_weights,
+                        nabla_rho, ao_grad, part="xc"):
+    return _compute_vxc_nn_core(
+        model, rho, sigma, features, ao_grid, grid_weights,
+        nabla_rho=nabla_rho, ao_grad=ao_grad, part=part,
+    )
+
+
+def _compute_vxc_nn_core(
+    model,
+    rho,
+    sigma,
+    features,
+    ao_grid,
+    grid_weights,
+    nabla_rho=None,
+    ao_grad=None,
+    part="xc",
+) -> jnp.ndarray:
+    """Assemble NN XC potential matrix V_xc via per-point forward-mode jvp.
+
+    For a GGA E_xc[rho, sigma = |nabla rho|^2], the V_xc matrix element is
+        V_xc_ij = integral phi_i v_rho phi_j dr
+                + 2 * integral v_sigma nabla_rho . nabla(phi_i phi_j) dr
+    The factor of 2 comes from dE_xc/d(nabla_rho) = 2 v_sigma * nabla_rho
+    (because sigma = |nabla rho|^2). Expanding nabla(phi_i phi_j) =
+    phi_j nabla(phi_i) + phi_i nabla(phi_j) and defining
+        A_ij = sum_g w_g v_sigma(g) [nabla_rho(g) . nabla(phi_i)(g)] phi_j(g)
+    gives the symmetric form
+        V_sigma = 2 * (A + A.T).
+
+    Parameters
+    ----------
+    rho : (n_grid,)
+    sigma : (n_grid,)
+    features : (n_grid, n_features) or (n_grid, 0)
+    ao_grid : (n_grid, n_ao)
+    grid_weights : (n_grid,)
+    nabla_rho : (n_grid, 3), optional. If ``None`` the v_sigma term is
+        omitted (LDA-only path). The public ``compute_vxc_nn`` wrapper only
+        reaches this path when the caller passes ``lda_only=True``.
+    ao_grad : (3, n_grid, n_ao) or (4, n_grid, n_ao), optional. If 4 leading
+        dims, interpreted as ``eval_ao(..., deriv=1)`` and ``ao_grad[1:4]``
+        is used. If ``None`` the v_sigma term is omitted (LDA-only path).
+
+    Returns
+    -------
+    V_xc : (n_ao, n_ao), symmetric.
+    """
+    # select exchange-only / correlation-only / combined scalar.
+    exc_single_point = _exc_scalar_for_part(model, part)
+
+    # Sanitize JVP inputs at low-density / vanishing-gradient points.
+    #
+    # The networks' reduced-gradient transform uses sqrt(sigma), whose
+    # derivative d/dsigma sqrt(sigma) = 1/(2 sqrt(sigma)) diverges as
+    # sigma -> 0, and the downstream tanh(s)^2 JVP then evaluates
+    # 0 * inf = NaN. A sanitizer masking only on rho > thr lets a grid point
+    # with rho > thr AND sigma == 0 exactly (reachable on symmetric /
+    # high-symmetry systems, and identically on a zero-occupation spin
+    # channel) slip through: its NaN v_sigma is NOT masked and spreads
+    # through V_sigma -> Fock -> energy/grad. So the sanitize predicate (and
+    # the v_sigma mask) ALSO require sigma > _V_SIGMA_THRESHOLD. We use the
+    # standard "safe value under where, then mask the output with where"
+    # double-where trick so that BOTH the forward value and the reverse-mode
+    # (VJP/JVP) gradient are NaN-free: the masked-out points feed safe
+    # (rho=1, sigma=1) inputs into the JVP, and the JVP output is then forced
+    # to exactly 0, contributing nothing to V_sigma while keeping
+    # 1/(2 sqrt(sigma)) out of the tape entirely.
+    #
+    # _V_SIGMA_THRESHOLD is DENORMAL-LEVEL (1e-30), NOT 1e-10. This is critical
+    # for energy<->potential consistency. v_sigma is NOT singular as
+    # sigma->0: with the tanh(s)^2 gate the enhancement obeys F-1 ~ s^2 so
+    # F'(s) ~ s ~ sqrt(sigma), which exactly CANCELS the 1/(2 sqrt(sigma))
+    # from d sqrt(sigma)/d sigma, leaving a FINITE v_sigma limit. The NaN is
+    # purely the 0*inf artefact at sigma == 0 EXACTLY (and at denormal
+    # underflow). A 1e-10 threshold masks v_sigma over the whole
+    # sigma <= 1e-10 RANGE, zeroing a finite, energy-significant
+    # contribution: on an open-shell Li channel ~49% of points fall in that
+    # range and the masked V_xc captures only ~52% of the true energy
+    # derivative (FD energy<->potential residual 0.92 vs 2.3e-7 at 1e-30). At
+    # 1e-30 only the genuinely-singular sigma==0 / denormal points are masked
+    # (1/(2 sqrt(1e-30)) = 5e14 is finite; underflow risk is below ~1e-300), so
+    # v_sigma stays finite everywhere AND the analytic V_xc remains the true
+    # functional derivative of E_xc.
+    _V_RHO_THRESHOLD = 1e-10
+    _V_SIGMA_THRESHOLD = 1e-30
+    rho_ok = rho > _V_RHO_THRESHOLD
+    # v_rho only needs the rho guard; v_sigma needs BOTH guards because the
+    # sqrt(sigma)-derivative divergence is what makes the sigma-tangent JVP
+    # blow up.
+    sigma_ok = sigma > _V_SIGMA_THRESHOLD
+    safe_mask = rho_ok & sigma_ok
+    # safe_rho is gated on the rho guard ALONE (matching v_rho's output mask
+    # below). At a high-density point with sigma == 0 EXACTLY (rho_ok but not
+    # sigma_ok) v_rho is KEPT, so it must see the TRUE rho: gating safe_rho on
+    # safe_mask (as before) fed rho=1 into that kept v_rho, breaking
+    # V_xc = dE_xc/drho at zero-gradient high-symmetry points. safe_sigma keeps
+    # BOTH guards because the sqrt(sigma) tangent is the actual 0*inf source, so
+    # sigma must stay away from 0 in both JVPs. This mirrors the correlation
+    # path (keep rho, mask sigma only).
+    safe_rho = jnp.where(rho_ok, rho, jnp.ones_like(rho))
+    safe_sigma = jnp.where(safe_mask, sigma, jnp.ones_like(sigma))
+
+    # Per-point JVPs: tangent on rho and then on sigma
+    v_rho, v_sigma = jax.vmap(
+        lambda r, s, f: (
+            jax.jvp(
+                exc_single_point,
+                (r, s, f),
+                (jnp.ones_like(r), jnp.zeros_like(s), jnp.zeros_like(f)),
+            )[1],
+            jax.jvp(
+                exc_single_point,
+                (r, s, f),
+                (jnp.zeros_like(r), jnp.ones_like(s), jnp.zeros_like(f)),
+            )[1],
+        )
+    )(safe_rho, safe_sigma, features)
+
+    # Mask JVP outputs to zero at the masked-out points (physically negligible
+    # contribution AND keeps gradients finite at rho/sigma = 0). v_rho is
+    # masked on the rho guard alone (its tangent does not pass through the
+    # sqrt(sigma) singularity); v_sigma is masked on BOTH guards.
+    v_rho = jnp.where(rho_ok, v_rho, 0.0)
+    v_sigma = jnp.where(safe_mask, v_sigma, 0.0)
+
+    # LDA-like contribution: V_rho_ij = sum_g w_g v_rho(g) phi_i(g) phi_j(g).
+    V_rho = jnp.einsum("g,gi,gj->ij", grid_weights * v_rho, ao_grid, ao_grid)
+
+    if nabla_rho is None or ao_grad is None:
+        # Explicit LDA-only path (reached only via lda_only=True at the
+        # public wrapper). The GGA v_sigma term is intentionally omitted.
+        return V_rho
+
+    # Accept either the (4, n_grid, n_ao) eval_ao(deriv=1) layout or the
+    # (3, n_grid, n_ao) "derivatives-only" layout. This keeps callers
+    # flexible: run_manual_scf/_vxc_term can pass mol_data["ao_grid_deriv"]
+    # directly without an extra slice step.
+    ao_grad_xyz = ao_grad[1:4] if ao_grad.shape[0] == 4 else ao_grad
+
+    # (nabla_rho . nabla phi_i)(g) contracting cartesian axis d.
+    # nabla_rho: (n_grid, 3); ao_grad_xyz: (3, n_grid, n_ao) -> (n_grid, n_ao).
+    nabla_rho_dot_ao_grad = jnp.einsum("gd,dgi->gi", nabla_rho, ao_grad_xyz)
+
+    # A_ij = sum_g w_g v_sigma(g) [nabla_rho . nabla phi_i](g) phi_j(g).
+    # v_sigma already masked above at rho < threshold, so tail contribution
+    # is exactly zero.
+    A_matrix = jnp.einsum(
+        "g,gi,gj->ij",
+        grid_weights * v_sigma,
+        nabla_rho_dot_ao_grad,
+        ao_grid,
+    )
+    # V_sigma from d/dD_ij integral v_sigma |nabla rho|^2 dr = 2 v_sigma nabla_rho . nabla(phi_i phi_j).
+    V_sigma = 2.0 * (A_matrix + A_matrix.T)
+    return V_rho + V_sigma
+
+
+def has_dm_dependent_descriptor(model) -> bool:
+    """True iff any descriptor's features change with the density matrix.
+
+    ``CuspDescriptor`` is geometry-only and is the sole descriptor without a
+    ``compute_from_dm``; every other descriptor (meta-GGA alpha, rung-3.5,
+    DM statistics) responds to the DM and therefore contributes the
+    ``de/df . df/dP`` term assembled by :func:`feature_response_vxc`.
+    """
+    return any(hasattr(type(d), "compute_from_dm") for d in model.descriptors)
+
+
+def uks_zeta(rho_a, rho_b):
+    """Spin polarization with the production guards, in ONE place.
+
+    The floor, the clip and the tail freeze must be IDENTICAL in the energy
+    (:func:`split_exc_energy_uks`), in the per-spin correlation potential
+    (:func:`compute_vc_polarized_per_spin`) and in the feature-derivative
+    accumulation, or v_c stops being the exact gradient of E_c. That invariant
+    used to be held by comments in three places; it is now held by this
+    function. See the ``_ZETA_BOUNDARY_EPS`` / ``_RHO_TOT_FLOOR`` notes for why
+    each guard exists.
+    """
+    rho_tot = rho_a + rho_b
+    safe_rho_tot = jnp.maximum(rho_tot, _RHO_TOT_FLOOR)
+    z_raw = jnp.clip((rho_a - rho_b) / safe_rho_tot,
+                     -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
+    return jnp.where(rho_tot > _RHO_TOT_FLOOR, z_raw,
+                     jax.lax.stop_gradient(z_raw))
+
+
+def feature_energy_derivative(model, rho, sigma, features, part="xc",
+                              zeta=None):
+    """``de/dfeatures`` per grid point, shape ``(n_grid, n_features)``.
+
+    Evaluated at the SAME sanitized inputs and under the SAME tail mask as the
+    ``v_rho`` JVP in :func:`_compute_vxc_nn_core`, so the three contributions to
+    dE_xc/dP are consistent point by point. Returning this separately (rather
+    than folding it into the JVP tuple) lets the UKS caller contract each term
+    against the derivative of ITS OWN feature map: the two spin-scaled exchange
+    terms see the blocks of diag(P_a, P_a) and diag(P_b, P_b) (evaluated at the
+    doubled arguments ``2 rho_sigma``, ``4 sigma_sigma_sigma``, with the 1/2 of
+    the spin-scaling relation applied by the caller), the correlation term sees
+    the total block; three maps of P, three contractions through
+    :func:`feature_response_vxc`. In the closed-shell case the three maps
+    coincide and the three contractions sum to the single one of the RKS path.
+    """
+    n_feat = features.shape[1] if features.ndim == 2 else 0
+    if n_feat == 0:
+        return jnp.zeros((rho.shape[0], 0), dtype=rho.dtype)
+    if zeta is None:
+        exc_single_point = _exc_scalar_for_part(model, part)
+    else:
+        # Polarized correlation: de_c/df must be taken at the SAME zeta the
+        # energy uses, or the accumulated derivative belongs to a different
+        # functional than the one being minimised.
+        if part != "c":
+            raise ValueError(
+                "feature_energy_derivative: zeta applies to the correlation "
+                f"term only (part='c'); got part={part!r}. Exchange is "
+                "spin-scaled per Oliver & Perdew and ignores zeta."
+            )
+        _ec_scalar = model.eval_ec_scalar
+
+        def exc_single_point(r, s, f, _z=None):
+            return _ec_scalar(r, s, f, zeta=_z)
+
+        dedf = jax.vmap(
+            lambda r, s, f, z: jax.grad(exc_single_point, argnums=2)(r, s, f, z)
+        )(
+            jnp.where(rho > 1e-10, rho, jnp.ones_like(rho)),
+            jnp.where((rho > 1e-10) & (sigma > 1e-30), sigma,
+                      jnp.ones_like(sigma)),
+            features, zeta,
+        )
+        return jnp.where((rho > 1e-10)[:, None], dedf, 0.0)
+    # Same guards as _compute_vxc_nn_core: keep 1/(2 sqrt(sigma)) off the tape
+    # at sigma == 0 while letting v_rho-like terms see the true rho.
+    rho_ok = rho > 1e-10
+    safe_rho = jnp.where(rho_ok, rho, jnp.ones_like(rho))
+    safe_sigma = jnp.where(rho_ok & (sigma > 1e-30), sigma, jnp.ones_like(sigma))
+    dedf = jax.vmap(jax.grad(exc_single_point, argnums=2))(
+        safe_rho, safe_sigma, features)
+    return jnp.where(rho_ok[:, None], dedf, 0.0)
+
+
+def feature_response_vxc(dedf, grid_weights, features_of_dm, dm):
+    """V_xc contribution ``sum_g w_g (de/df)_g . d f_g / dP``.
+
+    This is the term omitted by the per-point JVP formulation: ``v_rho`` and
+    ``v_sigma`` are partial derivatives at FIXED features, so for any descriptor
+    that depends on the density matrix the assembled V_xc is not dE_xc/dP and the
+    SCF minimises an energy whose gradient it does not have.
+
+    Only the ``P -> features`` map is differentiated here, so this returns
+    exactly the missing chain-rule term and nothing else -- the ``rho(P)`` and
+    ``sigma(P)`` paths stay with the existing analytic assembly, which keeps its
+    tail sanitization and leaves descriptor-free architectures on their existing
+    code path.
+
+    ``dedf`` arrives as a concrete array, already evaluated at the current P, so
+    the inner ``jax.grad`` treats it as a constant WITHOUT any masking: that is
+    just the product rule, `d/dP sum_g w_g e(...,f_g(P)) = ... + sum_g w_g
+    (de/df)_g df_g/dP`, with `de/df` taken at P and not differentiated twice.
+    It must NOT be wrapped in ``stop_gradient``. Doing so leaves the returned
+    V_xc bit-identical -- ``dedf`` does not depend on this function's ``dm``
+    argument, so the inner derivative cannot see the difference -- while
+    silently cutting every OUTER derivative that runs through it. The training
+    loop differentiates this Fock matrix with respect to the network parameters
+    at every step, and the freeze made that gradient wrong by 1-7% (measured: on
+    the SCF-predicted density matrix, the quantity the density channel is built
+    on, 5.4e-02 relative against a finite difference, versus 6.2e-10 without
+    it). A potential whose parameter gradient is not the gradient of the
+    potential is the same defect this function exists to remove.
+
+    ``features_of_dm`` must be the SAME closure the energy uses, so the potential
+    cannot drift from the functional. ``dm`` is (n_ao, n_ao) for RKS or
+    (2, n_ao, n_ao) spin-resolved for UKS; the result matches its shape.
+
+    The raw gradient is asymmetric by ~1e-3 because ``nabla_rho`` is contracted
+    with the one-sided ``2 * einsum("ij,dgi,gj->gd")`` shortcut, which is valid
+    only on symmetric density matrices. The antisymmetric part contracts to zero
+    against any symmetric perturbation, so symmetrizing is a gauge choice, not a
+    correction.
+    """
+    if dedf.shape[1] == 0:
+        return jnp.zeros_like(dm)
+    w_dedf = grid_weights[:, None] * dedf
+
+    def _weighted_features(P):
+        return jnp.sum(w_dedf * features_of_dm(P))
+
+    G = jax.grad(_weighted_features)(dm)
+    return 0.5 * (G + jnp.swapaxes(G, -1, -2))
+
+
+# Spin polarization zeta is held strictly INSIDE (-1, 1) by this margin. At full
+# polarization (one spin density 0) zeta -> +-1 EXACTLY; the PW92 spin
+# interpolation f(zeta) ~ (1+zeta)**(4/3) + (1-zeta)**(4/3) has a SECOND
+# derivative ~ (1+zeta)**(-2/3) + (1-zeta)**(-2/3) -> inf as EITHER factor
+# vanishes at |zeta|=1 (same-sign pairing: each term's curvature blows up at
+# its own zero). The (rho_a-rho_b)/rho_tot chain is finite at |zeta|=1 and
+# diverges separately as rho_tot**-2 in the vanishing-density tail. The FULL SCF
+# differentiates v_c (itself a first derivative of E_c) a second time, so the
+# exact boundary produces a NaN training gradient on every fully-spin-polarized
+# species (free atoms H, Li, ... in W4-11 atomization / atom anchors), which then
+# corrupts all weights. Clipping zeta to +-(1 - eps) keeps every derivative
+# finite; the forward E_c bias is O(eps * dE_c/dzeta) ~ 1e-6 * O(1e-2) ~ 1e-8 Ha
+# (far below conv_tol; does NOT invalidate pretrained checkpoints). MUST be
+# IDENTICAL in the energy (split_exc_energy_uks) and potential
+# (compute_vc_polarized_per_spin) paths so v_c stays the exact gradient of E_c.
+# Perdew & Wang PRB 45, 13244 (1992), eqs (8)-(9).
+_ZETA_BOUNDARY_EPS = 1e-6
+
+# Positive floor on the TOTAL density in the zeta = (rho_a - rho_b)/rho_tot ratio.
+# Diffuse-basis grid-tail quadrature noise can drive rho_tot slightly NEGATIVE; the
+# old jnp.maximum(rho_tot, 1e-300) then floors a negative rt to 1e-300, whose SQUARE
+# (1e-600) UNDERFLOWS to 0 in the POTENTIAL's forward-mode (jvp) quotient-rule
+# derivative -> inf, and the saturated clip's 0 derivative -> 0*inf = NaN training
+# gradient (the meta-GGA `bh76:HLi` step-0 failure: the pretrained net drives ~1300
+# tail points negative at cycle 0; the energy path is forward-only so it stayed
+# finite -- hence finite energy, NaN potential). A physical floor (1e-12, square
+# 1e-24) never underflows; paired with a where+stop_gradient it also freezes the
+# gradient on the non-physical rt <= floor tail. MUST match in BOTH paths (the
+# energy/potential invariant above).
+_RHO_TOT_FLOOR = 1e-12
+
+
+def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
+                         sigma_tot, features_a, features_b, features_tot,
+                         grid_weights):
+    """Integrated UKS XC energy using the SOLV-01 split (exchange spin-scaled,
+    correlation on the total density).
+
+        E_xc = 1/2 sum_g w_g [eps_x(2 rho_a, 4 sigma_aa, f_a)
+                              + eps_x(2 rho_b, 4 sigma_bb, f_b)]
+             +     sum_g w_g  eps_c(rho_tot, sigma_tot, f_tot)
+
+    where eps_x = model.eval_ex, eps_c = model.eval_ec (the exact split of
+    eval_exc with identical tail masking). Exchange spin-scaling: Oliver and
+    Perdew, Phys. Rev. A 20, 397 (1979). Correlation on the TOTAL density:
+    von Barth and Hedin, J. Phys. C 5, 1629 (1972); Perdew and Wang, Phys. Rev.
+    B 45, 13244 (1992). This is the energy whose functional derivative is the
+    split V_xc built by ``_uks_spin_resolved_vxc`` / the manual solver (the
+    finite-difference consistency test guards this).
+
+    EXACT SPIN SCALING FOR DESCRIPTOR FEATURES. The relation above is an
+    identity for an F_x of any ingredient set, provided each channel is
+    evaluated on the FICTITIOUS SPIN-UNPOLARIZED SYSTEM the relation refers to:
+    the symmetric doubled density ``diag(P_sigma, P_sigma)``, with density
+    ``2 rho_sigma``, gradient invariant ``4 sigma_sigma_sigma`` and
+    kinetic-energy density ``2 tau_sigma``. ``features_sigma`` is that system's
+    descriptor block, so the meta-GGA indicator is
+    ``alpha(2 rho_sigma, 4 sigma_sigma_sigma, 2 tau_sigma)``, the rung-3.5
+    single and multishell occupancies are the channel's occupancy in BOTH spin
+    slots (alpha-major-then-spin column order preserved), and the density-matrix
+    statistics are those of ``diag(P_sigma, P_sigma)``; the nuclear-cusp
+    proximity feature is geometry-only and identical in all three blocks.
+    Correlation is spin-interpolated rather than spin-scaled, so it keeps the
+    total density and ``features_tot``.
+
+    Callers build the three blocks with
+    ``descriptors.assemble_descriptor_features(..., spin_channel=0 / 1 / None)``
+    on precomputed data, or with ``solver.make_uks_feature_fns`` on a live
+    density matrix. Passing one block three times is the CLOSED-SHELL case and
+    nothing else: at ``rho_a = rho_b`` the three blocks are identical, so RKS
+    and every closed-shell UKS number is unchanged byte for byte.
+
+    When the cnet is spin-polarization-aware (``cnet.use_spin_polarization``),
+    correlation is evaluated with the real zeta = (rho_a-rho_b)/rho_tot and the
+    zeta-dependent PW92 baseline (Dick and Fernandez-Serra, Phys. Rev. B 104,
+    L161109 (2021)); this is the energy whose per-spin functional derivative
+    ``compute_vc_polarized_per_spin`` builds. Flag False keeps the zeta=0
+    total-density correlation. ``rho_tot = rho_a + rho_b`` is implied by
+    ``sigma_tot``.
+    """
+    rho_tot = rho_a + rho_b
+    ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, features_a)
+    ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, features_b)
+    # Explicit attribute read instead of getattr(..., False) silent fallback.
+    # A polarized model.eqx that loses use_spin_polarization during
+    # (de)serialization would silently drop zeta on the open-shell path,
+    # making polarized vs unpolarized indistinguishable at eval. Raises
+    # AttributeError if the cnet lacks the attribute entirely (legacy
+    # hand-built cnet, not normal flow).
+    if not hasattr(model.cnet, "use_spin_polarization"):
+        raise AttributeError(
+            "model.cnet has no `use_spin_polarization` attribute. This "
+            "indicates a model built outside the standard "
+            "AlecGGA_CNet / create_network_pair path; the silent-False "
+            "fallback was removed 2026-05-29 to surface this class of bug "
+            "instead of degrading polarized eval."
+        )
+    if model.cnet.use_spin_polarization:
+        ec = model.eval_ec(rho_tot, sigma_tot, features_tot,
+                           zeta=uks_zeta(rho_a, rho_b))
+    else:
+        ec = model.eval_ec(rho_tot, sigma_tot, features_tot)
+    E_x = 0.5 * jnp.sum(grid_weights * (ex_a + ex_b))
+    E_c = jnp.sum(grid_weights * ec)
+    return E_x + E_c
+
+
+def fixed_density_total_energy(model, mol_data) -> float:
+    """Total energy with NN XC on frozen PBE density. No Roothaan step.
+
+    E_total = E_non_xc + E_xc^NN[rho_PBE]
+    Used by A, D1 losses and all energy-based evaluation metrics.
+
+    the UKS branch uses the SPLIT XC energy (exchange spin-scaled per Oliver and
+    Perdew, Phys. Rev. A 20, 397 (1979), each channel on its own doubled density
+    diag(P_sigma, P_sigma); correlation on the total density per von Barth and
+    Hedin 1972 / PW92 1992) so that this energy is consistent with the split
+    V_xc used by the SCF solvers. RKS is unchanged (combined eval_exc on the
+    total density).
+    """
+    features = assemble_descriptor_features(model.descriptors, mol_data)
+    if mol_data["is_unrestricted"]:
+        # Each exchange channel is evaluated on its own doubled density
+        # diag(P_sigma, P_sigma); correlation keeps the total block.
+        features_a = assemble_descriptor_features(model.descriptors, mol_data,
+                                                  spin_channel=0)
+        features_b = assemble_descriptor_features(model.descriptors, mol_data,
+                                                  spin_channel=1)
+        dm_pbe = mol_data["dm_pbe"]  # (2, nao, nao)
+        ao_grid = mol_data["ao_grid"]
+        ao_xyz = mol_data["ao_grid_deriv"][1:4]
+        grid_weights = mol_data["grid_weights"]
+        rho_a = jnp.einsum("ij,gi,gj->g", dm_pbe[0], ao_grid, ao_grid)
+        rho_b = jnp.einsum("ij,gi,gj->g", dm_pbe[1], ao_grid, ao_grid)
+        nabla_rho_a = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_pbe[0], ao_xyz, ao_grid)
+        nabla_rho_b = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_pbe[1], ao_xyz, ao_grid)
+        sigma_aa = jnp.sum(nabla_rho_a * nabla_rho_a, axis=1)
+        sigma_bb = jnp.sum(nabla_rho_b * nabla_rho_b, axis=1)
+        nabla_rho_tot = nabla_rho_a + nabla_rho_b
+        sigma_tot = jnp.sum(nabla_rho_tot * nabla_rho_tot, axis=1)
+        exc_integrated = split_exc_energy_uks(
+            model, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot,
+            features_a, features_b, features, grid_weights,
+        )
+        return mol_data["E_non_xc"] + exc_integrated
+    exc_integrated = compute_exc_nn(
+        model,
+        mol_data["rho_grid"],
+        mol_data["sigma_grid"],
+        features,
+        mol_data["grid_weights"],
+    )
+    return mol_data["E_non_xc"] + exc_integrated
+
+
+def total_energy_for_solver(model, mol_data, solver_config=None, forward_only=False):
+    """Total energy, dispatched on the SCF solver MODE, the single source of
+    truth shared by training (``losses._compute_energies``) and the
+    energy/AE evaluation metrics so the two optimize/measure the same quantity.
+
+    ``forward_only`` is forwarded to :func:`run_scf` (EVAL passes True to skip the
+    fused ``lax.scan`` compile; TRAINING keeps the default False so backprop through
+    the differentiable SCF is unchanged).
+
+    * ``FULL`` -> the SELF-CONSISTENT energy ``run_scf(...).total_energy``.
+      FULL rebuilds both ``J`` and ``V_xc`` from the live density each cycle, so
+      it has a coherent fixed point and ``E[rho_scf]`` is a valid energy
+      functional: the energy a deployed functional actually produces, and the
+      DFS/dpyscf self-consistent training target. The SCF loop is differentiable
+      (``jax.lax.scan``), so training backpropagates through the cycles.
+
+    * ``ONESHOT`` / ``FIXED_J`` / ``None`` -> the one-shot fixed-density
+      functional on ``rho_PBE`` (:func:`fixed_density_total_energy`). FIXED_J
+      stays one-shot deliberately: its ``run_scf`` energy is a J-pinned hybrid
+      (``J[rho_PBE]`` acting on ``rho_scf != rho_PBE``) that is NOT a valid
+      energy functional of any single density, using it drove FIXED_J specs
+      to lowest train loss but 50+ kcal/mol eval atomization-energy error.
+    """
+    from xcquinox.pipeline.solver import SolverMode  # local: avoid import cycle
+    if solver_config is not None and solver_config.mode == SolverMode.FULL:
+        from xcquinox.pipeline.solver import run_scf
+        result = run_scf(solver_config, model, mol_data, forward_only=forward_only)
+        # DFS tail reporting: when enabled, report a convergence-aware
+        # weighted mean of the SCF tail rather than the arbitrary final cycle
+        # (which for a non-converged species is one phase of an oscillation).
+        # Used by validation MAE and the single-scalar energy/AE metric; the
+        # per-step TRAINING loss takes the full tail via
+        # ``energy_trajectory_for_solver``. Degrades to ``.total_energy`` when
+        # the tail is disabled or no trace was captured.
+        if solver_config.scf_loss_use_tail and result.energy_trace is not None:
+            return tail_weighted_mean_energy(
+                result.energy_trace,
+                solver_config.scf_loss_tail,
+                solver_config.scf_loss_weight_power,
+            )
+        return result.total_energy
+    return fixed_density_total_energy(model, mol_data)
+
+
+def scf_tail_window(n_cycles, tail, power):
+    """DFS convergence-tail window for an ``n_cycles``-step SCF, generalized to
+    any N (the fix to DFS's ``skip = max(5, N-10)`` which underflows to an
+    empty slice for small N).
+
+    Returns ``(skip, weights)`` where ``weights`` (a numpy array, host-static
+    so it is jit-safe) are the per-step quadratic weights ``(i/(N-1))**power``
+    over the KEPT tail steps ``[skip:]``. The tail keeps the last
+    ``min(N, tail)`` steps, so ``skip = max(0, N - tail) <= N - 1`` and at
+    least one step is always kept. At ``N == 25, tail == 10, power == 2`` this
+    reproduces DFS exactly (skip 15, last 10, weights ~0.39..1.0).
+    """
+    n = int(n_cycles)
+    t = max(1, int(tail))
+    p = float(power)
+    tail_len = min(n, t)
+    skip = n - tail_len
+    if n <= 1:
+        # ``linspace(0,1,1)**p == [0.0]`` would zero out the only step.
+        w_full = np.ones(max(n, 1), dtype=float)
+    else:
+        w_full = np.linspace(0.0, 1.0, n) ** p
+    return skip, w_full[skip:]
+
+
+def tail_weighted_mean_energy(energy_trace, tail, power):
+    """Convergence-aware scalar: the quadratic-weighted mean of the SCF tail.
+
+    ``energy_trace`` is the per-cycle energy ``(n_cycles,)`` from
+    ``run_scf().energy_trace``. Denoises a non-converged (oscillating) tail and
+    equals the converged value for a frozen/flat tail. ``sum(weights) >= 1``
+    always (the final step carries weight 1), so the mean is well-defined.
+    """
+    n = energy_trace.shape[0]
+    skip, w = scf_tail_window(n, tail, power)
+    w = jnp.asarray(w, dtype=energy_trace.dtype)
+    tail_e = energy_trace[skip:]
+    return jnp.sum(w * tail_e) / jnp.sum(w)
+
+
+def scf_loss_tail_weights(solver_config):
+    """The per-step tail weights ``(tail_len,)`` for the DFS training loss, or
+    ``None`` when the tail scheme is disabled / not a FULL solver. Pairs with
+    :func:`energy_trajectory_for_solver` (same kept-tail length)."""
+    from xcquinox.pipeline.solver import SolverMode  # local: avoid import cycle
+    if (
+        solver_config is None
+        or solver_config.mode != SolverMode.FULL
+        or not solver_config.scf_loss_use_tail
+    ):
+        return None
+    _, w = scf_tail_window(
+        solver_config.max_cycles,
+        solver_config.scf_loss_tail,
+        solver_config.scf_loss_weight_power,
+    )
+    return jnp.asarray(w)
+
+
+def energy_trajectory_for_solver(model, mol_data, solver_config=None):
+    """Per-cycle SCF energies over the DFS convergence tail, for the per-step
+    training loss. Returns shape ``(tail_len,)`` when FULL + ``scf_loss_use_tail``
+    and a trace was captured; otherwise the single reporting scalar reshaped to
+    ``(1,)`` (so the per-step loss with one step + weight 1 reduces EXACTLY to
+    the prior final-step behavior). All species in a spec share one
+    ``solver_config``, so the returned length is uniform and stackable."""
+    from xcquinox.pipeline.solver import SolverMode  # local: avoid import cycle
+    if (
+        solver_config is not None
+        and solver_config.mode == SolverMode.FULL
+        and solver_config.scf_loss_use_tail
+    ):
+        from xcquinox.pipeline.solver import run_scf
+        result = run_scf(solver_config, model, mol_data)
+        if result.energy_trace is not None:
+            skip, _ = scf_tail_window(
+                result.energy_trace.shape[0],
+                solver_config.scf_loss_tail,
+                solver_config.scf_loss_weight_power,
+            )
+            return result.energy_trace[skip:]
+    return jnp.reshape(
+        total_energy_for_solver(model, mol_data, solver_config), (1,)
+    )
+
+
+def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
+                                  ao_grid, grid_weights, nabla_rho_tot, ao_grad):
+    """Per-spin correlation potential V_c^a, V_c^b for a spin-polarization-aware
+    cnet. E_c depends on rho_a/rho_b through BOTH rho_tot = rho_a+rho_b
+    AND zeta = (rho_a-rho_b)/rho_tot, so V_c^s = dE_c/drho_s is NOT shared.
+
+    The per-spin rho COEFFICIENTS are obtained EXACTLY by JVP'ing the
+    correlation energy density through a helper that forms rho_tot and zeta
+    INTERNALLY w.r.t. rho_a / rho_b, so jax performs the full (clip-aware)
+    zeta chain rule and the result is byte-consistent with autodiff of the
+    energy (verified to ~1e-10), avoiding a hand-coded d zeta/d rho.
+
+    The SIGMA term is SHARED: sigma_tot = |nabla rho_a + nabla rho_b|^2 gives
+    d sigma_tot/d(nabla rho_a) = d sigma_tot/d(nabla rho_b) = 2 nabla rho_tot,
+    and zeta has no gradient dependence.
+
+    ALL THREE tangents (rho_a, rho_b, sigma) are evaluated at the denormal-
+    guarded ``safe_sigma`` rather than the raw ``sigma_tot``: the cnet's shared
+    ``s = sqrt(sigma)/(...)`` node has a 1/(2 sqrt(sigma)) derivative that is
+    +inf at sigma == 0 EXACTLY, and JAX's JVP forms ``(d/dsigma)*sigma_tangent``
+    for that node on EVERY tangent, so even the rho-only tangents (whose
+    sigma-tangent is 0) hit ``0 * inf = NaN`` at a genuine sigma == 0 grid
+    point. Standard atom-centered Lebedev grids have no sigma == 0 points, but
+    high-symmetry / custom grids do; using ``safe_sigma`` matches the sibling
+    ``compute_vxc_nn`` (which also evaluates v_rho at safe_sigma) and is
+    byte-identical at every physical sigma > 1e-30.
+
+    ``features`` is the TOTAL-density block: correlation is spin-interpolated,
+    not spin-scaled, so it never sees the per-channel blocks of
+    ``diag(P_sigma, P_sigma)``.
+    """
+    # eps_c density as a function of the SPIN densities (rho_tot + zeta formed
+    # internally with the SAME clip/floor the UKS energy uses).
+    def ec_spin(ra, rb, s, f):
+        # zeta formed by the SHARED helper, so this jvp differentiates exactly
+        # the zeta the energy path evaluates -- the invariant that keeps v_c the
+        # exact gradient of E_c.
+        return model.eval_ec_scalar(ra + rb, s, f, zeta=uks_zeta(ra, rb))
+
+    _V_SIGMA_THRESHOLD = 1e-30
+    sigma_ok = sigma_tot > _V_SIGMA_THRESHOLD
+    safe_sigma = jnp.where(sigma_ok, sigma_tot, jnp.ones_like(sigma_tot))
+
+    # Per-spin rho coefficients = d eps_c / d rho_{a,b}, evaluated at safe_sigma
+    # (NOT raw sigma_tot): the rho-only tangents still propagate through the
+    # cnet's sqrt(sigma) node, whose +inf derivative at sigma==0 gives
+    # 0*inf=NaN. safe_sigma is byte-identical at every sigma>1e-30.
+    coeff_a, coeff_b = jax.vmap(
+        lambda ra, rb, s, f: (
+            jax.jvp(ec_spin, (ra, rb, s, f),
+                    (jnp.ones_like(ra), jnp.zeros_like(rb),
+                     jnp.zeros_like(s), jnp.zeros_like(f)))[1],
+            jax.jvp(ec_spin, (ra, rb, s, f),
+                    (jnp.zeros_like(ra), jnp.ones_like(rb),
+                     jnp.zeros_like(s), jnp.zeros_like(f)))[1],
+        )
+    )(rho_a, rho_b, safe_sigma, features)
+
+    # Shared sigma coefficient = d eps_c / d sigma_tot (safe sigma guard).
+    v_sigma = jax.vmap(
+        lambda ra, rb, s, f: jax.jvp(
+            ec_spin, (ra, rb, s, f),
+            (jnp.zeros_like(ra), jnp.zeros_like(rb),
+             jnp.ones_like(s), jnp.zeros_like(f)))[1]
+    )(rho_a, rho_b, safe_sigma, features)
+    v_sigma = jnp.where(sigma_ok, v_sigma, 0.0)
+
+    V_rho_a = jnp.einsum("g,gi,gj->ij", grid_weights * coeff_a, ao_grid, ao_grid)
+    V_rho_b = jnp.einsum("g,gi,gj->ij", grid_weights * coeff_b, ao_grid, ao_grid)
+
+    ao_grad_xyz = ao_grad[1:4] if ao_grad.shape[0] == 4 else ao_grad
+    ndphi = jnp.einsum("gd,dgi->gi", nabla_rho_tot, ao_grad_xyz)
+    A = jnp.einsum("g,gi,gj->ij", grid_weights * v_sigma, ndphi, ao_grid)
+    V_sigma = 2.0 * (A + A.T)   # shared by both spins (zeta has no grad dep.)
+    return V_rho_a + V_sigma, V_rho_b + V_sigma
+
+
+def _uks_spin_resolved_vxc(model, mol_data, features_a, features_b,
+                           features_tot):
+    """Build spin-resolved V_xc^NN_a, V_xc^NN_b for the SOLV-01 split energy.
+
+    SOLV-01 physics. The XC energy is split into exchange + correlation:
+
+      * EXCHANGE obeys the exact spin-scaling relation (Oliver & Perdew,
+        Phys. Rev. A 20, 397 (1979)):
+            E_x[n_a, n_b] = 1/2 (E_x[2 n_a] + E_x[2 n_b]).
+        Its functional derivative w.r.t. the alpha DM is exactly what
+        ``compute_vxc_nn(..., part="x")`` produces when called with
+        (2 rho_a, 4 sigma_aa, nabla = 2 nabla_rho_a): the v_sigma factor of 2
+        absorbs the 2*nabla_rho_a scaling and the remaining factor of 2 from
+        4*sigma_aa. Beta is symmetric.
+
+      * CORRELATION does NOT obey the exchange spin-scaling relation; it is
+        spin-interpolated (von Barth & Hedin, J. Phys. C 5, 1629 (1972);
+        PW92, Phys. Rev. B 45, 13244 (1992)). Two paths exist, gated on the
+        cnet's ``use_spin_polarization`` flag:
+
+        - flag FALSE (default / RKS-era checkpoints): the correlation baseline
+          ``pw92c_unpolarized_scalar`` is zeta-independent, so correlation is
+          evaluated ONCE on the TOTAL density (the zeta=0 approximation). Since
+          E_c depends only on rho_tot, delta rho_tot/delta rho_a =
+          delta rho_tot/delta rho_b = 1, so the SAME matrix V_c[rho_tot,
+          sigma_tot] enters BOTH spin channels (the fast path).
+
+        - flag TRUE (P2-03, Dick & Fernandez-Serra PRB 104 L161109 (2021)):
+          correlation uses the zeta-dependent PW92 baseline
+          ``pw92c_polarized_scalar`` plus a spin-polarization input feature, so
+          E_c depends on rho_a/rho_b through BOTH rho_tot AND zeta. Then
+          delta zeta/delta rho_a != delta zeta/delta rho_b and V_c is PER-SPIN;
+          ``compute_vc_polarized_per_spin`` builds V_c^a, V_c^b exactly.
+
+    Therefore (flag FALSE) V_xc^a = vx[2 rho_a, 4 sigma_aa; 2 nabla_rho_a] +
+    vc[rho_tot] and V_xc^b = vx[2 rho_b, 4 sigma_bb; 2 nabla_rho_b] + vc[rho_tot],
+    with vc computed exactly ONCE; (flag TRUE) vc is replaced by the per-spin
+    vc_a, vc_b.
+
+    EXACT SPIN SCALING FOR DESCRIPTOR FEATURES. Each exchange channel is
+    evaluated at its OWN feature block ``features_sigma``, the block of the
+    symmetric doubled density ``diag(P_sigma, P_sigma)`` that the Oliver-Perdew
+    relation refers to; correlation is evaluated at ``features_tot``. Since the
+    blocks arrive as concrete arrays here (this is the fixed-density one-shot
+    path, whose features are frozen at the precompute density matrix), the
+    ``de/df . df/dP`` chain-rule term does not enter; the self-consistent path in
+    ``solver_manual`` differentiates each channel's ``P -> f_sigma(P)`` map and
+    adds it.
+    """
+    dm_pbe = mol_data["dm_pbe"]  # (2, nao, nao)
+    ao_grid = mol_data["ao_grid"]
+    ao_grid_deriv = mol_data["ao_grid_deriv"]
+    grid_weights = mol_data["grid_weights"]
+
+    # Per-spin rho and nabla_rho from spin-resolved PBE DM.
+    ao_xyz = ao_grid_deriv[1:4]  # (3, n_grid, n_ao)
+    rho_a = jnp.einsum("ij,gi,gj->g", dm_pbe[0], ao_grid, ao_grid)
+    rho_b = jnp.einsum("ij,gi,gj->g", dm_pbe[1], ao_grid, ao_grid)
+    nabla_rho_a = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_pbe[0], ao_xyz, ao_grid)
+    nabla_rho_b = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_pbe[1], ao_xyz, ao_grid)
+    sigma_aa = jnp.sum(nabla_rho_a * nabla_rho_a, axis=1)
+    sigma_bb = jnp.sum(nabla_rho_b * nabla_rho_b, axis=1)
+
+    # Total density for the correlation piece (zeta=0 treatment).
+    rho_tot = rho_a + rho_b
+    nabla_rho_tot = nabla_rho_a + nabla_rho_b
+    sigma_tot = jnp.sum(nabla_rho_tot * nabla_rho_tot, axis=1)
+
+    # Exchange: per-spin, spin-scaled (part="x"), each at its own channel block.
+    vx_a = compute_vxc_nn(
+        model, 2.0 * rho_a, 4.0 * sigma_aa, features_a, ao_grid, grid_weights,
+        nabla_rho=2.0 * nabla_rho_a, ao_grad=ao_grid_deriv, part="x",
+    )
+    vx_b = compute_vxc_nn(
+        model, 2.0 * rho_b, 4.0 * sigma_bb, features_b, ao_grid, grid_weights,
+        nabla_rho=2.0 * nabla_rho_b, ao_grad=ao_grid_deriv, part="x",
+    )
+    # Correlation. P2-03: a spin-polarization-aware cnet makes V_c PER-SPIN
+    # (zeta = (rho_a-rho_b)/rho_tot couples the spins); otherwise V_c is the
+    # zeta=0 total-density potential, shared by both spins (the fast path).
+    # Explicit attribute read, see split_exc_energy_uks for rationale.
+    if not hasattr(model.cnet, "use_spin_polarization"):
+        raise AttributeError(
+            "model.cnet has no `use_spin_polarization` attribute (see "
+            "split_exc_energy_uks for the polarization-flag assertion "
+            "rationale)."
+        )
+    if model.cnet.use_spin_polarization:
+        vc_a, vc_b = compute_vc_polarized_per_spin(
+            model, rho_a, rho_b, sigma_tot, features_tot, ao_grid,
+            grid_weights, nabla_rho_tot, ao_grid_deriv,
+        )
+        return vx_a + vc_a, vx_b + vc_b
+    vc = compute_vxc_nn(
+        model, rho_tot, sigma_tot, features_tot, ao_grid, grid_weights,
+        nabla_rho=nabla_rho_tot, ao_grad=ao_grid_deriv, part="c",
+    )
+    return vx_a + vc, vx_b + vc
+
+
+def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarray:
+    """Fixed-J Roothaan one-shot DM prediction.
+
+    Builds F_NN = h_core + J[D_PBE] + V_xc^NN(rho_PBE), solves the
+    generalized eigenvalue problem F C = S C eps via Cholesky transform,
+    and returns the predicted density matrix.
+
+    Returns:
+      RKS: shape (n_ao, n_ao)
+      UKS: shape (2, n_ao, n_ao)
+    """
+    if solver_config is not None:
+        from xcquinox.pipeline.solver import run_scf
+        return run_scf(solver_config, model, mol_data).density_matrix
+    features = assemble_descriptor_features(model.descriptors, mol_data)
+
+    h_core = mol_data["h_core"]
+    j_pbe = mol_data["j_matrix"]
+    s_matrix = mol_data["s_matrix"]
+    nao = s_matrix.shape[0]
+
+    # Cholesky decomposition of regularized overlap
+    overlap_reg = s_matrix + DEGENERACY_REG * jnp.eye(nao)
+    L = jnp.linalg.cholesky(overlap_reg)
+    L_inv = jnp.linalg.inv(L)
+
+    if mol_data["is_unrestricted"]:
+        nocc_a = mol_data["nocc_a"]
+        nocc_b = mol_data["nocc_b"]
+
+        # Spin-resolved V_xc^NN: each exchange channel at its own doubled-density
+        # block, correlation at the total block.
+        vxc_nn_a, vxc_nn_b = _uks_spin_resolved_vxc(
+            model, mol_data,
+            assemble_descriptor_features(model.descriptors, mol_data,
+                                         spin_channel=0),
+            assemble_descriptor_features(model.descriptors, mol_data,
+                                         spin_channel=1),
+            features,
+        )
+
+        # UKS: j_pbe has shape (2, n_ao, n_ao); J_total = J[dm_a] + J[dm_b]
+        # enters both spin Fock matrices identically (Coulomb is spin-blind).
+        j_total = j_pbe[0] + j_pbe[1]
+        fock_a = h_core + j_total + vxc_nn_a
+        fock_b = h_core + j_total + vxc_nn_b
+
+        # Transform to orthogonal basis. A uniform DEGENERACY_REG * I shift
+        # does NOT resolve eigenvalue degeneracies (every eigenvalue moves by
+        # the same amount, commuting through eigh), which breaks the eigh VJP
+        # on linear-symmetry molecules. Only the non-uniform diag
+        # (_sym_break_diag) resolves exact degeneracies so 1/(λ_i - λ_j)
+        # in the reverse-mode derivative stays finite. See SYM_BREAK_SHIFT
+        # block comment for full rationale.
+        _sb = jnp.diag(_sym_break_diag(nao, fock_a.dtype))
+        fock_orth_a = L_inv @ fock_a @ L_inv.T + _sb
+        fock_orth_b = L_inv @ fock_b @ L_inv.T + _sb
+
+        # Eigendecomposition (JAX-native: preserves grad flow through the solver).
+        _, mo_coeff_orth_a = jnp.linalg.eigh(fock_orth_a)
+        _, mo_coeff_orth_b = jnp.linalg.eigh(fock_orth_b)
+
+        # Back-transform
+        mo_coeff_a = L_inv.T @ mo_coeff_orth_a
+        mo_coeff_b = L_inv.T @ mo_coeff_orth_b
+
+        # Density matrices (no factor of 2 for UKS).
+        # Occupation-mask form (C * occ) @ C.T matches the RKS path's gradient
+        # stability under multi-cycle eigh on degenerate-eigenvalue Fock
+        # matrices (e.g. linear-symmetry mols C2H2 / HCN / C2H4). The slice
+        # form C[:, :nocc] @ C[:, :nocc].T produces 0*NaN=NaN through
+        # reverse-mode at exact p-orbital degeneracies.
+        occ_a = (jnp.arange(nao) < nocc_a).astype(mo_coeff_a.dtype)
+        occ_b = (jnp.arange(nao) < nocc_b).astype(mo_coeff_b.dtype)
+        dm_a = (mo_coeff_a * occ_a) @ mo_coeff_a.T
+        dm_b = (mo_coeff_b * occ_b) @ mo_coeff_b.T
+        dm_pred = jnp.stack([dm_a, dm_b])
+    else:
+        nocc = mol_data["nocc"]
+
+        # RKS path: single spin-blind V_xc^NN evaluated on the total density.
+        vxc_nn = compute_vxc_nn(
+            model,
+            mol_data["rho_grid"],
+            mol_data["sigma_grid"],
+            features,
+            mol_data["ao_grid"],
+            mol_data["grid_weights"],
+            nabla_rho=mol_data.get("nabla_rho_grid"),
+            ao_grad=mol_data.get("ao_grid_deriv"),
+        )
+
+        # RKS: j_pbe has shape (n_ao, n_ao)
+        fock = h_core + j_pbe + vxc_nn
+
+        # Transform to orthogonal basis. Only the non-uniform
+        # _sym_break_diag perturbation does work, a uniform
+        # DEGENERACY_REG * I shift commutes through eigh and leaves
+        # eigenvalue gaps unchanged. See SYM_BREAK_SHIFT block comment for
+        # full rationale on the non-uniform shift.
+        fock_orth = (L_inv @ fock @ L_inv.T
+                     + jnp.diag(_sym_break_diag(nao, fock.dtype)))
+
+        # Eigendecomposition
+        _, mo_coeff_orth = jnp.linalg.eigh(fock_orth)
+
+        # Back-transform
+        mo_coeff = L_inv.T @ mo_coeff_orth
+
+        # Density matrix (factor of 2 for RKS double occupation).
+        # Use occupation-mask form to match the UKS path's gradient
+        # stability under multi-cycle eigh on degenerate-eigenvalue
+        # Fock matrices.
+        occ = (jnp.arange(nao) < nocc).astype(mo_coeff.dtype)
+        dm_pred = 2.0 * (mo_coeff * occ) @ mo_coeff.T
+
+    return dm_pred
+
+
+def oneshot_grid_density(model, mol_data, solver_config=None,
+                         forward_only=False) -> jnp.ndarray:
+    """Run oneshot DM prediction, then compute grid density.
+
+    Returns spin-summed density of shape (n_points,) for both RKS and UKS.
+    ``forward_only`` is forwarded to :func:`run_scf` (EVAL passes True to skip the
+    fused ``lax.scan`` compile; identical density, no grad context).
+    """
+    if solver_config is not None:
+        from xcquinox.pipeline.solver import run_scf
+        D_total = run_scf(solver_config, model, mol_data,
+                          forward_only=forward_only).density_matrix
+        if mol_data["is_unrestricted"]:
+            D_total = D_total[0] + D_total[1]
+        ao = mol_data["ao_grid"]
+        return jnp.einsum("ij,gi,gj->g", D_total, ao, ao)
+    D_NN = oneshot_dm_prediction_fast(model, mol_data)
+    ao = mol_data["ao_grid"]
+
+    if mol_data["is_unrestricted"]:
+        D_total = D_NN[0] + D_NN[1]
+    else:
+        D_total = D_NN
+
+    return jnp.einsum("ij,gi,gj->g", D_total, ao, ao)
+
+
+# ---------------------------------------------------------------------------
+# Training-path SCF jit seam
+#
+# The de-fused training step differentiates the group loss EAGERLY -- removing
+# the group-wide fusion is its whole purpose (see
+# :mod:`xcquinox.pipeline.defused_grad`) -- and under reverse-mode AD an eager
+# ``lax.scan`` is rebuilt by ``partial_eval``/``transpose`` on every call. The
+# resulting linearized-forward and transposed-backward scans are fresh
+# ``ClosedJaxpr`` objects, hashed by identity, so they never hit the
+# primitive-executable cache: each call compiles and then permanently retains
+# two more XLA modules, because the runtime does not release LLVM code mappings
+# once allocated. Over a training run the process mapping count climbs
+# monotonically until it crosses ``vm.max_map_count`` (65530) and the job dies
+# with SIGSEGV, reported as ``LLVM compilation error: Cannot allocate memory``
+# at a resident set far below node RAM.
+#
+# Evaluating the SCF inside a module-scope ``eqx.filter_jit`` gives the scan a
+# stable cache key, so it compiles once per molecule shape and is reused for the
+# rest of the run -- the per-molecule sizing the de-fused step already applies to
+# the energy channel (``defused_grad._energy_*_jit``), without reintroducing the
+# group-wide fusion that exhausted host RAM at codegen time.
+#
+# BOTH self-consistent loss channels need this: the density channel
+# (``losses._grid_term``) and the density-matrix channel (``losses._dm_term``).
+# The public ``oneshot_*`` entry points are left untouched so evaluation,
+# notebook, and metric callers are unaffected.
+# ---------------------------------------------------------------------------
+
+def _scf_needs_jit(solver_config) -> bool:
+    """Whether this config's SCF is an eager ``lax.scan`` that must be compiled.
+
+    Only the MANUAL backend runs a ``lax.scan``. ``solver_config=None`` takes a
+    one-shot branch with no scan at all. The pyscfad backend has no scan to
+    stabilise and cannot be traced in the first place -- its driver needs
+    concrete arrays for libcint integral construction and raises on tracers
+    (:func:`solver_pyscfad.run_pyscfad_scf`), including in ONESHOT mode, whose
+    short-circuit sits behind that guard.
+    """
+    return (solver_config is not None
+            and solver_config.backend is SolverBackend.MANUAL)
+
+
+@eqx.filter_jit
+def _grid_density_scf_jit(model, mol_data, solver_config):
+    """SCF-backed grid density, compiled once per (molecule shape, solver_config)."""
+    return oneshot_grid_density(model, mol_data, solver_config=solver_config)
+
+
+@eqx.filter_jit
+def _dm_prediction_scf_jit(model, mol_data, solver_config):
+    """SCF-backed density matrix, compiled once per (molecule shape, solver_config)."""
+    return oneshot_dm_prediction_fast(model, mol_data, solver_config=solver_config)
+
+
+def grid_density_for_loss(model, mol_data, solver_config):
+    """Grid density for the training density channel.
+
+    Numerically identical to :func:`oneshot_grid_density`; the difference is only
+    where the SCF is compiled. See the seam note above.
+    """
+    if _scf_needs_jit(solver_config):
+        return _grid_density_scf_jit(model, mol_data, solver_config)
+    return oneshot_grid_density(model, mol_data, solver_config=solver_config)
+
+
+def dm_prediction_for_loss(model, mol_data, solver_config):
+    """Predicted density matrix for the training density-matrix channel.
+
+    Numerically identical to :func:`oneshot_dm_prediction_fast`; the difference
+    is only where the SCF is compiled. See the seam note above.
+    """
+    if _scf_needs_jit(solver_config):
+        return _dm_prediction_scf_jit(model, mol_data, solver_config)
+    return oneshot_dm_prediction_fast(model, mol_data, solver_config=solver_config)
+
+
+def oneshot_total_energy(model, mol_data) -> float:
+    """Harris functional energy at the NN-predicted density.
+
+    E_harris = Tr[D_NN * (h_core + J[D_PBE] + V_xc^PBE)]
+             - 0.5 * Tr[D_PBE * J[D_PBE]]
+             - (Tr[D_PBE * V_xc^PBE] - E_xc^PBE)
+             + e_nuc
+
+    Research diagnostic only, NOT used by any loss or metric.
+    """
+    D_NN = oneshot_dm_prediction_fast(model, mol_data)
+
+    h_core = mol_data["h_core"]
+    j_pbe = mol_data["j_matrix"]
+    vxc_pbe = mol_data["vxc_pbe"]
+    dm_pbe = mol_data["dm_pbe"]
+    E_xc_pbe = mol_data["E_xc_pbe"]
+    e_nuc = mol_data["e_nuc"]
+
+    if mol_data["is_unrestricted"]:
+        # UKS: sum traces over both spin channels
+        # j_pbe: (2, n_ao, n_ao), dm_pbe: (2, n_ao, n_ao), vxc_pbe: (2, n_ao, n_ao)
+        # D_NN: (2, n_ao, n_ao)
+        j_total = j_pbe[0] + j_pbe[1]
+
+        # Tr[D_NN * (h_core + J_total + vxc_pbe)] summed over spins
+        F_pbe_a = h_core + j_total + vxc_pbe[0]
+        F_pbe_b = h_core + j_total + vxc_pbe[1]
+        term1 = jnp.trace(D_NN[0] @ F_pbe_a) + jnp.trace(D_NN[1] @ F_pbe_b)
+
+        # Double-counting: 0.5 * Tr[D_PBE * J[D_PBE]]
+        term2 = 0.5 * (jnp.trace(dm_pbe[0] @ j_total) + jnp.trace(dm_pbe[1] @ j_total))
+
+        # XC double-counting: Tr[D_PBE * V_xc^PBE] - E_xc^PBE
+        term3 = (jnp.trace(dm_pbe[0] @ vxc_pbe[0]) + jnp.trace(dm_pbe[1] @ vxc_pbe[1])) - E_xc_pbe
+    else:
+        # RKS
+        F_pbe = h_core + j_pbe + vxc_pbe
+        term1 = jnp.trace(D_NN @ F_pbe)
+        term2 = 0.5 * jnp.trace(dm_pbe @ j_pbe)
+        term3 = jnp.trace(dm_pbe @ vxc_pbe) - E_xc_pbe
+
+    return term1 - term2 - term3 + e_nuc
+
+
+def _nn_fx_local_uks(model, rho_alpha: jnp.ndarray,
+                    rho_beta: jnp.ndarray,
+                    s: jnp.ndarray) -> jnp.ndarray:
+    """Evaluate model.xnet as UKS F_x on synthetic (rho_alpha, rho_beta, s) points.
+
+    Step-6 PBE-anchor helper. AlecGGA_XNet.__call__ is a single-grid-point
+    evaluator taking a 1-D input tensor ``[rho, sigma, *extras]`` and
+    returning a scalar F_x. We therefore vmap over N sample points.
+
+    Spin-scaled UKS approximation (matches ``_uks_spin_resolved_vxc`` at
+    SCF time):
+
+        F_x_UKS(ra, rb, s) = 0.5 * (F_x_RKS(2*ra, sigma_aa_eff)
+                                   + F_x_RKS(2*rb, sigma_bb_eff))
+
+    where ``sigma_sigma_eff = (1 +/- zeta)**2 * sigma_tot``,
+    ``zeta = (ra-rb)/(ra+rb)``, and ``sigma_tot = (2*kF(rho_tot)*s*rho_tot^(4/3))^2``.
+    This is the per-spin sigma that ``_uks_spin_resolved_vxc`` feeds into
+    ``compute_vxc_nn`` during SCF, ``4 * sigma_sigma_sigma``, written for a
+    synthetic row: such a row carries no gradient direction, so its zeta has
+    no spatial variation, nabla_rho_sigma = (1 +/- zeta)/2 * nabla_rho_tot,
+    and ``4 * sigma_sigma_sigma = (1 +/- zeta)**2 * sigma_tot``: exactly
+    ``sigma_sigma_eff`` above. (On a molecular grid nabla zeta != 0 and the
+    SCF uses the channel's own gradient; the anchor never evaluates there.)
+
+    Uses zero extras (no descriptor features), and is FEATURE-FREE by
+    construction. The exact spin scaling gives each channel the descriptor block
+    of its own doubled density diag(P_sigma, P_sigma); a synthetic
+    (rho_alpha, rho_beta, s) point has no density matrix, so no such block
+    exists and the zero row is a fixed slice of the feature space rather than
+    the block of any system (for the raw alpha column it is the single-orbital
+    limit alpha = 0, which only a one-electron spin channel reaches).
+    ``losses._anchor_term`` therefore refuses a descriptor-carrying architecture
+    at non-zero weight, and this helper is reached only for the descriptor-free
+    ones, where ``[rho, sigma]`` is the network's whole input and the row above
+    is the footing of ``split_exc_energy_uks`` itself.
+    """
+    n_extra = model.xnet.n_extra_features
+    kF_tot = (3.0 * jnp.pi ** 2) ** (1.0 / 3.0)
+
+    rho_tot = rho_alpha + rho_beta
+    sigma_tot = (
+        2.0 * kF_tot * s
+        * jnp.clip(rho_tot, 1e-30, None) ** (4.0 / 3.0)
+    ) ** 2
+    zeta = jnp.where(
+        rho_tot > 0,
+        (rho_alpha - rho_beta) / jnp.clip(rho_tot, 1e-30, None),
+        0.0,
+    )
+    sigma_aa_eff = (1.0 + zeta) ** 2 * sigma_tot
+    sigma_bb_eff = (1.0 - zeta) ** 2 * sigma_tot
+
+    def _fx_one(rho_spin_doubled, sigma_spin_eff):
+        extras = jnp.zeros(n_extra, dtype=rho_spin_doubled.dtype)
+        inputs = jnp.concatenate([
+            jnp.atleast_1d(rho_spin_doubled),
+            jnp.atleast_1d(sigma_spin_eff),
+            extras,
+        ])
+        return model.xnet(inputs)
+
+    fx_a = jax.vmap(_fx_one)(2.0 * rho_alpha, sigma_aa_eff)
+    fx_b = jax.vmap(_fx_one)(2.0 * rho_beta, sigma_bb_eff)
+    return 0.5 * (fx_a + fx_b)

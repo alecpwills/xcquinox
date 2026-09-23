@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=${JOB_NAME}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
+${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --output=${RUN_DIR}/logs/preflight_%j.out
+${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
+set -euo pipefail
+
+# --- conda activation ------------------------------------------------------
+${CONDA_ACTIVATION}
+
+# --- thread caps -----------------------------------------------------------
+# Preflight's OWN precompute (the CCSD + OEP reference build) runs PySCF's
+# OpenMP pool and numpy's OpenBLAS pool at min(allocation, ${PYSCF_POOL_THREADS_MAX})
+# threads each (parallel.pyscf_pool_threads). Sized to the allocation, the two
+# spin-waiting pools stall the small dense operations the build is made of:
+# measured at about ten minutes per molecule at 40 threads on a 40-core node
+# against 8 s at four (the curve is on parallel.PYSCF_POOL_THREADS_MAX). The
+# compile-smoke probe deliberately does NOT inherit these -- it re-derives the
+# production BLAS cap (SLURM_CPUS_ON_NODE/12) + the XLA compile trims in
+# _preflight._compile_smoke_impl so the gate mirrors a real train node.
+PYSCF_THREADS=$${SLURM_CPUS_PER_TASK:-${PYSCF_POOL_THREADS_MAX}}
+case "$$PYSCF_THREADS" in ''|*[!0-9]*) PYSCF_THREADS=${PYSCF_POOL_THREADS_MAX} ;; esac
+PYSCF_THREADS=$$(( 10#$$PYSCF_THREADS ))
+[ "$$PYSCF_THREADS" -ge 1 ] || PYSCF_THREADS=1
+[ "$$PYSCF_THREADS" -le ${PYSCF_POOL_THREADS_MAX} ] || PYSCF_THREADS=${PYSCF_POOL_THREADS_MAX}
+export OMP_NUM_THREADS="$$PYSCF_THREADS"
+export MKL_NUM_THREADS="$$PYSCF_THREADS"
+export OPENBLAS_NUM_THREADS="$$PYSCF_THREADS"
+echo "[thread-caps] allocation=$${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$$PYSCF_THREADS"
+
+# --- glibc allocator -------------------------------------------------------
+# Mirror the train templates' MALLOC_ARENA_MAX=2 so the compile-smoke gate
+# measures the allocator behavior of a production train node (the cap cut the
+# train worker's resident floor ~200 -> ~86 GB; rationale in
+# train_eval_inline_cpu.sbatch.tmpl). The probe subprocess inherits it through
+# os.environ in _preflight._compile_smoke_impl.
+export MALLOC_ARENA_MAX=2
+echo "[malloc] MALLOC_ARENA_MAX=$$MALLOC_ARENA_MAX"
+
+# Raise the per-user process/thread ceiling if node policy permits (extra
+# pthread_create headroom for the compile-smoke probe's LLVM codegen); harmless
+# where the hard limit forbids it. Mirrors train_eval_inline_cpu.sbatch.tmpl.
+ulimit -u unlimited 2>/dev/null || true
+
+# --- preflight job (single task, no array) ---------------------------------
+python -m xcquinox.pipeline.cluster._preflight ${RUN_DIR}

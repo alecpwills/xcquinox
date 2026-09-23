@@ -1,0 +1,33 @@
+# The parity stack: the exact releases the declaration (pyproject.toml) resolves to on the
+# workstation, around pyscfad 0.3.4 (2026-09-22). Every line is an exact pin; every runtime
+# and test-extra library of the declaration is here with its binary halves, and
+# tools/test_packaging.py holds the declared floors to these versions. An environment:
+#   python3.12 -m venv <prefix> && <prefix>/bin/pip install -r requirements.txt -e .
+# On the cluster, hpcjobs/build_parity_env.sbatch does the same after conda supplies python
+# 3.12; every wheel here installs on the nodes' glibc 2.34 (measured 2026-09-22).
+ase==3.29.0
+brokenaxes==0.6.2
+equinox==0.13.8
+h5py==3.16.0
+ipykernel==7.3.0
+jax==0.10.2
+jaxlib==0.10.2
+jaxtyping==0.3.11
+matplotlib==3.11.2
+ml_dtypes==0.6.0
+nbclient==0.11.0
+nbformat==5.11.1
+numpy==2.5.3
+opt_einsum==3.4.0
+optax==0.2.8
+pandas==3.0.6
+pillow==12.3.0
+pyscf==2.14.0
+pyscf-properties==0.1.0
+pyscfad==0.3.4
+pyscfadlib==0.3.4
+pytest==9.1.1
+pytest-cov==7.1.0
+pyyaml==6.0.3
+scipy==1.18.1
+tqdm==4.70.1

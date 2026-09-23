@@ -1,0 +1,533 @@
+#!/usr/bin/env python
+"""Exchange / correlation enhancement-factor curves from trained checkpoints.
+
+Mirrors SI Figs 7-10 of Navarro-Rodriguez et al. (*Constraint-aware
+functional cloning*, MLXC_Constraints 2026): plot each trained network's
+learned exchange enhancement F_x(s) and correlation enhancement
+F_c(s, r_s; zeta=0) against the analytic PBE reference, as a function of the
+reduced density gradient ``s = |grad rho| / (2 (3 pi^2)^{1/3} rho^{4/3})``.
+
+For each architecture we load the most-trained representative checkpoint
+(largest subset_size with a materialized ``model.eqx``), reusing the canonical
+loader :func:`xcquinox.pipeline.eval_holdout.load_trained_model` (the skeleton from
+``AlecGGAModel.from_arch(spec.arch)``, the checkpoint's recorded model class
+held to the spec's arch, then the leaves), and forward-evaluate
+``model.eval_Fx`` / ``model.eval_Fc`` on a synthetic descriptor grid.
+
+Definitions used (consistent with ``AlecGGAModel`` and ``pbe_anchor``):
+  * F_x reference  : analytic PBE, ``pbe_anchor._fx_pbe_analytic(s)``
+    (Perdew-Burke-Ernzerhof, PRL 77, 3865 (1996), eq. 14;
+    kappa=0.804, mu=0.21951).
+  * F_c reference  : libxc GGA_C_PBE eps_c / LDA_C_PW eps_c -- i.e. the PBE
+    correlation enhancement over the same PW92 baseline the network's
+    ``eval_Fc`` enhances (``_ec_baseline`` -> PW92). Same per-electron ratio,
+    so the network and reference are directly comparable.
+
+Caveats stamped on the figure:
+  * Pre-``dm_entropy``-fix run (2026-05-29 forensic review).
+  * **Zero-descriptor slice**: for descriptor architectures (cusp / dm /
+    combined) the extra features are set to 0, so these curves are the
+    F(s) slice at zero auxiliary descriptors -- a well-defined cut, not the
+    full descriptor-dependent surface. ``deep``/``deep_attn``/``*notransform``
+    have no extra descriptors, so the cut is exact for them.
+
+Usage:
+    python tools/analysis/enhancement_factors.py \
+        [--run-dir <pulled run dir>] \
+        [--outdir tools/analysis/figures_ablation_notransform]
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+
+# Reuse the arch palette/order + run discovery from the sibling module.
+_SIB_PATH = Path(__file__).resolve().parent / "make_ablation_arch_figure.py"
+_sib_spec = importlib.util.spec_from_file_location(
+    "make_ablation_arch_figure", _SIB_PATH)
+sib = importlib.util.module_from_spec(_sib_spec)  # type: ignore[arg-type]
+sys.modules["make_ablation_arch_figure"] = sib
+_sib_spec.loader.exec_module(sib)  # type: ignore[union-attr]
+
+ARCH_ORDER = sib.ARCH_ORDER
+ARCH_COLOR = sib.ARCH_COLOR
+ccp = sib.ccp
+
+_RS_PANELS: Tuple[float, ...] = (0.5, 2.0, 5.0)  # Wigner-Seitz radii for F_c
+#: Iso-orbital alpha values the meta-GGA panel sweeps. Spans the single-orbital
+#: corner (0), the uniform-gas point (1), and the overlap/tail region a
+#: diffuse basis reaches; alpha is clipped to 100 upstream (metagga.py).
+_ALPHA_PANELS: Tuple[float, ...] = (0.0, 0.5, 1.0, 2.0, 5.0, 100.0)
+#: The dm_entropy label leak was fixed on 2026-05-29; runs stamped at or before
+#: that date carry the caveat, later ones must NOT (the stamp used to be
+#: unconditional, which printed a false provenance claim on every newer run).
+_DM_ENTROPY_FIX_DATE = "20260529"
+
+
+def _provenance(run_dir: Path, mgga_alpha: bool) -> str:
+    """Provenance stamp for ``run_dir``: the descriptor-slice convention the
+    panels actually use, plus the dm_entropy caveat only where it applies."""
+    parts = []
+    stamp = run_dir.name.replace("run_", "")[:8]
+    if stamp.isdigit() and stamp <= _DM_ENTROPY_FIX_DATE:
+        parts.append("Pre-dm_entropy-fix run (2026-05-29).")
+    parts.append("Descriptor archs shown at the zero-descriptor slice "
+                 "(extras=0)")
+    parts.append("except the meta-GGA archs: their F_x AND F_c curves are "
+                 "drawn at the encoded alpha=0 slice (a raw zero column is "
+                 "misread as alpha ~ 1 by the model classes that invert the "
+                 "stored encoding), and the alpha panel sweeps the indicator."
+                 if mgga_alpha else ".")
+    return " ".join(parts).replace(" .", ".")
+
+
+# ---------------------------------------------------------------------------
+# Descriptor-grid geometry
+# ---------------------------------------------------------------------------
+
+def s_to_sigma(rho: np.ndarray, s: np.ndarray) -> np.ndarray:
+    """Invert ``s = sqrt(sigma)/(2 k_F rho)`` -> ``sigma`` at fixed rho.
+    ``k_F = (3 pi^2 rho)^{1/3}``."""
+    rho = np.asarray(rho, dtype=float)
+    k_F = (3.0 * np.pi ** 2 * rho) ** (1.0 / 3.0)
+    return (2.0 * k_F * rho * np.asarray(s, dtype=float)) ** 2
+
+
+def rs_to_rho(rs: float) -> float:
+    """Wigner-Seitz radius -> uniform density ``rho = 3/(4 pi rs^3)``."""
+    return 3.0 / (4.0 * np.pi * rs ** 3)
+
+
+def alpha_column_value(alpha: float) -> float:
+    """The stored ``metagga`` column that encodes the EXACT raw indicator
+    ``alpha``.
+
+    The descriptor column the networks read is ``min(p(alpha_raw), 100)``
+    with ``p`` the smooth positive part of width 1e-5 (``metagga.
+    compute_alpha``; the pretraining mesh's own alpha column is produced by
+    the same helper, ``pretrain_data_gen._mesh_columns``), and
+    ``networks._raw_indicator`` inverts it exactly below the ceiling.
+    Passing the raw ``alpha`` itself as the column would be misread: the
+    inverse maps a column value c to ``c - w^2/(4c)`` (alpha = 1 would land
+    2.5e-11 low), and its positivity guard sends a column of exactly 0.0 to
+    alpha ~ 1 -- the wrong end of the indicator range, 1.74e-1 off in F_x
+    (measured). Encoding through ``smooth_positive_part`` makes the
+    recovered indicator, and therefore the SCAN parent inside an anchored
+    network, sit at exactly the requested slice ``alpha`` (measured: an
+    anchored fresh model matches ``parents.scan_fx`` to 2.2e-16 at the
+    alpha = 0 and alpha = 1 slices).
+    """
+    import jax.numpy as jnp
+
+    from xcquinox.pipeline import metagga
+    return float(jnp.minimum(
+        metagga.smooth_positive_part(jnp.asarray(float(alpha)),
+                                     metagga._ALPHA_SMOOTHING_WIDTH),
+        metagga._ALPHA_MAX))
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint selection + loading
+# ---------------------------------------------------------------------------
+
+def representative_specs(run_dir: Path) -> Dict[str, int]:
+    """``{arch: spec_idx}`` -- per arch, the largest-subset trained spec
+    (has ``model.eqx``). The most-trained representative per architecture."""
+    cells = ccp._read_manifest_cells(run_dir)
+    best: Dict[str, Tuple[int, int]] = {}  # arch -> (subset_size, idx)
+    for idx, spec_dir in ccp._spec_dirs(run_dir):
+        if not (spec_dir / "model.eqx").is_file():
+            continue
+        cell = cells.get(idx, {})
+        # keyed by the STORED key (the checkpoint loader and the registry
+        # take it); the shown name is applied at the draw sites
+        arch = cell.get("arch_stored", cell.get("arch"))
+        ss = cell.get("subset_size")
+        if arch is None or ss is None:
+            continue
+        if arch not in best or ss > best[arch][0]:
+            best[arch] = (ss, idx)
+    return {a: idx for a, (_ss, idx) in best.items()}
+
+
+def load_trained_model(run_dir: Path, spec_idx: int):
+    """Load ``(spec, AlecGGAModel)`` for ``spec_idx`` via the canonical
+    cluster loader. Heavy: imports jax/equinox/pyscf on first call."""
+    from xcquinox.pipeline import eval_holdout
+    from xcquinox.pipeline.checkpoint_class import load_pickle
+
+    manifest = ccp._read_manifest_cells(run_dir)
+    width = 4
+    mpath = run_dir / "manifest.json"
+    if mpath.is_file():
+        try:
+            width = int(json.loads(mpath.read_text()).get("width", 4))
+        except (json.JSONDecodeError, OSError, ValueError):
+            width = 4
+    spec_path = run_dir / "specs" / f"spec_{spec_idx:0{width}d}.spec"
+    model_path = (run_dir / "checkpoints" / f"spec_{spec_idx:0{width}d}"
+                  / "model.eqx")
+    with spec_path.open("rb") as f:
+        spec = load_pickle(f)
+    model = eval_holdout.load_trained_model(spec, model_path)
+    return spec, model
+
+
+# ---------------------------------------------------------------------------
+# Enhancement-factor curves
+# ---------------------------------------------------------------------------
+
+def is_meta_gga(model) -> bool:
+    """Whether ``model``'s X-net carries the meta-GGA alpha channel."""
+    return bool(getattr(model.xnet, "meta_gga", False))
+
+
+def model_fx_curve(model, s_grid: np.ndarray, rho: float = 1.0,
+                   alpha: Optional[float] = None) -> np.ndarray:
+    """``F_x(s)`` from a loaded model at fixed rho, zero extra descriptors.
+
+    ``alpha`` (meta-GGA archs only) selects the slice at that EXACT raw
+    iso-orbital indicator: the descriptor column receives the stored-column
+    encoding of ``alpha`` (:func:`alpha_column_value`), which is what
+    ``metagga.compute_alpha`` writes and what every model class reads -- the
+    anchored/DFS classes invert the column exactly, so writing the raw value
+    instead is misread there (a raw 0.0 is recovered as alpha ~ 1 through
+    the inverse's positivity guard, 1.74e-1 off in F_x, measured). Left None
+    the behaviour is the historical zero-descriptor slice: every extra
+    column 0, a value no ``compute_alpha`` output can produce (its floor is
+    width/2 = 5e-6) and which the inverting classes read as alpha ~ 1.
+
+    Why the alpha argument exists: a meta-GGA cut at any single alpha says
+    nothing about the functional where molecules actually sample the
+    indicator (alpha ~ 0-2), and the single-orbital corner alpha = 0 --
+    where F_x sits at its ceiling -- is the least representative point of
+    the domain, so the alpha panel sweeps the indicator instead.
+    """
+    import jax.numpy as jnp
+    n = s_grid.shape[0]
+    rho_arr = np.full(n, rho, dtype=float)
+    sigma = s_to_sigma(rho_arr, s_grid)
+    n_extra = int(getattr(model.xnet, "n_extra_features", 0))
+    feats = np.zeros((n, n_extra), dtype=float)
+    if alpha is not None and n_extra > 0:
+        idx = int(model.xnet.metagga_alpha_index)
+        if idx < 0:
+            raise ValueError(
+                "model_fx_curve: alpha was requested but the exchange "
+                "network carries no meta-GGA alpha column "
+                f"(metagga_alpha_index={idx}); a negative index would "
+                "silently write the last descriptor column")
+        feats[:, idx] = alpha_column_value(alpha)
+    fx = model.eval_Fx(jnp.asarray(rho_arr), jnp.asarray(sigma),
+                       jnp.asarray(feats))
+    return np.asarray(fx, dtype=float)
+
+
+def scan_fx_curve(s_grid: np.ndarray, alpha: float,
+                  rho: float = 1.0) -> Optional[np.ndarray]:
+    """SCAN exchange enhancement ``F_x(s)`` at fixed ``alpha`` from libxc.
+
+    The meta-GGA archs pretrain to SCAN (``pretrain.py`` selects
+    ``Fx_scan_all`` for ``meta_gga`` archs), so SCAN -- not PBE -- is the
+    reference they should be read against. ``tau`` is solved from the requested
+    alpha by inverting ``alpha = (tau - tau_W)/tau_unif``. ``None`` when libxc
+    has no SCAN (older pyscf), so the panel degrades to no reference line.
+    """
+    try:
+        from pyscf import dft
+    except Exception:  # noqa: BLE001 - optional reference
+        return None
+    out = []
+    tau_unif_c = 0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0)
+    e_x_lda = -0.75 * (3.0 / np.pi) ** (1.0 / 3.0) * rho ** (1.0 / 3.0)
+    for s in np.asarray(s_grid, dtype=float):
+        k_f = (3.0 * np.pi ** 2 * rho) ** (1.0 / 3.0)
+        sigma = (s * 2.0 * k_f * rho) ** 2
+        tau = alpha * tau_unif_c * rho ** (5.0 / 3.0) + sigma / (8.0 * rho)
+        arr = np.array([[rho], [np.sqrt(sigma)], [0.0], [0.0], [0.0], [tau]])
+        try:
+            e_xc = dft.libxc.eval_xc("MGGA_X_SCAN", arr, spin=0, deriv=0)[0][0]
+        except Exception:  # noqa: BLE001
+            return None
+        out.append(float(e_xc / e_x_lda))
+    return np.asarray(out, dtype=float)
+
+
+def model_fc_curve(model, s_grid: np.ndarray, rs: float,
+                   zeta: float = 0.0, *, alpha=None) -> np.ndarray:
+    """``F_c(s; r_s, zeta)`` from a loaded model.
+
+    ``alpha=None`` keeps the historical zero-extra-descriptor cut. A float
+    ``alpha`` writes the STORED-COLUMN encoding of that indicator value
+    (:func:`alpha_column_value`) into the correlation network's alpha
+    column, exactly as :func:`model_fx_curve` does for exchange -- a raw
+    value is misread by the inverting model classes (a raw 0.0 recovers as
+    alpha ~ 1, up to 0.669 off in F_c at r_s = 0.5, measured).
+    """
+    import jax.numpy as jnp
+    n = s_grid.shape[0]
+    rho = rs_to_rho(rs)
+    rho_arr = np.full(n, rho, dtype=float)
+    sigma = s_to_sigma(rho_arr, s_grid)
+    n_extra = int(getattr(model.cnet, "n_extra_features", 0))
+    feats = np.zeros((n, n_extra), dtype=float)
+    if alpha is not None and n_extra > 0:
+        idx = int(model.cnet.metagga_alpha_index)
+        if idx < 0:
+            raise ValueError(
+                "model_fc_curve: alpha was requested but the correlation "
+                "network carries no meta-GGA alpha column "
+                f"(metagga_alpha_index={idx}); a negative index would "
+                "silently write the last descriptor column")
+        feats[:, idx] = alpha_column_value(alpha)
+    fc = model.eval_Fc(jnp.asarray(rho_arr), jnp.asarray(sigma),
+                       jnp.asarray(feats), zeta=zeta)
+    return np.asarray(fc, dtype=float)
+
+
+def pbe_fx_curve(s_grid: np.ndarray) -> np.ndarray:
+    """Analytic PBE F_x(s) (reuses ``pbe_anchor._fx_pbe_analytic``)."""
+    from xcquinox.pipeline.pbe_anchor import _fx_pbe_analytic
+    return np.asarray(_fx_pbe_analytic(np.asarray(s_grid, dtype=float)),
+                      dtype=float)
+
+
+def pbe_fc_curve(s_grid: np.ndarray, rs: float) -> Optional[np.ndarray]:
+    """PBE correlation enhancement ``eps_c^{PBE}/eps_c^{PW92}`` via libxc, at
+    fixed rho(rs) over the s grid. Returns None if libxc is unavailable.
+
+    Mirrors the libxc call convention in ``pbe_anchor._pbe_fx_libxc``: pack a
+    (4, N) GGA input with ``rho_input[1] = sqrt(sigma)`` so that the libxc
+    contracted gradient equals the target sigma.
+    """
+    try:
+        from pyscf import dft as _pyscf_dft
+    except ImportError:  # pragma: no cover - pyscf always present in env
+        return None
+    eval_xc = _pyscf_dft.libxc.eval_xc
+    n = s_grid.shape[0]
+    rho = rs_to_rho(rs)
+    rho_arr = np.full(n, rho, dtype=float)
+    sigma = s_to_sigma(rho_arr, s_grid)
+
+    rho_input = np.zeros((4, n), dtype=np.float64)
+    rho_input[0, :] = rho_arr
+    rho_input[1, :] = np.sqrt(np.clip(sigma, 0.0, None))
+    eps_c_pbe, *_ = eval_xc("GGA_C_PBE", rho_input, spin=0, deriv=0)
+    eps_c_pw92, *_ = eval_xc("LDA_C_PW", rho_arr, spin=0, deriv=0)
+    eps_c_pbe = np.asarray(eps_c_pbe, dtype=float)
+    eps_c_pw92 = np.asarray(eps_c_pw92, dtype=float)
+    return np.where(np.abs(eps_c_pw92) > 1e-30, eps_c_pbe / eps_c_pw92, 1.0)
+
+
+def mgga_panel_curves(model, s_grid: np.ndarray):
+    """The meta-GGA panel curves of the enhancement-factor figure, all on
+    ONE indicator slice.
+
+    Returns ``(fx, fc, alpha_sweep)``: the ``F_x(s)`` curve and the
+    ``F_c(s; r_s)`` family at the ENCODED alpha = 0 slice, plus the alpha
+    panel's sweep over :data:`_ALPHA_PANELS`. The F_c panels sit on the
+    SAME alpha = 0 slice as the exchange panel: the zero-column cut is
+    recovered as alpha ~ 1 by the inverting model classes, which drew one
+    figure at two different indicator values (up to 0.669 apart in F_c at
+    r_s = 0.5, measured).
+    """
+    fx = model_fx_curve(model, s_grid, alpha=0.0)
+    fc = {rs: model_fc_curve(model, s_grid, rs, alpha=0.0)
+          for rs in _RS_PANELS}
+    sweep = {a: model_fx_curve(model, s_grid, alpha=a)
+             for a in _ALPHA_PANELS}
+    return fx, fc, sweep
+
+
+# ---------------------------------------------------------------------------
+# Figure
+# ---------------------------------------------------------------------------
+
+def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
+                             s_max: float = 3.0, n_points: int = 240) -> Path:
+    """Figure D -- F_x(s) and F_c(s; r_s) per architecture, each against the
+    reference it was PRETRAINED to (PBE for the GGA archs, SCAN for the
+    meta-GGA ones), plus an alpha sweep for the meta-GGA family."""
+    reps = representative_specs(run_dir)
+    # stored keys in ARCH_ORDER's (shown-name) order; a stored key that is
+    # also a shown name (deep_3x16) is mapped explicitly, never by inspection
+    shown_of = {a: sib.display_name(a) for a in reps}
+    archs = [a for s in ARCH_ORDER for a in reps if shown_of[a] == s]
+    s_grid = np.linspace(1e-3, s_max, n_points)
+
+    # Load each arch once; compute its Fx + Fc(rs) curves.
+    fx_curves: Dict[str, np.ndarray] = {}
+    fc_curves: Dict[str, Dict[float, np.ndarray]] = {}
+    # meta-GGA archs additionally get an alpha family, and their F_x-panel
+    # curve is drawn at the TRUE alpha=0 slice through the encoded column
+    # (extras=0 is NOT that slice: the model classes that invert the stored
+    # encoding read a zero column as alpha ~ 1). The single-orbital corner
+    # shown alone misrepresents the functional everywhere molecules sample
+    # it, hence the sweep.
+    mgga_alpha: Dict[str, Dict[float, np.ndarray]] = {}
+    for arch in archs:
+        try:
+            _spec, model = load_trained_model(run_dir, reps[arch])
+        except Exception as exc:  # noqa: BLE001 - report and skip a bad ckpt
+            print(f"  [warn] could not load {arch} "
+                  f"(spec {reps[arch]}): {exc}", flush=True)
+            continue
+        if is_meta_gga(model):
+            fx_curves[arch], fc_curves[arch], mgga_alpha[arch] = \
+                mgga_panel_curves(model, s_grid)
+        else:
+            fx_curves[arch] = model_fx_curve(model, s_grid)
+            fc_curves[arch] = {rs: model_fc_curve(model, s_grid, rs)
+                               for rs in _RS_PANELS}
+
+    with plt.rc_context(sib._STYLE):
+        # A meta-GGA arch earns a fifth panel (its alpha sweep). Without one the
+        # layout is the historical 2x2, so GGA-only runs render unchanged.
+        if mgga_alpha:
+            fig, axes = plt.subplots(2, 3, figsize=(16.5, 9.5))
+            ax_fx, ax_alpha = axes[0, 0], axes[0, 1]
+            fc_axes = [axes[0, 2], axes[1, 0], axes[1, 1]]
+            axes[1, 2].axis("off")
+        else:
+            fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+            ax_fx, ax_alpha = axes[0, 0], None
+            fc_axes = [axes[0, 1], axes[1, 0], axes[1, 1]]
+
+        # Panel 1: F_x(s) ---------------------------------------------------
+        # NOTE the meta-GGA curves here are the TRUE alpha=0 slice, drawn
+        # through the encoded column (a raw zero column is NOT that slice:
+        # the model classes that invert the stored encoding read it as
+        # alpha ~ 1) -- the single-orbital corner. Their representative
+        # behaviour is in the alpha panel; this one is kept so all archs
+        # appear on one axis, and the caption says which slice it is.
+        for arch in archs:
+            if arch in fx_curves:
+                ax_fx.plot(s_grid, fx_curves[arch], linewidth=1.4,
+                           color=sib.arch_color(shown_of[arch]),
+                           label=shown_of[arch])
+        ax_fx.plot(s_grid, pbe_fx_curve(s_grid), "k--", linewidth=1.8,
+                   label="PBE (analytic)")
+        if mgga_alpha:
+            # SCAN at alpha=0 is the reference for the meta-GGA archs on THIS
+            # slice; PBE is the wrong oracle for them (they pretrain to SCAN).
+            scan0 = scan_fx_curve(s_grid, 0.0)
+            if scan0 is not None:
+                ax_fx.plot(s_grid, scan0, ls="-.", color="#8c564b",
+                           linewidth=1.8, label=r"SCAN (libxc, $\alpha$=0)")
+        ax_fx.axhline(1.804, ls=":", color="0.5", linewidth=1.0,
+                      label="Lieb-Oxford bound (1.804)")
+        ax_fx.set_xlabel("reduced gradient  s")
+        ax_fx.set_ylabel(r"$F_x(s)$")
+        ax_fx.set_title("Exchange enhancement"
+                        + (r"  ($\alpha$=0 slice for meta-GGA)"
+                           if mgga_alpha else ""))
+        ax_fx.legend(fontsize=6, ncol=2)
+        ax_fx.grid(True, alpha=0.3)
+
+        # Panel: meta-GGA alpha sweep vs SCAN -------------------------------
+        if ax_alpha is not None:
+            cmap = plt.get_cmap("viridis")
+            n_a = max(1, len(_ALPHA_PANELS) - 1)
+            for arch, curves in mgga_alpha.items():
+                for i, a in enumerate(_ALPHA_PANELS):
+                    ax_alpha.plot(s_grid, curves[a], linewidth=1.5,
+                                  color=cmap(i / n_a),
+                                  label=fr"{shown_of[arch]} $\alpha$={a:g}")
+                    ref = scan_fx_curve(s_grid, a)
+                    if ref is not None:
+                        ax_alpha.plot(s_grid, ref, ls="--", linewidth=1.0,
+                                      color=cmap(i / n_a), alpha=0.75)
+            ax_alpha.set_xlabel("reduced gradient  s")
+            ax_alpha.set_ylabel(r"$F_x(s;\alpha)$")
+            ax_alpha.set_title(r"meta-GGA: $F_x$ vs iso-orbital $\alpha$"
+                               "\n(solid = net, dashed = SCAN target)")
+            ax_alpha.legend(fontsize=5, ncol=2)
+            ax_alpha.grid(True, alpha=0.3)
+
+        # Panels 2-4: F_c(s) at three r_s ----------------------------------
+        for ax, rs in zip(fc_axes, _RS_PANELS):
+            for arch in archs:
+                if arch in fc_curves:
+                    ax.plot(s_grid, fc_curves[arch][rs], linewidth=1.3,
+                            color=sib.arch_color(shown_of[arch]),
+                            label=shown_of[arch])
+            pbe_fc = pbe_fc_curve(s_grid, rs)
+            if pbe_fc is not None:
+                ax.plot(s_grid, pbe_fc, "k--", linewidth=1.8, label="PBE")
+            ax.set_xlabel("reduced gradient  s")
+            ax.set_ylabel(r"$F_c(s)$  (enh. over PW92)")
+            ax.set_title(fr"Correlation enhancement, $r_s={rs:g}$ ($\zeta=0$)")
+            ax.grid(True, alpha=0.3)
+        fc_axes[0].legend(fontsize=6, ncol=2)
+
+        fig.suptitle(
+            ("Learned enhancement factors vs the reference each arch was "
+             f"PRETRAINED to · {run_dir.name}" if mgga_alpha else
+             f"Learned enhancement factors vs PBE · {run_dir.name}"),
+            fontsize=12)
+        loaded = [shown_of[a] for a in archs if a in fx_curves]
+        missing = [s for s in ARCH_ORDER if s not in set(shown_of.values())]
+        cov = (f"Archs shown: {len(loaded)}/{len(ARCH_ORDER)} "
+               f"({', '.join(loaded)}).")
+        if missing:
+            # Weights-gated, not training-status-gated: an arch outside this
+            # run's sweep, one not started, and one mid-training (resume
+            # checkpoint only) all lack renderable weights equally.
+            cov += (f"  NO FINAL WEIGHTS in this run: {', '.join(missing)}.")
+        if mgga_alpha:
+            # Which oracle belongs to which arch. Reading a meta-GGA against PBE
+            # mistakes SCAN's genuine flatness in s for a defect, so the split
+            # is stated on the figure rather than left to the reader.
+            cov += ("  PRETRAIN TARGET: " + ", ".join(sorted(mgga_alpha))
+                    + " clone SCAN (pretrain.py selects Fx_scan_all for "
+                    "meta_gga archs); every other arch clones PBE -- read each "
+                    "against its own reference. F_x panel is the alpha=0 "
+                    "(single-orbital) slice for the meta-GGA archs; their "
+                    "representative behaviour is the alpha panel.")
+        # The pretrain-target sentence makes this caption long; wrap it and
+        # give the band room rather than letting it run off the canvas.
+        fig.text(0.5, 0.055 if mgga_alpha else 0.028, cov, ha="center",
+                 fontsize=7, color="#a33", wrap=True)
+        fig.text(0.5, 0.005, _provenance(run_dir, bool(mgga_alpha)),
+                 ha="center", fontsize=7, color="#777777")
+        fig.tight_layout(rect=(0, 0.10 if mgga_alpha else 0.05, 1, 0.96))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Driver
+# ---------------------------------------------------------------------------
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--run-dir", default=None,
+                   help="pulled run dir (default: latest ablation_notransform)")
+    p.add_argument("--outdir", default=str(
+        Path(__file__).resolve().parent / "figures_ablation_notransform"))
+    args = p.parse_args(argv)
+
+    run_dir = sib._resolve_run_dir(args.run_dir)
+    outdir = Path(args.outdir).expanduser().resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+    print(f"run_dir: {run_dir}")
+    out = plot_enhancement_factors(run_dir, outdir / "trained_enhancement_factors.png")
+    print(f"  wrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

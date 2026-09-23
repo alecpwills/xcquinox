@@ -1,0 +1,160 @@
+# xcquinox.pipeline.cluster -- rsync filter rules for the "summaries" pull profile.
+#
+# Loaded via `rsync --filter='. <abs path>/summaries.filter'`. Rules apply with
+# the run dir (`run_<UTC>Z/`) as the transfer root, so leading `/` anchors a
+# pattern to that root (NOT the filesystem root). See `man rsync` "FILTER RULES"
+# and "INCLUDE/EXCLUDE PATTERN RULES".
+#
+# Contract: this filter MUST stay in sync with the artifact layout the harness
+# writes (see xcquinox/pipeline/cluster/__main__.py cmd_submit, _train_task.py,
+# _eval_one_spec.py, _pretrain.py). When the harness gains a new small artifact,
+# add a `+ ` line here in the same commit. The end-to-end canary test in
+# tests/test_cluster_sync.py drives rsync against a fixture tree and will fail
+# loudly if this filter omits an artifact it lists or includes a *.eqx blob it
+# is not supposed to.
+#
+# The NETWORK WEIGHTS this profile carries (2026-08-30). The profile used to
+# skip every *.eqx; it now carries the four the enhancement-factor figures read
+# -- the trained model.eqx / model_val_best.eqx per spec with their .class.json
+# records, and the pretrained xnet.eqx / cnet.eqx per architecture with the
+# val-best pair beside them. Those figures (tools/analysis/trained_fx_fc.py
+# and pretrain_fx_fc.py) forward-evaluate the networks themselves, which no
+# summary table can stand in for, and the model class the loaders check is
+# stated only by the .class.json record. They are small: the 1259 model*.eqx
+# checkpoints on disk here measure 11.8 KB to 129 KB (median 32 KB), so a
+# 100-cell run adds a few MB to a profile budgeted at under 100 MB -- the bulk
+# of a `--profile full` pull is the logs/ tree and the per-step snapshots, not
+# these. What stays remote is set out at the bottom of this file.
+
+# --- top-level metadata (small, always wanted) -----------------------------
++ /manifest.json
++ /resolved_config.yaml
++ /jobs.json
++ /attempts.json
+# The run-level representative-subset ledger: names every cell's selected
+# training points; the figures and the exclusion layer both key on it.
++ /subset_ledger.json
+# The run-level CCSD T1 table (benchmark_refs --write-t1-json, 2026-09-07):
+# the model-free multireference list the outlier-free figure variant reads.
++ /t1_diagnostics.json
+# The staged validation slice (cluster/inputs._stage_validation_slice): the
+# identity record of the 47-name validation set. The figures' validation
+# column hard-requires it -- a pull without it silently rendered a DIFFERENT
+# slice than the training's own. The record file is named explicitly (not
+# ***) so this dir can never smuggle a stray blob past the terminal rule.
++ /validation/
++ /validation/val_reactions.json
+
+# --- shard scratch: excluded BEFORE the eval_holdout*/ includes below ------
+# The parallel eval's worker shard payloads (names_t*_s*.json /
+# shard_t*_s*.json). Already merged into per_molecule/per_reaction at eval
+# time; measured ~60 percent of a summaries pull's bytes with no analysis
+# use. First-match wins in rsync filters, so this line must stay ABOVE the
+# `+ .../eval_holdout*/***` rules.
+- /checkpoints/spec_*/eval_holdout*/_shards/
+
+# --- per-spec eval / training summaries ------------------------------------
+# rsync needs `+ <dir>/` rules to descend into each level; the final `- *`
+# below would otherwise prune the whole subtree.
++ /checkpoints/
++ /checkpoints/spec_*/
++ /checkpoints/spec_*/eval/
++ /checkpoints/spec_*/eval_df.csv
++ /checkpoints/spec_*/failure.json
++ /checkpoints/spec_*/losses.npy
+# aux_log.pkl (per-step, per-group, per-channel loss values) + train_metadata
+# (config + final_loss) are the FIRST things needed to triage a NaN/divergent
+# run -- small (~90 KB/spec), so pull them in `summaries` rather than forcing a
+# multi-GB `--profile full`. (2026-06: a polarized-correlation NaN was diagnosed
+# from aux_log.pkl, which the summaries profile had been dropping.)
++ /checkpoints/spec_*/aux_log.pkl
++ /checkpoints/spec_*/train_metadata.json
++ /checkpoints/spec_*/eval/per_molecule.json
++ /checkpoints/spec_*/eval/skipped.json
+# Held-out (BH76 + W4-11) reaction-energy eval -- THE "beats PBE?" headline:
+# eval_holdout/test_set.csv (mae_nn vs mae_pbe vs delta), per_reaction.json,
+# per_molecule.json, and failure.json. This dir holds ONLY small text
+# (CSV/JSON, no *.eqx), so `***` pulls the whole subtree present + future.
+# (2026-06: the summaries profile had been dropping eval_holdout/ entirely, so
+# the headline metric never reached a default pull -- guarded by the canary.)
++ /checkpoints/spec_*/eval_holdout/
++ /checkpoints/spec_*/eval_holdout/***
+# Best-loss-checkpoint held-out eval (2026-06): a SECOND eval pass over the same
+# pool using model_best.eqx instead of the final-step model.eqx, written to a
+# sibling eval_holdout_best/ (same small CSV/JSON artifacts, no *.eqx). Doubles
+# the figure data return; pulled by default like its eval_holdout/ sibling.
++ /checkpoints/spec_*/eval_holdout_best/
++ /checkpoints/spec_*/eval_holdout_best/***
+# Validation-best-checkpoint held-out eval (2026-06): a THIRD eval pass over the
+# same pool using model_val_best.eqx (the held-out-VALIDATION-best weights). This
+# is the checkpoint the figures now plot as "val-best" -- unlike model_best.eqx
+# (min TRAINING loss, which selects the most-overfit step) it does not collapse on
+# overfit-prone archs. Same small CSV/JSON, no *.eqx; pulled by default like its
+# eval_holdout/ siblings so the default figures-only pull has the data.
++ /checkpoints/spec_*/eval_holdout_val_best/
++ /checkpoints/spec_*/eval_holdout_val_best/***
+# Cold-start trajectory-diagnostic channel (2026-08-14): a FOURTH eval pass on
+# the FINAL checkpoint with the shared cold-start override (minao seed, 25
+# cycles) -- the per-cycle scf_energy_residual_<i> columns + eval_metadata.json
+# provenance stamp live here. Same small CSV/JSON artifacts, no *.eqx.
++ /checkpoints/spec_*/eval_holdout_coldstart/
++ /checkpoints/spec_*/eval_holdout_coldstart/***
+# Converged-SCF channel (2026-09-07): a FIFTH pass on the FINAL checkpoint and
+# a SIXTH on the val-best one under a converged pyscfad SCF (PBE seed, DIIS,
+# 100 cycles at 1e-8) -- the density comparison on the same footing as the
+# converged PBE baseline. Same small CSV/JSON artifacts, no *.eqx.
++ /checkpoints/spec_*/eval_holdout_converged/
++ /checkpoints/spec_*/eval_holdout_converged/***
++ /checkpoints/spec_*/eval_holdout_converged_val_best/
++ /checkpoints/spec_*/eval_holdout_converged_val_best/***
+
+# --- trained network weights (2026-08-30) ----------------------------------
+# The final-step and validation-best checkpoints, each with the model-class
+# record beside it. The enhancement-factor figures (trained_fx_fc.py) build the
+# skeleton from resolved_config.yaml and forward-evaluate these weights, and
+# the loaders refuse an anchored or `dfs` checkpoint that arrives without its
+# record (checkpoint_class.require_matching_class), so the .eqx and the
+# .class.json must travel together or neither is usable.
++ /checkpoints/spec_*/model.eqx
++ /checkpoints/spec_*/model.eqx.class.json
++ /checkpoints/spec_*/model_val_best.eqx
++ /checkpoints/spec_*/model_val_best.eqx.class.json
+# model_best.eqx (minimum TRAINING loss) is deliberately NOT here: it selects
+# the most-overfit step on the overfit-prone archs and no figure reads it, so
+# it stays remote to keep the default pull lean. Its held-out EVAL
+# (eval_holdout_best/) still comes, as above. resume_*.eqx (the in-flight
+# resume set, opt_state included) is mid-run state with no analysis use.
+
+# --- pretrain metadata + loss curves (small, useful for diagnostics) -------
++ /pretrain/
++ /pretrain/*/
++ /pretrain/*/pretrain_metadata.json
+# The per-arch fidelity certificate (fidelity.CERTIFICATE_FILENAME): the figure
+# suite refuses to render an arch whose pulled run has no readable certificate,
+# so the default pull must carry it (small JSON beside the metadata).
++ /pretrain/*/fidelity_certificate.json
++ /pretrain/*/losses_*.npy
+# The pretrained networks themselves (2026-08-30), read by pretrain_fx_fc.py
+# and by any local rebuild of a certified model: the final pair at the top
+# level, the validated pair in the per-network subdirs pretrain.py writes
+# (<arch>/xnet/xnet_val_best.eqx, <arch>/cnet/cnet_val_best.eqx), and any
+# .class.json record standing beside one. 1.7 to 16 KB each. The periodic
+# `xc.eqx.<step>` trajectory snapshots in those same subdirs are NOT included
+# -- one per serialize interval per network, of no analysis use.
++ /pretrain/*/xnet.eqx
++ /pretrain/*/cnet.eqx
++ /pretrain/*/*.eqx.class.json
++ /pretrain/*/xnet/
++ /pretrain/*/xnet/xnet_val_best.eqx
++ /pretrain/*/xnet/xnet_val_best.eqx.class.json
++ /pretrain/*/cnet/
++ /pretrain/*/cnet/cnet_val_best.eqx
++ /pretrain/*/cnet/cnet_val_best.eqx.class.json
+
+# --- drop everything else -------------------------------------------------
+# This includes: /logs/, /scripts/, /specs/, every *.eqx NOT named above
+# (model_best.eqx, the resume_*.eqx set, the pretrain `xc.eqx.<step>`
+# snapshots, and any stray .eqx elsewhere in the tree), every per-spec
+# *.gen<N> archived artifact, and any future top-level dir the harness gains
+# (must be opted in explicitly above).
+- *

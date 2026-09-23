@@ -1,0 +1,204 @@
+# =============================================================================
+# step7.yaml -- HPC training-harness grid config (COPY-ME TEMPLATE)
+# =============================================================================
+#
+# This file reproduces the step-7 40-spec sweep
+# (10 subset sizes x 2 metrics x 2 solvers) that the notebook
+# ``notebooks/_build_gga_training_dfs_subsets_notebook.py`` builds in-process. It is a TEMPLATE:
+# copy it to ``configs/step7.local.yaml`` (git-ignored), then fill in the
+# placeholders before submitting to a cluster.
+#
+# It is loaded by ``xcquinox.pipeline.cluster.grid_config.load_grid_config`` and
+# expands (via ``expand_grid``) to exactly 40 GridCells.
+#
+# FIELDS YOU MUST EDIT BEFORE USE (all marked ``CHANGE_ME``):
+#   cluster.conda_profile - absolute path to the conda profile script that
+#                           ``source`` runs to make ``conda activate`` work
+#                           (e.g. <miniconda3>/etc/profile.d/conda.sh). Leave
+#                           empty only if ``conda`` is already on PATH.
+#   cluster.mail_user   - your email for SLURM job-status mail
+#   cluster.mail_type   - SLURM mail events (NONE | BEGIN | END | FAIL | ALL)
+#   cluster.account     - your SLURM allocation/account name
+#   inputs.external_refs_dir   - shared dir of per-species CCSD <name>.npz refs
+#   inputs.subset_ledger_path  - shared path to the EXISTING subset-selection
+#                                ledger JSON (a consumed, read-only input --
+#                                see the comment on the field below)
+#   inputs.output_root         - shared run-output root directory
+#   pretrain.data_dir          - shared dir of training data the pretrain
+#                                stage builds its PretrainSpec from
+#   pretrain.pretrain_root     - shared root the pretrain stage writes each
+#                                arch's xnet/cnet checkpoint into
+#                                (<pretrain_root>/<run_id>/<arch>/)
+#
+# Every ``inputs.*`` / ``pretrain.*`` path MUST be an ABSOLUTE path on a SHARED
+# filesystem that resolves identically on the SLURM login node and every
+# compute node.
+# The ``/gpfs/.../CHANGE_ME/...`` placeholders below are intentionally
+# non-existent so a copy used unedited fails fast in ``validate_grid_semantics``.
+#
+# ``conda_env`` defaults to ``xcquinox`` -- change it if your environment differs.
+# =============================================================================
+
+# --- swept axes: Cartesian product = the grid ------------------------------
+# arch(1) x loss(1) x metric(2) x subset_size(10) x solver(2) = 40 cells.
+sweep:
+  arch: [deep_combined_attn]
+  loss: [L5_gradnorm_vxc_step7]
+  metric: [l2, jsd]
+  subset_size: [1, 2, 3, 4, 5, 6, 7, 12, 15, 18]
+  solver: [oneshot, full_3]
+
+# --- named solver configs referenced by the ``solver`` sweep axis ----------
+# oneshot: a single non-self-consistent pass (mode ONESHOT, 0 SCF cycles).
+# full_3:  a 3-cycle full SCF with feature reassembly between cycles.
+solvers:
+  oneshot:
+    mode: ONESHOT
+    max_cycles: 0
+  full_3:
+    mode: FULL
+    max_cycles: 3
+    feature_policy: REASSEMBLE
+
+# --- training hyperparameters shared by every grid cell --------------------
+hyperparams:
+  n_steps: 100
+  lr_start: 0.01            # 1e-2
+  lr_end: 0.00001           # 1e-5
+  lr_decay_start: 0.2       # fraction of n_steps
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  seed: 42
+
+# --- filesystem inputs (ABSOLUTE, SHARED-FS paths) -------------------------
+inputs:
+  external_refs_dir: /gpfs/projects/CHANGE_ME/xcquinox/step7/external_refs
+  # subset_ledger_path: the EXISTING ``subset_index_log.json`` produced by the
+  # (already-finished) offline subset-selection pre-process. The harness
+  # CONSUMES this ledger read-only -- it does NOT run subset selection,
+  # descriptor extraction, or reference-histogram building. Stage a copy of
+  # the ledger (and the per-spec ``subset.traj`` files alongside it) onto
+  # shared storage BEFORE submitting.
+  #
+  # C4-03 (descriptor-weight provenance): the step-7 notebook now writes the
+  # ledger under a MODE subdir keyed by whether the meta-GGA descriptor alpha
+  # was used in the selection objective:
+  #   notebooks/checkpoints_step7/alpha_on/subset_index_log.json   (default;
+  #       alpha weighted equally -- descriptor_weights=None)
+  #   notebooks/checkpoints_step7/alpha_off/subset_index_log.json  (alpha
+  #       dropped -- descriptor_weights={'alpha': 0.0}, STEP7_IGNORE_ALPHA=1)
+  # Point subset_ledger_path at the mode you intend to train; the GGA network
+  # is alpha-blind, so alpha_off matches the descriptors the model can see.
+  subset_ledger_path: /gpfs/projects/CHANGE_ME/xcquinox/step7/subset_index_log.json
+  basis: def2-svp           # (L) step-7 basis set
+  grid_level: 1             # (L) step-7 DFT integration-grid level
+  output_root: /gpfs/projects/CHANGE_ME/xcquinox/step7/runs
+  # These campaigns ran UNLOCKED -- in training, in their CCSD references and
+  # in their pretraining data. The data generator applied no orientation lock
+  # at all before 2026-08-23, and every pretraining manifest and reference
+  # intermediate they left on disk carries the unlocked identity (no lock key
+  # in the manifests; no _ol tag on any of the cached intermediates). Stated
+  # as 0.0 rather than left to the harness default, which is now the
+  # calibrated 3e-5: an omitted key would re-identify the campaign, so a
+  # re-run would discard the pretraining file it consumed and recompute its
+  # whole CCSD reference set.
+  orientation_lock_strength: 0.0
+  # Two conditions at once, and one waiver covers both: grid level 1 does not
+  # resolve a spatially degenerate free atom's P term whatever the lock is,
+  # and with the lock off the SCF may land on any orientation of the hole
+  # however fine the grid. This campaign's degenerate-atom rows are one
+  # arbitrary member of their manifold, so the data generator refuses to
+  # rebuild them unless the run says otherwise. Waived deliberately: this IS
+  # the identity the finished campaign was run at, and the waiver is what puts
+  # that on the record.
+  allow_irreproducible_degenerate: true
+  irreproducible_degenerate_reason: >-
+    historical campaign identity at grid level 1, unlocked; the finished
+    runs consumed pretraining data and CCSD references built at exactly this
+    identity, and the campaign is not re-run at a finer grid
+
+# --- pretrain stage: one run_pretrain job per distinct architecture --------
+# The pretrain stage builds a PretrainSpec per arch and writes the resulting
+# xnet/cnet checkpoint into <pretrain_root>/<run_id>/<arch>/. Each train spec then uses
+# that directory as its pretrained checkpoint. The defaults below mirror the
+# step-7 notebook's pretraining cell; only the two paths must be filled.
+pretrain:
+  data_dir: /gpfs/projects/CHANGE_ME/xcquinox/step7/pretrain_data
+  pretrain_root: /gpfs/projects/CHANGE_ME/xcquinox/step7/pretrain
+  n_steps: 1000             # (E) step-7 pretrain schedule length
+  lr_start: 0.01            # (E) step-7 pretrain lr start (1e-2)
+  lr_end: 0.00001           # (E) step-7 pretrain lr floor (1e-5)
+  lr_decay_start: 0.2       # (E) step-7 pretrain decay onset (fraction of n_steps)
+  grad_clip: 1.0            # (E) step-7 pretrain grad-clip
+  seed: 42
+  loss_weighting: integration   # (E) step-7's only pretrain origin
+
+# --- SLURM resource requests + submission knobs (SeaWulf defaults) ---------
+cluster:
+  # partition is intentionally EMPTY -- set it on the CLI at submit time via the
+  # required --partition flag (no config default, so a submission never silently
+  # lands on a login-node-specific queue). Per-stage overrides:
+  #   --train-partition --eval-partition --preflight-partition --pretrain-partition
+  # WALLTIME COUPLING: train/preflight/pretrain default to 8h walls below, but
+  # the *short* queues cap at 4h. Run on a queue that allows the wall -- simplest
+  # is one long-wall queue for all stages:
+  #   submit ... --partition long-96core-shared --max-nodes 3
+  # Override a stage's wall ad-hoc with --time / --{train,eval,...}-time.
+  partition: ""
+  # train wall: the slower (full_3 / large-subset) specs need ~3h for 100 steps
+  # on a CPU node; 8h gives margin. Needs a >=8h queue (medium 12h / long).
+  time: "08:00:00"
+  # No mem: every stage defaults to whole-node "exclusive" allocation
+  # (#SBATCH --nodes=1 --exclusive, no --mem) -- each task owns the full node's
+  # RAM, which memory-heavy training needs. Set <stage>_allocation: shared +
+  # mem only if you want a stage to co-tenant a node.
+  cpus_per_task: 24
+  # array_throttle / eval_array_throttle = simultaneous-node cap per stage
+  # (1 whole node per task). Override at submit with --max-nodes / per-stage.
+  array_throttle: 4
+  eval_array_throttle: 4
+  max_concurrent_tasks: 8
+  max_array_size: 1000
+  device: cpu
+  conda_env: /gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j0102
+  # Absolute path to the conda profile script ``source``d before
+  # ``conda activate``. Leave empty only if ``conda`` is already on PATH.
+  conda_profile: /gpfs/software/CHANGE_ME/miniconda3/etc/profile.d/conda.sh
+  mail_user: CHANGE_ME@example.com
+  mail_type: NONE
+  account: CHANGE_ME
+  # Per-stage WALLTIME tiers (partition is CLI-controlled -- see --partition
+  # above). Preflight runs once and its CCSD pre-compute for the full species
+  # union can take well over the train wall clock, hence 8h.
+  preflight_time: "08:00:00"
+  eval_time: "02:00:00"
+  # Pretrain runs once per distinct architecture, up front; pretrain_throttle
+  # unset means all distinct architectures pretrain concurrently.
+  pretrain_time: "08:00:00"
+
+# --- domain profile: physics tables (atom energies, kcal/Ha, extractors) ---
+# ``dfs_step7`` is the only profile registered in cluster/domain.py.
+domain_profile: dfs_step7
+
+# --- grid-level behaviour knobs --------------------------------------------
+on_precompute_failure: abort
+bh76_mode: reaction_energy
+# Spin-polarized correlation: when true, every arch is built spin-polarization-
+# aware (cnet input +1) and the UKS energy path uses the zeta-dependent PW92c
+# baseline. Default false. Enable per-run via `submit --polarized` (or set true
+# here). A true run REQUIRES a zeta-aware pretrain_data_polarized.npz in
+# pretrain.data_dir (generate via tools/generate_polarized_pretrain_data.py).
+use_polarized_correlation: false
+# Deferred-eval submission: when true, the eval array is NOT queued up front. The
+# initial submit queues pretrain+preflight+train plus a tiny launcher job
+# (afterany on train) that submits the eval array only after train terminates,
+# shrinking the per-run queued-job footprint (helps under SLURM per-user submit
+# caps like QOSMaxSubmitJobPerUserLimit). Default false (eval queued with the
+# rest). Enable per-run via `submit --defer-eval` (or set true here). If the
+# launcher cannot sbatch from a compute node, submit the eval array manually:
+#   python -m xcquinox.pipeline.cluster submit-eval <run_dir>
+defer_eval: false

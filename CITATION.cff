@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "xcquinox: machine-learned exchange-correlation functionals in JAX"
+abstract: >-
+  Neural exchange and correlation enhancement factors trained against reference densities and
+  energies through a differentiable self-consistent field, with a research pipeline for
+  pretraining against a parent functional, training with energy, potential and density
+  channels, held-out evaluation over standard benchmark pools, and a SLURM harness that
+  drives a campaign from one configuration file.
+type: software
+authors:
+  - family-names: Wills
+    given-names: Alec P.
+    affiliation: "Stony Brook University"
+    email: alec.wills@stonybrook.edu
+license: MIT
+repository-code: "https://github.com/alecpwills/xcquinox"
+url: "https://xcquinox.readthedocs.io/en/latest/"
+keywords:
+  - density functional theory
+  - exchange-correlation functional
+  - machine learning
+  - JAX
+  - automatic differentiation
+references:
+  - type: article
+    title: "Highly accurate and constrained density functional obtained with differentiable programming"
+    authors:
+      - family-names: Dick
+        given-names: Sebastian
+      - family-names: Fernandez-Serra
+        given-names: Marivi
+    journal: "Physical Review B"
+    volume: 104
+    issue: 16
+    start: L161109
+    year: 2021
+    doi: "10.1103/PhysRevB.104.L161109"

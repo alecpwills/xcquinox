@@ -1,0 +1,32 @@
+# A conda environment for the test suite, at the same floors as the packaging file's
+# dependencies. The workflow installs the package with pip instead (pip install .[test]);
+# this file is for a conda user who wants the stack without building it.
+name: test
+channels:
+  - conda-forge
+dependencies:
+    # Base depends
+  - python >=3.12
+  - pip
+    # Runtime
+  - jax >=0.10.2
+  - equinox >=0.13.8
+  - optax >=0.2.8
+  - numpy >=2.5.3
+  - scipy >=1.18.1
+  - matplotlib-base >=3.11.2
+  - tqdm >=4.70.1
+  - pyyaml >=6.0.3
+  - ase >=3.29.0
+    # Testing
+  - pytest >=7.0
+  - pytest-cov
+  - nbformat >=5.9
+  - nbclient >=0.9
+  - ipykernel >=6.29
+  - pandas >=2.0
+  - pillow >=10.0
+  - pip:
+    - pyscf>=2.14.0
+    - pyscfad>=0.3.4
+    - brokenaxes>=0.6
