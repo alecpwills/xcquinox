@@ -144,20 +144,47 @@ _RE_W411_LINE = re.compile(
 _RE_EHT = re.compile(r"\$eht\s+charge\s*=\s*(-?\d+)\s+unpaired\s*=\s*(\d+)")
 
 
-def _read_coord_meta(species_dir: Path) -> Tuple[int, int]:
-    """Return (charge, 2S) parsed from ``<species>/coord``'s ``$eht`` block.
+def _read_int_file(path: Path) -> int | None:
+    """The integer a one-line metadata file (``.CHRG`` / ``.UHF``) carries,
+    or None when the file is absent or carries none."""
+    if not path.is_file():
+        return None
+    m = re.search(r"[-+]?\d+", path.read_text(encoding="utf-8", errors="ignore"))
+    return int(m.group(0)) if m else None
 
-    Defaults to (0, 0) if the file is missing or the block is absent,
-    closed-shell neutral is the right fallback for the molecule majority.
+
+def _electron_parity_spin(species_dir: Path, charge: int) -> int:
+    """The unpaired-electron count an odd electron count forces: 1 for an
+    odd count, 0 for an even one, from the geometry's elements."""
+    from ase.data import atomic_numbers
+    n_elec = sum(atomic_numbers[e] for e, _, _, _ in
+                 _read_struc_xyz_angstrom(species_dir)) - int(charge)
+    return n_elec % 2
+
+
+def _read_coord_meta(species_dir: Path) -> Tuple[int, int]:
+    """Return (charge, 2S) of a species directory.
+
+    The ``$eht charge= unpaired=`` block of ``coord`` when present; else the
+    subset's ``.CHRG`` and ``.UHF`` files beside the geometry (the
+    collection's other convention); else charge 0 and the spin the electron
+    count's parity forces, so a one-electron system is never recorded as a
+    closed shell. A directory without a geometry is (0, 0).
     """
     coord_file = species_dir / "coord"
-    if not coord_file.is_file():
-        return 0, 0
-    text = coord_file.read_text(encoding="utf-8", errors="ignore")
-    m = _RE_EHT.search(text)
-    if not m:
-        return 0, 0
-    return int(m.group(1)), int(m.group(2))
+    if coord_file.is_file():
+        m = _RE_EHT.search(coord_file.read_text(encoding="utf-8",
+                                                errors="ignore"))
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    charge = _read_int_file(species_dir / ".CHRG")
+    unpaired = _read_int_file(species_dir / ".UHF")
+    charge = 0 if charge is None else charge
+    if unpaired is not None:
+        return charge, unpaired
+    if not (species_dir / "struc.xyz").is_file():
+        return charge, 0
+    return charge, _electron_parity_spin(species_dir, charge)
 
 
 def _read_struc_xyz_angstrom(species_dir: Path) -> List[Tuple[str, float, float, float]]:
@@ -550,34 +577,106 @@ def load_full_w411(
     return mol_specs, reactions
 
 
+#: Every held-out pool a configuration may name, in the order a union lists
+#: them by default: the two tracked benchmark pools, then the GMTKN55 sets
+#: of ``gmtkn55_sets`` (the diet set and the two Slim sets).
+POOL_NAMES: Tuple[str, ...] = ("bh76", "w411", "diet150", "slim05", "slim16")
+#: The pair every configuration evaluated before a pool selection existed.
+DEFAULT_POOL_NAMES: Tuple[str, ...] = ("bh76", "w411")
+
+
+def _pool_loader(name: str):
+    """The loader of one pool by name; the GMTKN55 sets are imported at the
+    call so this module stays importable without them."""
+    if name == "bh76":
+        return load_full_bh76
+    if name == "w411":
+        return load_full_w411
+    from xcquinox.pipeline import gmtkn55_sets
+    if name == "diet150":
+        return gmtkn55_sets.load_full_diet150
+    if name in ("slim05", "slim16"):
+        return lambda **kw: gmtkn55_sets.load_full_slim(name, **kw)
+    raise ValueError(f"unknown held-out pool {name!r}; the pools are {POOL_NAMES}")
+
+
+def load_held_out_pools_with_conflicts(
+    names: Sequence[str],
+    basis: str = "def2-svp",
+    grid_level: int | None = 1,
+    refs_dir: str | os.PathLike | None = None,
+) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]], List[Dict[str, str]]]:
+    """The union of the named pools, and the names two of them carry with
+    different geometries.
+
+    Species merge by name, the first pool in ``names`` winning; reactions
+    concatenate in that order. A name a later pool carries with another
+    geometry, charge or spin is kept as the first pool's and REPORTED in the
+    third element as ``{"name", "kept", "dropped"}`` (the two pool names), so
+    the evaluation can say which species it scored on which molecule. The
+    tracked pair carries fourteen such names (BH76's geometry kept, as every
+    evaluation of the pair has done); the GMTKN55 sets are named so that they
+    add none. An unknown, repeated or missing pool name is refused.
+    """
+    names = tuple(names)
+    if not names:
+        raise ValueError("no held-out pool named; the pools are "
+                         f"{POOL_NAMES}")
+    unknown = [n for n in names if n not in POOL_NAMES]
+    if unknown:
+        raise ValueError(f"unknown held-out pool(s) {unknown}; the pools are "
+                         f"{POOL_NAMES}")
+    if len(set(names)) != len(names):
+        raise ValueError(f"a held-out pool is named twice: {names}")
+    merged: Dict[str, MoleculeSpec] = {}
+    owner: Dict[str, str] = {}
+    reactions: List[Dict[str, Any]] = []
+    conflicts: List[Dict[str, str]] = []
+    for name in names:
+        specs, rxns = _pool_loader(name)(basis=basis, grid_level=grid_level,
+                                         refs_dir=refs_dir)
+        for sp_name, ms in specs.items():
+            if sp_name in merged:
+                kept = merged[sp_name]
+                if (kept.atom, kept.charge, kept.spin) != (ms.atom, ms.charge,
+                                                           ms.spin):
+                    conflicts.append({"name": sp_name, "kept": owner[sp_name],
+                                      "dropped": name})
+                continue
+            merged[sp_name] = ms
+            owner[sp_name] = name
+        reactions.extend(rxns)
+    return merged, reactions, conflicts
+
+
+def load_held_out_pools(
+    names: Sequence[str],
+    basis: str = "def2-svp",
+    grid_level: int | None = 1,
+    refs_dir: str | os.PathLike | None = None,
+) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
+    """``({species_name: MoleculeSpec}, [reaction_dict, ...])`` of the union
+    of the named pools (:func:`load_held_out_pools_with_conflicts` without
+    the conflict list)."""
+    specs, reactions, _conflicts = load_held_out_pools_with_conflicts(
+        names, basis=basis, grid_level=grid_level, refs_dir=refs_dir)
+    return specs, reactions
+
+
 def load_full_held_out_pools(
     basis: str = "def2-svp",
     grid_level: int | None = 1,
     refs_dir: str | os.PathLike | None = None,
 ) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
-    """Convenience: union of BH76 + W4-11.
+    """The union of BH76 + W4-11, the pair every configuration evaluates
+    unless it names its pools (:data:`DEFAULT_POOL_NAMES`).
 
-    Species dicts merge by name (e.g. ``h``, ``c``, ``o``, ``n``, ``f`` appear
-    in both sets, same MoleculeSpec for both). Reactions concatenate (BH76
-    first, then W4-11). Total: 76 + 140 = 216 reactions over 214 unique
-    species (79 BH76 + 152 W4-11, 17 overlap). ``refs_dir`` semantics as
-    :func:`load_full_bh76`.
+    Species dicts merge by name, BH76's kept where the two carry a name with
+    different geometries; reactions concatenate (BH76 first, then W4-11).
+    ``refs_dir`` semantics as :func:`load_full_bh76`.
     """
-    bh76_mols, bh76_rxns = load_full_bh76(basis=basis, grid_level=grid_level,
-                                          refs_dir=refs_dir)
-    w411_mols, w411_rxns = load_full_w411(basis=basis, grid_level=grid_level,
-                                          refs_dir=refs_dir)
-    merged_mols: Dict[str, MoleculeSpec] = dict(bh76_mols)
-    for sp_name, ms in w411_mols.items():
-        if sp_name in merged_mols:
-            # When the same species appears in both sets the geometries may
-            # differ marginally (different GMTKN55 source dirs). Keep the
-            # BH76 version, it covers the barrier-height species set which
-            # matters most for the eval comparison. Document the conflict
-            # at debug-print level for the operator.
-            continue
-        merged_mols[sp_name] = ms
-    return merged_mols, list(bh76_rxns) + list(w411_rxns)
+    return load_held_out_pools(DEFAULT_POOL_NAMES, basis=basis,
+                               grid_level=grid_level, refs_dir=refs_dir)
 
 
 # ---------------------------------------------------------------------------

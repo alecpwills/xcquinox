@@ -133,3 +133,34 @@ def test_refinalize_refuses_a_sliced_channel(tmp_path):
     assert (sd / "test_set.csv").read_text() == "old\n"
 
 
+def test_refinalize_reads_the_pools_from_the_run_s_resolved_config(tmp_path,
+                                                                   monkeypatch):
+    """Refinalization re-selects each channel's test slice from the pool the run
+    evaluated. Reading the pair regardless would rebuild a wider run's tables from a
+    narrower pool and drop every reaction the run actually reported.
+
+    Oracle: the pool names the loader received, against the run's resolved config.
+    """
+    import yaml
+
+    run = _mk_run(tmp_path)
+    (run / "resolved_config.yaml").write_text(yaml.safe_dump(
+        {"inputs": {"held_out_pools": ["bh76", "w411", "diet150"]}}))
+
+    seen = {}
+
+    def _fake_load(names, basis=None, grid_level=None, refs_dir=None):
+        seen["pools"] = tuple(names)
+        return _POOL_SPECS, _POOL_RXNS
+
+    monkeypatch.setattr(rv, "_load_held_out_pools", _fake_load)
+    rv.refinalize_run(run, channels=("eval_holdout",))
+    assert seen["pools"] == ("bh76", "w411", "diet150")
+
+    bare = _mk_run(tmp_path / "bare")
+    rv.refinalize_run(bare, channels=("eval_holdout",))
+    assert seen["pools"] == ("bh76", "w411")
+
+
+
+

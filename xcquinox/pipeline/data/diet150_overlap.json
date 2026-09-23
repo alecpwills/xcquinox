@@ -1,0 +1,3439 @@
+[
+  {
+    "name": "amino20x4_004",
+    "subset": "Amino20x4",
+    "index": 4,
+    "species": {
+      "amino20x4_ALA_xag": {
+        "exact": [],
+        "formula": []
+      },
+      "amino20x4_ALA_xab": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "amino20x4_006",
+    "subset": "Amino20x4",
+    "index": 6,
+    "species": {
+      "amino20x4_ARG_xci": {
+        "exact": [],
+        "formula": []
+      },
+      "amino20x4_ARG_xbv": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "amino20x4_015",
+    "subset": "Amino20x4",
+    "index": 15,
+    "species": {
+      "amino20x4_ASP_xaz": {
+        "exact": [],
+        "formula": []
+      },
+      "amino20x4_ASP_xau": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "amino20x4_025",
+    "subset": "Amino20x4",
+    "index": 25,
+    "species": {
+      "amino20x4_GLU_xbi": {
+        "exact": [],
+        "formula": []
+      },
+      "amino20x4_GLU_xav": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "amino20x4_039",
+    "subset": "Amino20x4",
+    "index": 39,
+    "species": {
+      "amino20x4_ILE_xae": {
+        "exact": [],
+        "formula": []
+      },
+      "amino20x4_ILE_xag": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "amino20x4_041",
+    "subset": "Amino20x4",
+    "index": 41,
+    "species": {
+      "amino20x4_LEU_xap": {
+        "exact": [],
+        "formula": []
+      },
+      "amino20x4_LEU_xad": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "amino20x4_046",
+    "subset": "Amino20x4",
+    "index": 46,
+    "species": {
+      "amino20x4_LYS_xap": {
+        "exact": [],
+        "formula": []
+      },
+      "amino20x4_LYS_xan": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "amino20x4_068",
+    "subset": "Amino20x4",
+    "index": 68,
+    "species": {
+      "amino20x4_THR_xaq": {
+        "exact": [],
+        "formula": []
+      },
+      "amino20x4_THR_xal": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "cdie20_001",
+    "subset": "CDIE20",
+    "index": 1,
+    "species": {
+      "cdie20_R20": {
+        "exact": [],
+        "formula": []
+      },
+      "cdie20_P20": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "cdie20_018",
+    "subset": "CDIE20",
+    "index": 18,
+    "species": {
+      "cdie20_R56": {
+        "exact": [],
+        "formula": []
+      },
+      "cdie20_P56": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "cdie20_020",
+    "subset": "CDIE20",
+    "index": 20,
+    "species": {
+      "cdie20_R60": {
+        "exact": [],
+        "formula": []
+      },
+      "cdie20_P60": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "fh51_026",
+    "subset": "FH51",
+    "index": 26,
+    "species": {
+      "fh51_C4H9NCO": {
+        "exact": [],
+        "formula": []
+      },
+      "fh51_NH3": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "fh51_C4H9NHCONH2": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "fh51_027",
+    "subset": "FH51",
+    "index": 27,
+    "species": {
+      "fh51_C3H7CN": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "fh51_H2O": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "fh51_C3H7CONH2": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "fh51_040",
+    "subset": "FH51",
+    "index": 40,
+    "species": {
+      "fh51_hexandione": {
+        "exact": [],
+        "formula": []
+      },
+      "fh51_methyl-d-valerolactone": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "fh51_048",
+    "subset": "FH51",
+    "index": 48,
+    "species": {
+      "fh51_3-methylpentane": {
+        "exact": [],
+        "formula": []
+      },
+      "fh51_dimethylbutane": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "taut15_005",
+    "subset": "TAUT15",
+    "index": 5,
+    "species": {
+      "taut15_3a": {
+        "exact": [],
+        "formula": []
+      },
+      "taut15_3d": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "taut15_013",
+    "subset": "TAUT15",
+    "index": 13,
+    "species": {
+      "taut15_8a": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "taut15_8b": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "isol24_002",
+    "subset": "ISOL24",
+    "index": 2,
+    "species": {
+      "isol24_i2e": {
+        "exact": [],
+        "formula": []
+      },
+      "isol24_i2p": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "isol24_004",
+    "subset": "ISOL24",
+    "index": 4,
+    "species": {
+      "isol24_i4e": {
+        "exact": [],
+        "formula": []
+      },
+      "isol24_i4p": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "isol24_020",
+    "subset": "ISOL24",
+    "index": 20,
+    "species": {
+      "isol24_i20e": {
+        "exact": [],
+        "formula": []
+      },
+      "isol24_i20p": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "pconf21_003",
+    "subset": "PCONF21",
+    "index": 3,
+    "species": {
+      "pconf21_99": {
+        "exact": [],
+        "formula": []
+      },
+      "pconf21_366": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "darc_011",
+    "subset": "DARC",
+    "index": 11,
+    "species": {
+      "darc_cpdiene": {
+        "exact": [],
+        "formula": []
+      },
+      "darc_malein": {
+        "exact": [],
+        "formula": []
+      },
+      "darc_P9": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "iconf_016",
+    "subset": "ICONF",
+    "index": 16,
+    "species": {
+      "iconf_H4P2O7_1": {
+        "exact": [],
+        "formula": []
+      },
+      "iconf_H4P2O7_3": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "iso34_021",
+    "subset": "ISO34",
+    "index": 21,
+    "species": {
+      "iso34_E21": {
+        "exact": [],
+        "formula": []
+      },
+      "iso34_P21": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bhrot27_003",
+    "subset": "BHROT27",
+    "index": 3,
+    "species": {
+      "bhrot27_tmethane_60": {
+        "exact": [],
+        "formula": []
+      },
+      "bhrot27_tmethane_120": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bhrot27_011",
+    "subset": "BHROT27",
+    "index": 11,
+    "species": {
+      "bhrot27_n2h4_st1": {
+        "exact": [],
+        "formula": []
+      },
+      "bhrot27_n2h4_ecl1": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bhrot27_014",
+    "subset": "BHROT27",
+    "index": 14,
+    "species": {
+      "bhrot27_nh2oh_st2": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "bhrot27_nh2oh_ecl": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      }
+    }
+  },
+  {
+    "name": "bhrot27_021",
+    "subset": "BHROT27",
+    "index": 21,
+    "species": {
+      "bhrot27_bithiophene_syn": {
+        "exact": [],
+        "formula": []
+      },
+      "bhrot27_bithiophene_TS": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "upu23_002",
+    "subset": "UPU23",
+    "index": 2,
+    "species": {
+      "upu23_2p": {
+        "exact": [],
+        "formula": []
+      },
+      "upu23_1b": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "upu23_004",
+    "subset": "UPU23",
+    "index": 4,
+    "species": {
+      "upu23_2p": {
+        "exact": [],
+        "formula": []
+      },
+      "upu23_1g": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "upu23_009",
+    "subset": "UPU23",
+    "index": 9,
+    "species": {
+      "upu23_2p": {
+        "exact": [],
+        "formula": []
+      },
+      "upu23_7a": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "upu23_015",
+    "subset": "UPU23",
+    "index": 15,
+    "species": {
+      "upu23_2p": {
+        "exact": [],
+        "formula": []
+      },
+      "upu23_4b": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "rg18_011",
+    "subset": "RG18",
+    "index": 11,
+    "species": {
+      "rg18_hfAr": {
+        "exact": [],
+        "formula": []
+      },
+      "rg18_ar": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "rg18_hf": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "rg18_013",
+    "subset": "RG18",
+    "index": 13,
+    "species": {
+      "rg18_c2h2Ne": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "rg18_ne": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "rg18_c2h2": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "rg18_015",
+    "subset": "RG18",
+    "index": 15,
+    "species": {
+      "rg18_c2h6Ne": {
+        "exact": [],
+        "formula": []
+      },
+      "rg18_ne": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "rg18_c2h6": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "idisp_003",
+    "subset": "IDISP",
+    "index": 3,
+    "species": {
+      "idisp_octane2": {
+        "exact": [],
+        "formula": []
+      },
+      "idisp_octane1": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "dc13_010",
+    "subset": "DC13",
+    "index": 10,
+    "species": {
+      "dc13_ISO_C8H8_1": {
+        "exact": [],
+        "formula": []
+      },
+      "dc13_ISO_C8H8_41": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "dc13_013",
+    "subset": "DC13",
+    "index": 13,
+    "species": {
+      "dc13_C6Cl6": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "dc13_HCL": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "dc13_C6H6": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "dc13_CL2": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "bh76_008",
+    "subset": "BH76",
+    "index": 8,
+    "species": {
+      "hf": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "ch3": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "hfch3ts": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bh76_036",
+    "subset": "BH76",
+    "index": 36,
+    "species": {
+      "c3h7": {
+        "exact": [],
+        "formula": []
+      },
+      "c3h7ts": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bh76_037",
+    "subset": "BH76",
+    "index": 37,
+    "species": {
+      "hcn": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "hcnts": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "bh76_047",
+    "subset": "BH76",
+    "index": 47,
+    "species": {
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "H2": {
+        "exact": [
+          "dfs"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "RKT06": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bh76_050",
+    "subset": "BH76",
+    "index": 50,
+    "species": {
+      "H2O": {
+        "exact": [
+          "dfs",
+          "slim05"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "NH2": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "RKT07": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bh76_053",
+    "subset": "BH76",
+    "index": 53,
+    "species": {
+      "oh": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "C2H6": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "RKT09": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bh76_066",
+    "subset": "BH76",
+    "index": 66,
+    "species": {
+      "oh": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "cl": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "RKT17": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      }
+    }
+  },
+  {
+    "name": "heavy28_003",
+    "subset": "HEAVY28",
+    "index": 3,
+    "species": {
+      "heavy28_bih3_h2s": {
+        "exact": [],
+        "formula": []
+      },
+      "heavy28_bih3": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "heavy28_h2s": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "heavy28_016",
+    "subset": "HEAVY28",
+    "index": 16,
+    "species": {
+      "heavy28_sbh3_h2o": {
+        "exact": [],
+        "formula": []
+      },
+      "heavy28_sbh3": {
+        "exact": [],
+        "formula": []
+      },
+      "heavy28_h2o": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "heavy28_024",
+    "subset": "HEAVY28",
+    "index": 24,
+    "species": {
+      "heavy28_teh2_h2s": {
+        "exact": [],
+        "formula": []
+      },
+      "heavy28_teh2": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "heavy28_h2s": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "inv24_001",
+    "subset": "INV24",
+    "index": 1,
+    "species": {
+      "inv24_H2O": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "inv24_H2O_TS": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "inv24_014",
+    "subset": "INV24",
+    "index": 14,
+    "species": {
+      "inv24_Pentahelicene": {
+        "exact": [],
+        "formula": []
+      },
+      "inv24_Pentahelicene_TS": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "inv24_015",
+    "subset": "INV24",
+    "index": 15,
+    "species": {
+      "inv24_Hexahelicene": {
+        "exact": [],
+        "formula": []
+      },
+      "inv24_Hexahelicene_TS": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "px13_008",
+    "subset": "PX13",
+    "index": 8,
+    "species": {
+      "px13_h2o_6": {
+        "exact": [],
+        "formula": []
+      },
+      "px13_h2o_6_ts": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "g2rc_016",
+    "subset": "G2RC",
+    "index": 16,
+    "species": {
+      "g2rc_8": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "g2rc_45": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "g2rc_97": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "g2rc_22": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "g2rc_024",
+    "subset": "G2RC",
+    "index": 24,
+    "species": {
+      "g2rc_25": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "g2rc_94": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "g2rc_025",
+    "subset": "G2RC",
+    "index": 25,
+    "species": {
+      "g2rc_23": {
+        "exact": [],
+        "formula": []
+      },
+      "g2rc_39": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "g2rc_24": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "chb6_002",
+    "subset": "CHB6",
+    "index": 2,
+    "species": {
+      "chb6_23A": {
+        "exact": [],
+        "formula": []
+      },
+      "chb6_23B": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "chb6_23": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "rc21_005",
+    "subset": "RC21",
+    "index": 5,
+    "species": {
+      "rc21_3e": {
+        "exact": [],
+        "formula": []
+      },
+      "rc21_3p1": {
+        "exact": [],
+        "formula": []
+      },
+      "rc21_3p2": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "rc21_006",
+    "subset": "RC21",
+    "index": 6,
+    "species": {
+      "rc21_3e": {
+        "exact": [],
+        "formula": []
+      },
+      "rc21_3int1": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "rc21_008",
+    "subset": "RC21",
+    "index": 8,
+    "species": {
+      "rc21_3e": {
+        "exact": [],
+        "formula": []
+      },
+      "rc21_3int3": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "rc21_016",
+    "subset": "RC21",
+    "index": 16,
+    "species": {
+      "rc21_7e": {
+        "exact": [],
+        "formula": []
+      },
+      "rc21_7p1": {
+        "exact": [],
+        "formula": []
+      },
+      "rc21_7p2": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "rc21_020",
+    "subset": "RC21",
+    "index": 20,
+    "species": {
+      "rc21_9e": {
+        "exact": [],
+        "formula": []
+      },
+      "rc21_9p1": {
+        "exact": [],
+        "formula": []
+      },
+      "rc21_9p2": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      }
+    }
+  },
+  {
+    "name": "bhperi_002",
+    "subset": "BHPERI",
+    "index": 2,
+    "species": {
+      "bhperi_cis-135-Hexatriene": {
+        "exact": [],
+        "formula": []
+      },
+      "bhperi_TS2": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bhperi_008",
+    "subset": "BHPERI",
+    "index": 8,
+    "species": {
+      "bhperi_13-Cyclopentadiene": {
+        "exact": [],
+        "formula": []
+      },
+      "bhperi_Ethylene": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "bhperi_TS8": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "bhperi_025",
+    "subset": "BHPERI",
+    "index": 25,
+    "species": {
+      "bhperi_07r": {
+        "exact": [],
+        "formula": []
+      },
+      "bhperi_00r": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "bhperi_08ts": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "nbprc_001",
+    "subset": "NBPRC",
+    "index": 1,
+    "species": {
+      "nbprc_nh3": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "nbprc_bh3_1": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "nbprc_nh3-bh3": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "g21ea_017",
+    "subset": "G21EA",
+    "index": 17,
+    "species": {
+      "g21ea_EA_17": {
+        "exact": [],
+        "formula": []
+      },
+      "g21ea_EA_17n": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "g21ea_020",
+    "subset": "G21EA",
+    "index": 20,
+    "species": {
+      "g21ea_EA_20": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "g21ea_EA_20n": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "g21ea_023",
+    "subset": "G21EA",
+    "index": 23,
+    "species": {
+      "g21ea_EA_23": {
+        "exact": [],
+        "formula": []
+      },
+      "g21ea_EA_23n": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "al2x6_005",
+    "subset": "AL2X6",
+    "index": 5,
+    "species": {
+      "al2x6_al2me5": {
+        "exact": [],
+        "formula": []
+      },
+      "al2x6_alme2": {
+        "exact": [],
+        "formula": []
+      },
+      "al2x6_alme3": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "c60iso_007",
+    "subset": "C60ISO",
+    "index": 7,
+    "species": {
+      "c60iso_1": {
+        "exact": [],
+        "formula": []
+      },
+      "c60iso_8": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "c60iso_009",
+    "subset": "C60ISO",
+    "index": 9,
+    "species": {
+      "c60iso_1": {
+        "exact": [],
+        "formula": []
+      },
+      "c60iso_10": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "sconf_016",
+    "subset": "SCONF",
+    "index": 16,
+    "species": {
+      "sconf_G1": {
+        "exact": [],
+        "formula": []
+      },
+      "sconf_G3": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "dipcs10_002",
+    "subset": "DIPCS10",
+    "index": 2,
+    "species": {
+      "dipcs10_c2h6": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "dipcs10_c2h6_2+": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "s22_003",
+    "subset": "S22",
+    "index": 3,
+    "species": {
+      "s22_03": {
+        "exact": [],
+        "formula": []
+      },
+      "s22_03a": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      }
+    }
+  },
+  {
+    "name": "s22_008",
+    "subset": "S22",
+    "index": 8,
+    "species": {
+      "s22_08": {
+        "exact": [],
+        "formula": []
+      },
+      "s22_08a": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "s22_011",
+    "subset": "S22",
+    "index": 11,
+    "species": {
+      "s22_11": {
+        "exact": [],
+        "formula": []
+      },
+      "s22_11a": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "pa26_020",
+    "subset": "PA26",
+    "index": 20,
+    "species": {
+      "pa26_si2h6p": {
+        "exact": [],
+        "formula": []
+      },
+      "pa26_si2h6": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "pa26_025",
+    "subset": "PA26",
+    "index": 25,
+    "species": {
+      "pa26_Gp": {
+        "exact": [],
+        "formula": []
+      },
+      "pa26_G": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "w4_11_002",
+    "subset": "W4-11",
+    "index": 2,
+    "species": {
+      "alh3": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "al": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_007",
+    "subset": "W4-11",
+    "index": 7,
+    "species": {
+      "ch2-trip": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      },
+      "c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_030",
+    "subset": "W4-11",
+    "index": 30,
+    "species": {
+      "w411_hcl": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "cl": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_031",
+    "subset": "W4-11",
+    "index": 31,
+    "species": {
+      "nh2": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_038",
+    "subset": "W4-11",
+    "index": 38,
+    "species": {
+      "w411_oh": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_058",
+    "subset": "W4-11",
+    "index": 58,
+    "species": {
+      "becl2": {
+        "exact": [],
+        "formula": []
+      },
+      "be": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "cl": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_063",
+    "subset": "W4-11",
+    "index": 63,
+    "species": {
+      "ketene": {
+        "exact": [],
+        "formula": []
+      },
+      "c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_073",
+    "subset": "W4-11",
+    "index": 73,
+    "species": {
+      "w411_hnc": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_077",
+    "subset": "W4-11",
+    "index": 77,
+    "species": {
+      "oxirene": {
+        "exact": [],
+        "formula": []
+      },
+      "c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_085",
+    "subset": "W4-11",
+    "index": 85,
+    "species": {
+      "co2": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05"
+        ]
+      },
+      "c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_086",
+    "subset": "W4-11",
+    "index": 86,
+    "species": {
+      "fccf": {
+        "exact": [],
+        "formula": []
+      },
+      "c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_095",
+    "subset": "W4-11",
+    "index": 95,
+    "species": {
+      "sio": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "si": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_102",
+    "subset": "W4-11",
+    "index": 102,
+    "species": {
+      "c-hono": {
+        "exact": [],
+        "formula": []
+      },
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_106",
+    "subset": "W4-11",
+    "index": 106,
+    "species": {
+      "cs": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w4_11_129",
+    "subset": "W4-11",
+    "index": 129,
+    "species": {
+      "s4-c2v": {
+        "exact": [],
+        "formula": []
+      },
+      "s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "bh76rc_005",
+    "subset": "BH76RC",
+    "index": 5,
+    "species": {
+      "h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "hcl": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "hclhts": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "s66_008",
+    "subset": "S66",
+    "index": 8,
+    "species": {
+      "s66_08": {
+        "exact": [],
+        "formula": []
+      },
+      "s66_08A": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "s66_08B": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "s66_017",
+    "subset": "S66",
+    "index": 17,
+    "species": {
+      "s66_17": {
+        "exact": [],
+        "formula": []
+      },
+      "s66_17A": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "s66_17B": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "s66_025",
+    "subset": "S66",
+    "index": 25,
+    "species": {
+      "s66_25": {
+        "exact": [],
+        "formula": []
+      },
+      "s66_25A": {
+        "exact": [],
+        "formula": []
+      },
+      "s66_25B": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "s66_028",
+    "subset": "S66",
+    "index": 28,
+    "species": {
+      "s66_28": {
+        "exact": [],
+        "formula": []
+      },
+      "s66_28A": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "s66_28B": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "s66_042",
+    "subset": "S66",
+    "index": 42,
+    "species": {
+      "s66_42": {
+        "exact": [],
+        "formula": []
+      },
+      "s66_42A": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "s66_42B": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "s66_047",
+    "subset": "S66",
+    "index": 47,
+    "species": {
+      "s66_47": {
+        "exact": [],
+        "formula": []
+      },
+      "s66_47A": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "s66_47B": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "s66_061",
+    "subset": "S66",
+    "index": 61,
+    "species": {
+      "s66_61": {
+        "exact": [],
+        "formula": []
+      },
+      "s66_61A": {
+        "exact": [],
+        "formula": []
+      },
+      "s66_61B": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "mb16_43_014",
+    "subset": "MB16-43",
+    "index": 14,
+    "species": {
+      "mb16_43_14": {
+        "exact": [],
+        "formula": []
+      },
+      "mb16_43_H2": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "mb16_43_LiH": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim16"
+        ]
+      },
+      "mb16_43_BH3": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "mb16_43_O2": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "mb16_43_AlH3": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "mb16_43_SiH4": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "mb16_43_Cl2": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "g21ip_006",
+    "subset": "G21IP",
+    "index": 6,
+    "species": {
+      "g21ip_n": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "g21ip_n+": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "g21ip_015",
+    "subset": "G21IP",
+    "index": 15,
+    "species": {
+      "g21ip_cl": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "g21ip_cl+": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "g21ip_031",
+    "subset": "G21IP",
+    "index": 31,
+    "species": {
+      "g21ip_37": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "g21ip_IP_75": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "hal59_007",
+    "subset": "HAL59",
+    "index": 7,
+    "species": {
+      "hal59_PCH_PhI": {
+        "exact": [],
+        "formula": []
+      },
+      "hal59_PCH": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "hal59_PhI": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "hal59_011",
+    "subset": "HAL59",
+    "index": 11,
+    "species": {
+      "hal59_NCH_F3CI": {
+        "exact": [],
+        "formula": []
+      },
+      "hal59_NCH": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "hal59_F3CI": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "hal59_016",
+    "subset": "HAL59",
+    "index": 16,
+    "species": {
+      "hal59_PCH_NBS": {
+        "exact": [],
+        "formula": []
+      },
+      "hal59_PCH": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "hal59_NBS": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "hal59_028",
+    "subset": "HAL59",
+    "index": 28,
+    "species": {
+      "hal59_FI_PCH": {
+        "exact": [],
+        "formula": []
+      },
+      "hal59_FI": {
+        "exact": [],
+        "formula": []
+      },
+      "hal59_PCH": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      }
+    }
+  },
+  {
+    "name": "hal59_032",
+    "subset": "HAL59",
+    "index": 32,
+    "species": {
+      "hal59_BrBr_FCCH": {
+        "exact": [],
+        "formula": []
+      },
+      "hal59_BrBr": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "hal59_FCCH": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "hal59_056",
+    "subset": "HAL59",
+    "index": 56,
+    "species": {
+      "hal59_27_CH3Br-benAB": {
+        "exact": [],
+        "formula": []
+      },
+      "hal59_27_CH3Br-benA": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "hal59_27_CH3Br-benB": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "but14diol_002",
+    "subset": "BUT14DIOL",
+    "index": 2,
+    "species": {
+      "but14diol_B1": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "but14diol_B3": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "but14diol_029",
+    "subset": "BUT14DIOL",
+    "index": 29,
+    "species": {
+      "but14diol_B1": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "but14diol_B30": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "but14diol_032",
+    "subset": "BUT14DIOL",
+    "index": 32,
+    "species": {
+      "but14diol_B1": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "but14diol_B33": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "but14diol_038",
+    "subset": "BUT14DIOL",
+    "index": 38,
+    "species": {
+      "but14diol_B1": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "but14diol_B39": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "but14diol_039",
+    "subset": "BUT14DIOL",
+    "index": 39,
+    "species": {
+      "but14diol_B1": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "but14diol_B40": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "but14diol_042",
+    "subset": "BUT14DIOL",
+    "index": 42,
+    "species": {
+      "but14diol_B1": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "but14diol_B43": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "but14diol_043",
+    "subset": "BUT14DIOL",
+    "index": 43,
+    "species": {
+      "but14diol_B1": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "but14diol_B44": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "but14diol_053",
+    "subset": "BUT14DIOL",
+    "index": 53,
+    "species": {
+      "but14diol_B1": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "but14diol_B54": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "parel_013",
+    "subset": "PArel",
+    "index": 13,
+    "species": {
+      "parel_aminocoohbz2": {
+        "exact": [],
+        "formula": []
+      },
+      "parel_aminocoohbz1": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "ahb21_006",
+    "subset": "AHB21",
+    "index": 6,
+    "species": {
+      "ahb21_6A": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "ahb21_6B": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "ahb21_6": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "ahb21_010",
+    "subset": "AHB21",
+    "index": 10,
+    "species": {
+      "ahb21_10A": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "ahb21_10B": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "ahb21_10": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "ahb21_015",
+    "subset": "AHB21",
+    "index": 15,
+    "species": {
+      "ahb21_15A": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "ahb21_15B": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "ahb21_15": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "pnico23_007",
+    "subset": "PNICO23",
+    "index": 7,
+    "species": {
+      "pnico23_7": {
+        "exact": [],
+        "formula": []
+      },
+      "pnico23_7a": {
+        "exact": [],
+        "formula": []
+      },
+      "pnico23_7b": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "pnico23_011",
+    "subset": "PNICO23",
+    "index": 11,
+    "species": {
+      "pnico23_11": {
+        "exact": [],
+        "formula": []
+      },
+      "pnico23_11a": {
+        "exact": [],
+        "formula": []
+      },
+      "pnico23_11b": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "pnico23_013",
+    "subset": "PNICO23",
+    "index": 13,
+    "species": {
+      "pnico23_13": {
+        "exact": [],
+        "formula": []
+      },
+      "pnico23_13a": {
+        "exact": [],
+        "formula": []
+      },
+      "pnico23_13b": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "pnico23_021",
+    "subset": "PNICO23",
+    "index": 21,
+    "species": {
+      "pnico23_21": {
+        "exact": [],
+        "formula": []
+      },
+      "pnico23_21a": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "pnico23_21b": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "aconf_011",
+    "subset": "ACONF",
+    "index": 11,
+    "species": {
+      "aconf_H_ttt": {
+        "exact": [],
+        "formula": []
+      },
+      "aconf_H_g+x-t+": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "aconf_014",
+    "subset": "ACONF",
+    "index": 14,
+    "species": {
+      "aconf_H_ttt": {
+        "exact": [],
+        "formula": []
+      },
+      "aconf_H_x+g-g-": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "wcpt18_006",
+    "subset": "WCPT18",
+    "index": 6,
+    "species": {
+      "wcpt18_reac6": {
+        "exact": [],
+        "formula": []
+      },
+      "wcpt18_ts6": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "wcpt18_008",
+    "subset": "WCPT18",
+    "index": 8,
+    "species": {
+      "wcpt18_reac8": {
+        "exact": [],
+        "formula": []
+      },
+      "wcpt18_ts8": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "wcpt18_009",
+    "subset": "WCPT18",
+    "index": 9,
+    "species": {
+      "wcpt18_reac9": {
+        "exact": [],
+        "formula": []
+      },
+      "wcpt18_ts9": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "wcpt18_018",
+    "subset": "WCPT18",
+    "index": 18,
+    "species": {
+      "wcpt18_reac9": {
+        "exact": [],
+        "formula": []
+      },
+      "wcpt18_h2o": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "wcpt18_ts9h2o": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "il16_011",
+    "subset": "IL16",
+    "index": 11,
+    "species": {
+      "il16_214A": {
+        "exact": [],
+        "formula": []
+      },
+      "il16_214B": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "il16_214": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "il16_014",
+    "subset": "IL16",
+    "index": 14,
+    "species": {
+      "il16_229A": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "il16_229B": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "il16_229": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "bsr36_017",
+    "subset": "BSR36",
+    "index": 17,
+    "species": {
+      "bsr36_r2": {
+        "exact": [],
+        "formula": []
+      },
+      "bsr36_ch4": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "bsr36_c2h6": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "bsr36_022",
+    "subset": "BSR36",
+    "index": 22,
+    "species": {
+      "bsr36_r7": {
+        "exact": [],
+        "formula": []
+      },
+      "bsr36_ch4": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "bsr36_c2h6": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "rse43_014",
+    "subset": "RSE43",
+    "index": 14,
+    "species": {
+      "rse43_E16": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "rse43_P1": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "rse43_P16": {
+        "exact": [],
+        "formula": []
+      },
+      "rse43_E1": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "rse43_040",
+    "subset": "RSE43",
+    "index": 40,
+    "species": {
+      "rse43_E42": {
+        "exact": [],
+        "formula": []
+      },
+      "rse43_P1": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "rse43_P42": {
+        "exact": [],
+        "formula": []
+      },
+      "rse43_E1": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "mconf_011",
+    "subset": "MCONF",
+    "index": 11,
+    "species": {
+      "mconf_1": {
+        "exact": [],
+        "formula": []
+      },
+      "mconf_12": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "mconf_020",
+    "subset": "MCONF",
+    "index": 20,
+    "species": {
+      "mconf_1": {
+        "exact": [],
+        "formula": []
+      },
+      "mconf_21": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "mconf_030",
+    "subset": "MCONF",
+    "index": 30,
+    "species": {
+      "mconf_1": {
+        "exact": [],
+        "formula": []
+      },
+      "mconf_31": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "water27_002",
+    "subset": "WATER27",
+    "index": 2,
+    "species": {
+      "water27_H2O3": {
+        "exact": [],
+        "formula": []
+      },
+      "water27_H2O": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "water27_017",
+    "subset": "WATER27",
+    "index": 17,
+    "species": {
+      "water27_H3OpH2O3": {
+        "exact": [],
+        "formula": []
+      },
+      "water27_H3Op": {
+        "exact": [],
+        "formula": []
+      },
+      "water27_H2O": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "sie4x4_015",
+    "subset": "SIE4x4",
+    "index": 15,
+    "species": {
+      "sie4x4_h2o2+_1.5": {
+        "exact": [],
+        "formula": []
+      },
+      "sie4x4_h2o": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "sie4x4_h2o+": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "ybde18_006",
+    "subset": "YBDE18",
+    "index": 6,
+    "species": {
+      "ybde18_me2s-ch2": {
+        "exact": [],
+        "formula": []
+      },
+      "ybde18_me2s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "ybde18_ch2": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      }
+    }
+  },
+  {
+    "name": "ybde18_008",
+    "subset": "YBDE18",
+    "index": 8,
+    "species": {
+      "ybde18_nf3-ch2": {
+        "exact": [],
+        "formula": []
+      },
+      "ybde18_nf3": {
+        "exact": [],
+        "formula": []
+      },
+      "ybde18_ch2": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      }
+    }
+  },
+  {
+    "name": "ybde18_009",
+    "subset": "YBDE18",
+    "index": 9,
+    "species": {
+      "ybde18_nh3-cbh22": {
+        "exact": [],
+        "formula": []
+      },
+      "ybde18_nh3": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "ybde18_cbh22": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "ybde18_013",
+    "subset": "YBDE18",
+    "index": 13,
+    "species": {
+      "ybde18_pf3-cbh22": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "ybde18_pf3": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "ybde18_cbh22": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "ybde18_016",
+    "subset": "YBDE18",
+    "index": 16,
+    "species": {
+      "ybde18_ph3-ch2": {
+        "exact": [],
+        "formula": []
+      },
+      "ybde18_ph3": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "ybde18_ch2": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      }
+    }
+  }
+]

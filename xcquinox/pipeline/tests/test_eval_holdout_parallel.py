@@ -74,7 +74,7 @@ def test_worker_main_writes_shard_and_prints_success(tmp_path, monkeypatch, caps
     monkeypatch.setattr(
         ehw, "compute_shard",
         lambda rd, idx, names, basis, gl, model_name="model.eqx",
-        channel=None: {
+        channel=None, pools=("bh76", "w411"): {
             "energies": {"h2": -1.17}, "pbe_energies": {"h2": -1.16},
             "mol_records": [{"molecule": "h2"}]})
 

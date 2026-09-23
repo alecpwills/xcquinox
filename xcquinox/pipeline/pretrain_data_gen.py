@@ -339,25 +339,38 @@ def _dfs_pretrain_records(level):
     return dfs_pretrain_records(level)
 
 
+def _slim_pretrain_records(name):
+    """The published study's drawn Slim molecules, a named seam like
+    :func:`_dfs_pretrain_records`."""
+    from xcquinox.pipeline.gmtkn55_sets import slim_pretrain_records
+    return slim_pretrain_records(name)
+
+
 def resolve_pretrain_systems(*, atoms=None, dfs_set=False, pool_atoms=False,
-                             reference_xc="pbe"):
+                             reference_xc="pbe", slim_set=""):
     """The ordered, de-duplicated pretraining set.
 
-    Order is DFS inventory, then pool atoms, then the explicit ``atoms`` list,
-    with the first occurrence of a (geometry, charge, spin) winning. ``atoms`` of
-    ``None`` means the historical four-atom default when neither inventory is
-    requested and NOTHING when one is: the set Section 7 binds is stated exactly
-    ("the DFS pretraining set in its entirety, plus every atom of the BH76 /
-    W4-11 pools"), and He belongs to neither.
+    Order is DFS inventory, then pool atoms, then the drawn Slim molecules of
+    ``slim_set`` (``""`` adds none), then the explicit ``atoms`` list, with
+    the first occurrence of a (geometry, charge, spin) winning; a drawn
+    molecule that is a free atom of the pools is therefore recorded under the
+    pool atom's name. ``atoms`` of ``None`` means the historical four-atom
+    default when no inventory is requested and NOTHING when one is: the set
+    Section 7 binds is stated exactly ("the DFS pretraining set in its
+    entirety, plus every atom of the BH76 / W4-11 pools"), and He belongs to
+    neither.
     """
     if atoms is None:
-        atoms = () if (dfs_set or pool_atoms) else DEFAULT_PRETRAIN_ATOMS
+        atoms = (() if (dfs_set or pool_atoms or slim_set)
+                 else DEFAULT_PRETRAIN_ATOMS)
     ordered = []
     if dfs_set:
         ordered.extend(_dfs_pretrain_records(
             dfs_level_for_reference_xc(reference_xc)))
     if pool_atoms:
         ordered.extend(pool_atom_systems())
+    if slim_set:
+        ordered.extend(_slim_pretrain_records(slim_set))
     ordered.extend(atoms)
     out = []
     seen = set()
@@ -1469,7 +1482,7 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
                          mesh_fraction=MESH_WEIGHT_FRACTION,
                          orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
                          allow_irreproducible_degenerate=False,
-                         on_stale="regenerate"):
+                         on_stale="regenerate", slim_set=""):
     """Skip-if-current driver for staged pretrain data.
 
     Returns the canonical ``.npz`` path, (re)generating it ONLY when the file
@@ -1498,7 +1511,8 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
     eff_aux = _effective_auxbasis(basis, density_fit, auxbasis)
     systems = resolve_pretrain_systems(atoms=atoms, dfs_set=dfs_set,
                                        pool_atoms=pool_atoms,
-                                       reference_xc=reference_xc)
+                                       reference_xc=reference_xc,
+                                       slim_set=slim_set)
     _check_irreproducible_degenerate(systems, basis, grid_level,
                                      orientation_lock_strength,
                                      allow_irreproducible_degenerate)
@@ -2073,7 +2087,8 @@ def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
                                mesh_fraction=MESH_WEIGHT_FRACTION,
                                systems=None,
                                orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
-                               allow_irreproducible_degenerate=False):
+                               allow_irreproducible_degenerate=False,
+                               slim_set=""):
     """Generate the pretrain-data ``.npz`` in ``out_dir`` and return its path.
 
     ``polarized=True`` writes the zeta-carrying file; ``reference_xc="scan"``
@@ -2132,11 +2147,12 @@ def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
                if systems is not None
                else resolve_pretrain_systems(atoms=atoms, dfs_set=dfs_set,
                                              pool_atoms=pool_atoms,
-                                             reference_xc=reference_xc))
+                                             reference_xc=reference_xc,
+                                             slim_set=slim_set))
     if not systems:
         raise ValueError(
             "the pretraining set is empty: pass atoms=..., or turn on "
-            "dfs_set / pool_atoms."
+            "dfs_set / pool_atoms / slim_set."
         )
     # Before any SCF is paid for: a spatially degenerate free atom below
     # COARSE_DEGENERATE_MIN_GRID_LEVEL, or with the orientation lock off, is

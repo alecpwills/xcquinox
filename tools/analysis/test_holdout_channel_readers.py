@@ -362,3 +362,27 @@ def test_the_validation_detector_keys_on_the_channel_directory(tmp_path):
     _root, bare = _make_run(tmp_path, ("eval_holdout",), name="bare")
     assert FIG._run_used_validation(bare) is False
     assert FIG._val_best_channel_present(bare) is None
+
+
+def test_the_pulls_collector_reads_a_pool_s_unweighted_row_only(tmp_path):
+    """The local test-set collector hands out one row per pool and the
+    combined row; a pool's weighted row is a second statistic of the same
+    pool and is not surfaced as a pool.
+
+    Oracle: one spec directory whose CSV carries a plain and a weighted row
+    of the diet pool.
+    """
+    pulls = _load("make_cluster_pulls_figure",
+                  _HERE / "make_cluster_pulls_figure.py")
+    spec_dir = tmp_path / "run" / "checkpoints" / "spec_0000"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "local_test_set.csv").write_text(
+        "set,mae_nn_kcalmol,mae_pbe_kcalmol,delta_nn_minus_pbe,n_reactions,"
+        "n_dropped_overlap,n_dropped_nan,note\n"
+        "test_set_bh76,1.000000,2.000000,-1.000000,1,0,0,\n"
+        "test_set_diet150,4.000000,1.000000,+3.000000,2,0,0,\n"
+        "test_set_diet150_wtmad2,13.000000,3.000000,+10.000000,2,0,0,\n"
+        "test_set_held_out_combined,3.000000,1.333333,+1.666667,3,0,0,\n",
+        encoding="utf-8")
+    rows = pulls.collect_local_test_set_rows(tmp_path / "run")
+    assert {r["pool"] for r in rows} == {"bh76", "diet150", "held_out_combined"}

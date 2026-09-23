@@ -561,3 +561,91 @@ _NON_LIST_SLICE_VALUES = ["3", "1.5", "true", '"h,h2"', '{"h": 1}']
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_the_weighted_mae_scales_each_identity_by_its_weight():
+    """The weighted mean absolute error of a pool whose reactions carry subset
+    weights is the mean over reaction identities of weight times absolute
+    error, the WTMAD-2 of a diet set; a reaction without a weight is refused.
+
+    Oracle: two reactions with errors of 1 and 4 kcal/mol under weights 2 and
+    0.5, whose weighted mean is (2 + 2) / 2 against an unweighted 2.5.
+    """
+    import pytest
+    from xcquinox.pipeline.eval_holdout import (
+        KCAL_PER_HA, reaction_mae_kcalmol, weighted_reaction_mae_kcalmol)
+    reactions = [
+        {"name": "a", "reactants": ["x"], "products": ["y"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0, "weight": 2.0},
+        {"name": "b", "reactants": ["x"], "products": ["z"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0, "weight": 0.5},
+    ]
+    energies = {"x": 0.0, "y": 1.0 / KCAL_PER_HA, "z": 4.0 / KCAL_PER_HA}
+    weighted, n_used, n_dropped = weighted_reaction_mae_kcalmol(energies,
+                                                                reactions)
+    assert (n_used, n_dropped) == (2, 0)
+    assert weighted == pytest.approx((2.0 * 1.0 + 0.5 * 4.0) / 2.0)
+    plain, _, _ = reaction_mae_kcalmol(energies, reactions)
+    assert plain == pytest.approx(2.5)
+    unweighted = [{k: v for k, v in reactions[0].items() if k != "weight"}]
+    with pytest.raises(ValueError):
+        weighted_reaction_mae_kcalmol(energies, unweighted)
+
+
+def test_the_finalized_tables_carry_the_weighted_row_and_a_pair_only_combined_row(
+        tmp_path):
+    """A pool whose reactions all carry weights gets a weighted row beside its
+    plain row, and the combined row averages the benchmark pair alone, so a
+    diet reaction that repeats a benchmark reaction is not counted twice in
+    the headline.
+
+    Oracle: one reaction per pool with errors 2, 4 and 1 kcal/mol; the diet
+    reaction under weight 3.
+    """
+    import csv
+    import pytest
+    from xcquinox.pipeline.eval_holdout import (KCAL_PER_HA,
+                                                _finalize_holdout_outputs)
+    reactions = [
+        {"name": "bh76_a", "source_pool": "bh76", "reactants": ["x"],
+         "products": ["p"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0},
+        {"name": "w411_b", "source_pool": "w411", "reactants": ["x"],
+         "products": ["q"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0},
+        {"name": "diet_c", "source_pool": "diet150", "reactants": ["x"],
+         "products": ["r"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0,
+         "weight": 3.0},
+    ]
+    energies = {"x": 0.0, "p": 2.0 / KCAL_PER_HA, "q": 4.0 / KCAL_PER_HA,
+                "r": 1.0 / KCAL_PER_HA}
+    _finalize_holdout_outputs(reactions, energies, dict(energies), [], [],
+                              n_species=4, out_dir=tmp_path, strict=False)
+    with (tmp_path / "test_set.csv").open(newline="") as fh:
+        rows = {row["set"]: row for row in csv.DictReader(fh)}
+    assert float(rows["test_set_bh76"]["mae_nn_kcalmol"]) == pytest.approx(2.0)
+    assert float(rows["test_set_w411"]["mae_nn_kcalmol"]) == pytest.approx(4.0)
+    assert float(rows["test_set_diet150"]["mae_nn_kcalmol"]) == pytest.approx(1.0)
+    assert float(rows["test_set_diet150_wtmad2"]["mae_nn_kcalmol"]) == \
+        pytest.approx(3.0)
+    assert "test_set_bh76_wtmad2" not in rows
+    combined = rows["test_set_held_out_combined"]
+    assert float(combined["mae_nn_kcalmol"]) == pytest.approx(3.0)
+    assert int(combined["n_reactions"]) == 2
+    assert "bh76, w411" in combined["note"]
+    # the per-reaction records carry the weight, so the weighted row can be
+    # recomputed from them; a reaction without one carries no key
+    import json
+    from xcquinox.pipeline.eval_holdout import DEFAULT_PER_REACTION_NAME
+    records = {r["name"]: r for r in json.loads(
+        (tmp_path / DEFAULT_PER_REACTION_NAME).read_text())}
+    assert records["diet_c"]["weight"] == pytest.approx(3.0)
+    assert "weight" not in records["bh76_a"]
+
+    # a run evaluating the diet set alone combines over what it has
+    (tmp_path / "diet_only").mkdir()
+    _finalize_holdout_outputs(reactions[2:], energies, dict(energies), [], [],
+                              n_species=2, out_dir=tmp_path / "diet_only",
+                              strict=False)
+    with (tmp_path / "diet_only" / "test_set.csv").open(newline="") as fh:
+        rows = {row["set"]: row for row in csv.DictReader(fh)}
+    assert float(rows["test_set_held_out_combined"]["mae_nn_kcalmol"]) == \
+        pytest.approx(1.0)

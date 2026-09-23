@@ -657,6 +657,22 @@ loss primer cites line by line) and the six v7 files: `dfs_step7.dfs6311_grid3_v
 (the 25-cycle and the dpyscf-parity arms). `xcquinox/pipeline/tests/test_cluster_grid_config.py`
 holds this set equal to the index.
 
+### The held-out pools and the reference job's size cap
+
+`inputs.held_out_pools` names the pools a run evaluates, validates against and builds
+references for (`bh76`, `w411`, `diet150`, `slim05`, `slim16`; the pair by default), and
+`inputs.benchmark_refs_max_atoms` caps the species the reference job generates CCSD
+densities for; a species above the cap gets no reference and its density leg is reported
+absent. Size the capped set before submitting, on the login node with the environment
+active (nothing is computed):
+
+```bash
+python -m xcquinox.pipeline.benchmark_refs --out-dir /dev/null --pool diet150 --max-atoms 16 --list-species
+```
+
+The species of the diet set that are also BH76 or W4-11 species carry those pools' names
+and reuse their reference files; the rest are named with their subset's tag.
+
 ---
 
 ## Run-dir contents (for reference)

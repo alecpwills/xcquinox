@@ -446,6 +446,56 @@ def reaction_mae_kcalmol(
     return float(sum(abs_errs) / len(abs_errs)), len(abs_errs), n_dropped_nan
 
 
+def weighted_reaction_mae_kcalmol(
+    energies_ha: Dict[str, float],
+    reactions: Sequence[Dict[str, Any]],
+) -> Tuple[float, int, int]:
+    """``(weighted MAE in kcal/mol, n_identities_used, n_dropped_nan)``.
+
+    :func:`reaction_mae_kcalmol` with each identity's absolute error scaled
+    by the reaction's ``weight``: the subset weight of a diet set, under which
+    the mean over its reactions is the set's WTMAD-2 (the weight of a subset
+    times its mean absolute error, summed over the subsets and divided by the
+    number of reactions). Every reaction must carry ``weight``.
+    """
+    from xcquinox.pipeline.species_matching import reaction_identity_keys
+    rxns = list(reactions)
+    missing = [r.get("name") for r in rxns if "weight" not in r]
+    if missing:
+        raise ValueError(
+            f"weighted_reaction_mae_kcalmol: reactions without a weight: "
+            f"{missing[:5]}")
+    err_rows = list(per_reaction_errors(energies_ha, rxns))
+    groups: Dict[Any, list] = {}
+    weights: Dict[Any, float] = {}
+    order: list = []
+    for i, (rxn, row) in enumerate(zip(rxns, err_rows)):
+        key = reaction_identity_keys(rxn, {}) or ("__row__", i)
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+            weights[key] = float(rxn["weight"])
+        groups[key].append(row["abs_error_kcalmol"])
+    scaled = []
+    n_dropped_nan = 0
+    for key in order:
+        finite = [e for e in groups[key] if math.isfinite(e)]
+        if finite:
+            scaled.append(weights[key] * sum(finite) / len(finite))
+        else:
+            n_dropped_nan += 1
+    if not scaled:
+        return float("nan"), 0, n_dropped_nan
+    return float(sum(scaled) / len(scaled)), len(scaled), n_dropped_nan
+
+
+#: The pools the combined test-set row averages over: the benchmark pair. A
+#: GMTKN55 set repeats reactions of the pair by physical identity, so the pair
+#: row is the same quantity whatever else the run evaluates; when the pair is
+#: absent the row covers every reaction the run reports.
+COMBINED_POOLS: Tuple[str, ...] = ("bh76", "w411")
+
+
 _DENSITY_RECORD_KEYS: Tuple[str, ...] = (
     "density_rmse", "density_l1", "density_rmse_pbe", "density_l1_pbe",
     # DFS Letter Eq. 20 per-electron L1 (eps) + its model-free PBE twin,
@@ -625,8 +675,10 @@ def make_per_reaction_records(
     Output schema (per record): ``name, pool, reactants, products, coeffs,
     reaction_energy_ref_kcalmol, de_nn_kcalmol, de_pbe_kcalmol,
     error_nn_kcalmol, error_pbe_kcalmol, abs_error_nn_kcalmol,
-    abs_error_pbe_kcalmol, in_sample_overlap``. Stable order = the input
-    reactions list.
+    abs_error_pbe_kcalmol, in_sample_overlap``, plus ``weight`` for a
+    reaction that carries a subset weight, so the weighted row of its pool
+    can be recomputed from the records. Stable order = the input reactions
+    list.
     """
     training = set(training_names)
     records: List[Dict[str, Any]] = []
@@ -634,7 +686,7 @@ def make_per_reaction_records(
         # Case-insensitive, via the shared overlap helper, so the per-reaction
         # in_sample_overlap flag matches the strict-drop filter exactly.
         _, overlap = reaction_overlap(rxn, training)
-        records.append({
+        record = {
             "name": rxn.get("name"),
             "pool": rxn.get("source_pool"),
             "reactants": list(rxn.get("reactants", [])),
@@ -648,7 +700,10 @@ def make_per_reaction_records(
             "abs_error_nn_kcalmol": nn["abs_error_kcalmol"],
             "abs_error_pbe_kcalmol": pbe["abs_error_kcalmol"],
             "in_sample_overlap": overlap,
-        })
+        }
+        if "weight" in rxn:
+            record["weight"] = float(rxn["weight"])
+        records.append(record)
     return records
 
 
@@ -987,12 +1042,15 @@ def write_test_set_csv(
     per_pool_mae: Dict[str, Tuple[float, float, int, int, int]],
     combined_mae: Tuple[float, float, int, int, int],
     strict: bool,
+    combined_pools: Optional[Sequence[str]] = None,
 ) -> Path:
     """Write the per-spec MAE summary CSV (one row per pool + one combined).
 
-    ``per_pool_mae`` maps pool token (``"bh76"``, ``"w411"``) to
+    ``per_pool_mae`` maps pool token (``"bh76"``, ``"w411"``, and
+    ``"<pool>_wtmad2"`` for a weighted row) to
     ``(mae_nn_kcalmol, mae_pbe_kcalmol, n_used, n_dropped_overlap,
-    n_dropped_nan)``. ``n_used`` and ``n_dropped_nan`` are in reaction
+    n_dropped_nan)``; ``combined_pools`` names the pools the combined row
+    averages over (every pool when not given). ``n_used`` and ``n_dropped_nan`` are in reaction
     IDENTITY units (permuted-name and duplicate-name twins collapse;
     ``reaction_mae_kcalmol`` / ``_n_nan_union``), so one row's counts share
     one unit; ``n_dropped_overlap`` counts the strict-mode dropped ROWS. The PBE MAE comes from re-evaluating the same
@@ -1056,6 +1114,8 @@ def write_test_set_csv(
                    if math.isfinite(mae_c_nn) and math.isfinite(mae_c_pbe)
                    else float("nan"))
         combined_note_parts = ["combined across pools"
+                                + (f" {', '.join(combined_pools)}"
+                                   if combined_pools else "")
                                 + (" (strict)" if strict else " (loose)")]
         if n_nan_c:
             combined_note_parts.append(
@@ -1485,6 +1545,13 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
         # Union: NN and PBE can drop DIFFERENT reactions, so max() undercounts.
         n_nan = _n_nan_union(energies, pbe_energies, kept)
         per_pool_mae[pool] = (mae_nn, mae_pbe, n_used, n_dropped_pool, n_nan)
+        # A pool whose reactions carry subset weights (the diet set) also
+        # reports its weighted mean, the WTMAD-2 of the set.
+        if kept and all("weight" in r for r in kept):
+            w_nn, w_used, _w_nan = weighted_reaction_mae_kcalmol(energies, kept)
+            w_pbe, _, _ = weighted_reaction_mae_kcalmol(pbe_energies, kept)
+            per_pool_mae[f"{pool}_wtmad2"] = (w_nn, w_pbe, w_used,
+                                              n_dropped_pool, n_nan)
         all_kept.extend(kept)
         n_dropped_total += n_dropped_pool
         n_nan_total += n_nan
@@ -1494,12 +1561,19 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
               f"reactions in this pool -- a stale or foreign training "
               f"identity record leaves every supervised twin in the score",
               flush=True)
+    combined_kept = [r for r in all_kept
+                     if r.get("source_pool") in COMBINED_POOLS] or all_kept
+    combined_pools = tuple(sorted({str(r.get("source_pool", "unknown"))
+                                   for r in combined_kept}))
+    combined_dropped = sum(per_pool_mae[p][3] for p in combined_pools
+                           if p in per_pool_mae)
     combined_mae_nn, combined_n_used, combined_n_nan_nn = reaction_mae_kcalmol(
-        energies, all_kept)
+        energies, combined_kept)
     combined_mae_pbe, _, combined_n_nan_pbe = reaction_mae_kcalmol(
-        pbe_energies, all_kept)
+        pbe_energies, combined_kept)
     combined = (combined_mae_nn, combined_mae_pbe, combined_n_used,
-                n_dropped_total, _n_nan_union(energies, pbe_energies, all_kept))
+                combined_dropped,
+                _n_nan_union(energies, pbe_energies, combined_kept))
 
     nn_per_rxn = per_reaction_errors(energies, all_kept)
     pbe_per_rxn = per_reaction_errors(pbe_energies, all_kept)
@@ -1508,7 +1582,8 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
 
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = write_test_set_csv(
-        out_dir / DEFAULT_CSV_NAME, per_pool_mae, combined, strict)
+        out_dir / DEFAULT_CSV_NAME, per_pool_mae, combined, strict,
+        combined_pools=combined_pools)
     mol_json_path = write_per_molecule_json(
         out_dir / DEFAULT_PER_MOLECULE_NAME, mol_records)
     rxn_json_path = write_per_reaction_json(

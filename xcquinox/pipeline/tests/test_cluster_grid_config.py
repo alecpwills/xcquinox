@@ -832,6 +832,82 @@ def test_build_pretrain_parses_every_protocol_field():
     assert pt.patience == 8
 
 
+def test_the_held_out_pools_knob_defaults_to_the_pair_and_parses_a_list():
+    """The knob names which benchmark pools a run evaluates. Its default is the pair the
+    harness has always loaded, so a configuration written before the knob existed runs
+    the same set; a misspelt name, a repeated name and an empty list are refused rather
+    than silently evaluating a smaller pool that would be read as the full one.
+
+    Oracle: ``InputPaths`` built from the base config's ``inputs`` section.
+    """
+    from xcquinox.pipeline.cluster.grid_config import _build_inputs
+    base = _base_config_dict()["inputs"]
+    assert _build_inputs(dict(base)).held_out_pools == ("bh76", "w411")
+    parsed = _build_inputs(dict(base, held_out_pools=["diet150", "bh76"]))
+    assert parsed.held_out_pools == ("diet150", "bh76")
+    assert isinstance(parsed.held_out_pools, tuple)
+    for bad in (["bh76", "bh77"], ["bh76", "bh76"], [], "bh76", [None]):
+        with pytest.raises(ValueError):
+            _build_inputs(dict(base, held_out_pools=bad))
+
+
+def test_the_reference_size_cap_is_absent_or_a_positive_whole_number():
+    """The cap drops the species the reference generator would spend the longest on. It
+    is absent by default -- the historical behaviour, every species generated -- and a
+    zero, a negative or a fractional cap is refused: each of the three would either
+    empty the reference set or truncate to a bound other than the one written.
+
+    Oracle: ``InputPaths`` built from the base config's ``inputs`` section.
+    """
+    from xcquinox.pipeline.cluster.grid_config import _build_inputs
+    base = _base_config_dict()["inputs"]
+    assert _build_inputs(dict(base)).benchmark_refs_max_atoms is None
+    assert _build_inputs(
+        dict(base, benchmark_refs_max_atoms=12)).benchmark_refs_max_atoms == 12
+    for bad in (0, -1, 2.5, True, [3]):
+        with pytest.raises(ValueError):
+            _build_inputs(dict(base, benchmark_refs_max_atoms=bad))
+
+
+def test_the_pretraining_slim_set_knob_parses_its_two_values():
+    """The pretraining set may be the paper's drawn Slim05 molecules. The knob is empty
+    by default, so an existing configuration's pretraining data keeps its identity; a
+    value naming a set with no drawn list is refused at load rather than at the first
+    step of a queued job.
+
+    Oracle: ``_build_pretrain`` over a minimal pretrain section.
+    """
+    from xcquinox.pipeline.cluster.grid_config import _build_pretrain
+    assert _build_pretrain({"data_dir": "/d"}).slim_set == ""
+    assert _build_pretrain(
+        {"data_dir": "/d", "slim_set": "slim05"}).slim_set == "slim05"
+    for bad in ("slim16", "slim20", "SLIM05", "dfs", 5, True):
+        with pytest.raises(ValueError):
+            _build_pretrain({"data_dir": "/d", "slim_set": bad})
+
+
+def test_the_new_input_knobs_round_trip_through_the_resolved_config(tmp_path):
+    """Every stage after submit reads ``resolved_config.yaml`` rather than the config the
+    user wrote, so a knob the serializer drops reverts to its default on the evaluation,
+    the seed cache and the re-finalizer at once.
+
+    Oracle: the config dict written and reloaded through ``load_grid_config``.
+    """
+    import dataclasses
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+    cfg = _cfg()
+    inputs = dataclasses.replace(cfg.inputs,
+                                 held_out_pools=("diet150", "slim05"),
+                                 benchmark_refs_max_atoms=9)
+    cfg = dataclasses.replace(cfg, inputs=inputs)
+    path = _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg))
+    reloaded = load_grid_config(path)
+    assert reloaded.inputs.held_out_pools == ("diet150", "slim05")
+    assert reloaded.inputs.benchmark_refs_max_atoms == 9
+
+
+
+
 def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
     """The resolved_config.yaml round trip is what datagen, pretrain, preflight
     and eval all read; a dropped field is a silently reverted run."""
@@ -840,6 +916,7 @@ def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
     from xcquinox.pipeline.cluster.grid_config import (_build_pretrain,
                                                    pretrain_to_raw_dict)
     protocol = {
+        "slim_set": "slim05",
         "dfs_set": True, "pool_atoms": True,
         "parent_density": "auto", "exchange_footing": "spin_channel",
         "mesh_fraction": 0.25, "energy_term_weight": 1.0,
@@ -1159,3 +1236,16 @@ def test_the_paper_footing_refuses_an_energy_term(tmp_path):
     raw["pretrain"]["energy_term_weight"] = 0.0
     cfg = load_grid_config(_write(tmp_path, "unweighted.yaml", raw))
     validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_the_held_out_pool_names_are_stated_once():
+    """The parser's pool names and the loader's are one set: a pool the parser
+    admits and the loader refuses would fail at the first evaluation of a
+    queued run, and one the loader knows and the parser refuses could never be
+    configured.
+
+    Oracle: ``full_benchmark_pools.POOL_NAMES``.
+    """
+    from xcquinox.pipeline.cluster import grid_config as gc
+    from xcquinox.pipeline.full_benchmark_pools import POOL_NAMES
+    assert tuple(gc._HELD_OUT_POOLS) == tuple(POOL_NAMES)

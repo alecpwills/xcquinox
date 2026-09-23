@@ -197,3 +197,63 @@ def test_the_final_npz_writer_refuses_a_key_outside_its_declared_set(tmp_path):
     assert not list(tmp_path.glob("tmp*.npz"))
 
 
+def test_the_pool_argument_takes_a_comma_list_and_keeps_the_historical_names():
+    """The job template passes ``--pool all``, which stays the BH76 + W4-11 union; a
+    comma list covers the species of several pools in one reference build, and an
+    unknown name is refused rather than generating a smaller set than was asked for.
+
+    Oracle: the species names the loader returns per pool selection.
+    """
+    assert "all" in br.POOL_CHOICES
+    everything = br.load_benchmark_species("all")
+    pair = br.load_benchmark_species("bh76,w411")
+    assert sorted(pair) == sorted(everything)
+    only_bh76 = br.load_benchmark_species("bh76")
+    assert set(only_bh76) < set(everything)
+    assert list(everything) == sorted(everything)
+    with pytest.raises(ValueError):
+        br.load_benchmark_species("bh76,bh77")
+
+
+def test_the_size_cap_drops_the_largest_species_and_names_them(capsys):
+    """A cap bounds what the reference build will spend on one species. The species it
+    drops are named, so a reference set that is smaller than the pool is readable as a
+    capped set rather than as a failed one.
+
+    Oracle: the species counts of the uncapped pool.
+    """
+    uncapped = br.load_benchmark_species("bh76")
+    n_atoms = {name: sum(int(c) for _e, c in ms.atom_composition)
+               for name, ms in uncapped.items()}
+    cap = 3
+    capped = br.load_benchmark_species("bh76", max_atoms=cap)
+    assert set(capped) == {n for n, k in n_atoms.items() if k <= cap}
+    assert 0 < len(capped) < len(uncapped)
+    dropped = sorted(n for n, k in n_atoms.items() if k > cap)
+    out = capsys.readouterr().out
+    for name in dropped[:3]:
+        assert name in out, name
+
+
+def test_listing_the_species_runs_no_reference_generation(tmp_path, monkeypatch,
+                                                          capsys):
+    """The sizing question is asked before a job is submitted, so the listing exits
+    without generating anything.
+
+    Oracle: a ``generate_one`` that fails the test if it is reached.
+    """
+    monkeypatch.setattr(br, "generate_one", lambda *a, **k: pytest.fail(
+        "generate_one ran under --list-species"))
+    rc = br.main(["--out-dir", str(tmp_path), "--pool", "bh76",
+                  "--max-atoms", "3", "--list-species"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert not list(tmp_path.glob("*.npz"))
+    names = br.load_benchmark_species("bh76", max_atoms=3)
+    assert str(len(names)) in out
+    for name in list(names)[:3]:
+        assert name in out, name
+
+
+
+

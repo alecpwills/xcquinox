@@ -588,31 +588,42 @@ def _fmt_delta(x) -> str:
     return "" if not math.isfinite(x) else f"{x:+.6f}"
 
 
-def _pool_stats(rows):
+def _pool_stats(rows, weighted=False):
     """(mae_nn, mae_pbe, n_used_nn, n_nan_union) with
     eval_holdout.reaction_mae_kcalmol / _n_nan_union semantics on stored
     per-reaction rows: one term per reaction IDENTITY (permuted-name and
     duplicate-name twins collapse; the casefolded-name multiset of
     species_matching.reaction_identity_keys), finite values averaged
     within an identity; n_nan_union counts identities whose NN or PBE leg
-    has no finite row."""
+    has no finite row. With ``weighted`` each identity's term is scaled by
+    its rows' ``weight`` (the subset weight of a diet reaction), the
+    semantics of eval_holdout.weighted_reaction_mae_kcalmol; a row without
+    a weight refuses the recomputation."""
     import math as _math
     from xcquinox.pipeline.species_matching import reaction_identity_keys
 
     def _ident_mae(err_key):
-        groups, order = {}, []
+        groups, order, weights = {}, [], {}
         for i, r in enumerate(rows):
             key = reaction_identity_keys(r, {}) or ("__row__", i)
             if key not in groups:
                 order.append(key)
                 groups[key] = []
+                if weighted:
+                    if not _finite(r.get("weight")):
+                        raise PatchRefused(
+                            f"per-reaction row {r.get('name')!r} carries no "
+                            "weight; the weighted row of its pool cannot be "
+                            "recomputed from the stored rows.")
+                    weights[key] = float(r["weight"])
             v = r.get(err_key)
             groups[key].append(float(v) if _finite(v) else float("nan"))
         terms = []
         for key in order:
             finite = [v for v in groups[key] if _math.isfinite(v)]
             if finite:
-                terms.append(sum(finite) / len(finite))
+                mean = sum(finite) / len(finite)
+                terms.append(weights[key] * mean if weighted else mean)
         return ((sum(terms) / len(terms)) if terms else float("nan"),
                 len(terms))
 
@@ -650,17 +661,22 @@ def recompute_test_set_csv(old_text: str, pr_rows_patched) -> str:
     w.writeheader()
     for old in old_rows:
         set_name = old["set"]
+        weighted = False
         if set_name == "test_set_held_out_combined":
             subset = list(pr_rows_patched)
+        elif set_name.startswith("test_set_") and set_name.endswith("_wtmad2"):
+            pool = set_name[len("test_set_"):-len("_wtmad2")]
+            subset = [r for r in pr_rows_patched if r.get("pool") == pool]
+            weighted = True
         elif set_name.startswith("test_set_"):
             pool = set_name[len("test_set_"):]
             subset = [r for r in pr_rows_patched if r.get("pool") == pool]
         else:
             raise PatchRefused(
                 f"unrecognized test_set.csv row {set_name!r}; the "
-                "recomputation only reproduces test_set_<pool> and "
-                "test_set_held_out_combined rows.")
-        mae_nn, mae_pbe, n_used, n_nan = _pool_stats(subset)
+                "recomputation only reproduces test_set_<pool>, "
+                "test_set_<pool>_wtmad2 and test_set_held_out_combined rows.")
+        mae_nn, mae_pbe, n_used, n_nan = _pool_stats(subset, weighted=weighted)
         delta = (mae_nn - mae_pbe
                  if math.isfinite(mae_nn) and math.isfinite(mae_pbe)
                  else float("nan"))

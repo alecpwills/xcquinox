@@ -390,7 +390,8 @@ def _clear_pass_outputs(holdout_dir, names) -> None:
 def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                        training_spec, holdout_subdir="eval_holdout",
                        channel=None) -> None:
-    """Full-pool held-out eval (BH76 + W4-11) for one trained spec.
+    """Full-pool held-out eval over the run's held-out pools for one trained
+    spec.
 
     Parallelizes across molecule shards BY DEFAULT (adaptive degradation via
     ``_holdout_parallel.run_holdout_with_escalation``), auto-detecting the usable
@@ -422,7 +423,8 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
             load_trained_model,
             run_full_holdout_eval,
         )
-        from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
+        from xcquinox.pipeline.full_benchmark_pools import (
+            load_held_out_pools_with_conflicts)
         from xcquinox.pipeline.cluster.grid_config import _resolve_eval_workers
         from xcquinox.pipeline.parallel import detect_available_cpus
 
@@ -431,7 +433,11 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         # pass's start; its tables do, until this pass ends (PASS_OUTPUTS)
         _clear_pass_outputs(holdout_dir, _CLEARED_AT_START)
         model_name = os.path.basename(model_path)
-        _log(idx, f"starting full-pool held-out eval (BH76 + W4-11) "
+        # the pools the configuration names; the benchmark pair for a
+        # configuration written before the selection existed
+        pools = tuple(getattr(getattr(cfg, "inputs", None), "held_out_pools",
+                              ("bh76", "w411")))
+        _log(idx, f"starting full-pool held-out eval ({', '.join(pools)}) "
                   f"[{model_name} -> {holdout_subdir}]")
         t1 = time.time()
         model = load_trained_model(training_spec, _Path(model_path))
@@ -441,9 +447,15 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         # evaluates the held-out set in def2-svp (invalid comparison).
         _hb, _hg = _held_out_basis_grid(cfg)
         _log(idx, f"held-out pool basis={_hb} grid_level={_hg}")
-        full_specs, full_rxns = load_full_held_out_pools(
-            basis=_hb, grid_level=_hg,
+        full_specs, full_rxns, _conflicts = load_held_out_pools_with_conflicts(
+            pools, basis=_hb, grid_level=_hg,
         )
+        if _conflicts:
+            _log(idx, f"held-out pools: {len(_conflicts)} species names "
+                      "carried by two pools with different geometries, the "
+                      "first pool's kept: "
+                      + ", ".join(f"{c['name']} ({c['kept']} over "
+                                  f"{c['dropped']})" for c in _conflicts))
         n_pool = len(full_rxns)
         full_specs, full_rxns, _slice_names = _apply_species_slice(
             idx, full_specs, full_rxns, holdout_dir)
@@ -497,7 +509,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                     holdout_dir, basis=_hb, grid_level=_hg,
                     n_workers_top=n_top, total_cpus=detect_available_cpus(),
                     strict=bool(getattr(cfg, "held_out_strict", False)),
-                    model_name=model_name, channel=channel)
+                    model_name=model_name, channel=channel, pools=pools)
             except Exception as pexc:  # noqa: BLE001
                 _log(idx, f"held-out parallel path failed "
                           f"({type(pexc).__name__}: {pexc}); serial fallback")

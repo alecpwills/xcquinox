@@ -292,6 +292,22 @@ class InputPaths:
     # npz files live under ``<seed_cache_dir>/_intermediates/``). Required
     # when any cell resolves a "scan" seed.
     seed_cache_dir: str | None = None
+    # The held-out pools the run evaluates, validates against and builds
+    # references for, in this order (``full_benchmark_pools.POOL_NAMES``: the
+    # benchmark pair, the diet set, the two Slim sets). The default is the
+    # pair every earlier configuration evaluated.
+    held_out_pools: tuple[str, ...] = ("bh76", "w411")
+    # The species-size cap of the reference job: a species with more atoms
+    # than this gets no CCSD reference and its density leg is reported absent.
+    # None generates every species.
+    benchmark_refs_max_atoms: int | None = None
+
+
+#: The held-out pools a configuration may name; restated from
+#: ``full_benchmark_pools.POOL_NAMES`` because that module pulls the training
+#: stack and the parser runs on the login node (the two are held equal by a
+#: test).
+_HELD_OUT_POOLS = ("bh76", "w411", "diet150", "slim05", "slim16")
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +460,10 @@ class PretrainConfig:
     # extend. Both default False, so an existing YAML is unchanged.
     dfs_set: bool = False
     pool_atoms: bool = False
+    # The published study's pretraining molecules: "slim05" adds the 25 the
+    # study draws from the Slim05 set (``gmtkn55_sets.slim_pretrain_records``)
+    # after the DFS inventory and before the pool atoms; "" adds nothing.
+    slim_set: str = ""
     # The density the targets sit on: "pbe", "scan", or "auto" for the
     # architecture's rung baseline. "pbe" is every file written before this
     # change; "auto" splits a mixed-rung sweep across two data files.
@@ -1174,6 +1194,31 @@ def _build_inputs(d: dict) -> InputPaths:
             f"{ctx}.seed_xc must be one of 'pbe'/'scan'/'minao'/'auto', got "
             f"{seed_xc!r}"
         )
+    pools_raw = d.get("held_out_pools", ("bh76", "w411"))
+    if isinstance(pools_raw, str) or not isinstance(pools_raw, (list, tuple)):
+        raise ValueError(
+            f"grid config key '{ctx}.held_out_pools' must be a list of pool "
+            f"names from {_HELD_OUT_POOLS}, got {type(pools_raw).__name__} "
+            f"({pools_raw!r})")
+    pools = tuple(pools_raw)
+    if not pools:
+        raise ValueError(
+            f"grid config key '{ctx}.held_out_pools' names no pool; the pools "
+            f"are {_HELD_OUT_POOLS}")
+    for pool in pools:
+        if not isinstance(pool, str) or pool not in _HELD_OUT_POOLS:
+            raise ValueError(
+                f"grid config key '{ctx}.held_out_pools' names an unknown pool "
+                f"{pool!r}; the pools are {_HELD_OUT_POOLS}")
+    if len(set(pools)) != len(pools):
+        raise ValueError(
+            f"grid config key '{ctx}.held_out_pools' names a pool twice: "
+            f"{list(pools)}")
+    max_atoms = d.get("benchmark_refs_max_atoms")
+    if max_atoms is not None:
+        max_atoms = _config_number(d, "benchmark_refs_max_atoms", None,
+                                   whole=True, minimum=0, minimum_open=True,
+                                   ctx=ctx)
     return InputPaths(
         external_refs_dir=_require(d, "external_refs_dir", ctx),
         subset_ledger_path=_require(d, "subset_ledger_path", ctx),
@@ -1189,6 +1234,8 @@ def _build_inputs(d: dict) -> InputPaths:
         val_refs_dir=d.get("val_refs_dir"),
         seed_xc=seed_xc,
         seed_cache_dir=d.get("seed_cache_dir"),
+        held_out_pools=pools,
+        benchmark_refs_max_atoms=max_atoms,
     )
 
 
@@ -1204,6 +1251,8 @@ def _build_inputs(d: dict) -> InputPaths:
 _PARENT_DENSITIES = ("pbe", "scan", "auto")
 _EXCHANGE_FOOTINGS = ("total", "spin_channel", "paper")
 _LOSS_WEIGHTINGS = ("unweighted", "integration", "rho_w_sampled")
+# The Slim sets with a pretraining draw ("" = none); slim05 alone carries one.
+_SLIM_SETS = ("", "slim05")
 # jax.random.PRNGKey wraps modulo 2**32 instead of raising, so a seed outside
 # that range silently ALIASES another run's initialization (measured:
 # PRNGKey(-1) == PRNGKey(2**32 - 1), PRNGKey(2**32) == PRNGKey(0)) while the
@@ -1424,6 +1473,7 @@ def _build_pretrain(d: dict) -> PretrainConfig:
                                          minimum_open=True),
         sampling_seed=_config_number(d, "sampling_seed", 0, whole=True,
                                      minimum=0, maximum=_MAX_SEED),
+        slim_set=_pretrain_choice(d, "slim_set", "", _SLIM_SETS),
     )
     # The decay window is [lr_decay_start, lr_decay_end]; an end before the
     # start is not a schedule and is refused at load rather than at the node.

@@ -98,8 +98,12 @@ from xcquinox.pipeline.eval_holdout import (  # noqa: E402
 )
 
 
-#: Available held-out pools. Keyed by the lowercase token the user passes to
-#: ``--pools``.
+#: The pools this local re-scorer evaluates, keyed by the token the user
+#: passes to ``--pools``: the two demonstration pools of
+#: ``constraint_pretrain_gmtkn55_demo`` (a BH76 probe and the W4-11
+#: atomization energies, species keyed by Hill formula), not the tracked
+#: pools of ``xcquinox.pipeline.full_benchmark_pools`` that a cluster run
+#: names with ``inputs.held_out_pools``.
 _AVAILABLE_POOLS = ("bh76", "w411")
 
 
@@ -568,8 +572,10 @@ def main(argv: Optional[List[str]] = None) -> int:
              "--auto.")
     p.add_argument(
         "--pools", default="bh76,w411",
-        help="comma-separated held-out pools (default: bh76,w411; available: "
-             f"{','.join(_AVAILABLE_POOLS)})")
+        help="comma-separated demonstration pools of the local re-scorer "
+             f"(default: bh76,w411; available: {','.join(_AVAILABLE_POOLS)}; "
+             "the cluster evaluation's pools are the run's "
+             "inputs.held_out_pools)")
     p.add_argument(
         "--strict", action="store_true",
         help="Drop every reaction whose species set overlaps the training "

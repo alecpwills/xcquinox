@@ -267,3 +267,61 @@ def test_pretraining_grid_rebuild_pins_the_cutoff(monkeypatch):
     for key in ("rho", "sigma", "weights", "Fx", "Fc", "e_lda_x", "e_lda_c"):
         np.testing.assert_array_equal(np.asarray(pinned[key]),
                                       np.asarray(rebuilt[key]))
+
+
+def test_the_slim_draw_joins_the_pretraining_set_after_the_dfs_records_and_pool_atoms(
+        tmp_path):
+    """The pretraining set may carry the paper's drawn Slim molecules. They follow the
+    DFS inventory and the pool atoms, so a set that adds them is the existing set plus
+    those systems rather than a reordered one, a drawn molecule that is a pool atom keeps
+    the atom's name, and the file's identity changes with the knob -- a stale file served
+    under a manifest that names another set is the defect the manifest exists to exclude.
+
+    Oracle: ``resolve_pretrain_systems`` with and without the knob; a manifest written
+    for one set read against the other.
+    """
+    import numpy as np
+    from xcquinox.pipeline import pretrain_data_gen as pdg
+    from xcquinox.pipeline.gmtkn55_sets import slim_pretrain_records
+
+    base = pdg.resolve_pretrain_systems(dfs_set=True, pool_atoms=True)
+    with_slim = pdg.resolve_pretrain_systems(dfs_set=True, pool_atoms=True,
+                                             slim_set="slim05")
+    assert len(with_slim) > len(base)
+
+    def _key(system):
+        return (system.atom, int(system.charge), int(system.spin))
+
+    drawn = {(_key(pdg.normalize_system(r))) for r in slim_pretrain_records("slim05")}
+    added = [s for s in with_slim if _key(s) not in {_key(b) for b in base}]
+    assert added, "the knob added no system"
+    assert {_key(s) for s in added} <= drawn
+
+    # the existing set is the prefix, in order and under its own names
+    assert [(s.name, _key(s)) for s in with_slim[:len(base)]] == \
+        [(s.name, _key(s)) for s in base]
+    pool_atom_names = {s.name for s in pdg.pool_atom_systems()}
+    assert pool_atom_names <= {s.name for s in with_slim}
+    for s in with_slim[len(base):]:
+        assert s.name not in pool_atom_names
+        assert sum(1 for _ in s.atom.split(";")) > 1 or _key(s) not in {
+            _key(a) for a in pdg.pool_atom_systems()}
+
+    assert pdg.resolve_pretrain_systems(dfs_set=True, pool_atoms=True,
+                                        slim_set="") == base
+
+    # the identity: a manifest for one set is stale for the other
+    npz_path = str(tmp_path / "pretrain_data_polarized.npz")
+    np.savez(npz_path, rho=np.zeros(1))
+    common = dict(basis="sto-3g", grid_level=0)
+    pdg._write_pretrain_manifest(npz_path, density_fit=False, systems=base,
+                                 **common)
+    assert pdg.pretrain_data_is_current(npz_path, systems=base, **common)
+    assert not pdg.pretrain_data_is_current(npz_path, systems=with_slim,
+                                            **common)
+    pdg._write_pretrain_manifest(npz_path, density_fit=False,
+                                 systems=with_slim, **common)
+    assert pdg.pretrain_data_is_current(npz_path, systems=with_slim, **common)
+    assert not pdg.pretrain_data_is_current(npz_path, systems=base, **common)
+
+

@@ -232,6 +232,30 @@ def refinalize_spec(spec_dir: Path,
     return reports
 
 
+def run_held_out_pools(run_dir: Path) -> Tuple[str, ...]:
+    """The held-out pools a run evaluated, from ``inputs.held_out_pools`` of
+    its ``resolved_config.yaml``; the benchmark pair for a run written before
+    the selection existed or without the file."""
+    path = Path(run_dir) / "resolved_config.yaml"
+    if path.is_file():
+        import yaml
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            raw = {}
+        pools = (raw.get("inputs") or {}).get("held_out_pools")
+        if isinstance(pools, (list, tuple)) and pools:
+            return tuple(str(p) for p in pools)
+    return ("bh76", "w411")
+
+
+def _load_held_out_pools(names, basis="def2-svp", grid_level=1, refs_dir=None):
+    """Seam over ``full_benchmark_pools.load_held_out_pools``."""
+    from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
+    return load_held_out_pools(tuple(names), basis=basis,
+                               grid_level=grid_level, refs_dir=refs_dir)
+
+
 def refinalize_run(run_dir: Path, *,
                    channels: Sequence[str] = CHANNELS,
                    dry_run: bool = False,
@@ -255,9 +279,7 @@ def refinalize_run(run_dir: Path, *,
     if _pool is not None:
         pool_specs, pool_rxns = _pool
     else:
-        from xcquinox.pipeline.full_benchmark_pools import (
-            load_full_held_out_pools)
-        pool_specs, pool_rxns = load_full_held_out_pools()
+        pool_specs, pool_rxns = _load_held_out_pools(run_held_out_pools(run_dir))
     reactions = reactions_for_run(run_dir, pool_specs, list(pool_rxns))
     reports: List[Dict[str, Any]] = []
     for sd in sorted((run_dir / "checkpoints").glob("spec_*")):

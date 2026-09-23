@@ -374,3 +374,46 @@ def test_the_tracked_pools_regenerate_byte_for_byte():
         assert regenerated == tracked, (
             f"{Path(json_path).name}: {len(regenerated)} bytes regenerated "
             f"against {len(tracked)} tracked")
+
+
+# ---------------------------------------------------------------------------
+# The union's precedence and its conflict report
+# ---------------------------------------------------------------------------
+
+def test_the_union_keeps_the_first_pool_s_species_and_reports_the_conflict(
+        monkeypatch):
+    """A name two pools carry with different geometries resolves to the first
+    pool's species and is reported as a conflict naming the keeper and the
+    dropped pool; the same name at the same geometry is no conflict. Over the
+    tracked pair the conflicts are exactly the W4-11 names the naming rule
+    qualifies, every one kept from BH76.
+
+    Oracle: two synthetic loaders installed in place of the pool loaders; the
+    tracked caches of the pair.
+    """
+    import xcquinox.pipeline.full_benchmark_pools as fbp
+    from xcquinox.pipeline.gmtkn55_sets import w411_qualified_names
+
+    def _spec(name, z):
+        return fbp._dict_to_mol_spec(
+            {"name": name, "atom": f"H 0 0 0; H 0 0 {z}",
+             "atom_composition": [["H", 2]], "charge": 0, "spin": 0},
+            "def2-svp", 1, None)
+
+    first = {"x": _spec("x", 0.74), "y": _spec("y", 0.74)}
+    second = {"x": _spec("x", 0.80), "y": _spec("y", 0.74), "z": _spec("z", 0.74)}
+    loaders = {"bh76": lambda **kw: (first, [{"name": "r1"}]),
+               "w411": lambda **kw: (second, [{"name": "r2"}])}
+    monkeypatch.setattr(fbp, "_pool_loader", lambda name: loaders[name])
+    specs, reactions, conflicts = fbp.load_held_out_pools_with_conflicts(
+        ("bh76", "w411"))
+    assert specs["x"] is first["x"]
+    assert set(specs) == {"x", "y", "z"}
+    assert [r["name"] for r in reactions] == ["r1", "r2"]
+    assert conflicts == [{"name": "x", "kept": "bh76", "dropped": "w411"}]
+
+    monkeypatch.undo()
+    _, _, real = fbp.load_held_out_pools_with_conflicts(("bh76", "w411"))
+    assert {c["name"] for c in real} == set(w411_qualified_names())
+    assert real and all(c["kept"] == "bh76" and c["dropped"] == "w411"
+                        for c in real)

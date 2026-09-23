@@ -215,6 +215,8 @@ def _protocol_keywords(pt):
         extra["dfs_set"] = True
     if getattr(pt, "pool_atoms", False):
         extra["pool_atoms"] = True
+    if getattr(pt, "slim_set", ""):
+        extra["slim_set"] = str(pt.slim_set)
     if getattr(pt, "exchange_footing", "total") != "total":
         extra["exchange_footing"] = str(pt.exchange_footing)
     if float(getattr(pt, "mesh_fraction", 0.3)) != 0.3:
