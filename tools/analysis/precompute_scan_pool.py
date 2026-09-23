@@ -215,14 +215,14 @@ def _reference_lock(refs_dir: Path, name: str) -> Optional[float]:
 
 def _load_pool(pool: str, *, basis: str, grid_level: int) -> Dict[str, object]:
     """``{name: MoleculeSpec}`` for the requested pool, sorted by name so the
-    resume order is stable. ``all`` = BH76 + W4-11 (the held-out union)."""
+    resume order is stable. ``all`` = BH76 + W4-11. Every key carries the set
+    it belongs to, as the held-out evaluation and the seed-cache link do, so a
+    single-set run writes the same intermediate names a paired run does."""
     from xcquinox.pipeline import full_benchmark_pools as fbp
-    loader = {
-        "all": fbp.load_full_held_out_pools,
-        "bh76": fbp.load_full_bh76,
-        "w411": fbp.load_full_w411,
-    }[pool]
-    mol_specs, _reactions = loader(basis=basis, grid_level=grid_level)
+    names = {"all": ("bh76", "w411"), "bh76": ("bh76",),
+             "w411": ("w411",)}[pool]
+    mol_specs, _reactions = fbp.load_held_out_pools(
+        names, basis=basis, grid_level=grid_level)
     return dict(sorted(mol_specs.items()))
 
 

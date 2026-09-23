@@ -1,19 +1,20 @@
 #!/bin/bash
-#SBATCH --job-name=xcq_refinalize_verbatim
+#SBATCH --job-name=xcq_refinalize_holdout
 #SBATCH --partition=short-96core-shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=00:30:00
-#SBATCH --output=refinalize_verbatim_%j.out
-#SBATCH --mail-type=END,FAIL
+#SBATCH --output=refinalize_holdout_%j.out
+#SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=alec.wills@stonybrook.edu
 
-# Refinalize completed held-out evals under the verbatim hold-out rule
-# (2026-08-13): rewrites per_reaction.json/test_set.csv of specs evaluated
-# before the rule deployed, from their EXISTING per-species energies -- no
-# SCF. Idempotent; first rewrite per channel backs up the old artifacts as
-# *.pre_verbatim.*; specs already on the new rule report "unchanged".
+# Rewrite the tables of completed held-out evaluations from their EXISTING
+# per-species energies -- no SCF -- after a change in the pool definitions or
+# in the aggregation. Nothing is excluded: every reaction of every set is
+# reported. Idempotent; the first rewrite per channel backs up the old
+# artifacts as *.pre_refinalize.*; a channel already current reports
+# "unchanged".
 # Safe alongside a running train array: only completed specs' directories
 # are touched, and the arrays write their own spec dirs.
 #
@@ -54,12 +55,12 @@ cd "${REPO}"
 export PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}"
 export JAX_PLATFORMS=cpu
 
-python -c "import xcquinox.pipeline.refinalize_verbatim" \
+python -c "import xcquinox.pipeline.refinalize_holdout" \
     || { echo "FATAL: repo import failed (env/activation)"; exit 1; }
 
 echo "[refinalize] targets:${RUN_DIRS}"
 rc=0
 # shellcheck disable=SC2086
-python -m xcquinox.pipeline.refinalize_verbatim ${RUN_DIRS} || rc=$?
+python -m xcquinox.pipeline.refinalize_holdout ${RUN_DIRS} || rc=$?
 echo "[refinalize] DONE rc=${rc}"
 exit "${rc}"

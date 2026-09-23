@@ -43,6 +43,7 @@ Reaction-dict schema (matches
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -600,23 +601,82 @@ def _pool_loader(name: str):
     raise ValueError(f"unknown held-out pool {name!r}; the pools are {POOL_NAMES}")
 
 
-def load_held_out_pools_with_conflicts(
+#: The separator between a held-out set's name and a species' own name in the
+#: key the evaluation computes energies under. Every set is evaluated on its
+#: own species, so a name two sets carry is two species and two SCFs; the key
+#: says which set a number belongs to. An at sign is used rather than a path
+#: separator because the key is embedded in flat file names by the reference
+#: job and by the SCF, CCSD and seed caches, and no GMTKN55 system name
+#: carries one.
+SET_SEPARATOR = "@"
+
+
+def qualified_species_name(pool: str, system: str) -> str:
+    """The evaluation key of a species: its set and its own name."""
+    if SET_SEPARATOR in str(system):
+        raise ValueError(
+            f"species name {system!r} of pool {pool!r} carries the set "
+            f"separator {SET_SEPARATOR!r}")
+    return f"{pool}{SET_SEPARATOR}{system}"
+
+
+def split_qualified_name(name: str) -> Tuple[str, str]:
+    """``(pool, system)`` of a qualified species key."""
+    pool, sep, system = str(name).partition(SET_SEPARATOR)
+    if not sep:
+        raise ValueError(f"species key {name!r} names no held-out set")
+    return pool, system
+
+
+def reference_file_name(pool: str, system: str) -> str:
+    """The benchmark reference file of one species of one set. Every set
+    carries its own reference for a name the sets share, so the file is named
+    by the set as well."""
+    return f"{qualified_species_name(pool, system)}.npz"
+
+
+def _reference_path(refs_dir, pool: str, system: str) -> str | None:
+    """The species' reference file under ``refs_dir``, or None when the
+    directory is unset or holds no such file."""
+    resolved = _resolve_refs_dir(refs_dir)
+    if not resolved:
+        return None
+    cand = os.path.join(resolved, reference_file_name(pool, system))
+    return cand if os.path.isfile(cand) else None
+
+
+def _qualify_reaction(rxn: Dict[str, Any], pool: str) -> Dict[str, Any]:
+    """A reaction of ``pool`` with every species name it carries qualified,
+    so it resolves inside its own set and nowhere else."""
+    out = dict(rxn)
+    out["source_pool"] = pool
+    # ``systems`` keeps the GMTKN55 system names of the set's own definition
+    # and is not an evaluation key, so it is left as the set wrote it.
+    for key in ("reactants", "products"):
+        if key in out:
+            out[key] = [qualified_species_name(pool, n) for n in out[key]]
+    for key in ("species_spins", "species_charges"):
+        if key in out and isinstance(out[key], dict):
+            out[key] = {qualified_species_name(pool, n): v
+                        for n, v in out[key].items()}
+    return out
+
+
+def load_held_out_pools(
     names: Sequence[str],
     basis: str = "def2-svp",
     grid_level: int | None = 1,
     refs_dir: str | os.PathLike | None = None,
-) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]], List[Dict[str, str]]]:
-    """The union of the named pools, and the names two of them carry with
-    different geometries.
+) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
+    """``({qualified_name: MoleculeSpec}, [reaction_dict, ...])`` over the
+    named pools, each set on its own definitions.
 
-    Species merge by name, the first pool in ``names`` winning; reactions
-    concatenate in that order. A name a later pool carries with another
-    geometry, charge or spin is kept as the first pool's and REPORTED in the
-    third element as ``{"name", "kept", "dropped"}`` (the two pool names), so
-    the evaluation can say which species it scored on which molecule. The
-    tracked pair carries fourteen such names (BH76's geometry kept, as every
-    evaluation of the pair has done); the GMTKN55 sets are named so that they
-    add none. An unknown, repeated or missing pool name is refused.
+    A species is keyed by its set and its own name
+    (:func:`qualified_species_name`), so no two sets share a key and none is
+    dropped: a molecule two sets carry is evaluated once per set, at that
+    set's geometry, against that set's reference file. Reactions concatenate
+    in the order named, each carrying the qualified names of its own set.
+    An unknown, repeated or missing pool name is refused.
     """
     names = tuple(names)
     if not names:
@@ -629,38 +689,17 @@ def load_held_out_pools_with_conflicts(
     if len(set(names)) != len(names):
         raise ValueError(f"a held-out pool is named twice: {names}")
     merged: Dict[str, MoleculeSpec] = {}
-    owner: Dict[str, str] = {}
     reactions: List[Dict[str, Any]] = []
-    conflicts: List[Dict[str, str]] = []
     for name in names:
         specs, rxns = _pool_loader(name)(basis=basis, grid_level=grid_level,
                                          refs_dir=refs_dir)
         for sp_name, ms in specs.items():
-            if sp_name in merged:
-                kept = merged[sp_name]
-                if (kept.atom, kept.charge, kept.spin) != (ms.atom, ms.charge,
-                                                           ms.spin):
-                    conflicts.append({"name": sp_name, "kept": owner[sp_name],
-                                      "dropped": name})
-                continue
-            merged[sp_name] = ms
-            owner[sp_name] = name
-        reactions.extend(rxns)
-    return merged, reactions, conflicts
-
-
-def load_held_out_pools(
-    names: Sequence[str],
-    basis: str = "def2-svp",
-    grid_level: int | None = 1,
-    refs_dir: str | os.PathLike | None = None,
-) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
-    """``({species_name: MoleculeSpec}, [reaction_dict, ...])`` of the union
-    of the named pools (:func:`load_held_out_pools_with_conflicts` without
-    the conflict list)."""
-    specs, reactions, _conflicts = load_held_out_pools_with_conflicts(
-        names, basis=basis, grid_level=grid_level, refs_dir=refs_dir)
-    return specs, reactions
+            key = qualified_species_name(name, sp_name)
+            merged[key] = dataclasses.replace(
+                ms, name=key,
+                external_data_path=_reference_path(refs_dir, name, sp_name))
+        reactions.extend(_qualify_reaction(r, name) for r in rxns)
+    return merged, reactions
 
 
 def load_full_held_out_pools(
@@ -668,12 +707,12 @@ def load_full_held_out_pools(
     grid_level: int | None = 1,
     refs_dir: str | os.PathLike | None = None,
 ) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
-    """The union of BH76 + W4-11, the pair every configuration evaluates
-    unless it names its pools (:data:`DEFAULT_POOL_NAMES`).
+    """BH76 and W4-11, the pair every configuration evaluates unless it names
+    its pools (:data:`DEFAULT_POOL_NAMES`), each on its own definitions.
 
-    Species dicts merge by name, BH76's kept where the two carry a name with
-    different geometries; reactions concatenate (BH76 first, then W4-11).
-    ``refs_dir`` semantics as :func:`load_full_bh76`.
+    The two sets share fourteen system names at different geometries; each
+    keeps its own, under its own key. ``refs_dir`` semantics as
+    :func:`load_full_bh76`.
     """
     return load_held_out_pools(DEFAULT_POOL_NAMES, basis=basis,
                                grid_level=grid_level, refs_dir=refs_dir)
@@ -757,11 +796,10 @@ def slice_held_out_pools(
     if missing:
         raise ValueError(
             f"held-out species slice names {missing}, absent from the pool of "
-            f"{len(mol_specs)} species. Pool names are case-sensitive: the "
-            "W4-11 leg is lower case throughout ('h2', 'o', 'ch4') while BH76 "
-            "capitalises many of its species ('H2', 'O', 'CH4'), and 11 names "
-            "exist in both forms as separate entries closing different "
-            "reactions."
+            f"{len(mol_specs)} species. A species key carries the set it "
+            f"belongs to ('bh76{SET_SEPARATOR}h2', 'w411{SET_SEPARATOR}h2'), "
+            "and the names inside a set are case-sensitive: the W4-11 leg is "
+            "lower case throughout while BH76 capitalises many of its species."
         )
     kept_names = set(wanted)
     kept_specs = {n: mol_specs[n] for n in wanted}

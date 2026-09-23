@@ -187,7 +187,6 @@ def _config_to_raw_dict(cfg) -> dict:
         # groups in aux_log.pkl where the reaction form would emit none.
         "ae_as_reactions": cfg.ae_as_reactions,
         "use_polarized_correlation": cfg.use_polarized_correlation,
-        "held_out_strict": cfg.held_out_strict,
         "defer_eval": cfg.defer_eval,
         # inline_eval MUST round-trip: load_grid_config reads it
         # (raw.get("inline_eval", ...)), and recovery/resubmit paths re-load

@@ -641,7 +641,7 @@ it, and every one of them is listed here.
 | `probe_pretrain_energy_weight.py`, `probe_pretrain_energy_weight.sbatch` | the per-system energy-term weight of the pretraining objective | `test_thread_caps.py` |
 | `reeval_c2_patch.py` | patches wrong-branch c2 reference values in pulled held-out artifacts | -- |
 | `reeval_holdout_spec.sbatch` | re-runs the full evaluation of one completed spec (open item 33) | -- |
-| `refinalize_verbatim_holdout.sbatch` | refinalizes completed held-out evaluations under the verbatim rule (open item 17) | -- |
+| `refinalize_holdout.sbatch` | refinalizes completed held-out evaluations under the verbatim rule (open item 17) | -- |
 | `seed_cache_scan.sbatch` | builds the SCAN seed cache the meta-GGA group's `inputs.seed_cache_dir` names; a prerequisite of `configs/dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml` | -- |
 | `t1_backfill.sbatch` | backfills the T1 diagnostic into the benchmark references (`docs/pipeline/pull_and_figures.md`) | -- |
 | `workflow_matrix.sbatch` | the workflow-matrix driver: one process on one node running every stage of `cluster/examples/workflow_matrix_template.yaml` | `test_workflow_matrix_sbatch.py`, `test_standalone_sbatch_activation.py`, `test_thread_caps.py` |

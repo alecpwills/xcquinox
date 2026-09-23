@@ -303,9 +303,13 @@ def test_the_paper_draw_is_numpys_legacy_choice():
 #: Per Slim set: reactions, distinct (subset, system) identities over those reactions,
 #: distinct pool species names, and molecules under the paper's per-subset rule.
 #: Measured from the checkout with the module's grammar.
+#: Every distinct (subset, system) pair of a Slim set is one species of its
+#: pool, since a species name carries its subset's tag: the identity count and
+#: the species count agree, where the bare names of three subsets once
+#: collapsed four pairs of slim05 and five of slim16 onto one species each.
 _SLIM_COUNTS = {
-    "slim05": {"reactions": 100, "identities": 211, "species": 207, "molecules": 169},
-    "slim16": {"reactions": 100, "identities": 239, "species": 234, "molecules": 216},
+    "slim05": {"reactions": 100, "identities": 211, "species": 211, "molecules": 169},
+    "slim16": {"reactions": 100, "identities": 239, "species": 239, "molecules": 216},
 }
 
 #: The molecules the paper's first repetition draws from Slim05, as
@@ -490,93 +494,6 @@ def test_the_diet150_pool_keeps_every_subset_and_excludes_nothing():
 
 
 # ---------------------------------------------------------------------------
-# 8. Species shared with the tracked pools
-# ---------------------------------------------------------------------------
-
-def test_shared_species_keep_the_tracked_geometry():
-    """A species of the new pools that carries the name of a tracked BH76 or W4-11
-    species is that species: same geometry string, charge and 2S. The evaluation
-    computes one energy per name across the pool union and the held-out references
-    directory holds one file per name, so a name reused at another geometry would score
-    the tracked pools' reactions on the wrong molecule.
-
-    Oracle: ``xcquinox/pipeline/data/{bh76,w411}_full_pool.json`` as tracked.
-    """
-    missing = _missing_compositions()
-    if missing:
-        pytest.skip(f"the composition files are not on disk: {missing}")
-    tracked = {}
-    for path in (BH76_JSON_PATH, W411_JSON_PATH):
-        for sd in _tracked_pool(path)["species"]:
-            tracked.setdefault(sd["name"], []).append(
-                (sd["atom"], sd["charge"], sd["spin"]))
-    gs = _sets()
-    n_checked = 0
-    for name in ("slim05", "slim16", "diet150"):
-        pool = (gs.build_diet150_pool_dict() if name == "diet150"
-                else gs.build_slim_pool_dict(name))
-        for sd in pool["species"]:
-            if sd["name"] not in tracked:
-                continue
-            n_checked += 1
-            assert (sd["atom"], sd["charge"], sd["spin"]) in tracked[sd["name"]], (
-                name, sd["name"])
-    assert n_checked > 0, "no species of the new pools carries a tracked name"
-
-
-def test_a_species_outside_the_three_bare_subsets_carries_its_subset_tag():
-    """Only BH76, BH76RC and W4-11 species keep their bare system name -- those are the
-    species of the tracked pools. Everything else is prefixed with its subset tag, so a
-    system name shared by two subsets is two pool species.
-
-    Oracle: the naming rule against subsets whose system names collide in the checkout.
-    """
-    gs = _sets()
-    assert gs.species_name("BH76", "h") == "h"
-    assert gs.species_name("BH76RC", "ch3f") == "ch3f"
-    assert gs.species_name("W4-11", "h2") == "h2"
-    assert gs.species_name("G21IP", "h") == "g21ip_h"
-    assert gs.species_name("SIE4x4", "h") == "sie4x4_h"
-    assert gs.species_name("MB16-43", "H2") == "mb16_43_H2"
-    assert gs.species_name("W4-11", "h") != gs.species_name("SIE4x4", "h")
-    assert gs.reaction_name("W4-11", 23) == "w4_11_023"
-    assert gs.reaction_name("BH76RC", 5) == "bh76rc_005"
-
-
-# ---------------------------------------------------------------------------
-# 9. The tracked caches
-# ---------------------------------------------------------------------------
-
-def test_the_tracked_sets_regenerate_byte_for_byte():
-    """Each tracked cache is what the source produces now: the builder's dict,
-    serialized the way the regeneration script serializes it, equals the tracked file
-    byte for byte. A cache that no longer regenerates is a cache whose provenance has
-    been lost.
-
-    Oracle: the tracked JSON files under ``xcquinox/pipeline/data/``.
-    """
-    missing = _missing_compositions() + _missing_subsets(("BH76", "W4-11"))
-    if missing:
-        pytest.skip(f"the sources are not on this machine: {missing}")
-    gs = _sets()
-    builders = [
-        (lambda: gs.build_slim_pool_dict("slim05"), gs.SLIM_JSON_PATHS["slim05"]),
-        (lambda: gs.build_slim_pool_dict("slim16"), gs.SLIM_JSON_PATHS["slim16"]),
-        (gs.build_diet150_pool_dict, gs.DIET150_JSON_PATH),
-    ]
-    reports = gs.build_overlap_reports()
-    for key, path in gs.OVERLAP_JSON_PATHS.items():
-        builders.append((lambda k=key: reports[k], path))
-    for builder, json_path in builders:
-        regenerated = (json.dumps(builder(), indent=2, sort_keys=False,
-                                  ensure_ascii=False) + "\n").encode("utf-8")
-        tracked = Path(json_path).read_bytes()
-        assert regenerated == tracked, (
-            f"{Path(json_path).name}: {len(regenerated)} bytes regenerated against "
-            f"{len(tracked)} tracked")
-
-
-# ---------------------------------------------------------------------------
 # 10. The overlap report
 # ---------------------------------------------------------------------------
 
@@ -651,24 +568,6 @@ def test_the_loaders_return_the_probe_schema():
         assert "weight" in rxn
         assert set(rxn["reactants"]) | set(rxn["products"]) <= set(specs)
         assert len(rxn["coeffs"]) == len(rxn["reactants"]) + len(rxn["products"])
-
-
-def test_the_pool_union_is_the_pair_by_default():
-    """Naming the two historical pools reproduces the union the harness has always
-    loaded, species and reactions alike, so a configuration that states nothing runs
-    what it ran before.
-
-    Oracle: ``load_full_held_out_pools()``.
-    """
-    from xcquinox.pipeline.full_benchmark_pools import (
-        load_full_held_out_pools, load_held_out_pools)
-    want_specs, want_rxns = load_full_held_out_pools(basis="def2-svp", grid_level=1)
-    got_specs, got_rxns = load_held_out_pools(("bh76", "w411"), basis="def2-svp",
-                                              grid_level=1)
-    assert sorted(got_specs) == sorted(want_specs)
-    assert [r["name"] for r in got_rxns] == [r["name"] for r in want_rxns]
-    for name in want_specs:
-        assert got_specs[name].atom == want_specs[name].atom
 
 
 def test_an_unknown_pool_name_is_refused():
@@ -802,75 +701,175 @@ def test_a_composition_naming_a_subset_twice_is_refused():
         gs.parse_composition("AHB21 1 2\nBH76 4\nAHB21 3\n")
 
 
-def test_a_diet_species_takes_the_element_list_geometry_where_the_checkout_differs(
-        tmp_path, monkeypatch):
-    """The diet species is the checkout's where the two geometries share their
-    internal distances (a rigid motion between them is no difference) and the element
-    list's where they do not, with the source and the deviation recorded; a tracked
-    pool's species at another geometry is refused, and so is a charge that differs.
 
-    Oracle: a synthetic checkout and element-list entries built from one molecule.
+# ---------------------------------------------------------------------------
+# 12. One naming rule for every subset
+# ---------------------------------------------------------------------------
+
+def test_every_species_name_carries_its_subset_tag():
+    """Every GMTKN55 system is named with its subset's tag, BH76, BH76RC and
+    W4-11 included. No subset keeps a bare system name and no set renames a
+    selection of its own systems to dodge another set's: a set is evaluated
+    under the names its own definition gives it.
+
+    Oracle: the naming rule against subsets whose system names collide in the
+    checkout, and against the system names the two tracked pools share.
     """
-    hf = (("H", 0.0, 0.0, 0.0), ("F", 0.0, 0.0, 0.92))
-    root = _mini_checkout(tmp_path, {
-        "AAA": ("$tmer  a/$f  x  -1  $w  1.0\n", {"a": (hf, 0, 0)}),
-        "BH76": ("$tmer  hf/$f  x  -1  $w  1.0\n", {"hf": (hf, 0, 0)}),
-    })
-    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(root))
     gs = _sets()
-
-    def _entry(positions, charge=0, uhf=0):
-        return {"Count": -1, "Charge": charge, "UHF": uhf, "Number": 2,
-                "Elements": ["H", "F"], "Positions": [list(p) for p in positions]}
-
-    moved = [(1.0, 2.0, 3.0), (1.0, 2.92, 3.0)]   # translated and rotated
-    rec = gs._diet_species_record("AAA", "a", "a", _entry(moved))
-    assert rec["geometry_source"] == "checkout"
-    assert rec["element_list_deviation"] <= gs.ELEMENT_LIST_DISTANCE_TOL
-    assert rec["atom"] == gs.species_record("AAA", "a")["atom"]
-    assert rec["element_list_name"] == "a"
-
-    stretched = [(0.0, 0.0, 0.0), (0.0, 0.0, 0.93)]
-    rec = gs._diet_species_record("AAA", "a", "a", _entry(stretched))
-    assert rec["geometry_source"] == "element_list"
-    assert rec["element_list_deviation"] == pytest.approx(0.01)
-    assert gs.geometry_deviation(rec["atom"], stretched) == 0.0
-    assert rec["name"] == "aaa_a"
-
-    with pytest.raises(ValueError):
-        gs._diet_species_record("BH76", "hf", "hf", _entry(stretched))
-    with pytest.raises(ValueError):
-        gs._diet_species_record("AAA", "a", "a", _entry(moved, charge=1))
+    assert gs.species_name("BH76", "h") == "bh76_h"
+    assert gs.species_name("BH76", "CH4") == "bh76_CH4"
+    assert gs.species_name("BH76RC", "ch3f") == "bh76rc_ch3f"
+    assert gs.species_name("W4-11", "h2") == "w4_11_h2"
+    assert gs.species_name("W4-11", "ch4") == "w4_11_ch4"
+    assert gs.species_name("G21IP", "h") == "g21ip_h"
+    assert gs.species_name("SIE4x4", "h") == "sie4x4_h"
+    assert gs.species_name("MB16-43", "H2") == "mb16_43_H2"
+    assert gs.species_name("W4-11", "h") != gs.species_name("SIE4x4", "h")
+    assert gs.species_name("W4-11", "h") != gs.species_name("BH76", "h")
+    assert gs.reaction_name("W4-11", 23) == "w4_11_023"
+    assert gs.reaction_name("BH76RC", 5) == "bh76rc_005"
+    assert not hasattr(gs, "BARE_SUBSETS")
+    assert not hasattr(gs, "w411_qualified_names")
 
 
-def test_every_diet_species_carries_the_element_list_geometry():
-    """Every species of the diet pool has the internal distances of its element-list
-    entry within the tolerance, whatever the source of its coordinates; a species taken
-    from the list is one whose checkout geometry deviates beyond the tolerance, and it
-    is never a tracked pool's species.
+# ---------------------------------------------------------------------------
+# 13. The diet set from its own list
+# ---------------------------------------------------------------------------
 
-    Oracle: ``data/dietgmtkn55-150/AllElements-150.yaml`` against the built pool.
-    """
+def _diet_entries():
+    """``{(subset, list name): entry}`` over the blocks the subset list
+    selects, and the two loaded documents beside it."""
     elements = _diet_yaml("AllElements-150.yaml")
+    subsets = _diet_yaml("SubsetGMTKN55_150.yaml")["Systems"]
+    entries = {}
+    for subset, (_weight, indices) in subsets.items():
+        for index in indices:
+            for name, entry in elements[subset][int(index)]["Species"].items():
+                entries.setdefault((subset, name), entry)
+    return elements, subsets, entries
+
+
+def _positions_of(atom):
+    """The coordinates of a PySCF atom string, flattened."""
+    out = []
+    for token in atom.split(";"):
+        parts = token.split()
+        if parts:
+            out.extend(float(v) for v in parts[1:4])
+    return out
+
+
+def test_the_diet_pool_is_built_from_its_own_list_alone(tmp_path, monkeypatch):
+    """The set is defined by its own two files, so it builds with no GMTKN55
+    checkout in reach at all: the reactions, the species and their coordinates
+    come from the element list and the subset list and from nothing else.
+
+    Oracle: ``data/dietgmtkn55-150/AllElements-150.yaml`` and
+    ``SubsetGMTKN55_150.yaml`` read here, against a build pointed at an empty
+    directory.
+    """
+    empty = tmp_path / "no_checkout"
+    empty.mkdir()
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(empty))
+    _elements, _subsets, entries = _diet_entries()
+    gs = _sets()
+    pool = gs.build_diet150_pool_dict()
+    assert len(pool["reactions"]) == 150
+    assert len(entries) == 335
+    assert len(pool["species"]) == len(entries)
+    species = {sd["name"]: sd for sd in pool["species"]}
+    assert set(species) == {gs.species_name(subset, name)
+                            for subset, name in entries}
+    for (subset, name), entry in sorted(
+            entries.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+        sd = species[gs.species_name(subset, name)]
+        want = [float(v) for position in entry["Positions"] for v in position]
+        assert _positions_of(sd["atom"]) == pytest.approx(want, abs=1e-12), (
+            subset, name)
+
+
+def test_every_diet_species_carries_the_list_geometry_and_identity():
+    """Over the built set, every species carries the element list's element
+    sequence, coordinates, charge and unpaired-electron count, and every
+    reaction carries the list's reference energy and its subset's weight. A
+    species whose coordinates came from anywhere else is a species whose energy
+    does not belong to the reference energy it is scored against.
+
+    Oracle: ``data/dietgmtkn55-150/AllElements-150.yaml`` and
+    ``SubsetGMTKN55_150.yaml``.
+    """
+    elements, subsets, _entries = _diet_entries()
     gs = _sets()
     pool = gs.build_diet150_pool_dict()
     species = {sd["name"]: sd for sd in pool["species"]}
-    n_from_list = 0
+    n_checked = 0
     for rxn in pool["reactions"]:
-        block = elements[rxn["subset"]][int(rxn["index"])]
-        line = gs.ResLine(index=int(rxn["index"]), systems=list(rxn["systems"]),
-                          coeffs=[int(c) for c in rxn["coeffs"]],
-                          ref=float(rxn["reaction_energy_ref"]))
-        entries = gs._diet_species_entries(rxn["subset"], line, block)
-        for system in rxn["systems"]:
-            sd = species[gs.species_name(rxn["subset"], system)]
-            _list_name, entry = entries[system]
-            assert gs.geometry_deviation(sd["atom"], entry["Positions"]) <= \
-                gs.ELEMENT_LIST_DISTANCE_TOL, (rxn["subset"], system)
-            from_list = sd["geometry_source"] == "element_list"
-            assert from_list == (
-                sd["element_list_deviation"] > gs.ELEMENT_LIST_DISTANCE_TOL)
-            if from_list:
-                n_from_list += 1
-                assert rxn["subset"] not in gs.BARE_SUBSETS
-    assert n_from_list > 0, "the checkout's geometries all agree with the list's"
+        subset, index = rxn["subset"], int(rxn["index"])
+        block = elements[subset][index]
+        assert rxn["reaction_energy_ref"] == pytest.approx(
+            float(block["Energy"]), abs=1e-9), (subset, index)
+        assert rxn["weight"] == pytest.approx(float(block["Weight"]), abs=1e-9)
+        assert rxn["weight"] == pytest.approx(float(subsets[subset][0]),
+                                              abs=1e-9)
+        for name, entry in block["Species"].items():
+            key = gs.species_name(subset, name)
+            assert key in species, (subset, name)
+            sd = species[key]
+            symbols = [token.split()[0] for token in sd["atom"].split(";")
+                       if token.split()]
+            assert symbols == [str(e) for e in entry["Elements"]]
+            want = [float(v) for position in entry["Positions"]
+                    for v in position]
+            assert _positions_of(sd["atom"]) == pytest.approx(want, abs=1e-12)
+            assert int(sd["charge"]) == int(entry["Charge"])
+            assert int(sd["spin"]) == int(entry["UHF"])
+            assert "geometry_source" not in sd
+            assert "element_list_deviation" not in sd
+            n_checked += 1
+    assert n_checked > 0
+
+
+# ---------------------------------------------------------------------------
+# 14. The tracked caches
+# ---------------------------------------------------------------------------
+
+def test_the_tracked_caches_regenerate_byte_for_byte():
+    """Every tracked cache and report the rebuild tool writes is what the
+    sources produce now, byte for byte, and every species of a set built from
+    the collection is named with its subset's tag. A cache that no longer
+    regenerates is a cache whose provenance has been lost.
+
+    Oracle: the tracked JSON files under ``xcquinox/pipeline/data/``.
+    """
+    missing = _missing_compositions() + _missing_subsets(("BH76", "W4-11"))
+    if missing:
+        pytest.skip(f"the sources are not on this machine: {missing}")
+    from xcquinox.pipeline.full_benchmark_pools import (build_bh76_pool_dict,
+                                                        build_w411_pool_dict)
+    gs = _sets()
+    builders = [
+        (build_bh76_pool_dict, BH76_JSON_PATH),
+        (build_w411_pool_dict, W411_JSON_PATH),
+        (lambda: gs.build_slim_pool_dict("slim05"), gs.SLIM_JSON_PATHS["slim05"]),
+        (lambda: gs.build_slim_pool_dict("slim16"), gs.SLIM_JSON_PATHS["slim16"]),
+        (gs.build_diet150_pool_dict, gs.DIET150_JSON_PATH),
+    ]
+    reports = gs.build_overlap_reports()
+    for key, path in gs.OVERLAP_JSON_PATHS.items():
+        builders.append((lambda k=key: reports[k], path))
+    for builder, json_path in builders:
+        regenerated = (json.dumps(builder(), indent=2, sort_keys=False,
+                                  ensure_ascii=False) + "\n").encode("utf-8")
+        tracked = Path(json_path).read_bytes()
+        assert regenerated == tracked, (
+            f"{Path(json_path).name}: {len(regenerated)} bytes regenerated "
+            f"against {len(tracked)} tracked")
+    for name in ("slim05", "slim16", "diet150"):
+        path = (gs.DIET150_JSON_PATH if name == "diet150"
+                else gs.SLIM_JSON_PATHS[name])
+        cache = json.loads(Path(path).read_text(encoding="utf-8"))
+        for sd in cache["species"]:
+            assert sd["name"] == gs.species_name(sd["subset"], sd["system"]), (
+                name, sd["name"])
+            assert sd["name"].startswith(gs.subset_tag(sd["subset"]) + "_"), (
+                name, sd["name"])

@@ -303,7 +303,6 @@ def _check_yscale(yscale: str) -> None:
 # Data ingest
 # ---------------------------------------------------------------------------
 
-_POOL_SPECS_CACHE: Optional[Dict[str, Any]] = None
 _POOL_CACHE: Optional[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
 
 
@@ -318,49 +317,6 @@ def _canonical_pool() -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         specs, rxns = load_full_held_out_pools()
         _POOL_CACHE = (specs, list(rxns))
     return _POOL_CACHE
-
-
-def _pool_specs_for_aliasing() -> Dict[str, Any]:
-    """Benchmark-pool species specs for composition-level alias matching --
-    the figure-layer twin of the eval-side
-    ``held_out_filter_names_with_aliases`` expansion. Lazy + cached (one pool
-    load per process); monkeypatchable test seam."""
-    global _POOL_SPECS_CACHE
-    if _POOL_SPECS_CACHE is None:
-        from xcquinox.pipeline.full_benchmark_pools import (
-            load_full_held_out_pools)
-        _POOL_SPECS_CACHE = load_full_held_out_pools()[0]
-    return _POOL_SPECS_CACHE
-
-
-def _spec_alias_names(spec_dir: Path) -> set:
-    """Casefolded pool names physically identical to this spec's trained
-    molecules under a DIFFERENT name (Hill ``CHN`` vs pool ``hcn``) --
-    exactly the set the cluster-side name-level strict filter could not see.
-    Name-visible trained species were already dropped there, so only these
-    aliases need removing here. Empty set when metadata is absent."""
-    tm = spec_dir / "train_metadata.json"
-    if not tm.is_file():
-        return set()
-    try:
-        with tm.open() as f:
-            mols = json.load(f).get("molecules") or []
-    except (json.JSONDecodeError, OSError):
-        return set()
-    from xcquinox.pipeline.species_matching import (is_atomic,
-                                                parse_formula_name,
-                                                trained_pool_aliases)
-    mol_level = []
-    for n in mols:
-        parsed = parse_formula_name(str(n))
-        if parsed is not None and is_atomic(parsed[0]):
-            continue  # atoms are universal anchors, never held-out species
-        mol_level.append(str(n))
-    if not mol_level:
-        return set()
-    aliases = trained_pool_aliases(mol_level, _pool_specs_for_aliasing(),
-                                   verbose=False)
-    return {str(a).casefold() for a in aliases}
 
 
 def _reaction_identity(r: Dict[str, Any]) -> Optional[Tuple]:
@@ -481,13 +437,12 @@ def collect_holdout_reaction_rows(run_dir: Path,
     ``eval_subdir`` selects the checkpoint variant: ``eval_holdout`` (final-step
     weights, default) or ``eval_holdout_val_best`` (held-out validation-best weights).
 
-    Two strict-holdout repairs applied on read (each printed when it fires):
-    rows whose reaction contains a pool species physically identical to one of
-    that spec's trained molecules under a different name (``_spec_alias_names``
-    -- the cluster-side name filter is blind to the Hill-vs-pool naming split)
-    are dropped, and rows whose reaction is a permuted-name twin of a
-    validation-slice reaction (``_val_reaction_identities`` -- validation-best
-    selection saw that barrier) are dropped.
+    Nothing is dropped for overlapping the training set: a reaction that
+    touches a trained molecule is a held-out reaction and is reported, its
+    overlap recorded on the row. Rows whose reaction is a permuted-name twin
+    of a validation-slice reaction (``_val_reaction_identities`` --
+    validation-best selection saw that barrier) are left out, matching the
+    per-pool row the evaluation writes.
 
     Rows require a finite comparator (PBE) leg only: reactions whose NN leg
     is NaN are kept with NaN NN columns on BOTH ingest paths (the cluster
@@ -497,9 +452,9 @@ def collect_holdout_reaction_rows(run_dir: Path,
     filters."""
     cells = ccp._read_manifest_cells(run_dir)
     rows: List[Dict[str, Any]] = []
-    # -- verbatim-holdout reconstruction (specs whose per_molecule carries the
+    # -- slice reconstruction (specs whose per_molecule carries the
     #    per-species energies) --------------------------------------------
-    recon_stats = {"specs": 0, "verbatim": 0, "val": 0, "nan_pbe": 0,
+    recon_stats = {"specs": 0, "val": 0, "nan_pbe": 0,
                    "nan_nn": 0}
     legacy_specs: List[Tuple[int, Path]] = []
     for idx, spec_dir in ccp._spec_dirs(run_dir):
@@ -511,10 +466,9 @@ def collect_holdout_reaction_rows(run_dir: Path,
         else:
             rows.extend(got)
     if recon_stats["specs"]:
-        print(f"  (verbatim holdout: reconstructed {recon_stats['specs']} "
-              f"specs' test slices from per-species energies; excluded "
-              f"{recon_stats['verbatim']} verbatim-supervised and "
-              f"{recon_stats['val']} validation rows; "
+        print(f"  (reconstructed {recon_stats['specs']} "
+              f"specs' reported slices from per-species energies; left out "
+              f"{recon_stats['val']} validation rows and nothing else; "
               f"{recon_stats['nan_pbe']} comparator-NaN-dropped; "
               f"{recon_stats['nan_nn']} NN-NaN rows kept "
               f"(comparator leg only))")
@@ -524,11 +478,8 @@ def collect_holdout_reaction_rows(run_dir: Path,
     #    per_molecule.json predates the energy columns), with the
     #    species-alias and validation-twin repairs ------------------------
     val_ids = _val_reaction_identities(run_dir)
-    n_alias = 0
-    alias_hits: set = set()
     n_twin = 0
     twin_hits: set = set()
-    n_specs_alias = 0
     for idx, spec_dir in legacy_specs:
         rj_path = spec_dir / eval_subdir / "per_reaction.json"
         if not rj_path.is_file():
@@ -539,17 +490,7 @@ def collect_holdout_reaction_rows(run_dir: Path,
         except (json.JSONDecodeError, OSError):
             continue
         cell = cells.get(idx, {})
-        aliases_cf = _spec_alias_names(spec_dir)
-        spec_had_alias_drop = False
         for r in payload:
-            species_cf = [str(x).casefold()
-                          for x in ((r.get("reactants") or [])
-                                    + (r.get("products") or []))]
-            if aliases_cf and any(s in aliases_cf for s in species_cf):
-                n_alias += 1
-                spec_had_alias_drop = True
-                alias_hits.update(s for s in species_cf if s in aliases_cf)
-                continue
             if val_ids:
                 ident = _reaction_identity(r)
                 if ident is not None and ident in val_ids:
@@ -572,26 +513,11 @@ def collect_holdout_reaction_rows(run_dir: Path,
                 "reactants": r.get("reactants"),
                 "products": r.get("products"),
             })
-        if spec_had_alias_drop:
-            n_specs_alias += 1
-    if n_alias:
-        print(f"  (strict-holdout repair: dropped {n_alias} reaction rows "
-              f"across {n_specs_alias} specs containing trained species "
-              f"under pool names {sorted(alias_hits)})")
     if n_twin:
         print(f"  (validation-twin repair: dropped {n_twin} test rows whose "
               f"reaction is a permuted-name twin of a validation reaction: "
               f"{sorted(twin_hits)})")
     return rows
-
-
-class _MetadataSpec:
-    """Duck-typed training-spec view over a pulled ``train_metadata.json``,
-    exposing exactly what ``trained_reaction_exclusion`` consumes."""
-    def __init__(self, meta: Dict[str, Any]):
-        self._lk = dict(meta.get("loss_kwargs") or {})
-    def loss_kwargs_dict(self) -> Dict[str, Any]:
-        return self._lk
 
 
 def _val_reaction_entries(run_dir: Path) -> List[Dict[str, Any]]:
@@ -630,15 +556,15 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
                            eval_subdir: str,
                            stats: Dict[str, int]
                            ) -> Optional[List[Dict[str, Any]]]:
-    """One spec's VERBATIM-HOLDOUT test slice, reconstructed from its
+    """One spec's reported held-out slice, reconstructed from its
     per-species energies (``E_total_nn`` / ``E_pbe`` in
     ``<eval_subdir>/per_molecule.json``) over the canonical pool with the
     cluster's own reaction math (``eval_holdout.per_reaction_errors``).
 
-    Exclusions -- by canonical reaction identity -- are exactly the spec's
-    verbatim supervised reactions (``trained_reaction_exclusion`` over the
-    training record's reaction points) and the recorded validation slice;
-    a reaction merely containing a trained molecule STAYS. Rows require a
+    Nothing is excluded for training overlap: a reaction that touches a
+    trained molecule is a held-out reaction and is scored. The recorded
+    validation slice is left out, as it is in the reported per-pool row the
+    evaluation writes, because it drove early stopping. Rows require a
     finite COMPARATOR (PBE) leg only: reactions the NN failed to score are
     kept with NaN NN columns, so comparator reductions cover the cell's
     full test slice regardless of NN convergence (the cluster-written
@@ -659,24 +585,13 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
              if _is_num(r.get("E_pbe"))}
     if not e_nn or not e_pbe:
         return None
-    from xcquinox.pipeline.eval_holdout import (per_reaction_errors,
-                                            trained_reaction_exclusion)
+    from xcquinox.pipeline.eval_holdout import per_reaction_errors
     from xcquinox.pipeline.species_matching import reaction_identity_keys
     pool_specs, pool_rxns = _canonical_pool()
-    tm_path = spec_dir / "train_metadata.json"
-    meta: Dict[str, Any] = {}
-    if tm_path.is_file():
-        try:
-            with tm_path.open() as f:
-                meta = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            meta = {}
-    excl, key_map = trained_reaction_exclusion(_MetadataSpec(meta),
-                                               pool_specs)
-    # A pool-name key map always exists (pool-name keys are identical under
+    key_map = None
+    # A pool-name key map always exists; pool-name keys are identical under
     # any trained-name extension, so identities computed with either map
-    # coincide on pool reactions); the trained map is preferred when the
-    # spec records reaction points, since the exclusion set was built on it.
+    # coincide on pool reactions.
     global _POOL_KEY_MAP_CACHE
     if _POOL_KEY_MAP_CACHE is None or _POOL_KEY_MAP_CACHE[0] is not pool_specs:
         from xcquinox.pipeline.species_matching import canonical_species_keys
@@ -700,9 +615,6 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
             stats["nan_pbe"] += 1     # comparator leg undefined: not in slice
             continue
         ids = set(reaction_identity_keys(rxn, id_map))
-        if excl and ids & excl:
-            stats["verbatim"] += 1
-            continue
         if val_ids and ids & val_ids:
             stats["val"] += 1
             continue
@@ -4401,14 +4313,13 @@ def collect_holdout_density_rows(run_dir: Path,
     joined with the manifest arch/subset_size. Rows are kept when EITHER
     channel is finite, so a PBE-only re-eval still produces the baseline.
 
-    Two repairs applied on read (printed when they fire): rows for species
-    that are pool twins of the spec's trained molecules under a different
-    name are dropped (``_spec_alias_names`` -- the held-out density mean must
-    not average supervised species), and rows for species whose model-free
-    PBE reference disagrees across specs
-    (``_inconsistent_pbe_density_species``, the c2 reference-drift class) are
-    dropped entirely -- from the anchors AND the per-cell means -- so no
-    anchor can drift with pull coverage.
+    Every species of the set is kept, the ones the training set also carries
+    included; their rows state it through ``from_training_subset`` and the
+    count is printed. Rows for species whose model-free PBE reference
+    disagrees across specs (``_inconsistent_pbe_density_species``, the c2
+    reference-drift class) are dropped entirely -- from the anchors AND the
+    per-cell means -- so no anchor can drift with pull coverage; that is a
+    reference-validity exclusion, not a training-overlap one.
 
     ``exclude_cf`` (casefolded species names, :func:`_mol_cf`) drops the
     named species after the repairs -- both case spellings of a pool twin go
@@ -4417,8 +4328,6 @@ def collect_holdout_density_rows(run_dir: Path,
     the T1 or convergence lists here and render into their own directory."""
     cells = ccp._read_manifest_cells(run_dir)
     raw: List[Dict[str, Any]] = []
-    n_alias = 0
-    alias_hits: set = set()
     n_supervised = 0
     supervised_hits: set = set()
     for idx, spec_dir in ccp._spec_dirs(run_dir):
@@ -4432,23 +4341,18 @@ def collect_holdout_density_rows(run_dir: Path,
         except (json.JSONDecodeError, OSError):
             continue
         cell = cells.get(idx, {})
-        aliases_cf = _spec_alias_names(spec_dir)
         for r in payload:
             if not (_is_num(r.get("density_rmse"))
                     or _is_num(r.get("density_rmse_pbe"))):
                 continue
             mol = r.get("molecule")
-            # Supervised species (the eval's own alias-aware flag) are
-            # training-fit measurements, not held-out ones: a spec_0021-class
-            # cell carried 28 such rows inside its "held-out" density mean.
+            # Every species of the set is kept, the ones the training set also
+            # carries included: the row states its own membership through
+            # ``from_training_subset``, and separating them is a reading of the
+            # results rather than a filter on them.
             if r.get("from_training_subset"):
                 n_supervised += 1
                 supervised_hits.add(str(mol))
-                continue
-            if aliases_cf and str(mol).casefold() in aliases_cf:
-                n_alias += 1
-                alias_hits.add(str(mol))
-                continue
             raw.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
@@ -4484,12 +4388,9 @@ def collect_holdout_density_rows(run_dir: Path,
                 print(f"  (converged channel {eval_subdir}: {len(unconv)} "
                       f"unconverged species in spec_{idx:04d}: {unconv})")
     if n_supervised:
-        print(f"  (strict-holdout repair: dropped {n_supervised} density rows "
-              f"flagged from_training_subset "
-              f"({len(supervised_hits)} species))")
-    if n_alias:
-        print(f"  (strict-holdout repair: dropped {n_alias} density rows for "
-              f"trained species under pool names {sorted(alias_hits)})")
+        print(f"  ({n_supervised} density rows are species the training set "
+              f"also carries ({len(supervised_hits)} species); they are kept "
+              "and flagged from_training_subset, not removed)")
     bad = _inconsistent_pbe_density_species(raw)
     if bad:
         clauses = _pbe_density_outlier_clauses(raw, bad)

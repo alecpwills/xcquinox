@@ -154,11 +154,11 @@ _ATOM_GROUND_SPIN: dict[str, int] = {
 # r(CH) (1.0918537 A against 1.0874456 A), so a DFS record of one of these
 # three names must never win. The three are therefore certified at the pool
 # geometry, not at the DFS pretraining geometry; the pool species are also the
-# ones the held-out atomization energies are scored on. All three keys resolve
-# to BH76 entries -- "H2O" and "CH4" exist only there, and "n2" is in both
-# sets, where the merge keeps BH76 (load_full_held_out_pools) -- so the three
-# come from one benchmark's geometries and the certificate does not invent a
-# second merge policy. The lower-case W4-11 twins ("h2o", "ch4") carry the
+# ones the held-out atomization energies are scored on. All three keys name
+# BH76 species -- "H2O" and "CH4" exist only there, and "n2" is in both sets
+# at different geometries -- so the three come from one benchmark's
+# geometries, and the certificate names that set rather than inventing a
+# precedence. The lower-case W4-11 twins ("h2o", "ch4") carry the
 # same molecules at other geometries and are deliberately not used. Pool H2O
 # is r = 0.9569131 A with a 104.5169 degree bond angle.
 _FIXED_MOLECULE_POOL_NAMES: tuple[tuple[str, str], ...] = (
@@ -836,7 +836,8 @@ def build_oracle_set(cfg, arch_name: str) -> tuple:
     not to this function.
     """
     from xcquinox.pipeline.config import MoleculeSpec
-    from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
+    from xcquinox.pipeline.full_benchmark_pools import (load_full_bh76,
+                                                        load_full_w411)
     from xcquinox.pipeline.dfs_pretrain_set import dfs_pretrain_records
 
     basis = cfg.inputs.basis
@@ -855,9 +856,16 @@ def build_oracle_set(cfg, arch_name: str) -> tuple:
                 "certificate needs exactly one spin per free atom")
         atom_spin[key] = int(spin)
 
-    pool_specs, _pool_reactions = load_full_held_out_pools(
-        basis=basis, grid_level=grid_level)
-    for ms in pool_specs.values():
+    # The certificate is not a held-out evaluation: it needs one free atom per
+    # element and the three fixed molecules at ONE benchmark's geometries, so
+    # it reads the two sets by their own species names rather than through the
+    # set-qualified held-out keys. The three molecules are BH76's, as the
+    # comment on ``_FIXED_MOLECULE_POOL_NAMES`` states; a free atom the two
+    # sets disagree on is refused by the guard above.
+    bh76_specs, _bh76_rxns = load_full_bh76(basis=basis, grid_level=grid_level)
+    w411_specs, _w411_rxns = load_full_w411(basis=basis, grid_level=grid_level)
+    pool_specs = bh76_specs
+    for ms in list(bh76_specs.values()) + list(w411_specs.values()):
         if is_atom_system(ms):
             _add_atom(ms.atom_composition[0][0], ms.charge, ms.spin,
                       "BH76/W4-11 pools")

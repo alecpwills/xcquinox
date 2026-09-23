@@ -23,13 +23,13 @@ The density columns are NEVER touched: the benchmark CCSD reference
 densities are not staged locally, so a recomputed row would null them.
 
 Repair doctrine (mirrors ``cluster.coldstart_retro`` /
-``refinalize_verbatim``): idempotent (done = no non-finite ``E_total_nn``
+``refinalize_holdout``): idempotent (done = no non-finite ``E_total_nn``
 left), once-only ``per_molecule.pre_backfill.json`` backup, atomic
 replace, a ``backfill_meta.json`` stamp per channel, and every computed
 payload banked in ``backfill_ledger.json`` so a cluster pull that
 overwrites the patched files can be re-applied instantly without
 recomputation. Derived files (``per_reaction.json`` / ``test_set.csv``)
-are regenerated afterwards by ``xcquinox.pipeline.refinalize_verbatim``
+are regenerated afterwards by ``xcquinox.pipeline.refinalize_holdout``
 (``--refinalize``, default on when anything was patched).
 
 Usage (from the repo root):
@@ -680,8 +680,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if any_patched and not args.no_refinalize and not args.dry_run \
             and not args.measure_only:
         print("[backfill] regenerating per_reaction/test_set via "
-              "refinalize_verbatim ...", flush=True)
-        from xcquinox.pipeline.refinalize_verbatim import refinalize_run
+              "refinalize_holdout ...", flush=True)
+        from xcquinox.pipeline.refinalize_holdout import refinalize_run
         refinalize_run(run_dir, channels=tuple(args.channels))
     return rc
 

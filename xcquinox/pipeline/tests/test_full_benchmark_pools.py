@@ -19,7 +19,6 @@ import pytest
 from xcquinox.pipeline.full_benchmark_pools import (
     load_full_bh76,
     load_full_w411,
-    load_full_held_out_pools,
 )
 from xcquinox.pipeline.config import MoleculeSpec
 
@@ -153,21 +152,6 @@ def test_species_dicts_yield_valid_mol_specs():
             assert isinstance(count, int) and count >= 1, count
         # spin = 2S (non-negative); charge can be negative
         assert ms.spin >= 0, (name, ms.spin)
-
-
-def test_load_full_held_out_pools_merges_species():
-    """Combined pool: BH76 + W4-11 species merged (no duplicate by name)."""
-    bh76_mols, bh76_rxns = load_full_bh76()
-    w411_mols, w411_rxns = load_full_w411()
-    all_mols, all_rxns = load_full_held_out_pools()
-    # Reactions concatenate; species merge.
-    assert len(all_rxns) == len(bh76_rxns) + len(w411_rxns)
-    assert len(all_mols) <= len(bh76_mols) + len(w411_mols)
-    # Every species in BH76 or W4-11 must appear in the merged dict.
-    for name in bh76_mols:
-        assert name in all_mols, name
-    for name in w411_mols:
-        assert name in all_mols, name
 
 
 # ---------------------------------------------------------------------------
@@ -376,23 +360,23 @@ def test_the_tracked_pools_regenerate_byte_for_byte():
             f"against {len(tracked)} tracked")
 
 
+
+
 # ---------------------------------------------------------------------------
-# The union's precedence and its conflict report
+# Every set under its own keys: no merge, no precedence, no conflict list
 # ---------------------------------------------------------------------------
 
-def test_the_union_keeps_the_first_pool_s_species_and_reports_the_conflict(
-        monkeypatch):
-    """A name two pools carry with different geometries resolves to the first
-    pool's species and is reported as a conflict naming the keeper and the
-    dropped pool; the same name at the same geometry is no conflict. Over the
-    tracked pair the conflicts are exactly the W4-11 names the naming rule
-    qualifies, every one kept from BH76.
+def test_two_sets_sharing_a_species_name_keep_their_own_geometries(monkeypatch):
+    """A system name two sets carry is two species, each keyed ``<pool>/<system>``
+    and each holding its own geometry, and every reaction names its species in
+    that vocabulary. Nothing merges, nothing takes precedence and no conflict is
+    reported anywhere: the merge is what scored one set's reactions on the other
+    set's molecules.
 
-    Oracle: two synthetic loaders installed in place of the pool loaders; the
-    tracked caches of the pair.
+    Oracle: two synthetic loaders installed in place of the pool loaders, one
+    carrying a name at 0.74 A and the other the same name at 0.80 A.
     """
     import xcquinox.pipeline.full_benchmark_pools as fbp
-    from xcquinox.pipeline.gmtkn55_sets import w411_qualified_names
 
     def _spec(name, z):
         return fbp._dict_to_mol_spec(
@@ -401,19 +385,85 @@ def test_the_union_keeps_the_first_pool_s_species_and_reports_the_conflict(
             "def2-svp", 1, None)
 
     first = {"x": _spec("x", 0.74), "y": _spec("y", 0.74)}
-    second = {"x": _spec("x", 0.80), "y": _spec("y", 0.74), "z": _spec("z", 0.74)}
-    loaders = {"bh76": lambda **kw: (first, [{"name": "r1"}]),
-               "w411": lambda **kw: (second, [{"name": "r2"}])}
+    second = {"x": _spec("x", 0.80), "y": _spec("y", 0.74),
+              "z": _spec("z", 0.74)}
+    rxn_first = [{"name": "r1", "source_pool": "bh76", "reactants": ["x"],
+                  "products": ["y"], "coeffs": [-1.0, 1.0],
+                  "reaction_energy_ref": 1.0,
+                  "species_spins": {"x": 0, "y": 0},
+                  "species_charges": {"x": 0, "y": 0}}]
+    rxn_second = [{"name": "r2", "source_pool": "w411", "reactants": ["x"],
+                   "products": ["z"], "coeffs": [-1.0, 1.0],
+                   "reaction_energy_ref": 2.0,
+                   "species_spins": {"x": 0, "z": 0},
+                   "species_charges": {"x": 0, "z": 0}}]
+    loaders = {"bh76": lambda **kw: (first, rxn_first),
+               "w411": lambda **kw: (second, rxn_second)}
     monkeypatch.setattr(fbp, "_pool_loader", lambda name: loaders[name])
-    specs, reactions, conflicts = fbp.load_held_out_pools_with_conflicts(
-        ("bh76", "w411"))
-    assert specs["x"] is first["x"]
-    assert set(specs) == {"x", "y", "z"}
-    assert [r["name"] for r in reactions] == ["r1", "r2"]
-    assert conflicts == [{"name": "x", "kept": "bh76", "dropped": "w411"}]
 
-    monkeypatch.undo()
-    _, _, real = fbp.load_held_out_pools_with_conflicts(("bh76", "w411"))
-    assert {c["name"] for c in real} == set(w411_qualified_names())
-    assert real and all(c["kept"] == "bh76" and c["dropped"] == "w411"
-                        for c in real)
+    specs, reactions = fbp.load_held_out_pools(("bh76", "w411"))
+    assert set(specs) == {"bh76@x", "bh76@y", "w411@x", "w411@y", "w411@z"}
+    assert specs["bh76@x"].atom != specs["w411@x"].atom
+    assert specs["bh76@x"].atom == first["x"].atom
+    assert specs["bh76@x"].name == "bh76@x"
+    assert specs["w411@x"].name == "w411@x"
+    assert first["x"].name == "x", "the single-pool loader's own spec was renamed"
+    assert specs["w411@x"].atom == second["x"].atom
+    by_name = {r["name"]: r for r in reactions}
+    assert by_name["r1"]["reactants"] == ["bh76@x"]
+    assert by_name["r1"]["products"] == ["bh76@y"]
+    assert by_name["r2"]["reactants"] == ["w411@x"]
+    assert by_name["r2"]["products"] == ["w411@z"]
+    assert set(by_name["r1"]["species_spins"]) == {"bh76@x", "bh76@y"}
+    assert set(by_name["r2"]["species_charges"]) == {"w411@x", "w411@z"}
+    # the loaders hand back their cached dicts, so the qualification must not
+    # be written into them: a second load has to name the species the same way
+    again_specs, again_rxns = fbp.load_held_out_pools(("bh76", "w411"))
+    assert set(again_specs) == set(specs)
+    assert [r["reactants"] for r in again_rxns] == \
+        [r["reactants"] for r in reactions]
+    assert rxn_first[0]["reactants"] == ["x"], "the pool's own dict was rewritten"
+    # nothing reports a conflict, because no two sets share a key
+    assert not hasattr(fbp, "load_held_out_pools_with_conflicts")
+
+
+def test_the_tracked_pair_carries_both_geometries_of_every_shared_name(tmp_path):
+    """Over the tracked pair, a system name both sets carry resolves to two
+    species under two keys whose geometries differ, and the union holds every
+    species of both sets. The merge dropped one of each such pair, so those
+    W4-11 atomization energies were scored on BH76's molecules.
+
+    Oracle: ``xcquinox/pipeline/data/{bh76,w411}_full_pool.json`` as tracked.
+    """
+    import xcquinox.pipeline.full_benchmark_pools as fbp
+    bh76, _ = load_full_bh76(basis="def2-svp", grid_level=1)
+    w411, _ = load_full_w411(basis="def2-svp", grid_level=1)
+    union, reactions = fbp.load_held_out_pools(("bh76", "w411"),
+                                               basis="def2-svp", grid_level=1)
+    assert len(union) == len(bh76) + len(w411)
+    shared = sorted(set(bh76) & set(w411))
+    differing = sorted(n for n in shared if bh76[n].atom != w411[n].atom)
+    assert len(differing) == 14, differing
+    for name in differing:
+        assert union[f"bh76@{name}"].atom == bh76[name].atom
+        assert union[f"w411@{name}"].atom == w411[name].atom
+    named = {n for r in reactions
+             for n in list(r["reactants"]) + list(r["products"])}
+    assert named <= set(union)
+    assert all(n.startswith(("bh76@", "w411@")) for n in named)
+    assert all(union[key].name == key for key in union)
+    # the pair loader is the same union, so every reader joins on these keys
+    pair, pair_rxns = fbp.load_full_held_out_pools(basis="def2-svp",
+                                                   grid_level=1)
+    assert set(pair) == set(union)
+    assert len(pair_rxns) == len(reactions)
+    # the reference wiring follows the key: one file per set, so the two sets'
+    # species of one name resolve to two references
+    refs = tmp_path / "refs"
+    refs.mkdir(parents=True)
+    (refs / "bh76@n2o.npz").write_bytes(b"")
+    with_refs, _ = fbp.load_held_out_pools(("bh76", "w411"), basis="def2-svp",
+                                            grid_level=1, refs_dir=str(refs))
+    assert with_refs["bh76@n2o"].external_data_path == str(
+        refs / "bh76@n2o.npz")
+    assert with_refs["w411@n2o"].external_data_path is None

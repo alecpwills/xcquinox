@@ -1256,3 +1256,24 @@ def test_the_held_out_pool_names_are_stated_once():
     from xcquinox.pipeline.cluster import grid_config as gc
     from xcquinox.pipeline.full_benchmark_pools import POOL_NAMES
     assert tuple(gc._HELD_OUT_POOLS) == tuple(POOL_NAMES)
+
+
+def test_the_retired_strict_key_warns_and_changes_nothing(tmp_path):
+    """The held-out exclusion switch is retired, not refused: a configuration
+    that still states it loads, says the key has no effect, and exposes no such
+    field. Refusing it outright would break every tracked configuration the
+    harness itself wrote; leaving it readable would let a run still exclude
+    reactions from a held-out set.
+
+    Oracle: a configuration carrying the key, and the loaded config's fields.
+    """
+    import dataclasses
+    raw = _base_config_dict()
+    raw["held_out_strict"] = True
+    with pytest.warns(UserWarning, match="held_out_strict"):
+        cfg = load_grid_config(_write(tmp_path, "retired.yaml", raw))
+    _assert_well_formed(cfg)
+    assert not hasattr(cfg, "held_out_strict")
+    assert "held_out_strict" not in {f.name for f in dataclasses.fields(cfg)}
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+    assert "held_out_strict" not in _config_to_raw_dict(cfg)

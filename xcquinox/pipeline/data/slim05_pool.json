@@ -543,7 +543,7 @@
       "formula": "S"
     },
     {
-      "name": "hf",
+      "name": "bh76_hf",
       "atom": "F 0.0000000000 0.0000000000 0.4576911907; H 0.0000000000 0.0000000000 -0.4576911907",
       "atom_composition": [
         [
@@ -562,7 +562,7 @@
       "formula": "FH"
     },
     {
-      "name": "h",
+      "name": "bh76_h",
       "atom": "H 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -577,7 +577,7 @@
       "formula": "H"
     },
     {
-      "name": "hfhts",
+      "name": "bh76_hfhts",
       "atom": "H 0.0000000000 0.0000000000 1.1372177016; F 0.0000000000 0.0000000000 0.0000000000; H 0.0000000000 0.0000000000 -1.1372177016",
       "atom_composition": [
         [
@@ -596,7 +596,7 @@
       "formula": "FH2"
     },
     {
-      "name": "hn2",
+      "name": "bh76_hn2",
       "atom": "N -0.3122124377 0.9410566485 0.0000000000; N -0.3122124377 -0.2371447697 0.0000000000; H 0.6244248754 -0.7039118787 0.0000000000",
       "atom_composition": [
         [
@@ -615,7 +615,7 @@
       "formula": "HN2"
     },
     {
-      "name": "hn2ts",
+      "name": "bh76_hn2ts",
       "atom": "N 0.4228162958 -0.9690480062 0.0000000000; N 0.4228162958 0.1537633750 0.0000000000; H -0.8456325915 0.8152846312 0.0000000000",
       "atom_composition": [
         [
@@ -634,7 +634,7 @@
       "formula": "HN2"
     },
     {
-      "name": "hco",
+      "name": "bh76_hco",
       "atom": "H -0.6086105909 0.8210343180 0.0000000000; C 0.3043052954 0.1777982511 0.0000000000; O 0.3043052954 -0.9988325691 0.0000000000",
       "atom_composition": [
         [
@@ -657,7 +657,7 @@
       "formula": "CHO"
     },
     {
-      "name": "hcots",
+      "name": "bh76_hcots",
       "atom": "H -1.0863327265 0.9379789538 0.0000000000; C 0.5431663633 0.0984763511 0.0000000000; O 0.5431663633 -1.0364553049 0.0000000000",
       "atom_composition": [
         [
@@ -680,7 +680,7 @@
       "formula": "CHO"
     },
     {
-      "name": "hcn",
+      "name": "bh76_hcn",
       "atom": "C 0.0000000000 0.0000000000 -0.0290264284; N 0.0000000000 0.0000000000 1.1239782169; H 0.0000000000 0.0000000000 -1.0949517885",
       "atom_composition": [
         [
@@ -703,7 +703,7 @@
       "formula": "CHN"
     },
     {
-      "name": "hcnts",
+      "name": "bh76_hcnts",
       "atom": "C 0.3748216866 0.5178300640 0.0000000000; N 0.3748216866 -0.6705220315 0.0000000000; H -0.7496433733 0.1526919675 0.0000000000",
       "atom_composition": [
         [
@@ -726,7 +726,7 @@
       "formula": "CHN"
     },
     {
-      "name": "hnc",
+      "name": "bh76_hnc",
       "atom": "C 0.0000000000 0.0000000000 -1.1111818300; N 0.0000000000 0.0000000000 0.0581558699; H 0.0000000000 0.0000000000 1.0530259601",
       "atom_composition": [
         [
@@ -749,7 +749,7 @@
       "formula": "CHN"
     },
     {
-      "name": "H2O",
+      "name": "bh76_H2O",
       "atom": "O 0.0000000000 0.0000000000 0.3904848029; H -0.7567075363 0.0000000000 -0.1952424015; H 0.7567075363 0.0000000000 -0.1952424015",
       "atom_composition": [
         [
@@ -768,7 +768,7 @@
       "formula": "H2O"
     },
     {
-      "name": "RKT02",
+      "name": "bh76_RKT02",
       "atom": "O -0.8279255273 -0.2971337963 0.0000000000; H -0.9548052903 0.6624830350 0.0000000000; H 0.4886245071 -0.2894517368 0.0000000000; H 1.2941063105 -0.0758975019 0.0000000000",
       "atom_composition": [
         [
@@ -787,7 +787,7 @@
       "formula": "H3O"
     },
     {
-      "name": "RKT10",
+      "name": "bh76_RKT10",
       "atom": "H 0.1465677996 -0.2472645783 0.0000000000; F 0.0000000000 1.2115484021 0.0000000000; H -0.1465677996 -0.9642838238 0.0000000000",
       "atom_composition": [
         [
@@ -806,7 +806,7 @@
       "formula": "FH2"
     },
     {
-      "name": "oh",
+      "name": "bh76_oh",
       "atom": "O 0.0000000000 0.0000000000 0.4844482426; H 0.0000000000 0.0000000000 -0.4844482426",
       "atom_composition": [
         [
@@ -825,7 +825,7 @@
       "formula": "HO"
     },
     {
-      "name": "cl",
+      "name": "bh76_cl",
       "atom": "Cl 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -840,7 +840,7 @@
       "formula": "Cl"
     },
     {
-      "name": "RKT17",
+      "name": "bh76_RKT17",
       "atom": "Cl 0.1631027706 -1.2898888547 0.0000000000; H -0.3262055413 0.0968941112 0.0000000000; O 0.1631027706 1.1929947435 0.0000000000",
       "atom_composition": [
         [
@@ -863,7 +863,22 @@
       "formula": "ClHO"
     },
     {
-      "name": "ch3f",
+      "name": "bh76rc_h",
+      "atom": "H 0.0000000000 0.0000000000 0.0000000000",
+      "atom_composition": [
+        [
+          "H",
+          1
+        ]
+      ],
+      "charge": 0,
+      "spin": 1,
+      "subset": "BH76RC",
+      "system": "h",
+      "formula": "H"
+    },
+    {
+      "name": "bh76rc_ch3f",
       "atom": "C 0.0000000000 0.0000000000 0.0655663611; F 0.0000000000 0.0000000000 -1.3156284934; H 0.5149162960 -0.8918611863 0.4166873774; H 0.5149162960 0.8918611863 0.4166873774; H -1.0298325919 0.0000000000 0.4166873774",
       "atom_composition": [
         [
@@ -886,7 +901,26 @@
       "formula": "CH3F"
     },
     {
-      "name": "ch3",
+      "name": "bh76rc_hf",
+      "atom": "F 0.0000000000 0.0000000000 0.4576911907; H 0.0000000000 0.0000000000 -0.4576911907",
+      "atom_composition": [
+        [
+          "F",
+          1
+        ],
+        [
+          "H",
+          1
+        ]
+      ],
+      "charge": 0,
+      "spin": 0,
+      "subset": "BH76RC",
+      "system": "hf",
+      "formula": "FH"
+    },
+    {
+      "name": "bh76rc_ch3",
       "atom": "C 0.0000000000 0.0000000000 0.0000000000; H 0.5386580821 0.9329831661 0.0000000000; H 0.5386580821 -0.9329831661 0.0000000000; H -1.0773161642 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -905,7 +939,7 @@
       "formula": "CH3"
     },
     {
-      "name": "NH2",
+      "name": "bh76rc_NH2",
       "atom": "N 0.0000000000 0.0000000000 0.4242463090; H -0.8023120283 0.0000000000 -0.2121231545; H 0.8023120283 0.0000000000 -0.2121231545",
       "atom_composition": [
         [
@@ -924,7 +958,7 @@
       "formula": "H2N"
     },
     {
-      "name": "CH4",
+      "name": "bh76rc_CH4",
       "atom": "C 0.0000000000 0.0000000000 0.0000000000; H 0.6278370101 -0.6278370101 0.6278370101; H -0.6278370101 0.6278370101 0.6278370101; H -0.6278370101 -0.6278370101 -0.6278370101; H 0.6278370101 0.6278370101 -0.6278370101",
       "atom_composition": [
         [
@@ -943,7 +977,7 @@
       "formula": "CH4"
     },
     {
-      "name": "NH3",
+      "name": "bh76rc_NH3",
       "atom": "N 0.0000000000 0.0000000000 0.2822266074; H 0.4690122281 0.8123530084 -0.0940755358; H 0.4690122281 -0.8123530084 -0.0940755358; H -0.9380244561 0.0000000000 -0.0940755358",
       "atom_composition": [
         [
@@ -3379,7 +3413,7 @@
       "formula": "CH2OS"
     },
     {
-      "name": "w411_ch3f",
+      "name": "w4_11_ch3f",
       "atom": "F 0.6417845106 0.0000000000 -0.0000000138; C -0.7379643917 -0.0000000005 0.0000000794; H -1.1010314351 0.0077865336 -1.0268793021; H -1.1010313309 -0.8931966347 0.5066959728; H -1.1010313309 0.8854101069 0.5201826414",
       "atom_composition": [
         [
@@ -3402,7 +3436,7 @@
       "formula": "CH3F"
     },
     {
-      "name": "c",
+      "name": "w4_11_c",
       "atom": "C 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3417,7 +3451,7 @@
       "formula": "C"
     },
     {
-      "name": "f",
+      "name": "w4_11_f",
       "atom": "F 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3432,7 +3466,22 @@
       "formula": "F"
     },
     {
-      "name": "sif4",
+      "name": "w4_11_h",
+      "atom": "H 0.0000000000 0.0000000000 0.0000000000",
+      "atom_composition": [
+        [
+          "H",
+          1
+        ]
+      ],
+      "charge": 0,
+      "spin": 1,
+      "subset": "W4-11",
+      "system": "h",
+      "formula": "H"
+    },
+    {
+      "name": "w4_11_sif4",
       "atom": "F -0.4033470269 -0.0711077623 -1.5057217630; Si 0.0000000000 0.0000000000 0.0000000000; F 1.5216271498 -0.3133840297 0.1462341698; F -0.2914857475 1.4310776148 0.5495417047; F -0.8267943755 -1.0465858228 0.8099458885",
       "atom_composition": [
         [
@@ -3451,7 +3500,7 @@
       "formula": "F4Si"
     },
     {
-      "name": "si",
+      "name": "w4_11_si",
       "atom": "Si 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3466,7 +3515,7 @@
       "formula": "Si"
     },
     {
-      "name": "alcl3",
+      "name": "w4_11_alcl3",
       "atom": "Al -0.0000002656 0.0000000000 0.0000000000; Cl 2.0709705872 -0.0000078355 0.0000000000; Cl -1.0354919782 -1.7935089550 0.0000000000; Cl -1.0354784069 1.7935167905 0.0000000000",
       "atom_composition": [
         [
@@ -3485,7 +3534,7 @@
       "formula": "AlCl3"
     },
     {
-      "name": "al",
+      "name": "w4_11_al",
       "atom": "Al 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3500,7 +3549,22 @@
       "formula": "Al"
     },
     {
-      "name": "alcl",
+      "name": "w4_11_cl",
+      "atom": "Cl 0.0000000000 0.0000000000 0.0000000000",
+      "atom_composition": [
+        [
+          "Cl",
+          1
+        ]
+      ],
+      "charge": 0,
+      "spin": 1,
+      "subset": "W4-11",
+      "system": "cl",
+      "formula": "Cl"
+    },
+    {
+      "name": "w4_11_alcl",
       "atom": "Al -1.2157591606 0.0000000000 0.0000000000; Cl 0.9252546870 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3519,7 +3583,7 @@
       "formula": "AlCl"
     },
     {
-      "name": "formic",
+      "name": "w4_11_formic",
       "atom": "C 0.0991712569 0.4133008296 0.0000000000; H 0.0314174749 1.5049691111 0.0000000000; O 1.1209434449 -0.2150973274 0.0000000000; O -1.1333239484 -0.1218397158 0.0000000000; H -1.0166990930 -1.0816788398 0.0000000000",
       "atom_composition": [
         [
@@ -3542,7 +3606,7 @@
       "formula": "CH2O2"
     },
     {
-      "name": "o",
+      "name": "w4_11_o",
       "atom": "O 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3557,7 +3621,7 @@
       "formula": "O"
     },
     {
-      "name": "cf2",
+      "name": "w4_11_cf2",
       "atom": "C 0.0000000000 0.6010277321 0.0000000000; F -1.0279899271 -0.1899882117 0.0000000000; F 1.0279899271 -0.1899882117 0.0000000000",
       "atom_composition": [
         [
@@ -3576,7 +3640,7 @@
       "formula": "CF2"
     },
     {
-      "name": "hoo",
+      "name": "w4_11_hoo",
       "atom": "O 0.6932236227 0.0119479626 0.0000000000; O -0.6347632746 -0.0660570653 0.0000000000; H -0.9279992985 0.8589276482 -0.0000000005",
       "atom_composition": [
         [
@@ -3595,7 +3659,7 @@
       "formula": "HO2"
     },
     {
-      "name": "hnnn",
+      "name": "w4_11_hnnn",
       "atom": "H -1.5870770451 -0.8356282582 0.0000000005; N -1.1643993996 0.0892691236 0.0000000000; N 0.0735342700 -0.0385558320 0.0000000000; N 1.2050686866 0.0094171974 0.0000000000",
       "atom_composition": [
         [
@@ -3614,7 +3678,7 @@
       "formula": "HN3"
     },
     {
-      "name": "n",
+      "name": "w4_11_n",
       "atom": "N 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3629,7 +3693,7 @@
       "formula": "N"
     },
     {
-      "name": "ccl2",
+      "name": "w4_11_ccl2",
       "atom": "C 0.0000000000 0.8514038394 0.0000000000; Cl -1.4004069005 -0.1442220899 0.0000000000; Cl 1.4004069005 -0.1442220899 0.0000000000",
       "atom_composition": [
         [
@@ -3648,7 +3712,7 @@
       "formula": "CCl2"
     },
     {
-      "name": "cl2",
+      "name": "w4_11_cl2",
       "atom": "Cl 0.9982879294 0.0000000000 0.0000000000; Cl -0.9982879294 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3663,7 +3727,7 @@
       "formula": "Cl2"
     },
     {
-      "name": "w411_clf",
+      "name": "w4_11_clf",
       "atom": "Cl 0.5693521908 0.0000000000 0.0000000000; F -1.0624706934 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3682,7 +3746,7 @@
       "formula": "ClF"
     },
     {
-      "name": "oclo",
+      "name": "w4_11_oclo",
       "atom": "Cl 0.0000000000 0.3625511724 0.0000000000; O -1.2590819109 -0.4016877732 0.0000000000; O 1.2590819103 -0.4016877732 0.0000000000",
       "atom_composition": [
         [
@@ -3701,7 +3765,7 @@
       "formula": "ClO2"
     },
     {
-      "name": "b2",
+      "name": "w4_11_b2",
       "atom": "B 0.7937769439 0.0000000000 0.0000000000; B -0.7937769439 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -3716,7 +3780,7 @@
       "formula": "B2"
     },
     {
-      "name": "b",
+      "name": "w4_11_b",
       "atom": "B 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -4189,11 +4253,11 @@
       "name": "bh76_004",
       "source_pool": "slim05",
       "reactants": [
-        "hf",
-        "h"
+        "bh76_hf",
+        "bh76_h"
       ],
       "products": [
-        "hfhts"
+        "bh76_hfhts"
       ],
       "coeffs": [
         -1.0,
@@ -4203,14 +4267,14 @@
       "reaction_energy_ref": 42.1,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "hf": 0,
-        "h": 1,
-        "hfhts": 1
+        "bh76_hf": 0,
+        "bh76_h": 1,
+        "bh76_hfhts": 1
       },
       "species_charges": {
-        "hf": 0,
-        "h": 0,
-        "hfhts": 0
+        "bh76_hf": 0,
+        "bh76_h": 0,
+        "bh76_hfhts": 0
       },
       "subset": "BH76",
       "index": 4,
@@ -4224,10 +4288,10 @@
       "name": "bh76_030",
       "source_pool": "slim05",
       "reactants": [
-        "hn2"
+        "bh76_hn2"
       ],
       "products": [
-        "hn2ts"
+        "bh76_hn2ts"
       ],
       "coeffs": [
         -1.0,
@@ -4236,12 +4300,12 @@
       "reaction_energy_ref": 10.9,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "hn2": 1,
-        "hn2ts": 1
+        "bh76_hn2": 1,
+        "bh76_hn2ts": 1
       },
       "species_charges": {
-        "hn2": 0,
-        "hn2ts": 0
+        "bh76_hn2": 0,
+        "bh76_hn2ts": 0
       },
       "subset": "BH76",
       "index": 30,
@@ -4254,10 +4318,10 @@
       "name": "bh76_032",
       "source_pool": "slim05",
       "reactants": [
-        "hco"
+        "bh76_hco"
       ],
       "products": [
-        "hcots"
+        "bh76_hcots"
       ],
       "coeffs": [
         -1.0,
@@ -4266,12 +4330,12 @@
       "reaction_energy_ref": 22.8,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "hco": 1,
-        "hcots": 1
+        "bh76_hco": 1,
+        "bh76_hcots": 1
       },
       "species_charges": {
-        "hco": 0,
-        "hcots": 0
+        "bh76_hco": 0,
+        "bh76_hcots": 0
       },
       "subset": "BH76",
       "index": 32,
@@ -4284,10 +4348,10 @@
       "name": "bh76_037",
       "source_pool": "slim05",
       "reactants": [
-        "hcn"
+        "bh76_hcn"
       ],
       "products": [
-        "hcnts"
+        "bh76_hcnts"
       ],
       "coeffs": [
         -1.0,
@@ -4296,12 +4360,12 @@
       "reaction_energy_ref": 48.1,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "hcn": 0,
-        "hcnts": 0
+        "bh76_hcn": 0,
+        "bh76_hcnts": 0
       },
       "species_charges": {
-        "hcn": 0,
-        "hcnts": 0
+        "bh76_hcn": 0,
+        "bh76_hcnts": 0
       },
       "subset": "BH76",
       "index": 37,
@@ -4314,10 +4378,10 @@
       "name": "bh76_038",
       "source_pool": "slim05",
       "reactants": [
-        "hnc"
+        "bh76_hnc"
       ],
       "products": [
-        "hcnts"
+        "bh76_hcnts"
       ],
       "coeffs": [
         -1.0,
@@ -4326,12 +4390,12 @@
       "reaction_energy_ref": 33.0,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "hnc": 0,
-        "hcnts": 0
+        "bh76_hnc": 0,
+        "bh76_hcnts": 0
       },
       "species_charges": {
-        "hnc": 0,
-        "hcnts": 0
+        "bh76_hnc": 0,
+        "bh76_hcnts": 0
       },
       "subset": "BH76",
       "index": 38,
@@ -4344,11 +4408,11 @@
       "name": "bh76_042",
       "source_pool": "slim05",
       "reactants": [
-        "H2O",
-        "h"
+        "bh76_H2O",
+        "bh76_h"
       ],
       "products": [
-        "RKT02"
+        "bh76_RKT02"
       ],
       "coeffs": [
         -1.0,
@@ -4358,14 +4422,14 @@
       "reaction_energy_ref": 21.6,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "H2O": 0,
-        "h": 1,
-        "RKT02": 1
+        "bh76_H2O": 0,
+        "bh76_h": 1,
+        "bh76_RKT02": 1
       },
       "species_charges": {
-        "H2O": 0,
-        "h": 0,
-        "RKT02": 0
+        "bh76_H2O": 0,
+        "bh76_h": 0,
+        "bh76_RKT02": 0
       },
       "subset": "BH76",
       "index": 42,
@@ -4379,11 +4443,11 @@
       "name": "bh76_056",
       "source_pool": "slim05",
       "reactants": [
-        "hf",
-        "h"
+        "bh76_hf",
+        "bh76_h"
       ],
       "products": [
-        "RKT10"
+        "bh76_RKT10"
       ],
       "coeffs": [
         -1.0,
@@ -4393,14 +4457,14 @@
       "reaction_energy_ref": 33.8,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "hf": 0,
-        "h": 1,
-        "RKT10": 1
+        "bh76_hf": 0,
+        "bh76_h": 1,
+        "bh76_RKT10": 1
       },
       "species_charges": {
-        "hf": 0,
-        "h": 0,
-        "RKT10": 0
+        "bh76_hf": 0,
+        "bh76_h": 0,
+        "bh76_RKT10": 0
       },
       "subset": "BH76",
       "index": 56,
@@ -4414,11 +4478,11 @@
       "name": "bh76_066",
       "source_pool": "slim05",
       "reactants": [
-        "oh",
-        "cl"
+        "bh76_oh",
+        "bh76_cl"
       ],
       "products": [
-        "RKT17"
+        "bh76_RKT17"
       ],
       "coeffs": [
         -1.0,
@@ -4428,14 +4492,14 @@
       "reaction_energy_ref": 9.9,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "oh": 1,
-        "cl": 1,
-        "RKT17": 2
+        "bh76_oh": 1,
+        "bh76_cl": 1,
+        "bh76_RKT17": 2
       },
       "species_charges": {
-        "oh": 0,
-        "cl": 0,
-        "RKT17": 0
+        "bh76_oh": 0,
+        "bh76_cl": 0,
+        "bh76_RKT17": 0
       },
       "subset": "BH76",
       "index": 66,
@@ -4449,12 +4513,12 @@
       "name": "bh76rc_002",
       "source_pool": "slim05",
       "reactants": [
-        "h",
-        "ch3f"
+        "bh76rc_h",
+        "bh76rc_ch3f"
       ],
       "products": [
-        "hf",
-        "ch3"
+        "bh76rc_hf",
+        "bh76rc_ch3"
       ],
       "coeffs": [
         -1.0,
@@ -4465,16 +4529,16 @@
       "reaction_energy_ref": -26.32,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "h": 1,
-        "ch3f": 0,
-        "hf": 0,
-        "ch3": 1
+        "bh76rc_h": 1,
+        "bh76rc_ch3f": 0,
+        "bh76rc_hf": 0,
+        "bh76rc_ch3": 1
       },
       "species_charges": {
-        "h": 0,
-        "ch3f": 0,
-        "hf": 0,
-        "ch3": 0
+        "bh76rc_h": 0,
+        "bh76rc_ch3f": 0,
+        "bh76rc_hf": 0,
+        "bh76rc_ch3": 0
       },
       "subset": "BH76RC",
       "index": 2,
@@ -4489,12 +4553,12 @@
       "name": "bh76rc_030",
       "source_pool": "slim05",
       "reactants": [
-        "NH2",
-        "CH4"
+        "bh76rc_NH2",
+        "bh76rc_CH4"
       ],
       "products": [
-        "NH3",
-        "ch3"
+        "bh76rc_NH3",
+        "bh76rc_ch3"
       ],
       "coeffs": [
         -1.0,
@@ -4505,16 +4569,16 @@
       "reaction_energy_ref": -2.96,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "NH2": 1,
-        "CH4": 0,
-        "NH3": 0,
-        "ch3": 1
+        "bh76rc_NH2": 1,
+        "bh76rc_CH4": 0,
+        "bh76rc_NH3": 0,
+        "bh76rc_ch3": 1
       },
       "species_charges": {
-        "NH2": 0,
-        "CH4": 0,
-        "NH3": 0,
-        "ch3": 0
+        "bh76rc_NH2": 0,
+        "bh76rc_CH4": 0,
+        "bh76rc_NH3": 0,
+        "bh76rc_ch3": 0
       },
       "subset": "BH76RC",
       "index": 30,
@@ -6603,12 +6667,12 @@
       "name": "w4_11_023",
       "source_pool": "slim05",
       "reactants": [
-        "w411_ch3f"
+        "w4_11_ch3f"
       ],
       "products": [
-        "c",
-        "f",
-        "h"
+        "w4_11_c",
+        "w4_11_f",
+        "w4_11_h"
       ],
       "coeffs": [
         -1.0,
@@ -6619,16 +6683,16 @@
       "reaction_energy_ref": 422.959,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "w411_ch3f": 0,
-        "c": 2,
-        "f": 1,
-        "h": 1
+        "w4_11_ch3f": 0,
+        "w4_11_c": 2,
+        "w4_11_f": 1,
+        "w4_11_h": 1
       },
       "species_charges": {
-        "w411_ch3f": 0,
-        "c": 0,
-        "f": 0,
-        "h": 0
+        "w4_11_ch3f": 0,
+        "w4_11_c": 0,
+        "w4_11_f": 0,
+        "w4_11_h": 0
       },
       "subset": "W4-11",
       "index": 23,
@@ -6643,11 +6707,11 @@
       "name": "w4_11_042",
       "source_pool": "slim05",
       "reactants": [
-        "sif4"
+        "w4_11_sif4"
       ],
       "products": [
-        "si",
-        "f"
+        "w4_11_si",
+        "w4_11_f"
       ],
       "coeffs": [
         -1.0,
@@ -6657,14 +6721,14 @@
       "reaction_energy_ref": 577.78,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "sif4": 0,
-        "si": 2,
-        "f": 1
+        "w4_11_sif4": 0,
+        "w4_11_si": 2,
+        "w4_11_f": 1
       },
       "species_charges": {
-        "sif4": 0,
-        "si": 0,
-        "f": 0
+        "w4_11_sif4": 0,
+        "w4_11_si": 0,
+        "w4_11_f": 0
       },
       "subset": "W4-11",
       "index": 42,
@@ -6678,11 +6742,11 @@
       "name": "w4_11_060",
       "source_pool": "slim05",
       "reactants": [
-        "alcl3"
+        "w4_11_alcl3"
       ],
       "products": [
-        "al",
-        "cl"
+        "w4_11_al",
+        "w4_11_cl"
       ],
       "coeffs": [
         -1.0,
@@ -6692,14 +6756,14 @@
       "reaction_energy_ref": 312.651,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "alcl3": 0,
-        "al": 1,
-        "cl": 1
+        "w4_11_alcl3": 0,
+        "w4_11_al": 1,
+        "w4_11_cl": 1
       },
       "species_charges": {
-        "alcl3": 0,
-        "al": 0,
-        "cl": 0
+        "w4_11_alcl3": 0,
+        "w4_11_al": 0,
+        "w4_11_cl": 0
       },
       "subset": "W4-11",
       "index": 60,
@@ -6713,11 +6777,11 @@
       "name": "w4_11_062",
       "source_pool": "slim05",
       "reactants": [
-        "alcl"
+        "w4_11_alcl"
       ],
       "products": [
-        "al",
-        "cl"
+        "w4_11_al",
+        "w4_11_cl"
       ],
       "coeffs": [
         -1.0,
@@ -6727,14 +6791,14 @@
       "reaction_energy_ref": 122.618,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "alcl": 0,
-        "al": 1,
-        "cl": 1
+        "w4_11_alcl": 0,
+        "w4_11_al": 1,
+        "w4_11_cl": 1
       },
       "species_charges": {
-        "alcl": 0,
-        "al": 0,
-        "cl": 0
+        "w4_11_alcl": 0,
+        "w4_11_al": 0,
+        "w4_11_cl": 0
       },
       "subset": "W4-11",
       "index": 62,
@@ -6748,12 +6812,12 @@
       "name": "w4_11_065",
       "source_pool": "slim05",
       "reactants": [
-        "formic"
+        "w4_11_formic"
       ],
       "products": [
-        "c",
-        "o",
-        "h"
+        "w4_11_c",
+        "w4_11_o",
+        "w4_11_h"
       ],
       "coeffs": [
         -1.0,
@@ -6764,16 +6828,16 @@
       "reaction_energy_ref": 501.899,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "formic": 0,
-        "c": 2,
-        "o": 2,
-        "h": 1
+        "w4_11_formic": 0,
+        "w4_11_c": 2,
+        "w4_11_o": 2,
+        "w4_11_h": 1
       },
       "species_charges": {
-        "formic": 0,
-        "c": 0,
-        "o": 0,
-        "h": 0
+        "w4_11_formic": 0,
+        "w4_11_c": 0,
+        "w4_11_o": 0,
+        "w4_11_h": 0
       },
       "subset": "W4-11",
       "index": 65,
@@ -6788,11 +6852,11 @@
       "name": "w4_11_084",
       "source_pool": "slim05",
       "reactants": [
-        "cf2"
+        "w4_11_cf2"
       ],
       "products": [
-        "c",
-        "f"
+        "w4_11_c",
+        "w4_11_f"
       ],
       "coeffs": [
         -1.0,
@@ -6802,14 +6866,14 @@
       "reaction_energy_ref": 258.782,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "cf2": 0,
-        "c": 2,
-        "f": 1
+        "w4_11_cf2": 0,
+        "w4_11_c": 2,
+        "w4_11_f": 1
       },
       "species_charges": {
-        "cf2": 0,
-        "c": 0,
-        "f": 0
+        "w4_11_cf2": 0,
+        "w4_11_c": 0,
+        "w4_11_f": 0
       },
       "subset": "W4-11",
       "index": 84,
@@ -6823,11 +6887,11 @@
       "name": "w4_11_097",
       "source_pool": "slim05",
       "reactants": [
-        "hoo"
+        "w4_11_hoo"
       ],
       "products": [
-        "h",
-        "o"
+        "w4_11_h",
+        "w4_11_o"
       ],
       "coeffs": [
         -1.0,
@@ -6837,14 +6901,14 @@
       "reaction_energy_ref": 175.533,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "hoo": 1,
-        "h": 1,
-        "o": 2
+        "w4_11_hoo": 1,
+        "w4_11_h": 1,
+        "w4_11_o": 2
       },
       "species_charges": {
-        "hoo": 0,
-        "h": 0,
-        "o": 0
+        "w4_11_hoo": 0,
+        "w4_11_h": 0,
+        "w4_11_o": 0
       },
       "subset": "W4-11",
       "index": 97,
@@ -6858,11 +6922,11 @@
       "name": "w4_11_105",
       "source_pool": "slim05",
       "reactants": [
-        "hnnn"
+        "w4_11_hnnn"
       ],
       "products": [
-        "h",
-        "n"
+        "w4_11_h",
+        "w4_11_n"
       ],
       "coeffs": [
         -1.0,
@@ -6872,14 +6936,14 @@
       "reaction_energy_ref": 331.785,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "hnnn": 0,
-        "h": 1,
-        "n": 3
+        "w4_11_hnnn": 0,
+        "w4_11_h": 1,
+        "w4_11_n": 3
       },
       "species_charges": {
-        "hnnn": 0,
-        "h": 0,
-        "n": 0
+        "w4_11_hnnn": 0,
+        "w4_11_h": 0,
+        "w4_11_n": 0
       },
       "subset": "W4-11",
       "index": 105,
@@ -6893,11 +6957,11 @@
       "name": "w4_11_109",
       "source_pool": "slim05",
       "reactants": [
-        "ccl2"
+        "w4_11_ccl2"
       ],
       "products": [
-        "c",
-        "cl"
+        "w4_11_c",
+        "w4_11_cl"
       ],
       "coeffs": [
         -1.0,
@@ -6907,14 +6971,14 @@
       "reaction_energy_ref": 177.357,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "ccl2": 0,
-        "c": 2,
-        "cl": 1
+        "w4_11_ccl2": 0,
+        "w4_11_c": 2,
+        "w4_11_cl": 1
       },
       "species_charges": {
-        "ccl2": 0,
-        "c": 0,
-        "cl": 0
+        "w4_11_ccl2": 0,
+        "w4_11_c": 0,
+        "w4_11_cl": 0
       },
       "subset": "W4-11",
       "index": 109,
@@ -6928,10 +6992,10 @@
       "name": "w4_11_118",
       "source_pool": "slim05",
       "reactants": [
-        "cl2"
+        "w4_11_cl2"
       ],
       "products": [
-        "cl"
+        "w4_11_cl"
       ],
       "coeffs": [
         -1.0,
@@ -6940,12 +7004,12 @@
       "reaction_energy_ref": 59.75,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "cl2": 0,
-        "cl": 1
+        "w4_11_cl2": 0,
+        "w4_11_cl": 1
       },
       "species_charges": {
-        "cl2": 0,
-        "cl": 0
+        "w4_11_cl2": 0,
+        "w4_11_cl": 0
       },
       "subset": "W4-11",
       "index": 118,
@@ -6958,11 +7022,11 @@
       "name": "w4_11_124",
       "source_pool": "slim05",
       "reactants": [
-        "w411_clf"
+        "w4_11_clf"
       ],
       "products": [
-        "cl",
-        "f"
+        "w4_11_cl",
+        "w4_11_f"
       ],
       "coeffs": [
         -1.0,
@@ -6972,14 +7036,14 @@
       "reaction_energy_ref": 62.8,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "w411_clf": 0,
-        "cl": 1,
-        "f": 1
+        "w4_11_clf": 0,
+        "w4_11_cl": 1,
+        "w4_11_f": 1
       },
       "species_charges": {
-        "w411_clf": 0,
-        "cl": 0,
-        "f": 0
+        "w4_11_clf": 0,
+        "w4_11_cl": 0,
+        "w4_11_f": 0
       },
       "subset": "W4-11",
       "index": 124,
@@ -6993,11 +7057,11 @@
       "name": "w4_11_132",
       "source_pool": "slim05",
       "reactants": [
-        "oclo"
+        "w4_11_oclo"
       ],
       "products": [
-        "o",
-        "cl"
+        "w4_11_o",
+        "w4_11_cl"
       ],
       "coeffs": [
         -1.0,
@@ -7007,14 +7071,14 @@
       "reaction_energy_ref": 128.12,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "oclo": 1,
-        "o": 2,
-        "cl": 1
+        "w4_11_oclo": 1,
+        "w4_11_o": 2,
+        "w4_11_cl": 1
       },
       "species_charges": {
-        "oclo": 0,
-        "o": 0,
-        "cl": 0
+        "w4_11_oclo": 0,
+        "w4_11_o": 0,
+        "w4_11_cl": 0
       },
       "subset": "W4-11",
       "index": 132,
@@ -7028,10 +7092,10 @@
       "name": "w4_11_134",
       "source_pool": "slim05",
       "reactants": [
-        "b2"
+        "w4_11_b2"
       ],
       "products": [
-        "b"
+        "w4_11_b"
       ],
       "coeffs": [
         -1.0,
@@ -7040,12 +7104,12 @@
       "reaction_energy_ref": 67.459,
       "source": "GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP 19 32184 (2017)); the Slim05 composition of Gould and Vuckovic (J. Chem. Theory Comput. 21, 6517 (2025)) as listed by data/slim/Slim100M_05_composition.txt; the reaction lines of the checkout, data/gmtkn55/PROVENANCE.md",
       "species_spins": {
-        "b2": 2,
-        "b": 1
+        "w4_11_b2": 2,
+        "w4_11_b": 1
       },
       "species_charges": {
-        "b2": 0,
-        "b": 0
+        "w4_11_b2": 0,
+        "w4_11_b": 0
       },
       "subset": "W4-11",
       "index": 134,
@@ -7286,126 +7350,126 @@
       "subset": "BH76",
       "index": 4,
       "system": "hf",
-      "name": "hf",
+      "name": "bh76_hf",
       "formula": "FH"
     },
     {
       "subset": "BH76",
       "index": 4,
       "system": "h",
-      "name": "h",
+      "name": "bh76_h",
       "formula": "H"
     },
     {
       "subset": "BH76",
       "index": 4,
       "system": "hfhts",
-      "name": "hfhts",
+      "name": "bh76_hfhts",
       "formula": "FH2"
     },
     {
       "subset": "BH76",
       "index": 30,
       "system": "hn2",
-      "name": "hn2",
+      "name": "bh76_hn2",
       "formula": "HN2"
     },
     {
       "subset": "BH76",
       "index": 32,
       "system": "hco",
-      "name": "hco",
+      "name": "bh76_hco",
       "formula": "CHO"
     },
     {
       "subset": "BH76",
       "index": 37,
       "system": "hcn",
-      "name": "hcn",
+      "name": "bh76_hcn",
       "formula": "CHN"
     },
     {
       "subset": "BH76",
       "index": 42,
       "system": "H2O",
-      "name": "H2O",
+      "name": "bh76_H2O",
       "formula": "H2O"
     },
     {
       "subset": "BH76",
       "index": 42,
       "system": "RKT02",
-      "name": "RKT02",
+      "name": "bh76_RKT02",
       "formula": "H3O"
     },
     {
       "subset": "BH76",
       "index": 66,
       "system": "oh",
-      "name": "oh",
+      "name": "bh76_oh",
       "formula": "HO"
     },
     {
       "subset": "BH76",
       "index": 66,
       "system": "cl",
-      "name": "cl",
+      "name": "bh76_cl",
       "formula": "Cl"
     },
     {
       "subset": "BH76",
       "index": 66,
       "system": "RKT17",
-      "name": "RKT17",
+      "name": "bh76_RKT17",
       "formula": "ClHO"
     },
     {
       "subset": "BH76RC",
       "index": 2,
       "system": "h",
-      "name": "h",
+      "name": "bh76rc_h",
       "formula": "H"
     },
     {
       "subset": "BH76RC",
       "index": 2,
       "system": "ch3f",
-      "name": "ch3f",
+      "name": "bh76rc_ch3f",
       "formula": "CH3F"
     },
     {
       "subset": "BH76RC",
       "index": 2,
       "system": "hf",
-      "name": "hf",
+      "name": "bh76rc_hf",
       "formula": "FH"
     },
     {
       "subset": "BH76RC",
       "index": 2,
       "system": "ch3",
-      "name": "ch3",
+      "name": "bh76rc_ch3",
       "formula": "CH3"
     },
     {
       "subset": "BH76RC",
       "index": 30,
       "system": "NH2",
-      "name": "NH2",
+      "name": "bh76rc_NH2",
       "formula": "H2N"
     },
     {
       "subset": "BH76RC",
       "index": 30,
       "system": "CH4",
-      "name": "CH4",
+      "name": "bh76rc_CH4",
       "formula": "CH4"
     },
     {
       "subset": "BH76RC",
       "index": 30,
       "system": "NH3",
-      "name": "NH3",
+      "name": "bh76rc_NH3",
       "formula": "H3N"
     },
     {
@@ -8126,154 +8190,154 @@
       "subset": "W4-11",
       "index": 23,
       "system": "ch3f",
-      "name": "w411_ch3f",
+      "name": "w4_11_ch3f",
       "formula": "CH3F"
     },
     {
       "subset": "W4-11",
       "index": 23,
       "system": "c",
-      "name": "c",
+      "name": "w4_11_c",
       "formula": "C"
     },
     {
       "subset": "W4-11",
       "index": 23,
       "system": "f",
-      "name": "f",
+      "name": "w4_11_f",
       "formula": "F"
     },
     {
       "subset": "W4-11",
       "index": 23,
       "system": "h",
-      "name": "h",
+      "name": "w4_11_h",
       "formula": "H"
     },
     {
       "subset": "W4-11",
       "index": 42,
       "system": "sif4",
-      "name": "sif4",
+      "name": "w4_11_sif4",
       "formula": "F4Si"
     },
     {
       "subset": "W4-11",
       "index": 42,
       "system": "si",
-      "name": "si",
+      "name": "w4_11_si",
       "formula": "Si"
     },
     {
       "subset": "W4-11",
       "index": 60,
       "system": "alcl3",
-      "name": "alcl3",
+      "name": "w4_11_alcl3",
       "formula": "AlCl3"
     },
     {
       "subset": "W4-11",
       "index": 60,
       "system": "al",
-      "name": "al",
+      "name": "w4_11_al",
       "formula": "Al"
     },
     {
       "subset": "W4-11",
       "index": 60,
       "system": "cl",
-      "name": "cl",
+      "name": "w4_11_cl",
       "formula": "Cl"
     },
     {
       "subset": "W4-11",
       "index": 62,
       "system": "alcl",
-      "name": "alcl",
+      "name": "w4_11_alcl",
       "formula": "AlCl"
     },
     {
       "subset": "W4-11",
       "index": 65,
       "system": "formic",
-      "name": "formic",
+      "name": "w4_11_formic",
       "formula": "CH2O2"
     },
     {
       "subset": "W4-11",
       "index": 65,
       "system": "o",
-      "name": "o",
+      "name": "w4_11_o",
       "formula": "O"
     },
     {
       "subset": "W4-11",
       "index": 84,
       "system": "cf2",
-      "name": "cf2",
+      "name": "w4_11_cf2",
       "formula": "CF2"
     },
     {
       "subset": "W4-11",
       "index": 97,
       "system": "hoo",
-      "name": "hoo",
+      "name": "w4_11_hoo",
       "formula": "HO2"
     },
     {
       "subset": "W4-11",
       "index": 105,
       "system": "hnnn",
-      "name": "hnnn",
+      "name": "w4_11_hnnn",
       "formula": "HN3"
     },
     {
       "subset": "W4-11",
       "index": 105,
       "system": "n",
-      "name": "n",
+      "name": "w4_11_n",
       "formula": "N"
     },
     {
       "subset": "W4-11",
       "index": 109,
       "system": "ccl2",
-      "name": "ccl2",
+      "name": "w4_11_ccl2",
       "formula": "CCl2"
     },
     {
       "subset": "W4-11",
       "index": 118,
       "system": "cl2",
-      "name": "cl2",
+      "name": "w4_11_cl2",
       "formula": "Cl2"
     },
     {
       "subset": "W4-11",
       "index": 124,
       "system": "clf",
-      "name": "w411_clf",
+      "name": "w4_11_clf",
       "formula": "ClF"
     },
     {
       "subset": "W4-11",
       "index": 132,
       "system": "oclo",
-      "name": "oclo",
+      "name": "w4_11_oclo",
       "formula": "ClO2"
     },
     {
       "subset": "W4-11",
       "index": 134,
       "system": "b2",
-      "name": "b2",
+      "name": "w4_11_b2",
       "formula": "B2"
     },
     {
       "subset": "W4-11",
       "index": 134,
       "system": "b",
-      "name": "b",
+      "name": "w4_11_b",
       "formula": "B"
     },
     {
@@ -8437,7 +8501,7 @@
     },
     {
       "kind": "molecule",
-      "name": "h",
+      "name": "bh76_h",
       "atom": "H 0.0000000000 0.0000000000 0.0000000000",
       "atom_composition": [
         [
@@ -8455,7 +8519,7 @@
     },
     {
       "kind": "molecule",
-      "name": "H2O",
+      "name": "bh76_H2O",
       "atom": "O 0.0000000000 0.0000000000 0.3904848029; H -0.7567075363 0.0000000000 -0.1952424015; H 0.7567075363 0.0000000000 -0.1952424015",
       "atom_composition": [
         [
@@ -8477,7 +8541,7 @@
     },
     {
       "kind": "molecule",
-      "name": "RKT02",
+      "name": "bh76_RKT02",
       "atom": "O -0.8279255273 -0.2971337963 0.0000000000; H -0.9548052903 0.6624830350 0.0000000000; H 0.4886245071 -0.2894517368 0.0000000000; H 1.2941063105 -0.0758975019 0.0000000000",
       "atom_composition": [
         [
@@ -8499,7 +8563,7 @@
     },
     {
       "kind": "molecule",
-      "name": "oh",
+      "name": "bh76_oh",
       "atom": "O 0.0000000000 0.0000000000 0.4844482426; H 0.0000000000 0.0000000000 -0.4844482426",
       "atom_composition": [
         [
@@ -8769,7 +8833,7 @@
     },
     {
       "kind": "molecule",
-      "name": "w411_ch3f",
+      "name": "w4_11_ch3f",
       "atom": "F 0.6417845106 0.0000000000 -0.0000000138; C -0.7379643917 -0.0000000005 0.0000000794; H -1.1010314351 0.0077865336 -1.0268793021; H -1.1010313309 -0.8931966347 0.5066959728; H -1.1010313309 0.8854101069 0.5201826414",
       "atom_composition": [
         [
@@ -8795,7 +8859,7 @@
     },
     {
       "kind": "molecule",
-      "name": "hnnn",
+      "name": "w4_11_hnnn",
       "atom": "H -1.5870770451 -0.8356282582 0.0000000005; N -1.1643993996 0.0892691236 0.0000000000; N 0.0735342700 -0.0385558320 0.0000000000; N 1.2050686866 0.0094171974 0.0000000000",
       "atom_composition": [
         [
@@ -8817,7 +8881,7 @@
     },
     {
       "kind": "molecule",
-      "name": "oclo",
+      "name": "w4_11_oclo",
       "atom": "Cl 0.0000000000 0.3625511724 0.0000000000; O -1.2590819109 -0.4016877732 0.0000000000; O 1.2590819103 -0.4016877732 0.0000000000",
       "atom_composition": [
         [

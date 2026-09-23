@@ -87,8 +87,8 @@ def main() -> int:
         _dump_atomic(SLIM_JSON_PATHS[name], pool)
         print(f"  wrote {SLIM_JSON_PATHS[name]}", flush=True)
 
-    print("Rebuilding the diet150 cache from the element list and the "
-          "checkout ...", flush=True)
+    print("Rebuilding the diet150 cache from its element list and its "
+          "subset list ...", flush=True)
     diet = build_diet150_pool_dict()
     print(f"  parsed {len(diet['reactions'])} reactions over "
           f"{len(diet['species'])} species", flush=True)

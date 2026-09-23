@@ -280,8 +280,7 @@ def test_run_held_out_eval_stamps_the_channel_override(run_dir, monkeypatch):
     ``coldstart`` boolean stays, derived from the channel name."""
     spec = _full_mode_spec()
     ckpt_dir = _write_model(run_dir, 0)
-    cfg = SimpleNamespace(cluster=SimpleNamespace(eval_workers=1),
-                          held_out_strict=False)
+    cfg = SimpleNamespace(cluster=SimpleNamespace(eval_workers=1))
     _holdout_seams(monkeypatch)
     model_path = os.path.join(ckpt_dir, "model.eqx")
 
@@ -351,9 +350,9 @@ def _worker_seams(monkeypatch, spec, captured):
         return {"energies": {}, "pbe_energies": {}, "mol_records": []}
     monkeypatch.setattr(eh_mod, "compute_holdout_per_molecule", _fake_compute)
     monkeypatch.setattr(
-        fbp, "load_full_held_out_pools",
-        lambda basis=None, grid_level=None:
-            ({"h2": SimpleNamespace(name="h2")}, []))
+        fbp, "load_held_out_pools",
+        lambda names, basis=None, grid_level=None:
+            ({"bh76@h2": SimpleNamespace(name="bh76@h2")}, []))
 
 
 import dataclasses as _dc
@@ -377,7 +376,8 @@ def test_compute_shard_converged_applies_the_shared_override(monkeypatch):
     warm trajectory and writes it into the converged channel."""
     captured = {}
     _worker_seams(monkeypatch, _worker_spec(), captured)
-    ehw.compute_shard("/run", 0, ["h2"], "def2-svp", 1, channel="converged")
+    ehw.compute_shard("/run", 0, ["bh76@h2"], "def2-svp", 1,
+                      channel="converged")
     sc = captured["sc"]
     assert sc.backend == SolverBackend.PYSCFAD
     assert sc.mode == SolverMode.FULL

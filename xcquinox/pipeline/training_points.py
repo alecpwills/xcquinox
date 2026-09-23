@@ -191,9 +191,9 @@ def _ts_atoms(name: str) -> Atoms:
     training and held-out evaluation share ONE TS identity (geometry, spin,
     charge). The basis/grid arguments below only fill MoleculeSpec fields
     that are discarded at the Atoms level."""
-    from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
+    from xcquinox.pipeline.full_benchmark_pools import load_full_bh76
 
-    specs, _ = load_full_held_out_pools(basis="def2-svp", grid_level=1)
+    specs, _ = load_full_bh76(basis="def2-svp", grid_level=1)
     if name not in specs:
         raise ValueError(
             f"transition state {name!r} is not a species of "
@@ -533,7 +533,10 @@ def build_bh76w411_pool_points() -> list[TrainingPoint]:
 
     A thin wrapper over the generalizable :func:`build_reaction_pool_points`:
     pulls the reactions + geometries from ``full_benchmark_pools`` and resolves
-    species via :func:`_molspec_to_atoms`. Reaction names match the
+    species via :func:`_molspec_to_atoms`. Each set contributes its own
+    species under its own key, so the fourteen system names the two sets share
+    at different geometries are fourteen pairs of species and a W4-11
+    atomization is built on W4-11's molecule. Reaction names match the
     representative-subset ledger's ``point_names``."""
     from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
 

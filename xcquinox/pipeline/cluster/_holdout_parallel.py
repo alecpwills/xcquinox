@@ -59,7 +59,7 @@ def _round_robin(names, k):
 
 def run_holdout_with_escalation(
     run_dir, spec_idx, training_spec, model, reactions, full_specs, out_dir, *,
-    basis, grid_level, n_workers_top, total_cpus, strict=None,
+    basis, grid_level, n_workers_top, total_cpus,
     model_name="model.eqx", channel=None, pools=("bh76", "w411"),
 ):
     """Run the held-out eval in parallel with adaptive degradation.
@@ -80,9 +80,6 @@ def run_holdout_with_escalation(
     name. Returns the same summary dict as ``run_full_holdout_eval``.
     """
     from xcquinox.pipeline import eval_holdout
-
-    if strict is None:
-        strict = os.environ.get("XCQUINOX_HELDOUT_STRICT") == "1"
 
     out_dir = Path(out_dir)
     shard_dir = out_dir / "_shards"
@@ -184,9 +181,6 @@ def run_holdout_with_escalation(
     # left the parallel path's overlap annotations blind to those twins.
     training_names = eval_holdout.held_out_filter_names_with_aliases(
         training_spec, full_specs)
-    excl, key_map = eval_holdout.trained_reaction_exclusion(
-        training_spec, full_specs)
     return eval_holdout._finalize_holdout_outputs(
         reactions, energies, pbe_energies, mol_records, training_names,
-        n_species=len(full_specs), out_dir=out_dir, strict=strict,
-        excluded_identities=excl, species_key_map=key_map)
+        n_species=len(full_specs), out_dir=out_dir)

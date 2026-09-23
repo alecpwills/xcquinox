@@ -577,7 +577,6 @@ on_precompute_failure: abort
 bh76_mode: barrier_height
 ae_as_reactions: true
 use_polarized_correlation: true
-held_out_strict: true
 
 inline_eval: true
 eval_coldstart: true

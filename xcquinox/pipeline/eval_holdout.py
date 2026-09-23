@@ -136,29 +136,13 @@ def load_training_spec(spec_path: Path):
         return load_pickle(f)
 
 
-def held_out_pool_names(
-    training_molecule_names: Sequence[str],
-    pool_specs: Dict[str, Any],
-) -> List[str]:
-    """``pool_specs.keys() - training_molecule_names``, sorted lex.
-
-    Pure. The lex sort makes the script's per-molecule output order
-    deterministic across runs (so the per_molecule.json diffs cleanly in
-    a long-running comparison loop).
-    """
-    training = set(training_molecule_names)
-    return sorted(name for name in pool_specs if name not in training)
-
-
 def reaction_overlap(
     reaction: Dict[str, Any], training_names: set,
 ) -> Tuple[bool, List[str]]:
     """``(any_overlap, [names that are in_sample])`` for one reaction.
 
-    Used by the reaction filter to decide whether a reaction is strictly
-    held-out (no overlap), or carries an in-sample side (overlap is the
-    list of species names present in both the reaction and the training
-    set).
+    Used by the overlap annotation to record which species of a reaction
+    the training set also carries; no reaction is removed for it.
 
     CASE-INSENSITIVE: BH76 and W4-11 name the SAME molecule with different case
     (``CH4`` vs ``ch4``, ``NH3`` vs ``nh3``, ``H2S`` vs ``h2s``). An exact-name
@@ -174,35 +158,27 @@ def reaction_overlap(
     return (len(in_sample) > 0, in_sample)
 
 
-def filter_reactions(
+def annotate_overlap(
     reactions: Sequence[Dict[str, Any]],
     training_names: Sequence[str],
-    *,
-    strict: bool = False,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Partition ``reactions`` into ``(kept, dropped)``.
+) -> List[Dict[str, Any]]:
+    """Every reaction, each gaining an ``"in_sample_overlap"`` key listing the
+    species it shares with the training set (an empty list when it shares
+    none).
 
-    Loose mode (default, ``strict=False``): every reaction is kept and
-    each gains an ``"in_sample_overlap"`` key listing the overlapping
-    species (empty list when held-out). Strict mode (``strict=True``): a
-    reaction with ANY species in ``training_names`` is dropped. ``training_names``
-    MUST be MOLECULE-level -- build it via :func:`training_molecule_names`, which
-    excludes single ATOMS. Otherwise shared reference atoms (h, c, n, o, ...)
-    count as overlap and drop nearly the ENTIRE atomization held-out set: every
-    W4-11/BH76 atomization shares atoms with any non-empty training set, so
-    strict atom-disjointness is unachievable (this was a real bug -- training on
-    6 reactions dropped ~135/140 W4-11 reactions purely on shared atoms).
+    Nothing is ever removed from a held-out set: a reaction that touches a
+    trained molecule is still a held-out reaction, and which reactions to read
+    together is a question for the analysis of the results, not for the
+    evaluation. ``training_names`` is MOLECULE-level (see
+    :func:`training_molecule_names`); single atoms are universal reference
+    anchors and would mark every atomization.
     """
     training = set(training_names)
-    kept: List[Dict[str, Any]] = []
-    dropped: List[Dict[str, Any]] = []
+    out: List[Dict[str, Any]] = []
     for rxn in reactions:
-        has_overlap, overlap = reaction_overlap(rxn, training)
-        if has_overlap and strict:
-            dropped.append({**rxn, "in_sample_overlap": overlap})
-        else:
-            kept.append({**rxn, "in_sample_overlap": overlap})
-    return kept, dropped
+        _has_overlap, overlap = reaction_overlap(rxn, training)
+        out.append({**rxn, "in_sample_overlap": overlap})
+    return out
 
 
 def reaction_identity_key(rxn: Dict[str, Any]) -> str:
@@ -271,75 +247,17 @@ def training_molecule_names(training_spec) -> Tuple[str, ...]:
 
     Held-out overlap must be MOLECULE-level: atoms (h, c, n, o, f, ...) are
     universal reference anchors present in every atomization reaction, so
-    including them in ``training_names`` makes :func:`filter_reactions` drop
-    nearly the entire W4-11/BH76 held-out set (every atomization shares atoms
-    with any non-empty training set; strict atom-disjointness is unachievable).
-    Pass this as the ``training_names`` for the held-out OVERLAP filter; use the
-    FULL molecule list only for the per-molecule ``in_training_subset`` flag.
+    including them in ``training_names`` marks nearly every W4-11 and BH76
+    reaction, since every atomization shares atoms with any non-empty
+    training set. Pass this as the ``training_names`` of the overlap
+    annotation; use the FULL molecule list only for the per-molecule
+    ``in_training_subset`` flag.
     """
     return tuple(
         getattr(m, "name", None)
         for m in getattr(training_spec, "molecules", ()) or ()
         if getattr(m, "name", None) is not None and not _spec_is_atom(m)
     )
-
-
-def trained_reaction_exclusion(training_spec, pool_specs
-                               ) -> Tuple[set, Dict[str, Tuple[str, ...]]]:
-    """``(identity set, species key map)`` of the spec's VERBATIM supervised
-    reactions -- the reaction-form training points recorded in
-    ``loss_kwargs["bh76_reactions"]`` (the AE-as-reactions and the trained
-    barrier reactions; IP13 pairs are not reactions in the held-out pools).
-
-    Held-out exclusion is by verbatim supervised reaction, not by species
-    membership: a test reaction merely CONTAINING a trained molecule is a
-    genuine generalization target, while the trained reaction itself (e.g.
-    the ``w411_*_atomization`` twin of a trained AE molecule, under the
-    pool's naming) was a training target and must leave the reported set.
-    Identities are canonical (composition/charge/spin with geometric isomer
-    classes), so cross-vocabulary and permuted-name twins coincide. The key
-    map covers pool AND trained names so callers can key pool reactions with
-    the same vocabulary. ``(set(), {})`` when the spec records no reaction
-    points."""
-    from xcquinox.pipeline.species_matching import (canonical_species_keys,
-                                                reaction_identity_keys)
-    lk: Dict[str, Any] = {}
-    # TrainingSpec exposes ``loss_kwargs_dict`` as a PROPERTY (attribute
-    # access yields the dict directly); test stubs may model it as a method;
-    # raw ``loss_kwargs`` may be a dict or the spec's tuple-of-pairs form.
-    got = getattr(training_spec, "loss_kwargs_dict", None)
-    if isinstance(got, dict):
-        lk = got
-    elif callable(got):
-        lk = got() or {}
-    else:
-        raw = getattr(training_spec, "loss_kwargs", None)
-        if isinstance(raw, dict):
-            lk = raw
-        elif raw:
-            try:
-                lk = dict(raw)
-            except (TypeError, ValueError):
-                lk = {}
-    entries = []
-    trained_names: set = set()
-    for r in (lk.get("bh76_reactions") or []):
-        get = (r.get if isinstance(r, dict)
-               else lambda k, d=None, s=r: getattr(s, k, d))
-        e = {"reactants": [str(x) for x in (get("reactants") or [])],
-             "products": [str(x) for x in (get("products") or [])],
-             "coeffs": list(get("coeffs") or [])}
-        if not e["reactants"] or not e["products"]:
-            continue
-        entries.append(e)
-        trained_names.update(e["reactants"] + e["products"])
-    if not entries:
-        return set(), {}
-    key_map = canonical_species_keys(pool_specs, sorted(trained_names))
-    identities: set = set()
-    for e in entries:
-        identities.update(reaction_identity_keys(e, key_map))
-    return identities, key_map
 
 
 def held_out_filter_names_with_aliases(training_spec,
@@ -350,9 +268,9 @@ def held_out_filter_names_with_aliases(training_spec,
     The training vocabulary carries ASE Hill formulas (``CHN``, ``H3N``,
     ``HO``) while the pools name the same molecules in GMTKN55 style
     (``hcn``, ``nh3``, ``oh``); the name-based (even case-folded) overlap
-    test cannot connect them, so without this expansion the strict filter
-    keeps trained molecules' reactions in the "held-out" set. Identity is
-    matched on (element composition, charge, spin) via
+    test cannot connect them, so without this expansion a trained molecule's
+    reactions would be annotated as touching nothing. Identity is matched on
+    (element composition, charge, spin) via
     ``species_matching.trained_pool_aliases``."""
     from xcquinox.pipeline.species_matching import trained_pool_aliases
     names = training_molecule_names(training_spec)
@@ -573,6 +491,12 @@ def make_per_molecule_record(
     modification. Adds a ``from_training_subset`` flag for downstream
     splitting.
 
+    ``name`` is the evaluation key of the species, which carries the held-out
+    set it belongs to (``<pool>@<system>``); the record states the two parts
+    separately as ``pool`` and ``system``, so a molecule two sets carry is two
+    rows a reader can tell apart. A key without a set is recorded as its own
+    system with no pool.
+
     ``AE_error_kcalmol`` is left None (it only makes sense within a reaction
     context, which the per-reaction CSV captures). The density fields
     (``density_rmse``/``density_l1`` NN-vs-CCSD, ``density_rmse_pbe``/
@@ -604,8 +528,12 @@ def make_per_molecule_record(
     """
     e_pbe = mol_data.get("E_pbe")
     e_pbe_f = float(e_pbe) if e_pbe is not None else None
+    from xcquinox.pipeline.full_benchmark_pools import SET_SEPARATOR
+    pool, _sep, system = str(name).partition(SET_SEPARATOR)
     record: Dict[str, Any] = {
         "molecule": name,
+        "pool": pool if _sep else None,
+        "system": system if _sep else str(name),
         "E_total_nn": e_nn_ha if math.isfinite(e_nn_ha) else None,
         "E_pbe": e_pbe_f,
         "AE_nn": ((e_nn_ha - e_pbe_f)
@@ -676,15 +604,15 @@ def make_per_reaction_records(
     reaction_energy_ref_kcalmol, de_nn_kcalmol, de_pbe_kcalmol,
     error_nn_kcalmol, error_pbe_kcalmol, abs_error_nn_kcalmol,
     abs_error_pbe_kcalmol, in_sample_overlap``, plus ``weight`` for a
-    reaction that carries a subset weight, so the weighted row of its pool
-    can be recomputed from the records. Stable order = the input reactions
-    list.
+    reaction that carries a subset weight and ``in_validation_slice`` for one
+    the in-loop validation consumed, so every row of the pool's table can be
+    recomputed from the records. Stable order = the input reactions list.
     """
     training = set(training_names)
     records: List[Dict[str, Any]] = []
     for rxn, nn, pbe in zip(reactions, nn_errors, pbe_errors):
         # Case-insensitive, via the shared overlap helper, so the per-reaction
-        # in_sample_overlap flag matches the strict-drop filter exactly.
+        # in_sample_overlap flag matches the per-molecule flag exactly.
         _, overlap = reaction_overlap(rxn, training)
         record = {
             "name": rxn.get("name"),
@@ -703,6 +631,8 @@ def make_per_reaction_records(
         }
         if "weight" in rxn:
             record["weight"] = float(rxn["weight"])
+        if "in_validation_slice" in rxn:
+            record["in_validation_slice"] = bool(rxn["in_validation_slice"])
         records.append(record)
     return records
 
@@ -1041,29 +971,29 @@ def write_test_set_csv(
     out_path: Path,
     per_pool_mae: Dict[str, Tuple[float, float, int, int, int]],
     combined_mae: Tuple[float, float, int, int, int],
-    strict: bool,
     combined_pools: Optional[Sequence[str]] = None,
 ) -> Path:
     """Write the per-spec MAE summary CSV (one row per pool + one combined).
 
-    ``per_pool_mae`` maps pool token (``"bh76"``, ``"w411"``, and
-    ``"<pool>_wtmad2"`` for a weighted row) to
+    ``per_pool_mae`` maps pool token (``"bh76"``, ``"w411"``, with
+    ``"<pool>_wtmad2"`` for a weighted row and ``"<pool>_with_validation"``
+    for the row over the whole set) to
     ``(mae_nn_kcalmol, mae_pbe_kcalmol, n_used, n_dropped_overlap,
     n_dropped_nan)``; ``combined_pools`` names the pools the combined row
     averages over (every pool when not given). ``n_used`` and ``n_dropped_nan`` are in reaction
     IDENTITY units (permuted-name and duplicate-name twins collapse;
     ``reaction_mae_kcalmol`` / ``_n_nan_union``), so one row's counts share
-    one unit; ``n_dropped_overlap`` counts the strict-mode dropped ROWS. The PBE MAE comes from re-evaluating the same
+    one unit; ``n_dropped_overlap`` is always zero, since nothing is ever
+    excluded from a held-out set, and stays in the schema the readers pin. The PBE MAE comes from re-evaluating the same
     reactions against ``mol_data["E_pbe"]`` instead of the NN, costs
     nothing extra since the PBE energies are by-products of the precompute
     step, and gives the operator a direct apples-to-apples NN-vs-PBE
     comparison on the SAME pool the NN was scored on.
 
     The ``n_dropped_nan`` column reports reactions silently dropped because
-    their species energies were missing or non-finite. It is distinct from
-    ``n_dropped_overlap`` (training-set
-    overlap drops in strict mode). A row with ``n_dropped_nan > 0``
-    indicates the MAE was computed on a SMALLER reaction set than expected.
+    their species energies were missing or non-finite; a row with
+    ``n_dropped_nan > 0`` indicates the MAE was computed on a SMALLER
+    reaction set than expected.
 
     Writes to ``out_path`` (caller controls the full path so cluster uses
     ``<ckpt>/eval_holdout/test_set.csv`` and the local CLI uses
@@ -1079,16 +1009,12 @@ def write_test_set_csv(
         for pool_name, vals in per_pool_mae.items():
             mae_nn, mae_pbe, n_used, n_dropped, n_nan = vals
             note_parts = []
-            if strict and n_dropped:
-                note_parts.append(
-                    f"strict (held-out only); {n_dropped} verbatim-"
-                    "supervised reactions dropped")
-            elif strict:
-                note_parts.append("strict (held-out only)")
+            if pool_name.endswith("_with_validation"):
+                note_parts.append("every reaction of the set, the ones the "
+                                  "in-loop validation consumed included")
             else:
-                note_parts.append("loose (verbatim-supervised reactions "
-                                  "kept; species overlap flagged in "
-                                  "per_molecule.json)")
+                note_parts.append("nothing excluded; training overlap is "
+                                  "flagged per reaction and per molecule")
             if n_nan:
                 note_parts.append(
                     f"{n_nan} reactions silently dropped (missing/NaN "
@@ -1115,8 +1041,7 @@ def write_test_set_csv(
                    else float("nan"))
         combined_note_parts = ["combined across pools"
                                 + (f" {', '.join(combined_pools)}"
-                                   if combined_pools else "")
-                                + (" (strict)" if strict else " (loose)")]
+                                   if combined_pools else "")]
         if n_nan_c:
             combined_note_parts.append(
                 f"{n_nan_c} reactions silently dropped (missing/NaN species)")
@@ -1281,7 +1206,6 @@ def run_full_holdout_eval(
     reactions: Sequence[Dict[str, Any]],
     out_dir: Path,
     *,
-    strict: Optional[bool] = None,
     mol_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """End-to-end held-out eval driver, what the cluster eval task calls.
@@ -1294,9 +1218,8 @@ def run_full_holdout_eval(
       2. Precompute PBE on every species in ``mol_specs``.
       3. NN forward (one-shot or SCF, matching the training solver) on
          every species.
-      4. Filter reactions per ``strict`` (env var
-         ``XCQUINOX_HELDOUT_STRICT=1`` overrides the kwarg; default is
-         loose).
+      4. Annotate every reaction with the training species it touches;
+         nothing is excluded.
       5. Compute per-pool MAE + per-reaction NN/PBE error records.
       6. Write three artifacts under ``out_dir``:
 
@@ -1313,16 +1236,12 @@ def run_full_holdout_eval(
     Returns a small summary dict (counts + output paths) for the caller's
     log line.
     """
-    if strict is None:
-        strict = os.environ.get("XCQUINOX_HELDOUT_STRICT") == "1"
     per = compute_holdout_per_molecule(
         training_spec, model, mol_specs, mol_data=mol_data)
     require_precomputed_species(per["mol_records"], mol_specs)
-    excl, key_map = trained_reaction_exclusion(training_spec, mol_specs)
     return _finalize_holdout_outputs(
         reactions, per["energies"], per["pbe_energies"], per["mol_records"],
-        per["training_names"], per["n_species"], out_dir, strict=strict,
-        excluded_identities=excl, species_key_map=key_map)
+        per["training_names"], per["n_species"], out_dir)
 
 
 def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any],
@@ -1376,10 +1295,10 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
                     if md.get("E_pbe") is not None
                     and math.isfinite(float(md.get("E_pbe")))}
 
-    # Case-insensitive, to match the case-insensitive reaction overlap: CH4
-    # (BH76) and ch4 (W4-11) are the SAME molecule, so the descriptive
-    # in_training_subset flag must agree with the strict-drop filter --
-    # including the composition-level aliases (Hill vs pool naming).
+    # Case-insensitive, to match the case-insensitive reaction overlap, and
+    # expanded with the composition-level aliases (Hill vs pool naming), so
+    # the descriptive in_training_subset flag agrees with the per-reaction
+    # overlap annotation.
     from xcquinox.pipeline.species_matching import trained_pool_aliases
     flag_names = set(training_names) | trained_pool_aliases(
         training_names, mol_specs, verbose=False)
@@ -1491,10 +1410,7 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
                               mol_records: List[Dict[str, Any]],
                               training_names: Sequence[str],
                               n_species: int,
-                              out_dir: Path, *, strict: bool,
-                              excluded_identities: Optional[set] = None,
-                              species_key_map: Optional[
-                                  Dict[str, Tuple[str, ...]]] = None
+                              out_dir: Path,
                               ) -> Dict[str, Any]:
     """Reaction aggregation + artifact writing, the fast serial tail of the
     held-out eval, shared by the serial driver and the sharded/parallel driver.
@@ -1503,20 +1419,14 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
     after every shard has finished. Writes ``test_set.csv``, ``per_molecule.json``
     and ``per_reaction.json`` under ``out_dir`` and returns the summary dict.
 
-    ``strict`` drops the VERBATIM supervised reactions: rows whose canonical
-    identity (``species_key_map``) intersects ``excluded_identities`` (built
-    by :func:`trained_reaction_exclusion`; the recorded validation slice was
-    already removed upstream). Species-level overlap no longer drops anything
-    -- a reaction merely containing a trained molecule is a generalization
-    target -- but is still ANNOTATED per row (``in_sample_overlap``, via the
-    loose :func:`filter_reactions` mode) and per molecule
-    (``in_training_subset``)."""
-    from xcquinox.pipeline.species_matching import reaction_identity_keys
-    if strict and not excluded_identities and training_names:
-        print("[holdout] WARNING: strict mode with an EMPTY verbatim-"
-              "exclusion set while the spec records trained molecules -- "
-              "the training record may predate reaction-form points; no "
-              "supervised reaction will be dropped", flush=True)
+    NOTHING is excluded: every reaction of every set is scored and written.
+    Overlap with the training set is ANNOTATED per row
+    (``in_sample_overlap``, :func:`annotate_overlap`) and per molecule
+    (``in_training_subset``), and the reactions the in-loop validation
+    consumed carry ``in_validation_slice``. The per-pool row averages the
+    reactions outside that slice, so the reported number carries no
+    early-stop selection, and a ``<pool>_with_validation`` row beside it
+    averages the whole set."""
     # Partition reactions by source_pool so we can write per-pool rows.
     by_pool: Dict[str, List[Dict[str, Any]]] = {}
     for r in reactions:
@@ -1527,52 +1437,40 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
     n_dropped_total = 0
     n_nan_total = 0
     for pool, pool_rxns in by_pool.items():
-        # loose mode: every reaction kept, species overlap annotated
-        kept, _ = filter_reactions(pool_rxns, training_names, strict=False)
-        dropped: List[Dict[str, Any]] = []
-        if strict and excluded_identities:
-            kept2: List[Dict[str, Any]] = []
-            for rxn in kept:
-                ids = reaction_identity_keys(rxn, species_key_map or {})
-                if ids and set(ids) & excluded_identities:
-                    dropped.append(rxn)
-                else:
-                    kept2.append(rxn)
-            kept = kept2
-        n_dropped_pool = len(dropped)
-        mae_nn, n_used, n_nan_nn = reaction_mae_kcalmol(energies, kept)
-        mae_pbe, _, n_nan_pbe = reaction_mae_kcalmol(pbe_energies, kept)
+        kept = annotate_overlap(pool_rxns, training_names)
+        reported = [r for r in kept if not r.get("in_validation_slice")] or kept
+        mae_nn, n_used, _n_nan_nn = reaction_mae_kcalmol(energies, reported)
+        mae_pbe, _, _n_nan_pbe = reaction_mae_kcalmol(pbe_energies, reported)
         # Union: NN and PBE can drop DIFFERENT reactions, so max() undercounts.
-        n_nan = _n_nan_union(energies, pbe_energies, kept)
-        per_pool_mae[pool] = (mae_nn, mae_pbe, n_used, n_dropped_pool, n_nan)
+        n_nan = _n_nan_union(energies, pbe_energies, reported)
+        per_pool_mae[pool] = (mae_nn, mae_pbe, n_used, 0, n_nan)
         # A pool whose reactions carry subset weights (the diet set) also
-        # reports its weighted mean, the WTMAD-2 of the set.
-        if kept and all("weight" in r for r in kept):
-            w_nn, w_used, _w_nan = weighted_reaction_mae_kcalmol(energies, kept)
-            w_pbe, _, _ = weighted_reaction_mae_kcalmol(pbe_energies, kept)
-            per_pool_mae[f"{pool}_wtmad2"] = (w_nn, w_pbe, w_used,
-                                              n_dropped_pool, n_nan)
+        # reports its weighted mean, the WTMAD-2 estimate of the set.
+        if reported and all("weight" in r for r in reported):
+            w_nn, w_used, _w_nan = weighted_reaction_mae_kcalmol(energies,
+                                                                 reported)
+            w_pbe, _, _ = weighted_reaction_mae_kcalmol(pbe_energies, reported)
+            per_pool_mae[f"{pool}_wtmad2"] = (w_nn, w_pbe, w_used, 0, n_nan)
+        # The whole set beside it when the in-loop validation took part of it.
+        if len(reported) != len(kept):
+            a_nn, a_used, _ = reaction_mae_kcalmol(energies, kept)
+            a_pbe, _, _ = reaction_mae_kcalmol(pbe_energies, kept)
+            per_pool_mae[f"{pool}_with_validation"] = (
+                a_nn, a_pbe, a_used, 0,
+                _n_nan_union(energies, pbe_energies, kept))
         all_kept.extend(kept)
-        n_dropped_total += n_dropped_pool
         n_nan_total += n_nan
-    if strict and excluded_identities and n_dropped_total == 0:
-        print(f"[holdout] WARNING: strict mode's verbatim-exclusion set "
-              f"({len(excluded_identities)} identities) resolves to ZERO "
-              f"reactions in this pool -- a stale or foreign training "
-              f"identity record leaves every supervised twin in the score",
-              flush=True)
-    combined_kept = [r for r in all_kept
-                     if r.get("source_pool") in COMBINED_POOLS] or all_kept
+    combined_all = [r for r in all_kept
+                    if r.get("source_pool") in COMBINED_POOLS] or all_kept
     combined_pools = tuple(sorted({str(r.get("source_pool", "unknown"))
-                                   for r in combined_kept}))
-    combined_dropped = sum(per_pool_mae[p][3] for p in combined_pools
-                           if p in per_pool_mae)
-    combined_mae_nn, combined_n_used, combined_n_nan_nn = reaction_mae_kcalmol(
+                                   for r in combined_all}))
+    combined_kept = [r for r in combined_all
+                     if not r.get("in_validation_slice")] or combined_all
+    combined_mae_nn, combined_n_used, _c_nan_nn = reaction_mae_kcalmol(
         energies, combined_kept)
-    combined_mae_pbe, _, combined_n_nan_pbe = reaction_mae_kcalmol(
+    combined_mae_pbe, _, _c_nan_pbe = reaction_mae_kcalmol(
         pbe_energies, combined_kept)
-    combined = (combined_mae_nn, combined_mae_pbe, combined_n_used,
-                combined_dropped,
+    combined = (combined_mae_nn, combined_mae_pbe, combined_n_used, 0,
                 _n_nan_union(energies, pbe_energies, combined_kept))
 
     nn_per_rxn = per_reaction_errors(energies, all_kept)
@@ -1582,7 +1480,7 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
 
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = write_test_set_csv(
-        out_dir / DEFAULT_CSV_NAME, per_pool_mae, combined, strict,
+        out_dir / DEFAULT_CSV_NAME, per_pool_mae, combined,
         combined_pools=combined_pools)
     mol_json_path = write_per_molecule_json(
         out_dir / DEFAULT_PER_MOLECULE_NAME, mol_records)
@@ -1590,8 +1488,8 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
         out_dir / DEFAULT_PER_REACTION_NAME, rxn_records)
     print(f"[holdout] wrote {csv_path.name}, "
           f"{mol_json_path.name}, {rxn_json_path.name} "
-          f"({len(all_kept)} reactions, {n_nan_total} NaN-drops, "
-          f"{n_dropped_total} verbatim-supervised drops)", flush=True)
+          f"({len(all_kept)} reactions, nothing excluded, "
+          f"{n_nan_total} NaN-drops)", flush=True)
 
     return {
         "n_reactions": len(all_kept),

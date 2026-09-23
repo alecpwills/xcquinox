@@ -346,6 +346,12 @@ longer fires on a fresh pull.
 
 ## 17. Cluster-side strict-holdout repair deployment + re-eval (found 2026-08-13)
 
+**SUPERSEDED.** The exclusion this item deployed no longer exists: nothing is
+removed from a held-out set for any reason, and the training overlap is
+annotated per reaction and per molecule instead. The entry stands as the record
+of the repair; its script is now `hpcjobs/refinalize_holdout.sbatch`, which
+rewrites the tables from stored energies and excludes nothing.
+
 **RESOLVED 2026-08-15.** Deployment (user rsync 2026-08-13) + refinalize job
 2120119 (COMPLETED 0:0, 21 + 57 channels rewritten with one-time backups,
 verified on the artifacts) + the closing parity probe on the repulled v4gga
@@ -388,9 +394,9 @@ completed BEFORE the deployment carry species-strict artifacts. MARKED SET
 (parity probe, 2026-08-13): v4gga spec_0000..0017 and v4mgga spec_0000..0006
 (all 50 pulled spec-channels report stale-rule, 0 value mismatches) plus the
 cluster-only v4gga spec_0018 (completed between the last pull and the
-deployment). Remedy: `sbatch hpcjobs/refinalize_verbatim_holdout.sbatch`
+deployment). Remedy: `sbatch hpcjobs/refinalize_holdout.sbatch`
 (no SCF; rewrites per_reaction.json/test_set.csv from the existing
-per-species energies with one-time *.pre_verbatim.* backups; idempotent, so
+per-species energies with one-time *.pre_refinalize.* backups; idempotent, so
 running it over whole run dirs is safe and its report is the ground-truth
 stale list). Safe alongside the running arrays (touches only completed
 specs' dirs) or at drain. Afterwards: re-pull and run

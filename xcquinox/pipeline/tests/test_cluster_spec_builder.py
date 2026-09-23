@@ -620,3 +620,38 @@ def test_the_spec_builder_records_the_non_sc_points_and_threads_the_switch(
                                  str(tmp_path / "run_plain"))
     assert all(spec.nonsc_points == () for _cell, spec in plain)
     assert all(spec.nonsc_species == () for _cell, spec in plain)
+
+
+def test_the_validation_attachment_refuses_a_species_its_pools_do_not_carry(
+        tmp_path, monkeypatch):
+    """A staged validation reaction naming a species the run's held-out pools
+    do not carry is refused. Dropping it, as the attachment once did, would
+    validate on fewer reactions than the staged record states and leave no
+    sign of it; and the pools it looks in are the run's own, not the pair.
+
+    Oracle: a two-species stub pool against a validation record naming a third.
+    """
+    import json
+    from types import SimpleNamespace
+    import xcquinox.pipeline.cluster.spec_builder as sb
+
+    run_dir = tmp_path / "run"
+    (run_dir / "validation").mkdir(parents=True)
+    (run_dir / "validation" / "val_reactions.json").write_text(json.dumps([
+        {"name": "r", "reactants": ["bh76@x"], "products": ["diet150@y"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 1.0}]))
+    seen = {}
+
+    def _fake_pools(names=("bh76", "w411"), basis="def2-svp", grid_level=1,
+                    refs_dir=None):
+        seen["names"] = tuple(names)
+        return {"bh76@x": object()}, []
+
+    monkeypatch.setattr(sb, "_load_full_held_out_pools", _fake_pools)
+    cfg = SimpleNamespace(inputs=SimpleNamespace(
+        val_refs_dir=str(tmp_path / "refs"), basis="def2-svp", grid_level=1,
+        held_out_pools=("bh76", "diet150")))
+    spec = SimpleNamespace(validate_every=10)
+    with pytest.raises(ValueError, match="diet150@y"):
+        sb._attach_validation_slice(spec, cfg, str(run_dir))
+    assert seen["names"] == ("bh76", "diet150")

@@ -113,7 +113,7 @@ CHUNKS: tuple[Chunk, ...] = (
         "test_pretrain_mesh.py", "test_pretrain.py", "test_pretrain_schema.py",
         "test_pretrain_set.py", "test_pretrain_systems.py", "test_pretrain_weighted.py",
         "test_procmem.py", "test_pyscfad_gradflow.py", "test_pyscf_determinism.py",
-        "test_refinalize_verbatim.py", "test_required_keys_df.py", "test_rung35.py",
+        "test_refinalize_holdout.py", "test_required_keys_df.py", "test_rung35.py",
         "test_rungs.py", "test_scf_backends.py", "test_scf_diff.py", "test_scf_tail.py",
         "test_seed_cache.py", "test_self_attention.py", "test_shape_padding.py",
         "test_smoke_preflight_uks_oep.py"), peak=24315),

@@ -122,9 +122,9 @@ from xcquinox.pipeline.holdout_channels import (CHANNEL_MODEL,
 # Anchors and identities (measured on run_20260827T163330Z, 2026-08-31)
 # ---------------------------------------------------------------------------
 
-SPECIES = "c2"
+SPECIES = "w411@c2"
 REACTION_NAME = "w411_c2_atomization"
-C_ATOM = "c"
+C_ATOM = "w411@c"
 
 #: Stable-branch E_pbe(c2): bit-identical across the 72 clean channels of
 #: the pulled run (18 specs x 4 channels).
@@ -668,6 +668,10 @@ def recompute_test_set_csv(old_text: str, pr_rows_patched) -> str:
             pool = set_name[len("test_set_"):-len("_wtmad2")]
             subset = [r for r in pr_rows_patched if r.get("pool") == pool]
             weighted = True
+        elif set_name.startswith("test_set_") \
+                and set_name.endswith("_with_validation"):
+            pool = set_name[len("test_set_"):-len("_with_validation")]
+            subset = [r for r in pr_rows_patched if r.get("pool") == pool]
         elif set_name.startswith("test_set_"):
             pool = set_name[len("test_set_"):]
             subset = [r for r in pr_rows_patched if r.get("pool") == pool]
@@ -675,7 +679,8 @@ def recompute_test_set_csv(old_text: str, pr_rows_patched) -> str:
             raise PatchRefused(
                 f"unrecognized test_set.csv row {set_name!r}; the "
                 "recomputation only reproduces test_set_<pool>, "
-                "test_set_<pool>_wtmad2 and test_set_held_out_combined rows.")
+                "test_set_<pool>_wtmad2, test_set_<pool>_with_validation and "
+                "test_set_held_out_combined rows.")
         mae_nn, mae_pbe, n_used, n_nan = _pool_stats(subset, weighted=weighted)
         delta = (mae_nn - mae_pbe
                  if math.isfinite(mae_nn) and math.isfinite(mae_pbe)

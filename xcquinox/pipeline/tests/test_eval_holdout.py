@@ -14,13 +14,10 @@ import pytest
 import xcquinox.pipeline.eval_holdout as eh
 from xcquinox.pipeline.eval_holdout import (
     KCAL_PER_HA,
-    filter_reactions,
-    held_out_pool_names,
     make_per_molecule_record,
     per_reaction_errors,
     reaction_mae_kcalmol,
     run_full_holdout_eval,
-    write_test_set_csv,
 )
 
 
@@ -98,22 +95,14 @@ def test_run_full_holdout_eval_orchestration_no_compute(tmp_path, monkeypatch):
 # Pure helpers
 # ---------------------------------------------------------------------------
 
-def test_held_out_pool_names_subtracts_training_set():
-    pool = {"H": object(), "O": object(), "H2O": object(), "C": object()}
-    out = held_out_pool_names(("H", "O"), pool)
-    assert out == ["C", "H2O"]  # sorted, training-set removed
+def test_no_species_is_subtracted_from_a_held_out_pool():
+    """The module offers no way to remove a species from a held-out pool for
+    belonging to the training set: every species is evaluated and the overlap
+    is recorded per molecule.
 
-
-def test_filter_reactions_strict_drops_overlapping():
-    rxns = [
-        {"name": "r1", "reactants": ["H"], "products": ["A"]},
-        {"name": "r2", "reactants": ["B"], "products": ["C"]},
-    ]
-    kept, dropped = filter_reactions(rxns, training_names=["H"], strict=True)
-    names_kept = {r["name"] for r in kept}
-    names_dropped = {r["name"] for r in dropped}
-    assert names_kept == {"r2"}
-    assert names_dropped == {"r1"}
+    Oracle: the module's own surface.
+    """
+    assert not hasattr(eh, "held_out_pool_names")
 
 
 # ---------------------------------------------------------------------------
@@ -229,27 +218,6 @@ def test_make_per_molecule_record_failure_row_reports_no_scf():
 # Output writers
 # ---------------------------------------------------------------------------
 
-def test_write_test_set_csv_includes_n_dropped_nan_column(tmp_path):
-    out = tmp_path / "test_set.csv"
-    per_pool_mae = {
-        "bh76": (12.3456, 8.0774, 6, 0, 0),
-        "w411": (15.0000, 10.450, 10, 0, 1),
-    }
-    combined = (13.5, 9.2, 16, 0, 1)
-    p = write_test_set_csv(out, per_pool_mae, combined, strict=False)
-    assert p == out
-    rows = out.read_text().splitlines()
-    # Header gained n_dropped_nan
-    assert rows[0] == (
-        "set,mae_nn_kcalmol,mae_pbe_kcalmol,delta_nn_minus_pbe,"
-        "n_reactions,n_dropped_overlap,n_dropped_nan,note"
-    )
-    # The w411 row carries the new "1 reactions silently dropped" note text.
-    w411 = next(r for r in rows[1:] if "test_set_w411" in r)
-    assert ",1," in w411 or w411.split(",")[6] == "1"
-    assert "silently dropped" in w411
-
-
 def _mol(name, comp):
     from types import SimpleNamespace
     return SimpleNamespace(name=name, atom_composition=comp)
@@ -293,63 +261,6 @@ def test_split_held_out_keeps_permuted_name_twins_together():
     val_names = {r["name"] for r in val}
     twin_names = {t["name"] for t in twins}
     assert twin_names <= val_names or twin_names.isdisjoint(val_names)
-
-
-def test_holdout_overlap_charge_and_case_aware_no_leak():
-    """Phase-0 integrity check (NON-circular). The earlier oracle used the SAME
-    comp==1 atom rule as the code and never trained anions/case-twins, so it was
-    circular (the earlier oracle could not reach the two real leaks). This
-    oracle uses an INDEPENDENT rule -- a universal anchor is a NEUTRAL monatomic
-    -- and case-folds names, and it actually TRAINS the monatomic anions (f-,
-    cl-) and cross-pool case-twins (NH3/nh3). Asserts molecule-level overlap ==
-    oracle with ZERO case-insensitive leakage on the COMBINED pool.
-
-    Guards both leaks: (A) anion-as-atom, (B) case-variant."""
-    from types import SimpleNamespace
-    from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
-    specs, rxns = load_full_held_out_pools()
-
-    def cf(s):
-        return str(s).casefold()
-
-    def rcf(r):
-        return {cf(x) for x in (set(r["reactants"]) | set(r["products"]))}
-
-    def neutral_monatomic(s):          # INDEPENDENT oracle rule (charge + comp)
-        comp = dict(getattr(s, "atom_composition", ()) or ())
-        return sum(comp.values()) == 1 and int(getattr(s, "charge", 0) or 0) == 0
-
-    by = specs
-    mols = [s for s in specs.values() if not neutral_monatomic(s)]
-    subsets = [
-        ("f-", [by["f-"]]),                                   # Vector A
-        ("cl-", [by["cl-"]]),
-        ("nh3", [by["nh3"]]),                                 # Vector B (lower)
-        ("NH3", [by["NH3"]]),                                 # Vector B (upper)
-        ("f-,cl-,nh3", [by[n] for n in ("f-", "cl-", "nh3")]),
-        ("25mol+anions", mols[:25] + [by["f-"], by["cl-"]]),
-    ]
-    for label, trained in subsets:
-        ts = SimpleNamespace(molecules=trained)
-        mol_names = set(eh.training_molecule_names(ts))
-        kept, dropped = eh.filter_reactions(rxns, mol_names, strict=True)
-        mol_cf = {cf(s.name) for s in trained if not neutral_monatomic(s)}
-        oracle_kept = {r["name"] for r in rxns if not (rcf(r) & mol_cf)}
-        assert {r["name"] for r in kept} == oracle_kept, f"{label}: kept != oracle"
-        assert all(not (rcf(r) & mol_cf) for r in kept), f"{label}: case-insensitive LEAK"
-        assert len(kept) + len(dropped) == len(rxns), f"{label}: not conserved"
-
-    # (A) monatomic anions are MOLECULES; neutral monatomics are excluded.
-    assert set(eh.training_molecule_names(
-        SimpleNamespace(molecules=[by["f-"], by["cl-"]]))) == {"f-", "cl-"}
-    assert eh.training_molecule_names(
-        SimpleNamespace(molecules=[by[n] for n in ("h", "f", "cl", "o")])) == ()
-    # (B) training a lower-case twin drops the upper-case reaction (no leak).
-    nm = set(eh.training_molecule_names(SimpleNamespace(molecules=[by["nh3"]])))
-    kept_nh3, _ = eh.filter_reactions(rxns, nm, strict=True)
-    assert all("nh3" not in {s.casefold() for s in
-               (set(r["reactants"]) | set(r["products"]))} for r in kept_nh3), \
-        "NH3/nh3 case-twin leaked into held-out"
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +529,7 @@ def test_the_finalized_tables_carry_the_weighted_row_and_a_pair_only_combined_ro
     energies = {"x": 0.0, "p": 2.0 / KCAL_PER_HA, "q": 4.0 / KCAL_PER_HA,
                 "r": 1.0 / KCAL_PER_HA}
     _finalize_holdout_outputs(reactions, energies, dict(energies), [], [],
-                              n_species=4, out_dir=tmp_path, strict=False)
+                              n_species=4, out_dir=tmp_path)
     with (tmp_path / "test_set.csv").open(newline="") as fh:
         rows = {row["set"]: row for row in csv.DictReader(fh)}
     assert float(rows["test_set_bh76"]["mae_nn_kcalmol"]) == pytest.approx(2.0)
@@ -643,9 +554,147 @@ def test_the_finalized_tables_carry_the_weighted_row_and_a_pair_only_combined_ro
     # a run evaluating the diet set alone combines over what it has
     (tmp_path / "diet_only").mkdir()
     _finalize_holdout_outputs(reactions[2:], energies, dict(energies), [], [],
-                              n_species=2, out_dir=tmp_path / "diet_only",
-                              strict=False)
+                              n_species=2, out_dir=tmp_path / "diet_only")
     with (tmp_path / "diet_only" / "test_set.csv").open(newline="") as fh:
         rows = {row["set"]: row for row in csv.DictReader(fh)}
     assert float(rows["test_set_held_out_combined"]["mae_nn_kcalmol"]) == \
         pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Nothing is excluded from a held-out set
+# ---------------------------------------------------------------------------
+
+def test_no_reaction_is_ever_dropped_from_a_held_out_set(tmp_path):
+    """A set whose every reaction is built from trained species is reported
+    whole: the tables carry every reaction, the dropped-overlap column is zero,
+    and the intersection with the training set is recorded per row as an
+    annotation. Exclusion is a reading of the results, never a filter on them.
+
+    Oracle: two reactions over three species, all three of them trained.
+    """
+    import csv
+    from xcquinox.pipeline.eval_holdout import (DEFAULT_PER_REACTION_NAME,
+                                                KCAL_PER_HA,
+                                                _finalize_holdout_outputs)
+    reactions = [
+        {"name": "bh76_a", "source_pool": "bh76", "reactants": ["bh76@x"],
+         "products": ["bh76@p"], "coeffs": [-1.0, 1.0],
+         "reaction_energy_ref": 0.0},
+        {"name": "bh76_b", "source_pool": "bh76", "reactants": ["bh76@x"],
+         "products": ["bh76@q"], "coeffs": [-1.0, 1.0],
+         "reaction_energy_ref": 0.0},
+    ]
+    energies = {"bh76@x": 0.0, "bh76@p": 2.0 / KCAL_PER_HA,
+                "bh76@q": 4.0 / KCAL_PER_HA}
+    training = ("bh76@x", "bh76@p", "bh76@q")
+    summary = _finalize_holdout_outputs(
+        reactions, energies, dict(energies), [], training, n_species=3,
+        out_dir=tmp_path)
+    assert summary["n_reactions"] == 2
+    assert summary["n_dropped_overlap"] == 0
+    with (tmp_path / "test_set.csv").open(newline="") as fh:
+        text_rows = fh.read().splitlines()
+    assert text_rows[0] == (
+        "set,mae_nn_kcalmol,mae_pbe_kcalmol,delta_nn_minus_pbe,"
+        "n_reactions,n_dropped_overlap,n_dropped_nan,note")
+    with (tmp_path / "test_set.csv").open(newline="") as fh:
+        rows = {row["set"]: row for row in csv.DictReader(fh)}
+    assert int(rows["test_set_bh76"]["n_reactions"]) == 2
+    assert int(rows["test_set_bh76"]["n_dropped_overlap"]) == 0
+    records = json.loads(
+        (tmp_path / DEFAULT_PER_REACTION_NAME).read_text())
+    assert len(records) == 2
+    assert all(sorted(r["in_sample_overlap"]) for r in records)
+    assert sorted(records[0]["in_sample_overlap"]) == ["bh76@p", "bh76@x"]
+    # the annotation is the whole of what overlap does: it adds a key and
+    # returns every reaction it was given
+    from xcquinox.pipeline.eval_holdout import annotate_overlap
+    annotated = annotate_overlap(reactions, training)
+    assert [r["name"] for r in annotated] == ["bh76_a", "bh76_b"]
+    assert sorted(annotated[1]["in_sample_overlap"]) == ["bh76@q", "bh76@x"]
+    assert "in_sample_overlap" not in reactions[0]
+
+
+def test_the_strict_capability_is_gone():
+    """The held-out exclusion is retired outright: the filter, the verbatim
+    identity set and the environment variable are absent from the module, and
+    no writer or driver of the held-out tables takes a strict switch. A switch
+    that survives is a switch a configuration can still set.
+
+    Oracle: the module's own source and the signatures of its writers.
+    """
+    import inspect
+    from pathlib import Path
+    from xcquinox.pipeline.cluster._holdout_parallel import (
+        run_holdout_with_escalation)
+    assert not hasattr(eh, "filter_reactions")
+    assert not hasattr(eh, "trained_reaction_exclusion")
+    source = Path(eh.__file__).read_text(encoding="utf-8")
+    assert "XCQUINOX_HELDOUT_STRICT" not in source
+    for func in (eh._finalize_holdout_outputs, eh.run_full_holdout_eval,
+                 eh.write_test_set_csv, run_holdout_with_escalation):
+        assert "strict" not in inspect.signature(func).parameters, func.__name__
+    assert "excluded_identities" not in inspect.signature(
+        eh._finalize_holdout_outputs).parameters
+    assert "species_key_map" not in inspect.signature(
+        eh._finalize_holdout_outputs).parameters
+
+
+def test_the_per_molecule_record_names_its_set():
+    """A per-molecule row names the set it belongs to beside the qualified
+    species key, so a species evaluated once per set is readable per set rather
+    than only as one key among many.
+
+    Oracle: a record built for one species of one set.
+    """
+    rec = make_per_molecule_record(
+        "bh76@H2O", {"E_pbe": -76.27}, e_nn_ha=-76.43,
+        in_training_subset=False)
+    assert rec["molecule"] == "bh76@H2O"
+    assert "pool" in rec
+    assert "system" in rec
+    assert rec["pool"] == "bh76"
+    assert rec["system"] == "H2O"
+
+
+def test_the_validation_slice_is_marked_and_reported_beside_the_set(tmp_path):
+    """The reactions the in-loop validation consumed stay in every artifact and
+    are marked; the per-pool row averages the complement, so the headline
+    carries no early-stopping selection, and a second row averages the whole
+    set. Dropping them would remove reactions from a held-out set, which
+    nothing does.
+
+    Oracle: three reactions of one pool with errors 2, 4 and 12 kcal/mol, the
+    last of them the validation slice.
+    """
+    import csv
+    from xcquinox.pipeline.eval_holdout import (DEFAULT_PER_REACTION_NAME,
+                                                KCAL_PER_HA,
+                                                _finalize_holdout_outputs)
+    reactions = [
+        {"name": "bh76_a", "source_pool": "bh76", "reactants": ["bh76@x"],
+         "products": ["bh76@p"], "coeffs": [-1.0, 1.0],
+         "reaction_energy_ref": 0.0, "in_validation_slice": False},
+        {"name": "bh76_b", "source_pool": "bh76", "reactants": ["bh76@x"],
+         "products": ["bh76@q"], "coeffs": [-1.0, 1.0],
+         "reaction_energy_ref": 0.0, "in_validation_slice": False},
+        {"name": "bh76_v", "source_pool": "bh76", "reactants": ["bh76@x"],
+         "products": ["bh76@v"], "coeffs": [-1.0, 1.0],
+         "reaction_energy_ref": 0.0, "in_validation_slice": True},
+    ]
+    energies = {"bh76@x": 0.0, "bh76@p": 2.0 / KCAL_PER_HA,
+                "bh76@q": 4.0 / KCAL_PER_HA, "bh76@v": 12.0 / KCAL_PER_HA}
+    summary = _finalize_holdout_outputs(
+        reactions, energies, dict(energies), [], (), n_species=4,
+        out_dir=tmp_path)
+    assert summary["n_reactions"] == 3
+    with (tmp_path / "test_set.csv").open(newline="") as fh:
+        rows = {row["set"]: row for row in csv.DictReader(fh)}
+    assert float(rows["test_set_bh76"]["mae_nn_kcalmol"]) == pytest.approx(3.0)
+    assert int(rows["test_set_bh76"]["n_reactions"]) == 2
+    assert float(rows["test_set_bh76_with_validation"]["mae_nn_kcalmol"]) == \
+        pytest.approx(6.0)
+    assert int(rows["test_set_bh76_with_validation"]["n_reactions"]) == 3
+    records = json.loads((tmp_path / DEFAULT_PER_REACTION_NAME).read_text())
+    assert [r["name"] for r in records] == ["bh76_a", "bh76_b", "bh76_v"]

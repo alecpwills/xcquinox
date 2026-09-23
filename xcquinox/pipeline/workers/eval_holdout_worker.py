@@ -64,7 +64,18 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
 
     full_specs, _full_rxns = load_held_out_pools(
         tuple(pools), basis=basis, grid_level=grid_level)
-    subset = {n: full_specs[n] for n in names if n in full_specs}
+    # A shard name the pools do not carry is a fault, not a species to skip:
+    # the driver built the names from these same pools, so a mismatch means
+    # the worker and the driver disagree about what is being evaluated, and
+    # skipping would report a shorter shard as a complete one.
+    unknown = sorted(n for n in names if n not in full_specs)
+    if unknown:
+        raise KeyError(
+            f"the held-out pools {tuple(pools)} carry none of "
+            f"{len(unknown)} shard species ({', '.join(unknown[:5])}"
+            f"{', ...' if len(unknown) > 5 else ''}); the worker and the "
+            "driver disagree about the pool")
+    subset = {n: full_specs[n] for n in names}
 
     per = compute_holdout_per_molecule(training_spec, model, subset)
     return {

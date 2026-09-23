@@ -257,3 +257,37 @@ def test_listing_the_species_runs_no_reference_generation(tmp_path, monkeypatch,
 
 
 
+
+
+def test_the_reference_job_writes_one_file_per_set(tmp_path, monkeypatch):
+    """Each set's references carry the set in their file name, so a system two
+    sets carry gets one reference per set at that set's own geometry. A file per
+    bare name held one density for both: the second set's species resolved to
+    the first set's.
+
+    Oracle: the species keys the loader returns per pool selection, and the file
+    the generator writes for one species of each of two sets.
+    """
+    calls = []
+    _fake_stages(monkeypatch, calls)
+    only_bh76 = br.load_benchmark_species("bh76")
+    only_w411 = br.load_benchmark_species("w411")
+    both = br.load_benchmark_species("bh76,w411")
+    assert all(name.startswith("bh76@") for name in only_bh76)
+    assert all(name.startswith("w411@") for name in only_w411)
+    assert set(both) == set(only_bh76) | set(only_w411)
+    assert len(both) == len(only_bh76) + len(only_w411)
+
+    first = _ms(name="bh76@H2O")
+    second = _ms(name="w411@H2O",
+                 atom="O 0.000000 0.000000 0.120000; "
+                      "H 0.000000 0.760000 -0.470000; "
+                      "H 0.000000 -0.760000 -0.470000")
+    assert br.generate_one(first, out_dir=tmp_path, basis="def2-svp",
+                           grid_level=2) == "OK"
+    assert br.generate_one(second, out_dir=tmp_path, basis="def2-svp",
+                           grid_level=2) == "OK"
+    assert (tmp_path / "bh76@H2O.npz").is_file()
+    assert (tmp_path / "w411@H2O.npz").is_file()
+    assert not (tmp_path / "H2O.npz").exists()
+    assert br.reference_file_name("bh76", "H2O") == "bh76@H2O.npz"

@@ -40,33 +40,6 @@ def test_eval_worker_ladder_24():
 # Shard worker
 # ---------------------------------------------------------------------------
 
-def test_compute_shard_evaluates_only_named_subset(monkeypatch):
-    import xcquinox.pipeline.cluster._eval_one_spec as eos
-    import xcquinox.pipeline.full_benchmark_pools as fbp
-    monkeypatch.setattr(eos, "_read_width", lambda rd: 3)
-    monkeypatch.setattr(eos, "_checkpoint_dir", lambda rd, i, w: "/ckpt")
-    monkeypatch.setattr(eos, "_spec_path", lambda rd, i, w: "/spec.pkl")
-    monkeypatch.setattr(eos, "_load_spec", lambda p: "TSPEC")
-    monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
-    full = {"h2": "s_h2", "h": "s_h", "o": "s_o"}
-    monkeypatch.setattr(fbp, "load_full_held_out_pools",
-                        lambda *, basis, grid_level: (full, []))
-
-    captured = {}
-
-    def fake_compute(ts, model, subset):
-        captured["subset"] = dict(subset)
-        return {"energies": {n: -1.0 for n in subset},
-                "pbe_energies": {n: -0.9 for n in subset},
-                "mol_records": [{"molecule": n} for n in subset]}
-    monkeypatch.setattr(eh, "compute_holdout_per_molecule", fake_compute)
-
-    shard = ehw.compute_shard("/run", 2, ["h2", "h"], "def2-svp", 1)
-    assert set(captured["subset"]) == {"h2", "h"}      # only requested names
-    assert set(shard["energies"]) == {"h2", "h"}
-    assert "o" not in shard["energies"]                # other shards own 'o'
-
-
 def test_worker_main_writes_shard_and_prints_success(tmp_path, monkeypatch, capsys):
     names_file = tmp_path / "names.json"
     names_file.write_text(json.dumps(["h2", "h"]))
@@ -221,7 +194,7 @@ def test_finalize_writes_artifacts_and_summary(tmp_path):
 
     summary = eh._finalize_holdout_outputs(
         reactions, energies, pbe_energies, mol_records,
-        training_names=(), n_species=2, out_dir=out_dir, strict=False)
+        training_names=(), n_species=2, out_dir=out_dir)
 
     assert summary["n_reactions"] == 1
     assert summary["n_species"] == 2
@@ -275,3 +248,117 @@ print(json.dumps({"status": "success", "n_done": len(names)}))
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# Qualified names through the shards, and no exclusion switch
+# ---------------------------------------------------------------------------
+
+def test_the_worker_and_the_driver_carry_qualified_names(tmp_path, monkeypatch):
+    """The shard names, the shard worker's pool lookup and the merged records
+    all speak the qualified vocabulary, so a species of one set is never served
+    from another set's entry; and neither the driver nor the worker carries an
+    exclusion switch any more.
+
+    Oracle: the names file the driver writes for one shard, the subset the
+    worker hands the per-molecule stage, and the two signatures.
+    """
+    import inspect
+    from pathlib import Path
+    import xcquinox.pipeline.cluster._eval_one_spec as eos
+    import xcquinox.pipeline.full_benchmark_pools as fbp
+    from xcquinox.pipeline.cluster import _holdout_parallel as hp
+
+    assert "strict" not in inspect.signature(
+        hp.run_holdout_with_escalation).parameters
+    worker_source = Path(ehw.__file__).read_text(encoding="utf-8")
+    assert "XCQUINOX_HELDOUT_STRICT" not in worker_source
+    driver_source = Path(hp.__file__).read_text(encoding="utf-8")
+    assert "XCQUINOX_HELDOUT_STRICT" not in driver_source
+
+    # the driver's shard names are the pool's own keys
+    names_seen = []
+
+    class _Recorded(RuntimeError):
+        """Raised once the command is recorded; the later tiers would evaluate
+        on the stand-in spec."""
+
+    def _fake_run_workers(jobs, max_parallel=1):
+        for job in jobs:
+            cmd = list(job.cmd)
+            names_file = cmd[cmd.index("--names-file") + 1]
+            names_seen.extend(json.loads(Path(names_file).read_text()))
+        raise _Recorded()
+
+    monkeypatch.setattr(hp.parallel, "run_workers", _fake_run_workers)
+    monkeypatch.setattr(hp.parallel, "eval_worker_ladder",
+                        lambda total_cpus, top=1: [(1, 1)])
+    with pytest.raises(_Recorded):
+        hp.run_holdout_with_escalation(
+            "/run", 0, _FakeSpec(), object(), [],
+            {"bh76@h2": "spec", "w411@h2": "spec"}, tmp_path / "out",
+            basis="def2-svp", grid_level=1, n_workers_top=1, total_cpus=1,
+            pools=("bh76", "w411"))
+    assert sorted(names_seen) == ["bh76@h2", "w411@h2"]
+
+    # the worker resolves those names against a qualified pool
+    monkeypatch.setattr(eos, "_read_width", lambda rd: 3)
+    monkeypatch.setattr(eos, "_checkpoint_dir", lambda rd, i, w: "/ckpt")
+    monkeypatch.setattr(eos, "_spec_path", lambda rd, i, w: "/spec.pkl")
+    monkeypatch.setattr(eos, "_load_spec", lambda p: "TSPEC")
+    monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
+    pool = {"bh76@h2": "s_bh76_h2", "w411@h2": "s_w411_h2", "w411@o": "s_o"}
+    monkeypatch.setattr(fbp, "load_held_out_pools",
+                        lambda names, basis=None, grid_level=None,
+                        refs_dir=None: (dict(pool), []))
+    captured = {}
+
+    def _fake_compute(ts, model, subset):
+        captured["subset"] = dict(subset)
+        return {"energies": {n: -1.0 for n in subset},
+                "pbe_energies": {n: -0.9 for n in subset},
+                "mol_records": [{"molecule": n, "E_total_nn": -1.0}
+                                for n in subset]}
+
+    monkeypatch.setattr(eh, "compute_holdout_per_molecule", _fake_compute)
+    shard = ehw.compute_shard("/run", 2, ["bh76@h2", "w411@h2"], "def2-svp", 1)
+    assert set(captured["subset"]) == {"bh76@h2", "w411@h2"}
+    assert captured["subset"]["bh76@h2"] == "s_bh76_h2"
+    assert captured["subset"]["w411@h2"] == "s_w411_h2"
+    assert "w411@o" not in shard["energies"]
+
+    energies, _pbe, records = eh.merge_holdout_shards([shard])
+    assert sorted(energies) == ["bh76@h2", "w411@h2"]
+    assert sorted(r["molecule"] for r in records) == ["bh76@h2", "w411@h2"]
+
+
+def test_the_worker_refuses_a_shard_name_its_pools_do_not_carry(monkeypatch):
+    """A shard name absent from the worker's own pools is refused, not skipped:
+    the driver built the names from those pools, so a mismatch means the two
+    disagree about what is being evaluated, and a skipped species would report
+    a shorter shard as a complete one.
+
+    Oracle: a two-species pool and a shard naming a third.
+    """
+    import xcquinox.pipeline.cluster._eval_one_spec as eos
+    import xcquinox.pipeline.full_benchmark_pools as fbp
+    monkeypatch.setattr(eos, "_read_width", lambda rd: 3)
+    monkeypatch.setattr(eos, "_checkpoint_dir", lambda rd, i, w: "/ckpt")
+    monkeypatch.setattr(eos, "_spec_path", lambda rd, i, w: "/spec.pkl")
+    monkeypatch.setattr(eos, "_load_spec", lambda p: "TSPEC")
+    monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
+    monkeypatch.setattr(
+        fbp, "load_held_out_pools",
+        lambda names, basis, grid_level: (
+            {"bh76@h2": "s1", "w411@h2": "s2"}, []))
+    monkeypatch.setattr(eh, "compute_holdout_per_molecule",
+                        lambda ts, m, subset: {
+                            "energies": {}, "pbe_energies": {},
+                            "mol_records": []})
+
+    ok = ehw.compute_shard("/run", 2, ["bh76@h2"], "def2-svp", 1,
+                           pools=("bh76", "w411"))
+    assert ok["energies"] == {}
+    with pytest.raises(KeyError, match="diet150@h2"):
+        ehw.compute_shard("/run", 2, ["bh76@h2", "diet150@h2"], "def2-svp", 1,
+                          pools=("bh76", "w411"))

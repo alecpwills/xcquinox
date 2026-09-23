@@ -51,7 +51,7 @@ NAMED_ENTRY_POINTS = {
     "pipeline/_train_one_spec.py",
     # standalone job stages: launched by a checked-in sbatch script, so SLURM
     # reads the status each one hands back
-    "pipeline/refinalize_verbatim.py",
+    "pipeline/refinalize_holdout.py",
     "hpcjobs/dfs6311_nan_isolate.py",
     "hpcjobs/dfs6311_nan_verify.py",
     "hpcjobs/dfs6311_pretrained_holdout.py",
@@ -78,7 +78,7 @@ NAMED_ENTRY_POINTS = {
 EXTRA_ENTRY_FILES = (
     CLUSTER_DIR.parent / "benchmark_refs.py",
     CLUSTER_DIR.parent / "_train_one_spec.py",
-    CLUSTER_DIR.parent / "refinalize_verbatim.py",
+    CLUSTER_DIR.parent / "refinalize_holdout.py",
     REPO_ROOT / "hpcjobs" / "dfs6311_nan_isolate.py",
     REPO_ROOT / "hpcjobs" / "dfs6311_nan_verify.py",
     REPO_ROOT / "hpcjobs" / "dfs6311_pretrained_holdout.py",

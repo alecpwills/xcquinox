@@ -57,6 +57,7 @@ from xcquinox.pipeline.external_refs import (
     run_scf_with_cache,
 )
 from xcquinox.pipeline import full_benchmark_pools
+from xcquinox.pipeline.full_benchmark_pools import reference_file_name
 
 #: The historical pool names of ``--pool``; ``all`` is the benchmark pair.
 #: Any pool of ``full_benchmark_pools.POOL_NAMES`` and any comma-separated
@@ -202,12 +203,17 @@ def load_benchmark_species(pool: str = "all", *, basis: str = "def2-svp",
                            grid_level: int = 2,
                            max_atoms: Optional[int] = None
                            ) -> Dict[str, MoleculeSpec]:
-    """Sorted ``{name: MoleculeSpec}`` for the requested pool selection.
+    """Sorted ``{name: MoleculeSpec}`` for the requested pool selection, each
+    species keyed by the set it belongs to and its own name
+    (``<pool>@<system>``, :func:`reference_file_name`).
 
-    Sorting fixes the species order so ``--shard i/N`` slices are stable
-    across invocations and disjoint across array tasks. ``max_atoms`` drops
-    every species with more atoms than the cap and prints the dropped names,
-    so a reference set smaller than the pool reads as a capped set."""
+    Every set carries its own species, so a system two sets name gets one
+    reference per set, computed at that set's own geometry and written to a
+    file of its own. Sorting fixes the species order so ``--shard i/N`` slices
+    are stable across invocations and disjoint across array tasks.
+    ``max_atoms`` drops every species with more atoms than the cap and prints
+    the dropped names, so a reference set smaller than the pool reads as a
+    capped set."""
     names = pool_names_of(pool)
     mol_specs, _reactions = full_benchmark_pools.load_held_out_pools(
         names, basis=basis, grid_level=grid_level)

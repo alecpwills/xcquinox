@@ -223,7 +223,7 @@ def test_the_pipeline_consumers_take_their_channels_from_the_vocabulary():
     missing.
     """
     hc = _vocab()
-    from xcquinox.pipeline import eval_holdout, refinalize_verbatim
+    from xcquinox.pipeline import eval_holdout, refinalize_holdout
     from xcquinox.pipeline.cluster import channel_retro
 
     expected_dirs = {
@@ -234,7 +234,7 @@ def test_the_pipeline_consumers_take_their_channels_from_the_vocabulary():
     assert (channel_retro.CHANNEL_DIRS[hc.OVERRIDE_COLDSTART][1]
             == hc.REPORTING_CHANNEL)
 
-    assert refinalize_verbatim.CHANNELS == hc.HOLDOUT_CHANNELS
+    assert refinalize_holdout.CHANNELS == hc.HOLDOUT_CHANNELS
 
     assert set(eval_holdout.CHANNEL_OVERRIDES) == {hc.OVERRIDE_COLDSTART,
                                                   hc.OVERRIDE_CONVERGED}

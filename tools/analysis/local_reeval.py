@@ -36,21 +36,12 @@ Usage::
         ~/Documents/Research/xcquinox-results/runs/alpha_on/runs/run_<UTC>Z \\
         --specs 0,1,21
 
-By default this runs in **loose mode**: every BH76 and W4-11 reaction is
-kept and any in-sample overlap is flagged in the output metadata.
-Rationale:
-
-  - H is in every training set as a Dick regularization anchor (not as a
-    substantively learned target). Dropping every BH76 reaction because of
-    H overlap would discard the entire pool.
-  - When a molecule like H2O is in the training set, evaluating its
-    atomization energy AE(H2O) = E(H2O) − 2·E(H) − E(O) is a meaningful
-    test of whether the model learned the right *atomization*, not just
-    the total energy -- so we WANT to compute it.
-
-Pass ``--strict`` to opt into the old behavior where any reaction
-with a training-set species is dropped. The output ``note`` column
-records the overlap either way so a downstream consumer can filter.
+Nothing is excluded: every reaction of every pool is scored, and the
+per-reaction records carry the training overlap so a downstream consumer can
+read the subsets apart. A reaction that touches a trained molecule is still a
+held-out reaction -- H is in every training set as a regularization anchor,
+and the atomization energy of a trained molecule is exactly the check its
+training was meant to survive.
 """
 from __future__ import annotations
 
@@ -78,9 +69,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from xcquinox.pipeline.eval_holdout import (  # noqa: E402
     KCAL_PER_HA,
     load_training_spec,
-    held_out_pool_names,
     reaction_overlap,
-    filter_reactions,
+    annotate_overlap,
     per_reaction_errors,
     reaction_mae_kcalmol,
     make_per_molecule_record,
@@ -121,13 +111,12 @@ def write_local_test_set_csv(
     spec_dir: Path,
     per_pool_mae: Dict[str, Tuple[float, float, int, int, int]],
     combined_mae: Tuple[float, float, int, int, int],
-    strict: bool,
 ) -> Path:
     """Write ``<spec_dir>/local_test_set.csv`` -- see
     :func:`xcquinox.pipeline.eval_holdout.write_test_set_csv` for the schema."""
     return _write_test_set_csv(
         spec_dir / "local_test_set.csv",
-        per_pool_mae, combined_mae, strict,
+        per_pool_mae, combined_mae,
     )
 
 
@@ -272,7 +261,6 @@ def run_one_spec(
     spec_idx: int,
     pools: Sequence[str],
     *,
-    strict: bool = False,
     width: int = 4,
 ) -> Dict[str, Any]:
     """Process one (run_dir, spec_idx). Returns a summary dict including
@@ -298,21 +286,16 @@ def run_one_spec(
     print(f"[spec {spec_idx}] building {','.join(pools)} pool(s) ...",
           flush=True)
     pool_specs, all_reactions = load_pools(pools)
-    held_names = held_out_pool_names(training_names, pool_specs)
-    if not held_names:
-        print(f"[spec {spec_idx}] WARNING: every pool species is in the "
-              f"training set; held-out pool is empty.", flush=True)
-    held_pool_specs = {n: pool_specs[n] for n in held_names}
+    # Every species of every pool is evaluated, the ones the training set also
+    # carries included: nothing is removed from a held-out set, and the
+    # per-reaction records state the overlap for a later reading.
+    held_pool_specs = dict(pool_specs)
 
     # Partition reactions per source pool so we can report per-pool MAEs.
     per_pool_kept: Dict[str, List[Dict[str, Any]]] = {p: [] for p in pools}
     per_pool_dropped: Dict[str, List[Dict[str, Any]]] = {p: [] for p in pools}
-    for rxn in all_reactions:
-        pool = rxn.get("source_pool", "?")
-        kept_one, dropped_one = filter_reactions([rxn], training_names,
-                                                  strict=strict)
-        per_pool_kept.setdefault(pool, []).extend(kept_one)
-        per_pool_dropped.setdefault(pool, []).extend(dropped_one)
+    for rxn in annotate_overlap(all_reactions, training_names):
+        per_pool_kept.setdefault(rxn.get("source_pool", "?"), []).append(rxn)
 
     # Materialize the model's descriptor list so precompute_fixed_density_data
     # computes the columns the model actually consumes (e.g. dm_statistics,
@@ -383,9 +366,9 @@ def run_one_spec(
 
     # Per-pool MAEs -- both NN and PBE on the same kept reaction set.
     # Tuple shape: (mae_nn, mae_pbe, n_used, n_dropped_overlap, n_dropped_nan).
-    # n_dropped_overlap is the strict-mode drop count; n_dropped_nan counts
-    # reactions silently dropped because their species energies were missing
-    # / non-finite (bug found 2026-05-29).
+    # n_dropped_overlap is always zero, since nothing is excluded from a
+    # held-out set; n_dropped_nan counts reactions silently dropped because
+    # their species energies were missing or non-finite.
     per_pool_mae: Dict[str, Tuple[float, float, int, int, int]] = {}
     all_kept: List[Dict[str, Any]] = []
     n_dropped_total = 0
@@ -430,8 +413,7 @@ def run_one_spec(
         all_reactions, nn_per_rxn, pbe_per_rxn, training_names,
     )
 
-    csv_path = write_local_test_set_csv(spec_dir, per_pool_mae, combined,
-                                        strict)
+    csv_path = write_local_test_set_csv(spec_dir, per_pool_mae, combined)
     json_path = write_local_per_molecule_json(spec_dir, records)
     reaction_json_path = write_local_per_reaction_json(
         spec_dir, per_reaction_records)
@@ -471,7 +453,6 @@ def run_auto(
     local_root: Path,
     pools: Sequence[str],
     *,
-    strict: bool = False,
     width: int = 4,
 ) -> Dict[str, Any]:
     """Discover every pulled category under ``local_root`` and run
@@ -515,7 +496,7 @@ def run_auto(
         t0_cat = time.time()
         for idx in spec_indices:
             try:
-                run_one_spec(run_dir, idx, pools, strict=strict, width=width)
+                run_one_spec(run_dir, idx, pools, width=width)
                 n_ok += 1
             except FileNotFoundError as exc:
                 msg = str(exc)
@@ -577,16 +558,6 @@ def main(argv: Optional[List[str]] = None) -> int:
              "the cluster evaluation's pools are the run's "
              "inputs.held_out_pools)")
     p.add_argument(
-        "--strict", action="store_true",
-        help="Drop every reaction whose species set overlaps the training "
-             "subset (e.g. H, H2O). Default is loose mode: keep all "
-             "reactions and record the overlap in the output 'note' field. "
-             "Rationale for the loose default: H is in every training set "
-             "as a Dick regularization anchor (not a substantively learned "
-             "target); the H2O atomization energy IS the verification we "
-             "want when H2O is in the training set; dropping all reactions "
-             "with H overlap would discard the entire BH76 pool.")
-    p.add_argument(
         "--width", type=int, default=4,
         help="zero-pad width of spec_NNNN dir names (default 4; the harness "
              "uses 4 today)")
@@ -611,7 +582,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                   file=sys.stderr)
             return 1
         summary = run_auto(local_root, pools,
-                           strict=args.strict,
                            width=args.width)
         # Non-zero exit only if EVERY category was empty (nothing happened).
         if not summary or all(s["n_specs"] == 0 for s in summary.values()):
@@ -641,7 +611,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     for idx in spec_indices:
         try:
             run_one_spec(run_dir, idx, pools,
-                         strict=args.strict,
                          width=args.width)
         except FileNotFoundError as exc:
             print(f"[spec {idx}] {exc}", file=sys.stderr)

@@ -10,9 +10,10 @@ Three tracked pool caches are built here from the GMTKN55 checkout
   Slim05 also carries the study's pretraining molecules: the de-duplicated
   molecule list in the study's order and the 25 it draws from that list.
 * ``diet150``: the Diet GMTKN55 set at 150 reactions (``data/dietgmtkn55-150``),
-  defined by its element list and its subset list -- reactions, stoichiometric
-  counts, reference energies and subset weights -- with the geometries, charges
-  and spins of the checkout.
+  built from its element list and its subset list alone -- reactions,
+  stoichiometric counts, species geometries, charges, unpaired electron counts,
+  reference energies and subset weights -- and from nothing else, since the
+  list's reference energies belong to the list's geometries.
 
 Every pool cache has the shape of the BH76 cache
 (:mod:`xcquinox.pipeline.full_benchmark_pools`): species records and reaction
@@ -32,9 +33,7 @@ index of a line is its 1-based position among the reaction lines of the file.
 from __future__ import annotations
 
 import copy
-import functools
 import json
-import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,8 +42,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from xcquinox.pipeline.config import MoleculeSpec
 from xcquinox.pipeline.full_benchmark_pools import (
     BH76_JSON_PATH,
+    qualified_species_name,
     W411_JSON_PATH,
     _DATA_DIR,
+    _atom_composition,
     _atoms_to_pyscf_str,
     _build_species_dict,
     _load_pool_from_json,
@@ -63,11 +64,6 @@ SLIM_NAMES: Tuple[str, ...] = ("slim05", "slim16", "slim20")
 #: The Slim sets built into pool caches.
 POOL_SETS: Tuple[str, ...] = ("slim05", "slim16")
 DIET150 = "diet150"
-
-#: The subsets whose species keep their bare GMTKN55 system name: they are the
-#: species of the two tracked pools, and BH76RC's reactions are written over
-#: the BH76 directory.
-BARE_SUBSETS: Tuple[str, ...] = ("BH76", "BH76RC", "W4-11")
 
 _REACTION_LINE_TOKENS = ("$tmer", "tmer2++")
 _SPECIES_SUFFIX = "/$f"
@@ -120,8 +116,8 @@ _SOURCES = {
     "diet150": ("GMTKN55 (Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, PCCP "
                 "19 32184 (2017)); the Diet GMTKN55 set of 150 systems (Gould, "
                 "PCCP 20, 27735 (2018)) as data/dietgmtkn55-150/AllElements-150.yaml "
-                "and SubsetGMTKN55_150.yaml define it; geometries from the "
-                "checkout, data/gmtkn55/PROVENANCE.md"),
+                "and SubsetGMTKN55_150.yaml define it, species and "
+                "geometries included"),
 }
 
 
@@ -286,31 +282,14 @@ def _tracked_pool_species(path: Path) -> Dict[str, Tuple[str, int, int]]:
             for sd in data["species"]}
 
 
-@functools.lru_cache(maxsize=None)
-def w411_qualified_names() -> frozenset:
-    """The W4-11 system names that BH76 also carries with another geometry,
-    charge or spin. The union of the two tracked pools keeps BH76's species
-    for such a name, so a W4-11 species named bare would be scored on BH76's
-    molecule; those names are prefixed instead."""
-    bh76 = _tracked_pool_species(BH76_JSON_PATH)
-    w411 = _tracked_pool_species(W411_JSON_PATH)
-    return frozenset(name for name, key in w411.items()
-                     if name in bh76 and bh76[name] != key)
-
-
 def species_name(subset: str, system: str) -> str:
-    """The pool name of a GMTKN55 system.
+    """The pool name of a GMTKN55 system: the subset's tag and the system's
+    own name, for every subset alike.
 
-    BH76, BH76RC and W4-11 systems keep their bare name: they are the species
-    of the tracked pools, and one name is one geometry across every pool. The
-    exception is a W4-11 name BH76 carries with another geometry
-    (:func:`w411_qualified_names`), which is prefixed ``w411_``. Every other
-    subset's system is prefixed with the subset's tag, so a name two subsets
-    share is two pool species."""
-    if subset in ("BH76", "BH76RC"):
-        return system
-    if subset == "W4-11":
-        return f"w411_{system}" if system in w411_qualified_names() else system
+    A system name is unique inside its subset and nowhere else, so the tag is
+    what makes a pool's species distinct. No subset is exempted and no name is
+    qualified against another set: a set carries its own species, and the
+    evaluation keys them by set as well (:func:`qualified_species_name`)."""
     return f"{subset_tag(subset)}_{system}"
 
 
@@ -520,162 +499,73 @@ def _diet_definition() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     return elements, subsets["Systems"]
 
 
-def _species_signature(subset: str, system: str, coeff: int
-                       ) -> Tuple[int, int, int, Tuple[str, ...]]:
-    sd = _build_species_dict(system, species_directory(subset))
-    return (int(coeff), int(sd["charge"]), int(sd["spin"]),
-            tuple(_symbols_of(sd["atom"])))
-
-
-#: The largest difference, in Angstrom, between an internal distance of a
-#: species in the checkout and the same distance in the element list under
-#: which the two are one geometry. The list states positions to five
-#: decimals, so rounding alone moves a distance by less than 2e-5 A, and
-#: 322 of the 332 diet species sit under that; one (the S66 monomer 42A)
-#: sits at 9e-5 A, and the nine species whose checkout geometry the list
-#: does not describe sit at 2e-4 A and above.
-ELEMENT_LIST_DISTANCE_TOL = 1e-4
-
-
-def _positions_of_atom_string(atom: str) -> List[Tuple[float, float, float]]:
-    out = []
-    for tok in atom.split(";"):
-        parts = tok.split()
-        if parts:
-            out.append((float(parts[1]), float(parts[2]), float(parts[3])))
-    return out
-
-
-def _internal_distances(positions: Sequence[Sequence[float]]) -> List[float]:
-    """The pairwise distances of ``positions`` in row-major pair order."""
-    pos = [tuple(float(v) for v in p) for p in positions]
-    return [math.dist(pos[i], pos[j])
-            for i in range(len(pos)) for j in range(i + 1, len(pos))]
-
-
-def geometry_deviation(atom: str, positions: Sequence[Sequence[float]]) -> float:
-    """The largest difference between an internal distance of the PySCF
-    ``atom`` string and the same distance of ``positions`` (Angstrom, the
-    same atom order), a frame-independent comparison; zero for a single
-    atom."""
-    a = _internal_distances(_positions_of_atom_string(atom))
-    b = _internal_distances(positions)
-    if len(a) != len(b):
-        raise ValueError("geometry_deviation: the two geometries differ in "
-                         "their atom count")
-    return max((abs(x - y) for x, y in zip(a, b)), default=0.0)
-
-
-def _list_signature(entry: Mapping[str, Any]) -> Tuple[int, int, int, Tuple[str, ...]]:
-    return (int(entry["Count"]), int(entry["Charge"]), int(entry["UHF"]),
-            tuple(str(e) for e in entry["Elements"]))
-
-
-def _diet_species_entries(subset: str, line: ResLine, block: Mapping[str, Any]
-                          ) -> Dict[str, Tuple[str, Mapping[str, Any]]]:
-    """``{system: (list name, list entry)}`` for the systems of ``line``:
-    each system is paired with the element list's entry of equal
-    stoichiometric count, charge, unpaired electrons and element sequence,
-    the closest geometry deciding among several; every entry is used once.
-    Entries equally close to a system are accepted when they are one
-    geometry themselves (the two monomers of a homodimer), the first name
-    taken."""
-    remaining: Dict[str, Mapping[str, Any]] = dict(block["Species"])
-    out: Dict[str, Tuple[str, Mapping[str, Any]]] = {}
-    for system, coeff in zip(line.systems, line.coeffs):
-        sig = _species_signature(subset, system, coeff)
-        atom = _build_species_dict(system, species_directory(subset))["atom"]
-        scored = sorted(
-            (geometry_deviation(atom, entry["Positions"]), name)
-            for name, entry in remaining.items() if _list_signature(entry) == sig)
-        if not scored:
-            raise ValueError(
-                f"diet150: {subset} {line.index}: the element list carries no "
-                f"entry for the checkout's {system!r}")
-        name = scored[0][1]
-        for deviation, other in scored[1:]:
-            if deviation != scored[0][0]:
-                break
-            same = _internal_distances(remaining[name]["Positions"])
-            tied = _internal_distances(remaining[other]["Positions"])
-            if max((abs(x - y) for x, y in zip(same, tied)), default=0.0) \
-                    > ELEMENT_LIST_DISTANCE_TOL:
-                raise ValueError(
-                    f"diet150: {subset} {line.index}: the element list's "
-                    f"{name!r} and {other!r} are equally close to the "
-                    f"checkout's {system!r} and are not one geometry")
-        out[system] = (name, remaining.pop(name))
-    return out
-
-
-def _diet_species_record(subset: str, system: str, list_name: str,
+def _diet_species_record(subset: str, list_name: str,
                          entry: Mapping[str, Any]) -> Dict[str, Any]:
-    """The species record of a diet system: the checkout's record where its
-    internal distances agree with the element list's positions within
-    :data:`ELEMENT_LIST_DISTANCE_TOL`, and otherwise the list's positions,
-    since the list's reference energies belong to the list's geometries.
-    The record names the list's entry, the source of its geometry and the
-    deviation of the checkout's geometry from the list's. A species named as
-    a tracked pool's is refused where the two disagree: its name reuses
-    that pool's reference file and geometry."""
-    rec = species_record(subset, system)
-    if (int(rec["charge"]), int(rec["spin"])) != (int(entry["Charge"]),
-                                                  int(entry["UHF"])):
+    """The species record of one entry of the element list: its own element
+    sequence and positions as the geometry, its own charge and unpaired
+    electron count, under the pool name of its subset and list name. Nothing
+    is read from the GMTKN55 checkout: the list's reference energies belong to
+    the list's geometries, so the set is scored on them."""
+    elements = [str(e) for e in entry["Elements"]]
+    positions = [tuple(float(v) for v in p) for p in entry["Positions"]]
+    if len(elements) != len(positions):
         raise ValueError(
-            f"diet150: {subset} {system!r} carries charge {rec['charge']} and "
-            f"{rec['spin']} unpaired electrons in the checkout and "
-            f"{entry['Charge']} and {entry['UHF']} in the element list")
-    deviation = geometry_deviation(rec["atom"], entry["Positions"])
-    rec["element_list_name"] = str(list_name)
-    rec["element_list_deviation"] = float(deviation)
-    if deviation <= ELEMENT_LIST_DISTANCE_TOL:
-        rec["geometry_source"] = "checkout"
-        return rec
-    if subset in BARE_SUBSETS:
+            f"diet150: {subset} {list_name!r} names {len(elements)} elements "
+            f"and {len(positions)} positions")
+    if int(entry.get("Number", len(elements))) != len(elements):
         raise ValueError(
-            f"diet150: {subset} {system!r} is a tracked pool's species and the "
-            f"element list places it at another geometry (an internal distance "
-            f"differs by {deviation:.2e} A)")
-    atoms_ang = [(str(e), float(p[0]), float(p[1]), float(p[2]))
-                 for e, p in zip(entry["Elements"], entry["Positions"])]
-    rec["atom"] = _atoms_to_pyscf_str(atoms_ang)
-    rec["geometry_source"] = "element_list"
-    return rec
+            f"diet150: {subset} {list_name!r} states {entry['Number']} atoms "
+            f"and names {len(elements)}")
+    atoms_ang = [(e, p[0], p[1], p[2]) for e, p in zip(elements, positions)]
+    return {
+        "name": species_name(subset, list_name),
+        "atom": _atoms_to_pyscf_str(atoms_ang),
+        "atom_composition": list(_atom_composition(atoms_ang)),
+        "charge": int(entry["Charge"]),
+        "spin": int(entry["UHF"]),
+        "subset": subset,
+        "system": str(list_name),
+        "formula": hill_formula(elements),
+    }
+
+
+def _diet_block_species(block: Mapping[str, Any]) -> Dict[str, Any]:
+    """The species of one element-list block, keyed by their names as text.
+    A name the list writes as a bare number (``7a`` beside ``7``) parses as an
+    integer, and a species name is text everywhere else in a pool."""
+    out: Dict[str, Any] = {}
+    for name, entry in block["Species"].items():
+        key = str(name)
+        if key in out:
+            raise ValueError(f"the element list names {key!r} twice in one block")
+        out[key] = entry
+    return out
 
 
 def _diet_line(subset: str, index: int, block: Mapping[str, Any]) -> ResLine:
-    """The reaction line of the checkout that the element list's block for
-    ``(subset, index)`` describes: the line at that index of the subset's own
-    reaction file or, for BH76RC, of the BH76 file, whichever carries the
-    block's species (stoichiometric count, charge, unpaired electrons and
-    element sequence per species). The reference energy is the block's."""
-    want = sorted((int(v["Count"]), int(v["Charge"]), int(v["UHF"]),
-                   tuple(str(e) for e in v["Elements"]))
-                  for v in block["Species"].values())
-    candidates = [subset]
-    if subset == "BH76RC":
-        candidates.append("BH76")
-    for source in candidates:
-        lines = subset_res_lines(source)
-        if not 1 <= index <= len(lines):
-            continue
-        line = lines[index - 1]
-        got = sorted(_species_signature(subset, s, c)
-                     for s, c in zip(line.systems, line.coeffs))
-        if got == want:
-            return ResLine(index=int(index), systems=list(line.systems),
-                           coeffs=list(line.coeffs), ref=float(block["Energy"]))
-    raise ValueError(
-        f"diet150: no reaction line of {' or '.join(candidates)} at index "
-        f"{index} carries the species the element list names for "
-        f"{subset} {index}: {list(block['Species'])}")
+    """The reaction of one block of the element list: its species in the
+    list's order with their stoichiometric counts, and its reference energy.
+    The species are named by the list, so the reaction resolves inside the
+    diet set alone."""
+    entries = _diet_block_species(block)
+    systems = list(entries)
+    coeffs = [int(entries[s]["Count"]) for s in systems]
+    if not systems:
+        raise ValueError(f"diet150: {subset} {index} names no species")
+    if all(c >= 0 for c in coeffs) or all(c <= 0 for c in coeffs):
+        raise ValueError(
+            f"diet150: {subset} {index} has coefficients of one sign: "
+            f"{dict(zip(systems, coeffs))}")
+    return ResLine(index=int(index), systems=systems, coeffs=coeffs,
+                   ref=float(block["Energy"]))
 
 
 def build_diet150_pool_dict() -> Dict[str, Any]:
-    """The pool cache of the diet set: every reaction of the subset list with
-    its subset weight; species from the checkout where the checkout's
-    geometry is the element list's, and from the list where it is not
-    (:func:`_diet_species_record`)."""
+    """The pool cache of the diet set, built from its own two lists alone:
+    ``SubsetGMTKN55_150.yaml`` names the subsets, their weights and the
+    retained reaction indices, and ``AllElements-150.yaml`` supplies every
+    reaction's species, their stoichiometric counts, geometries, charges and
+    unpaired electron counts, and the reference energy."""
     elements, subsets = _diet_definition()
     species: Dict[str, Dict[str, Any]] = {}
     reactions: List[Dict[str, Any]] = []
@@ -687,21 +577,19 @@ def build_diet150_pool_dict() -> Dict[str, Any]:
                     f"diet150: {subset} {index} carries weight {block['Weight']} "
                     f"in the element list and {weight} in the subset list")
             line = _diet_line(subset, int(index), block)
-            entries = _diet_species_entries(subset, line, block)
+            entries = _diet_block_species(block)
             for system in line.systems:
                 pool_name = species_name(subset, system)
-                list_name, entry = entries[system]
-                if pool_name not in species:
-                    species[pool_name] = _diet_species_record(
-                        subset, system, list_name, entry)
-                    continue
-                again = geometry_deviation(species[pool_name]["atom"],
-                                           entry["Positions"])
-                if again > ELEMENT_LIST_DISTANCE_TOL:
+                record = _diet_species_record(subset, system,
+                                              entries[system])
+                kept = species.setdefault(pool_name, record)
+                if kept["atom"] != record["atom"] \
+                        or kept["charge"] != record["charge"] \
+                        or kept["spin"] != record["spin"]:
                     raise ValueError(
-                        f"diet150: the element list places {subset} {system!r} "
-                        f"at two geometries ({subset} {index} differs from the "
-                        f"recorded one by {again:.2e} A)")
+                        f"diet150: the element list carries {subset} "
+                        f"{system!r} with two identities ({subset} {index} "
+                        "differs from the recorded one)")
             reactions.append(reaction_record(subset, line, source_pool=DIET150,
                                              species=species,
                                              weight=float(weight)))
@@ -767,13 +655,15 @@ def slim_pretrain_records(name: str = "slim05") -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def overlap_rows(pool: Mapping[str, Any],
-                 training: Mapping[str, Sequence[Mapping[str, Any]]]
-                 ) -> List[Dict[str, Any]]:
+                 training: Mapping[str, Sequence[Mapping[str, Any]]],
+                 pool_name: str = "") -> List[Dict[str, Any]]:
     """Per reaction of ``pool``, per species, the training sets that carry the
     species exactly (same subset and system) and by formula (same Hill formula,
     charge and spin). ``training`` maps a set's name to its species records
-    (``subset``, ``system``, ``formula``, ``charge``, ``spin``). A report: the
-    pool is not modified."""
+    (``subset``, ``system``, ``formula``, ``charge``, ``spin``). The species
+    of a row are keyed the way the evaluation keys them, by set and system
+    (``pool_name`` names the set), so a report joins the evaluation's records.
+    A report: the pool is not modified."""
     exact: Dict[Tuple[str, str], set] = {}
     by_formula: Dict[Tuple[str, int, int], set] = {}
     for set_name, records in training.items():
@@ -787,10 +677,12 @@ def overlap_rows(pool: Mapping[str, Any],
     for rxn in pool["reactions"]:
         row_species: Dict[str, Dict[str, List[str]]] = {}
         for name in list(rxn["reactants"]) + list(rxn["products"]):
-            if name in row_species:
+            key = (qualified_species_name(pool_name, name) if pool_name
+                   else name)
+            if key in row_species:
                 continue
             sd = species[name]
-            row_species[name] = {
+            row_species[key] = {
                 "exact": sorted(exact.get((sd["subset"], sd["system"]), ())),
                 "formula": sorted(by_formula.get(
                     (sd["formula"], int(sd["charge"]), int(sd["spin"])), ())),
@@ -850,4 +742,5 @@ def build_overlap_reports() -> Dict[str, List[Dict[str, Any]]]:
         "bh76": _tracked_pool_with_identity(BH76_JSON_PATH, "BH76"),
         "w411": _tracked_pool_with_identity(W411_JSON_PATH, "W4-11"),
     }
-    return {key: overlap_rows(pool, training) for key, pool in pools.items()}
+    return {key: overlap_rows(pool, training, pool_name=key)
+            for key, pool in pools.items()}

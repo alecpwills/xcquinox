@@ -355,7 +355,7 @@ def _slice_fixture(monkeypatch, run_dir, pools=("bh76", "w411")):
     ckpt_dir = _write_model(run_dir, 0)
     cfg = SimpleNamespace(cluster=SimpleNamespace(eval_workers=1),
                           inputs=SimpleNamespace(held_out_pools=tuple(pools)),
-                          held_out_strict=False)
+                          )
     pool = {n: f"spec_{n}" for n in
             ("h", "h2", "o", "oh", "n2o", "n2ohts", "c2h6")}
     rxns = [
@@ -368,9 +368,16 @@ def _slice_fixture(monkeypatch, run_dir, pools=("bh76", "w411")):
 
     def _load(names, basis=None, grid_level=None, refs_dir=None):
         seen["pools"] = tuple(names)
-        return dict(pool), list(rxns), []
+        return dict(pool), list(rxns)
 
-    monkeypatch.setattr(fbp, "load_held_out_pools_with_conflicts", _load)
+    def _load_with_conflicts(names, basis=None, grid_level=None, refs_dir=None):
+        specs, reactions = _load(names, basis=basis, grid_level=grid_level,
+                                 refs_dir=refs_dir)
+        return specs, reactions, []
+
+    monkeypatch.setattr(fbp, "load_held_out_pools", _load)
+    monkeypatch.setattr(fbp, "load_held_out_pools_with_conflicts",
+                        _load_with_conflicts, raising=False)
     monkeypatch.setattr(ev, "_held_out_basis_grid", lambda cfg: ("def2-svp", 1))
 
     def _capture(**kw):
@@ -448,7 +455,7 @@ def test_the_shard_command_carries_the_pools(run_dir, monkeypatch):
         hp.run_holdout_with_escalation(
             run_dir, 0, "SPEC", "MODEL", [], {"h2": "spec_h2"},
             os.path.join(run_dir, "out"), basis="def2-svp", grid_level=1,
-            n_workers_top=1, total_cpus=1, strict=False,
+            n_workers_top=1, total_cpus=1,
             pools=("bh76", "diet150"))
     assert commands, "the driver rendered no worker command"
     cmd = commands[0]
@@ -496,3 +503,43 @@ def test_the_shard_worker_loads_the_pools_its_command_names(run_dir, monkeypatch
 # A channel directory holds the output of its last pass only
 # ---------------------------------------------------------------------------
 
+
+
+def test_the_eval_stage_marks_the_validation_slice_and_drops_nothing():
+    """The stage returns every reaction it was given, each carrying
+    ``in_validation_slice``: the reactions the in-loop validation consumed are
+    marked so the reported row can average the complement, and no reaction
+    leaves the set. A spec that never validated marks nothing.
+
+    Oracle: a four-reaction set against a spec whose recorded validation slice
+    names one of them.
+    """
+    import json
+    from types import SimpleNamespace
+    import xcquinox.pipeline.cluster._eval_one_spec as eos
+
+    reactions = [
+        {"name": f"r{i}", "reactants": [f"bh76@a{i}"],
+         "products": [f"bh76@b{i}"], "coeffs": [-1.0, 1.0],
+         "reaction_energy_ref": float(i)} for i in range(4)]
+
+    never = SimpleNamespace(validate_every=0, validation_molecules=(),
+                            validation_reactions_path=None)
+    out = eos._annotate_validation_slice(reactions, never)
+    assert [r["name"] for r in out] == ["r0", "r1", "r2", "r3"]
+    assert not any(r["in_validation_slice"] for r in out)
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "val_reactions.json")
+        with open(path, "w") as fh:
+            json.dump([reactions[2]], fh)
+        validated = SimpleNamespace(validate_every=10,
+                                    validation_molecules=("bh76@a2",),
+                                    validation_reactions_path=path,
+                                    val_frac=0.25)
+        marked = eos._annotate_validation_slice(reactions, validated)
+    assert [r["name"] for r in marked] == ["r0", "r1", "r2", "r3"]
+    assert [r["in_validation_slice"] for r in marked] == [False, False,
+                                                          True, False]
+    assert "in_validation_slice" not in reactions[0]

@@ -641,7 +641,6 @@ class GridConfig:
     # the training subset (strict overlap filtering) so held-out = the true
     # complement with no leakage. Required for the representative-subset
     # (BH76+W4-11) runs where training subset + held-out partition one benchmark.
-    held_out_strict: bool = False
     # Run-level toggle: when True, the eval array is NOT submitted up front. The
     # initial ``submit`` queues pretrain+preflight+train plus a tiny launcher job
     # (afterany on train) that submits the eval array only after train terminates,
@@ -709,6 +708,14 @@ def _require(d: dict, key: str, ctx: str):
 #: fails on a key the harness itself once wrote is a worse failure than the
 #: silence the refusal below exists to end.
 _RETIRED_PRETRAIN_KEYS = ("pretrain_root",)
+
+#: Top-level keys the loader once read. ``held_out_strict`` selected an
+#: exclusion of the held-out sets: reactions whose species the training set
+#: also carried left the reported score. Nothing is excluded from a held-out
+#: set any more -- every reaction is evaluated and the training overlap is
+#: annotated per reaction and per molecule -- so the key has no effect, and
+#: twelve shipped configurations state it.
+_RETIRED_ROOT_KEYS = ("held_out_strict",)
 
 
 def _reject_unknown_keys(d, dc_type, ctx: str, *, retired=()):
@@ -1946,7 +1953,8 @@ def load_grid_config(path: str) -> GridConfig:
             "the parser keeps only the last, so the others are dead text. "
             "State the objective exactly once."
         )
-    _reject_unknown_keys(raw, GridConfig, "<root>")
+    _reject_unknown_keys(raw, GridConfig, "<root>",
+                         retired=_RETIRED_ROOT_KEYS)
 
     return GridConfig(
         sweep=_build_sweep(_require(raw, "sweep", "<root>")),
@@ -1961,7 +1969,6 @@ def load_grid_config(path: str) -> GridConfig:
         bh76_mode=raw.get("bh76_mode", "reaction_energy"),
         ae_as_reactions=bool(raw.get("ae_as_reactions", False)),
         use_polarized_correlation=bool(raw.get("use_polarized_correlation", False)),
-        held_out_strict=bool(raw.get("held_out_strict", False)),
         defer_eval=bool(raw.get("defer_eval", False)),
         inline_eval=bool(raw.get("inline_eval", False)),
         eval_coldstart=bool(raw.get("eval_coldstart", False)),
