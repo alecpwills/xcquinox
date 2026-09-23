@@ -220,6 +220,97 @@ def test_get_architecture_raises_for_unknown():
         get_architecture("nonexistent")
 
 
+# ---------------------------------------------------------------------------
+# The seed mixture against the cold start: the pair the mixture cannot express
+# ---------------------------------------------------------------------------
+
+def _seed_spec(tmp_path, *, seed_source, in_loss_kwargs=True, **extra):
+    """An H / O / H2O spec whose only free variable is where the SCF starts.
+
+    The solver config is placed either in ``loss_kwargs`` or in the
+    ``solver_config`` field, the pair the training loop reads as
+    ``loss_kwargs_dict.get("solver_config") or solver_config``; both routes
+    must reach the same rule.
+    """
+    from xcquinox.pipeline.config import (
+        MoleculeSpec, TrainingSpec, get_architecture)
+    from xcquinox.pipeline.solver import SolverConfig, SolverMode
+
+    mols = (
+        MoleculeSpec.from_dict(
+            name="H", atom="H 0 0 0", basis="sto-3g", charge=0, spin=1,
+            atom_composition={"H": 1},
+        ),
+        MoleculeSpec.from_dict(
+            name="O", atom="O 0 0 0", basis="sto-3g", charge=0, spin=2,
+            atom_composition={"O": 1},
+        ),
+        MoleculeSpec.from_dict(
+            name="H2O", atom="O 0 0 0; H 0 0 0.96; H 0.93 0 -0.24",
+            basis="sto-3g", charge=0, spin=0,
+            atom_composition={"H": 2, "O": 1},
+        ),
+    )
+    sc = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
+                      seed_source=seed_source)
+    kwargs = dict(
+        arch=get_architecture("deep_combined"),
+        molecules=mols,
+        targets=(("H", 0.0), ("H2O", 232.0), ("O", 0.0)),
+        atom_energies=(("H", -0.5), ("O", -75.0)),
+        loss_name="A_atomization",
+        loss_kwargs=(("solver_config", sc),) if in_loss_kwargs else (),
+        solver_config=None if in_loss_kwargs else sc,
+        n_steps=10,
+        lr_start=1e-3,
+        lr_end=1e-5,
+        lr_decay_start=0.0,
+        grad_clip=1.0,
+        pretrain_checkpoint=None,
+        checkpoint_dir=str(tmp_path / "ckpt"),
+        seed=0,
+        update_scheme="per_molecule",
+        seed_mix_atomic=True,
+    )
+    kwargs.update(extra)
+    return TrainingSpec(**kwargs)
+
+
+def test_seed_mixture_is_refused_on_a_cold_start_seed(tmp_path):
+    """``seed_mix_atomic`` with a ``minao`` SCF seed is refused by
+    ``TrainingSpec.validate``, by both routes the loop reads the solver config.
+
+    The mixture forms ``(1 - beta) D_seed + beta D_minao``. Where the seed IS
+    the atomic guess the two endpoints coincide and the combination is the cold
+    start itself with a coefficient that changes nothing: an arm that reads as
+    a third protocol while executing the second. The oracle is the pair of
+    specs differing in ``seed_source`` alone -- the ``pbe`` form validates, the
+    ``minao`` form raises with both field names in the message. A third spec
+    keeps the cold-start seed and drops the mixture, which separates a rule
+    that refuses the seed by itself from one that refuses the pair.
+    """
+    import dataclasses
+
+    # Control: the mixture over a converged parent density is the protocol,
+    # and validates both before and after the rule lands.
+    _seed_spec(tmp_path, seed_source="pbe").validate()
+
+    for in_loss_kwargs in (True, False):
+        spec = _seed_spec(tmp_path, seed_source="minao",
+                          in_loss_kwargs=in_loss_kwargs)
+        with pytest.raises(ValueError) as excinfo:
+            spec.validate()
+        message = str(excinfo.value)
+        assert "seed_mix_atomic" in message, message
+        assert "seed_source" in message, message
+
+    # Control: the cold start WITHOUT the mixture is a legal arm (it is the
+    # protocol of the cold-start held-out channel), so the rule must name the
+    # pair and not the seed by itself.
+    dataclasses.replace(_seed_spec(tmp_path, seed_source="minao"),
+                        seed_mix_atomic=False).validate()
+
+
 # §13.2 item (14)
 
 

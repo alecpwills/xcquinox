@@ -667,6 +667,8 @@ holds this set equal to the index.
   scripts/{pretrain,preflight,train_array,eval_array}.sbatch
   specs/spec_0000.spec ...                               one materialized TrainingSpec per array task (preflight writes)
   manifest.json                                        idx → GridCell → spec file → hash (preflight writes)
+  coldstart_census.json                                the cold-start convergence census, one cell per architecture (preflight writes, with cluster.preflight_coldstart_census)
+  logs/coldstart_census.out                            the census subprocess output (preflight writes, with the census)
   checkpoints/spec_0000/ ...                             model.eqx, losses, eval/, eval_df.csv (train/eval write)
   jobs.json                                            submitted-job records (pretrain/preflight/train/eval)
   logs/{pretrain,preflight,train,eval}_*.out

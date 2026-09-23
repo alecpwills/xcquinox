@@ -819,6 +819,12 @@ def _build_validation_data(spec):
             seed_source=seed_source,
             seed_cache_dir=seed_cache_dir,
             seed_density_fit=seed_density_fit,
+            # The training batch's own supply call: the atomic guess is
+            # requested exactly when the run mixes, so the validation records
+            # carry the training records' key set and a species shared by the
+            # two slices is one cache entry. The validation seed (dm_seed) is
+            # unchanged: the metric stays the same quantity.
+            with_minao_seed=bool(getattr(spec, "seed_mix_atomic", False)),
         )
         for m in val_mols
     }
@@ -1205,7 +1211,7 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
                              train_best_model, val_present, val_best_mae,
                              val_finite_metrics, val_best_model, epoch, update,
                              losses, aux_log, early_stopped, arch=None,
-                             plateau_state=None) -> None:
+                             plateau_state=None, mix_rng_state=None) -> None:
     """Write one resume checkpoint ATOMICALLY from PRE-CAPTURED state (WS5).
 
     Persists everything needed to continue the per_molecule loop exactly where
@@ -1234,7 +1240,10 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
     ``train_best_model`` / ``val_best_model`` are the captured best_model pytrees
     (or ``None``); ``resume_best.eqx`` / ``resume_val_best.eqx`` are written ONLY
     when the respective snapshot is present. ``val_present`` is True iff
-    validation ran (its scalars are then meaningful).
+    validation ran (its scalars are then meaningful). ``mix_rng_state`` is
+    the mixer's own rng state under ``seed_mix_atomic`` (``None`` when the
+    mixture is off), restored beside ``rng_state`` so a resumed run draws the
+    mixing coefficients an uninterrupted run would.
 
     ``arch`` is the model class the snapshots are written under; the loop
     passes ``spec.arch`` so each model file carries its class record
@@ -1267,6 +1276,10 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
         # np.random.RandomState uses get_state()/set_state() (NOT the stdlib
         # random getstate/setstate); the loop's rng is a RandomState.
         "rng_state": rng_state,
+        # the mixer's own stream (seed_mix_atomic), None with the mixture off;
+        # restored beside rng_state so the resumed run draws the betas an
+        # uninterrupted run would.
+        "mix_rng_state": mix_rng_state,
         # the plateau controller (adam_plateau): best, bad_epochs, lr; None otherwise
         "plateau_state": plateau_state,
         # _BestModelTracker (train-loss best) scalars.
@@ -1386,6 +1399,7 @@ def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
         "model": model,
         "opt_state": opt_state,
         "rng_state": state["rng_state"],
+        "mix_rng_state": state.get("mix_rng_state"),
         "order": [int(x) for x in state["order"]],
         "train_tracker": train_tracker,
         "val_tracker": val_tracker,
@@ -1987,21 +2001,36 @@ def _require_minao_seed(prepared) -> None:
                     f"group {label!r}")
 
 
+def _mixer_seed(seed: int) -> int:
+    """The seed of the mixer's own rng stream: the spec seed spawned through a
+    fixed key, so the stream is a function of the spec seed alone and is
+    neither the loop's shuffle stream nor the shuffle stream of any other
+    spec seed."""
+    return int(np.random.SeedSequence(int(seed), spawn_key=(1,))
+               .generate_state(1)[0])
+
+
 def _mix_seed_batch(gbatch: dict, rng) -> dict:
     """The DFS seed mixture as the executed dpyscf script forms it
     (scripts/train.py 385-393 with utils.py 296-337: dm_in = dm_init * (1 -
     mixing) + dm_realinit * mixing, dm_init the CONVERGED density, dm_realinit
     the minao guess, mixing = rand / 2 + 1 / 2): for each molecule of the
-    group, D0 = (1 - beta) D_PBE + beta D_minao with beta = (r + 1) / 2, r ~
-    U(0, 1), so the seed is at least half the atomic guess and never the PBE
-    density itself; beta is drawn from the loop's rng at every update so the resume checkpoint's
-    rng_state covers the sequence. Only dm_seed is replaced; every other array
-    of the molecule dict is shared, and the mixture is formed before padding."""
+    group, D0 = (1 - beta) D_seed + beta D_minao with beta = (r + 1) / 2, r ~
+    U(0, 1), so the seed is at least half the atomic guess and never the
+    converged density itself. D_seed is the run's own SCF seed (``dm_seed``:
+    the PBE density on the GGA rung, where the supply layer aliases it to
+    ``dm_pbe``; the SCAN density under a SCAN seed), which is what dm_init is
+    in the script, the converged density of the run's own functional. beta is
+    drawn from ``rng``, the mixer's own stream, at every update, so the resume
+    checkpoint's ``mix_rng_state`` covers the sequence and the loop's shuffle
+    stream is left to the group order. Only dm_seed is replaced; every other
+    array of the molecule dict is shared, and the mixture is formed before
+    padding."""
     mixed = []
     for md in gbatch["mol_data"]:
         beta = (float(rng.uniform()) + 1.0) / 2.0
         new = dict(md)
-        new["dm_seed"] = (1.0 - beta) * md["dm_pbe"] + beta * md["dm_minao"]
+        new["dm_seed"] = (1.0 - beta) * md["dm_seed"] + beta * md["dm_minao"]
         mixed.append(new)
     out = dict(gbatch)
     out["mol_data"] = tuple(mixed)
@@ -2074,6 +2103,12 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     if mix_seed:
         _require_minao_seed(prepared)
     rng = np.random.RandomState(spec.seed)
+    # The mixer's own stream, drawn by nothing but the mixture, so the group
+    # order of every epoch is the same whether the mixture is on or off: the
+    # seed start is the one variable between the arms. None with the mixture
+    # off.
+    mix_rng = (np.random.RandomState(_mixer_seed(spec.seed)) if mix_seed
+               else None)
     order = np.arange(n_groups)
     losses_list: list = []
     aux_log: list = []
@@ -2120,6 +2155,13 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         try:
             restored = _load_resume_checkpoint(
                 checkpoint_dir, model_skeleton=model, opt_state_skeleton=opt_state)
+            # A set written without the mixer's stream cannot continue the
+            # betas where the killed run left them; it is refused here, inside
+            # the guarded load, so the run starts fresh with the warning below.
+            if mix_seed and restored.get("mix_rng_state") is None:
+                raise ValueError(
+                    "the resume set carries no mix_rng_state, so the mixer's "
+                    "stream cannot continue where the killed run left it")
         except Exception as exc:  # noqa: BLE001 -- corrupt ckpt -> start fresh
             warnings.warn(
                 f"WS5: could not load resume checkpoint in {checkpoint_dir} "
@@ -2132,6 +2174,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             if plateau is not None and restored.get("plateau_state") is not None:
                 plateau.from_state(restored["plateau_state"])
             rng.set_state(restored["rng_state"])
+            if mix_rng is not None:
+                mix_rng.set_state(restored["mix_rng_state"])
             order[:] = restored["order"]     # continue the killed run's perm
             tracker = restored["train_tracker"]
             losses_list = restored["losses"]
@@ -2162,6 +2206,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         _live["model"] = model
         _live["opt_state"] = opt_state
         _live["rng_state"] = rng.get_state()
+        _live["mix_rng_state"] = (mix_rng.get_state() if mix_rng is not None
+                                  else None)
         _live["order"] = list(order)
         _live["epoch"] = epochs_run
         _live["update"] = update
@@ -2187,6 +2233,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         _write_resume_checkpoint(
             checkpoint_dir, model=_live["model"], opt_state=_live["opt_state"],
             rng_state=_live["rng_state"], order=_live["order"],
+            mix_rng_state=_live["mix_rng_state"],
             train_best_loss=_live["train_best_loss"],
             train_recent=_live["train_recent"],
             train_window=_live["train_window"],
@@ -2214,7 +2261,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             for gi in order:
                 label, gloss, gbatch = prepared[gi]
                 if mix_seed:
-                    gbatch = _mix_seed_batch(gbatch, rng)
+                    gbatch = _mix_seed_batch(gbatch, mix_rng)
                 model, opt_state, loss_val, comps, grads = _step(
                     model, opt_state, gbatch, gloss)
                 loss_py = float(loss_val)

@@ -1660,6 +1660,333 @@ def test_seed_mix_atomic_resamples_the_seed_per_update(training_batch_info,
 
 
 # ---------------------------------------------------------------------------
+# The seed start as the one variable between the arms: the mixture starts from
+# the run's OWN seed, draws from its OWN rng, and carries that rng's state in
+# the resume record.
+# ---------------------------------------------------------------------------
+
+def _group_sequence(records):
+    """The per-update group identity of a recorded run: the sorted molecule
+    names each update's sub-batch carries."""
+    return [tuple(sorted(rec["name"] for rec in update)) for update in records]
+
+
+def test_the_mixture_starts_from_the_runs_own_seed():
+    """``_mix_seed_batch`` mixes the run's OWN SCF seed with the atomic guess:
+    ``D0 = (1 - beta) dm_seed + beta dm_minao``, beta = (r + 1) / 2 drawn from
+    the rng it is handed, once per molecule in batch order.
+
+    ``dm_seed``, ``dm_pbe`` and ``dm_minao`` are three DIFFERENT arrays here,
+    which is what separates a mixture formed from the run's seed from one
+    formed from the PBE density: under the PBE seed the two coincide (the
+    supply layer aliases ``dm_seed`` to ``dm_pbe``), so no PBE-seeded run can
+    tell them apart, while a SCAN-seeded arm starts from the wrong density.
+    The oracle is ``np.random.RandomState(0)`` replayed beside the call; the
+    two molecules draw different coefficients, so the assignment of a draw to
+    a molecule is pinned as well.
+    """
+    from xcquinox.pipeline.train import _mix_seed_batch
+
+    mol_a = {
+        "name": "A",
+        "dm_seed": np.array([[1.0, 0.25], [0.25, 2.0]]),
+        "dm_pbe": np.array([[5.0, -0.5], [-0.5, 7.0]]),
+        "dm_minao": np.array([[0.25, 0.0], [0.0, 0.5]]),
+        "s_matrix": np.eye(2),
+    }
+    mol_b = {
+        "name": "B",
+        "dm_seed": np.array([[3.0, 0.125], [0.125, 4.0]]),
+        "dm_pbe": np.array([[-2.0, 0.75], [0.75, 9.0]]),
+        "dm_minao": np.array([[0.75, 0.0], [0.0, 1.25]]),
+        "s_matrix": np.eye(2),
+    }
+    gbatch = {"mol_data": (mol_a, mol_b), "label": "ae:AB"}
+
+    out = _mix_seed_batch(gbatch, np.random.RandomState(0))
+
+    oracle = np.random.RandomState(0)
+    betas = []
+    for md_in, md_out in zip(gbatch["mol_data"], out["mol_data"]):
+        beta = (float(oracle.uniform()) + 1.0) / 2.0
+        betas.append(beta)
+        expected = (1.0 - beta) * md_in["dm_seed"] + beta * md_in["dm_minao"]
+        np.testing.assert_allclose(md_out["dm_seed"], expected,
+                                   rtol=0, atol=1e-12)
+        # the mixture is at least half the atomic guess, as the protocol states
+        assert 0.5 <= beta < 1.0, beta
+    assert betas[0] != betas[1]
+
+    # Only the seed is replaced: every other array is the one it was, and the
+    # input batch is left alone (the loop re-enters `prepared` every update).
+    for md_in, md_out in zip(gbatch["mol_data"], out["mol_data"]):
+        assert md_out["dm_pbe"] is md_in["dm_pbe"]
+        assert md_out["dm_minao"] is md_in["dm_minao"]
+        assert md_out["name"] == md_in["name"]
+    assert gbatch["mol_data"][0]["dm_seed"][0, 0] == 1.0
+    assert out["label"] == "ae:AB"
+
+
+def test_the_mixers_stream_is_its_own():
+    """The mixer's rng stream is a function of the spec seed that is neither
+    the shuffle stream of that seed nor the shuffle stream of any other seed
+    compared: the two streams of one run never coincide, and no run's
+    mixture replays another run's group order.
+
+    Oracle: ``np.random.RandomState`` sequences at the seeds compared, and
+    the spawned seeds' distinctness from each other and from every seed.
+    """
+    from xcquinox.pipeline.train import _mixer_seed
+
+    seeds = (0, 1, 7, 42, 123, 2024)
+    spawned = [_mixer_seed(s) for s in seeds]
+    assert len(set(spawned)) == len(seeds)
+    shuffles = {s: tuple(np.random.RandomState(s).uniform(size=8))
+                for s in seeds}
+    for s, m in zip(seeds, spawned):
+        assert m != s
+        assert m not in seeds
+        mixer = tuple(np.random.RandomState(m).uniform(size=8))
+        assert mixer not in shuffles.values(), (s, m)
+
+
+def test_the_mixture_leaves_the_group_order_alone(training_batch_info,
+                                                  monkeypatch):
+    """The per-update group sequence of a run with the mixture ON is identical
+    to the same spec's sequence with the mixture OFF.
+
+    The three campaign arms differ in the SCF seed start and in nothing else,
+    so the stochastic-update order must not depend on whether the mixture is
+    drawing. Sharing the loop's shuffle rng with the mixture makes the order a
+    function of the number of molecules mixed, which differs between the arms
+    from the second epoch on. The oracle is the mixture-off run at the same
+    seed: the two group sequences must agree update for update.
+    """
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.train import run_training, _training_groups
+
+    n_steps = 4
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec_on = _seed_mix_spec(training_batch_info, tmpdir, n_steps=n_steps,
+                                 seed_mix_atomic=True)
+        n_groups = len(_training_groups(spec_on))
+        on_records = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(on_records))
+        run_training(spec_on)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec_off = _seed_mix_spec(training_batch_info, tmpdir, n_steps=n_steps)
+        off_records = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(off_records))
+        run_training(spec_off)
+
+    assert spec_on.seed == spec_off.seed
+    assert n_groups > 1, "a single-group spec cannot show a shuffle difference"
+    assert len(on_records) == len(off_records) == n_steps * n_groups
+    assert _group_sequence(on_records) == _group_sequence(off_records)
+
+
+def test_resume_checkpoint_carries_the_mixers_rng(tmp_path):
+    """The resume record carries the MIXER's rng state beside the shuffle rng,
+    and a ``RandomState`` restored from it continues the draw sequence.
+
+    The oracle is the live stream: the next ``uniform()`` of the mixer whose
+    state was written equals the next ``uniform()`` of a state restored from
+    the record. The two states are also held apart, so a record that wrote the
+    shuffle state under both keys is separated from one that wrote both
+    streams. With the mixture off the field round-trips as ``None``.
+    """
+    import equinox as eqx
+    import numpy as _np
+    from xcquinox.pipeline.models import AlecGGAModel
+    from xcquinox.pipeline.train import (
+        _write_resume_checkpoint, _load_resume_checkpoint, _BestModelTracker,
+    )
+
+    model, opt_state, optimizer = _tiny_model_and_opt(seed=5, n_advance=1)
+    shuffle_rng = _np.random.RandomState(7)
+    order = _np.arange(4)
+    shuffle_rng.shuffle(order)
+    mix_rng = _np.random.RandomState(1234)
+    for _ in range(5):          # mid-epoch draws: the state is not the initial
+        mix_rng.uniform()
+    mix_state = mix_rng.get_state()
+    expected_next = float(mix_rng.uniform())
+
+    tt = _BestModelTracker(window=1)
+    common = dict(
+        model=model, opt_state=opt_state, order=list(order),
+        train_best_loss=tt.best_loss, train_recent=list(tt._recent),
+        train_window=tt.window, train_best_model=tt.best_model,
+        val_present=False, val_best_mae=None, val_finite_metrics=None,
+        val_best_model=None, epoch=1, update=4, losses=[], aux_log=[],
+        early_stopped=False,
+    )
+    _write_resume_checkpoint(str(tmp_path), rng_state=shuffle_rng.get_state(),
+                             mix_rng_state=mix_state, **common)
+
+    model_skel = AlecGGAModel.from_arch(_make_arch(), seed=6)
+    opt_skel = optimizer.init(eqx.filter(model_skel, eqx.is_array))
+    out = _load_resume_checkpoint(str(tmp_path), model_skeleton=model_skel,
+                                  opt_state_skeleton=opt_skel)
+
+    restored = _np.random.RandomState(0)
+    restored.set_state(out["mix_rng_state"])
+    assert float(restored.uniform()) == expected_next
+    # the two streams are separate records, not one written twice.
+    assert not _np.array_equal(out["mix_rng_state"][1], out["rng_state"][1])
+
+    # Mixture off: the field defaults and round-trips as None.
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    _write_resume_checkpoint(str(off_dir), rng_state=shuffle_rng.get_state(),
+                             **common)
+    off = _load_resume_checkpoint(str(off_dir), model_skeleton=model_skel,
+                                  opt_state_skeleton=opt_skel)
+    assert off["mix_rng_state"] is None
+
+
+def test_the_mixture_resumes_bit_exactly(training_batch_info, monkeypatch):
+    """A mixing run killed one update into its second epoch and re-entered
+    draws, from the resume boundary on, the coefficients an uninterrupted run
+    of the same spec draws.
+
+    The oracle is the uninterrupted run: its updates from the second epoch on
+    are compared group by group and molecule by molecule against the resumed
+    run's, through the mixing coefficient the recorded seed implies. This
+    guards the restore of the mixer's stream -- a state saved but never applied
+    restarts the coefficients at the stream's head while the group order
+    continues, which no energy or loss reports.
+    """
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.train import run_training, _training_groups
+
+    with tempfile.TemporaryDirectory() as ref_dir:
+        ref_spec = _seed_mix_spec(training_batch_info, ref_dir, n_steps=3,
+                                  seed_mix_atomic=True, checkpoint_every=1)
+        n_groups = len(_training_groups(ref_spec))
+        ref_records = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(ref_records))
+        run_training(ref_spec)
+
+    with tempfile.TemporaryDirectory() as run_dir:
+        spec = _seed_mix_spec(training_batch_info, run_dir, n_steps=3,
+                              seed_mix_atomic=True, checkpoint_every=1)
+        killed = []
+        monkeypatch.setattr(
+            train_mod, "defused_value_and_grad",
+            _make_seed_recorder(killed, stop_after=n_groups + 1))
+        with pytest.raises(_StopRecording):
+            run_training(spec)
+        # the periodic checkpoint of the completed first epoch is on disk and
+        # the run carries no success signal.
+        assert os.path.isfile(
+            os.path.join(spec.checkpoint_dir, "resume_state.pkl"))
+        assert not os.path.isfile(
+            os.path.join(spec.checkpoint_dir, "model.eqx"))
+
+        resumed = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(resumed))
+        run_training(spec)
+
+    assert len(ref_records) == 3 * n_groups
+    assert len(resumed) == 2 * n_groups
+    assert _group_sequence(resumed) == _group_sequence(ref_records)[n_groups:]
+    for got_update, want_update in zip(resumed, ref_records[n_groups:]):
+        for got, want in zip(got_update, want_update):
+            assert got["name"] == want["name"]
+            assert _recover_beta(got) == pytest.approx(_recover_beta(want),
+                                                       rel=1e-12)
+
+
+def test_a_resume_set_without_the_mixers_stream_starts_fresh(
+        training_batch_info, monkeypatch):
+    """A mixing run re-entered on a resume set that carries no
+    ``mix_rng_state`` starts fresh, with the warning every unusable resume set
+    raises, rather than continuing with coefficients from the stream's head.
+
+    The set is the run's own periodic checkpoint with the key removed from
+    its state pickle, the shape a set written before the mixer had its own
+    stream would have. The oracle is the record count: a fresh run records
+    every epoch again, a resumed one only the epochs after the boundary.
+    """
+    import pickle
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.train import run_training, _training_groups
+
+    with tempfile.TemporaryDirectory() as run_dir:
+        spec = _seed_mix_spec(training_batch_info, run_dir, n_steps=3,
+                              seed_mix_atomic=True, checkpoint_every=1)
+        n_groups = len(_training_groups(spec))
+        killed = []
+        monkeypatch.setattr(
+            train_mod, "defused_value_and_grad",
+            _make_seed_recorder(killed, stop_after=n_groups + 1))
+        with pytest.raises(_StopRecording):
+            run_training(spec)
+        state_path = os.path.join(spec.checkpoint_dir, "resume_state.pkl")
+        # the run's own state pickle, written by the loop a moment ago in
+        # this process: the artifact under test, not data from elsewhere.
+        with open(state_path, "rb") as fh:
+            state = pickle.load(fh)  # noqa: S301
+        assert state.pop("mix_rng_state") is not None
+        with open(state_path, "wb") as fh:
+            pickle.dump(state, fh, protocol=4)
+
+        fresh = []
+        monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                            _make_seed_recorder(fresh))
+        with pytest.warns(RuntimeWarning, match="mix_rng_state"):
+            run_training(spec)
+        assert os.path.isfile(os.path.join(spec.checkpoint_dir, "model.eqx"))
+
+    assert len(fresh) == 3 * n_groups
+
+
+def test_validation_records_carry_the_atomic_guess_under_the_mixture(
+        tmp_path, training_batch_info):
+    """``_build_validation_data`` asks the precompute for the atomic guess
+    exactly when the run mixes, so a species shared by the training and
+    validation slices is one cache entry rather than two reference SCFs.
+
+    The validation SEED itself is unchanged: the mixture is a training-loop
+    device and the validation metric must stay the same quantity, which is
+    asserted against the mixture-off record's own ``dm_seed``.
+    """
+    import dataclasses
+    from xcquinox.pipeline.train import _build_validation_data
+
+    rxn_path = tmp_path / "val_reactions.json"
+    rxn_path.write_text(json.dumps([{
+        "name": "r", "reactants": ["H2"], "products": ["H2"],
+        "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0}]))
+    spec_on = _make_live_spec(
+        training_batch_info, loss_name="L5_gradnorm_vxc_step7", n_steps=1,
+        tmpdir=str(tmp_path), update_scheme="per_molecule",
+        require_atom_anchors=False, validate_every=1,
+        validation_molecules=(h2_molecule(),),
+        validation_reactions_path=str(rxn_path), seed_mix_atomic=True)
+    spec_off = dataclasses.replace(spec_on, seed_mix_atomic=False)
+
+    on_data, on_reactions = _build_validation_data(spec_on)
+    off_data, _ = _build_validation_data(spec_off)
+
+    assert set(on_data) == set(off_data) == {"H2"}
+    assert on_reactions[0]["name"] == "r"
+    guess = on_data["H2"]["dm_minao"]
+    assert guess is not None
+    assert np.asarray(guess).shape == np.asarray(on_data["H2"]["dm_seed"]).shape
+    assert off_data["H2"]["dm_minao"] is None
+    # the validation seed does not move: the metric is the same quantity.
+    np.testing.assert_array_equal(np.asarray(on_data["H2"]["dm_seed"]),
+                                  np.asarray(off_data["H2"]["dm_seed"]))
+
+
+# ---------------------------------------------------------------------------
 # The plateau optimizer (spec C7): torch's ReduceLROnPlateau in `min` mode as
 # dpyscf configures it (patience 10, factor 0.1, min_lr 1e-7), stepping once
 # per epoch on the epoch's MEAN group loss, with the coupled L2 of torch's

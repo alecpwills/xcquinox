@@ -328,6 +328,65 @@ def _cfg_with(hp_kwargs=None, inputs_kwargs=None):
     )
 
 
+# --- The seed start as the one variable between the arms -------------------
+
+def test_seed_mixture_is_refused_on_a_cold_start_seed():
+    """``hyperparams.seed_mix_atomic`` with ``inputs.seed_xc: minao`` is
+    refused by ``validate_grid_semantics``, with both field names in the
+    message.
+
+    The mixture reads the run's own SCF seed as one endpoint and the atomic
+    guess as the other; a cold-start seed makes the two the same density, so
+    the arm executes the cold start and reports a mixture. The oracle is the
+    pair of configs differing in ``seed_xc`` alone: the resolved-per-rung form
+    passes. A third config keeps the cold start and drops the mixture, which
+    separates a rule that refuses the seed by itself from one that refuses the
+    pair.
+    """
+    hp_on = {"seed_mix_atomic": True, "update_scheme": "per_molecule"}
+    cfg = _cfg_with(hp_kwargs=hp_on, inputs_kwargs={"seed_xc": "minao"})
+    with pytest.raises(ValueError) as excinfo:
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+    message = str(excinfo.value)
+    assert "inputs.seed_xc" in message, message
+    assert "hyperparams.seed_mix_atomic" in message, message
+
+    # Controls: the mixture over a resolved parent seed, and the cold start
+    # without the mixture, are both legal.
+    validate_grid_semantics(
+        _cfg_with(hp_kwargs=hp_on, inputs_kwargs={"seed_xc": "auto"}),
+        _StubDomain(pool_size=40))
+    validate_grid_semantics(
+        _cfg_with(hp_kwargs={"update_scheme": "per_molecule"},
+                  inputs_kwargs={"seed_xc": "minao"}),
+        _StubDomain(pool_size=40))
+
+
+def test_the_census_knob_round_trips(tmp_path):
+    """``cluster.preflight_coldstart_census`` survives the resolved-config
+    round trip (asdict + YAML + reload), the path the preflight re-reads, and
+    defaults off.
+
+    A knob parsed but not stored, or stored but not written back, leaves the
+    preflight reading the default while the submitted file states the census:
+    the same class of silent drop the seeding and coldstart flags are held to
+    by ``test_seed_and_coldstart_resolved_round_trip``.
+    """
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+
+    raw = _base_config_dict()
+    raw["cluster"]["preflight_coldstart_census"] = True
+    cfg = load_grid_config(_write(tmp_path, "census.yaml", raw))
+    assert cfg.cluster.preflight_coldstart_census is True
+    cfg2 = load_grid_config(
+        _write(tmp_path, "census_resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.cluster.preflight_coldstart_census is True
+
+    # Default off: every existing configuration keeps its preflight.
+    plain = load_grid_config(_write(tmp_path, "plain.yaml", _base_config_dict()))
+    assert plain.cluster.preflight_coldstart_census is False
+
+
 # --- WS3 validation-slice cross-field + range guards (2026-06-20) -----------
 
 def test_validate_rejects_validate_every_without_val_refs_dir():

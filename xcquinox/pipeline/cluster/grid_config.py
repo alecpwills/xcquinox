@@ -569,6 +569,16 @@ class ClusterResources:
     # large-basis task OOMing at XLA/LLVM compile time). Default False ->
     # byte-identical (no probe, no extra subprocess).
     preflight_compile_smoke: bool = False
+    # Opt-in cold-start convergence census. When True the preflight runs the
+    # training solver from the atomic guess on every training species, for
+    # one FULL-mode cell per swept architecture, with the certified
+    # pretrained checkpoint (cluster/coldstart_census.py), and writes
+    # <run_dir>/coldstart_census.json. A report, never a gate: a species that
+    # does not converge is recorded and the array is not blocked. Cost, inside
+    # the preflight's own wall: one reference SCF per species and descriptor
+    # set, then the solver's cycles per species and architecture. Default
+    # False -> byte-identical (no census, no extra subprocess).
+    preflight_coldstart_census: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1719,6 +1729,8 @@ def _build_cluster(d: dict, *, text: str = "",
         benchmark_refs_allocation=d.get("benchmark_refs_allocation",
                                         "exclusive"),
         preflight_compile_smoke=bool(d.get("preflight_compile_smoke", False)),
+        preflight_coldstart_census=bool(
+            d.get("preflight_coldstart_census", False)),
     )
 
 
@@ -2156,6 +2168,16 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         raise ValueError(
             "hyperparams.seed_mix_atomic is applied by the per-molecule loop (update_scheme per_molecule) only; "
             f"got update_scheme={hp.update_scheme!r}")
+    # Under a minao seed the run's SCF seed is the atomic guess, so the two
+    # endpoints of the mixture coincide: every mixed seed would be the cold
+    # start itself while the record states a mixed-seed protocol.
+    if hp.seed_mix_atomic and getattr(cfg.inputs, "seed_xc", "pbe") == "minao":
+        raise ValueError(
+            "hyperparams.seed_mix_atomic mixes the run's SCF seed with the "
+            "atomic guess, and inputs.seed_xc='minao' makes that seed the "
+            "atomic guess itself: every mixture would be the cold start while "
+            "the record states a mixed-seed protocol. Use seed_xc 'auto', 'pbe' "
+            "or 'scan' with the mixture, or 'minao' without it.")
     if hp.plateau_patience < 0:
         raise ValueError(
             f"hyperparams.plateau_patience must be >= 0, got {hp.plateau_patience}")

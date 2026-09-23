@@ -359,6 +359,159 @@ def test_compile_smoke_gate_failure_blocks_exit_1(tmp_path, patched, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# cold-start convergence census (cluster.preflight_coldstart_census)
+# ---------------------------------------------------------------------------
+
+def _recording_census(calls, verdict):
+    """A stand-in for the census seam that records its arguments and reports
+    ``verdict``."""
+    def _seam(specs, paths, run_dir):
+        calls.append((len(specs), len(paths), run_dir))
+        return verdict
+    return _seam
+
+
+def test_the_preflight_runs_the_census_and_never_blocks_on_it(
+        tmp_path, patched, monkeypatch, capsys):
+    """``cluster.preflight_coldstart_census`` runs the census seam once, over
+    the staged specs and their materialized paths, and the run directory; the
+    preflight exits 0 whichever verdict the census returns, and does not call
+    the seam at all when the knob is absent.
+
+    The census is a report on where the cold start converges, not a gate: a
+    species that does not converge is information for the analysis, and
+    blocking the array on it would cost the run. The never-blocks half is
+    asserted against a seam that reports failure, which is the only state that
+    separates a report from a gate; the knob-absent half holds every existing
+    configuration's preflight unchanged.
+    """
+    calls = []
+
+    # Knob on, census succeeds: called once with the staged grid, exit 0.
+    run_dir = tmp_path / "on"
+    run_dir.mkdir()
+    _write_resolved_config(run_dir,
+                           cluster_extra={"preflight_coldstart_census": True})
+    monkeypatch.setattr(_preflight, "_coldstart_census",
+                        _recording_census(calls, True))
+    assert main([str(run_dir)]) == 0
+    assert len(calls) == 1
+    n_specs, n_paths, seen_dir = calls[0]
+    assert n_specs == len(_two_cells()) and n_paths == n_specs
+    assert seen_dir == str(run_dir)
+    capsys.readouterr()          # drop this run's log before reading the next
+
+    # Knob on, census reports a failure: still exit 0, and the log says so.
+    calls.clear()
+    failed_dir = tmp_path / "failed"
+    failed_dir.mkdir()
+    _write_resolved_config(failed_dir,
+                           cluster_extra={"preflight_coldstart_census": True})
+    monkeypatch.setattr(_preflight, "_coldstart_census",
+                        _recording_census(calls, False))
+    assert main([str(failed_dir)]) == 0
+    assert len(calls) == 1
+    assert "FAILED" in capsys.readouterr().out
+
+    # Knob absent: the seam is never reached.
+    calls.clear()
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    _write_resolved_config(off_dir)
+    monkeypatch.setattr(_preflight, "_coldstart_census",
+                        _recording_census(calls, True))
+    assert main([str(off_dir)]) == 0
+    assert calls == []
+
+
+def test_the_census_takes_the_first_full_cell_of_every_architecture():
+    """``_census_cells`` picks, per architecture, the first cell whose solver
+    is FULL (the only mode the solver accepts the atomic-guess seed in) and
+    names the architectures with no such cell.
+
+    The grid holds a one-shot cell before a FULL cell of the same
+    architecture, an architecture with only a one-shot cell, and one with a
+    FULL cell held in the ``solver_config`` field rather than in
+    ``loss_kwargs``, so the selection is separated from "the first cell" and
+    from a reader of one of the two places the solver config lives.
+    """
+    from types import SimpleNamespace
+    from xcquinox.pipeline.solver import SolverConfig, SolverMode
+
+    full = SolverConfig(mode=SolverMode.FULL, max_cycles=3)
+    oneshot = SolverConfig(mode=SolverMode.ONESHOT, max_cycles=0)
+
+    def _spec(sc, *, in_field=False):
+        if in_field:
+            return SimpleNamespace(loss_kwargs_dict={}, solver_config=sc)
+        return SimpleNamespace(loss_kwargs_dict={"solver_config": sc},
+                              solver_config=None)
+
+    specs = [
+        (_cell("a", 2), _spec(oneshot)),
+        (_cell("a", 3), _spec(full)),
+        (_cell("b", 2), _spec(oneshot)),
+        (_cell("c", 2), _spec(full, in_field=True)),
+        (_cell("c", 3), _spec(full)),
+    ]
+    chosen, skipped = _preflight._census_cells(specs)
+    assert chosen == [(1, "a"), (3, "c")]
+    assert skipped == ["b"]
+
+
+def test_the_census_subprocess_writes_the_record_under_the_run_dir(tmp_path,
+                                                                    capsys):
+    """``_coldstart_census_impl`` runs the census as a subprocess over the
+    selected cells and leaves ``coldstart_census.json`` and the subprocess
+    output under the run directory, logging the cell's summary line.
+
+    One FULL cell on a closed-shell H2 at sto-3g with a three-cycle solver,
+    materialized as the preflight materializes specs, so the whole path the
+    cluster job takes -- the spec file, the interpreter, the thread
+    environment, the output persistence -- is exercised once. The oracle is
+    the document the census module writes: one cell, one species, a row for
+    it.
+    """
+    from xcquinox.pipeline.cluster.materialize import write_spec_atomic
+    from xcquinox.pipeline.config import ArchitectureConfig, TrainingSpec
+    from xcquinox.pipeline.solver import SolverConfig, SolverMode
+    from xcquinox.pipeline.tests.fixtures.molecules import h2_molecule
+
+    arch = ArchitectureConfig(
+        name="census_t", depth=2, nodes=8, attention=False,
+        descriptors=(), x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False)
+    spec = TrainingSpec.from_dicts(
+        arch=arch, molecules=(h2_molecule(),), targets={"H2": 0.2},
+        atom_energies={"H": -0.5}, loss_name="L5_gradnorm_vxc_step7",
+        loss_kwargs={"solver_config": SolverConfig(mode=SolverMode.FULL,
+                                                   max_cycles=3)},
+        n_steps=1, lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0,
+        grad_clip=1.0, checkpoint_dir=str(tmp_path / "ckpt"), seed=0,
+        update_scheme="per_molecule", require_atom_anchors=False)
+    run_dir = tmp_path / "run"
+    (run_dir / "specs").mkdir(parents=True)
+    path = str(run_dir / "specs" / "spec_0000.spec")
+    write_spec_atomic(spec, path)
+
+    ok = _preflight._coldstart_census_impl(
+        [(_cell("census_t", 1), spec)], [path], str(run_dir))
+    assert ok is True
+
+    with open(run_dir / "coldstart_census.json") as fh:
+        doc = json.load(fh)
+    assert len(doc["cells"]) == 1
+    cell = doc["cells"][0]
+    assert cell["arch"] == "census_t"
+    assert cell["error"] is None
+    assert cell["n_species"] == 1
+    assert [r["name"] for r in cell["rows"]] == ["H2"]
+    assert os.path.isfile(run_dir / "logs" / "coldstart_census.out")
+    out = capsys.readouterr().out
+    assert "census census_t: " in out
+
+
+# ---------------------------------------------------------------------------
 # The per-architecture fidelity gate
 # ---------------------------------------------------------------------------
 

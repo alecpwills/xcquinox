@@ -1137,11 +1137,13 @@ class TrainingSpec:
     require_atom_anchors: bool = True
     # DFS seeding as dpyscf's script executes it (train.py 385-393): when True
     # the per-molecule loop rebuilds each group's SCF seed at EVERY update as
-    # (1 - beta) D_PBE + beta D_minao with beta = (r + 1) / 2, r ~ U(0, 1) from
-    # the loop's own rng (beta weights the ATOMIC guess), and the precompute
-    # supplies dm_minao. False keeps the exact PBE seed at every update, the
-    # protocol of every campaign through v7. Per-molecule scheme only
-    # (validate refuses it elsewhere) (2026-09-08).
+    # (1 - beta) D_seed + beta D_minao with beta = (r + 1) / 2, r ~ U(0, 1)
+    # from the mixer's own rng stream (beta weights the ATOMIC guess; D_seed
+    # is the run's converged seed, the PBE density on the GGA rung), and the
+    # precompute supplies dm_minao. False keeps the exact seed at every
+    # update, the protocol of every campaign through v7. Per-molecule scheme
+    # only, and never with a minao seed, whose two endpoints are the same
+    # atomic guess (validate refuses both).
     seed_mix_atomic: bool = False
     # Optimizer: "adamw_linear" (clip -> adamw on the constant-then-linear
     # schedule, every campaign through v7) or "adam_plateau" (dpyscf's: clip ->
@@ -1325,6 +1327,21 @@ class TrainingSpec:
             raise ValueError(
                 "seed_mix_atomic is applied by the per-molecule loop only; got "
                 f"update_scheme={self.update_scheme!r}")
+        # The solver config as the loop reads it: loss_kwargs first, the field
+        # otherwise. Under a minao seed the run's seed IS the atomic guess, so
+        # the mixture's two endpoints coincide and every mixed seed would be
+        # the cold start itself while the record states a mixed protocol.
+        solver_cfg = (self.loss_kwargs_dict.get("solver_config")
+                      or self.solver_config)
+        if (self.seed_mix_atomic
+                and getattr(solver_cfg, "seed_source", "pbe") == "minao"):
+            raise ValueError(
+                "seed_mix_atomic mixes the run's SCF seed with the atomic "
+                "guess, and under solver_config.seed_source='minao' that seed "
+                "is the atomic guess itself: every mixture would be the cold "
+                "start while the record states a mixed-seed protocol. Use "
+                "seed_source 'pbe' or 'scan' with the mixture, or 'minao' "
+                "without it.")
         if self.optimizer not in ("adamw_linear", "adam_plateau"):
             raise ValueError(
                 f"optimizer must be 'adamw_linear' or 'adam_plateau', got "
