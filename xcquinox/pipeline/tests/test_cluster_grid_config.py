@@ -701,12 +701,12 @@ def test_walltime_bad_shapes_refused(tmp_path, key, literal):
 
 #: The campaign configs under version control: the template, the two grid-2
 #: campaigns the user guide walks through, the grid-3 lineage root the loss
-#: primer cites line by line, and the six v7 files (the three group files, the
-#: reaction-energy control and the two arms). ``hpcjobs/.gitignore`` excludes
+#: primer cites line by line, the six v7 files (the three group files, the
+#: reaction-energy control and the two arms) and the three campaign-1 files of
+#: the v8 program (one per seed arm). ``hpcjobs/.gitignore`` excludes
 #: ``configs/*.local.yaml`` (personal cluster-filled copies), so a fresh clone,
-#: a git worktree and the cluster checkout carry only these; counting whatever
-#: ``*.yaml`` happens to be on disk would make this file red wherever the
-#: untracked copies are absent. The set is held equal to the index below.
+#: a git worktree and the cluster checkout carry only these, and the test
+#: below holds the list equal to the directory's other ``*.yaml`` files.
 _TRACKED_CONFIGS = (
     "bh76w411_repr.svp_grid2.yaml",
     "bh76w411_repr.tzvpd_grid2_df.yaml",
@@ -717,6 +717,9 @@ _TRACKED_CONFIGS = (
     "dfs_step7.dfs6311_grid3_v7g1_size.yaml",
     "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml",
     "dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml",
+    "dfs_step8.v8_dfs_allsc.yaml",
+    "dfs_step8.v8_dfs_coldstart.yaml",
+    "dfs_step8.v8_dfs_parity.yaml",
     "step7.yaml",
 )
 
@@ -744,22 +747,26 @@ def _assert_walltimes_are_strings(path):
 
 
 def test_tracked_configs_carry_valid_walltimes():
-    """Every version-controlled campaign config and the shipped example load.
+    """Every version-controlled campaign config and the shipped example load,
+    and the tracked list is exactly the configuration files on disk.
 
-    The tracked set is listed by name rather than globbed: the count is then a
-    property of the repository, not of which untracked ``*.local.yaml`` copies
-    happen to sit in the working tree.
+    The list is held equal to the directory's ``*.yaml`` files with the
+    personal ``*.local.yaml`` copies excepted (the ones ``hpcjobs/.gitignore``
+    keeps out of the repository), so a file added to the tree and left out of
+    the list, or listed and deleted, is red.
     """
     tree = _config_tree()
     if tree is None:
         pytest.skip("cluster config tree not present in this checkout")
     cfg_dir, example = tree
+    on_disk = sorted(p.name for p in cfg_dir.glob("*.yaml")
+                     if not p.name.endswith(".local.yaml"))
+    assert on_disk == sorted(_TRACKED_CONFIGS), (
+        f"the tracked-configuration list and the files on disk differ: "
+        f"{sorted(set(on_disk) ^ set(_TRACKED_CONFIGS))}")
     for name in _TRACKED_CONFIGS:
-        path = cfg_dir / name
-        assert path.is_file(), f"tracked config missing: {path}"
-        _assert_walltimes_are_strings(path)
+        _assert_walltimes_are_strings(cfg_dir / name)
     _assert_walltimes_are_strings(example)
-    assert len(_TRACKED_CONFIGS) + 1 == 11, "tracked config count changed"
 
 
 # ---------------------------------------------------------------------------

@@ -839,3 +839,81 @@ was removed from the repository and kept on disk under
 `tools/analysis/figures_archive/` (gitignored; reports under
 `figures_archive/reports/`). Rebuilding those PDFs requires restoring the
 archived paths; the archived PDFs are the frozen record.
+
+## Campaign 1 of the v8 program: the seed start as the one variable
+
+The three files `hpcjobs/configs/dfs_step8.v8_dfs_{allsc,parity,coldstart}.yaml`
+are one campaign: the four architectures (`deep_3x16`, `deep_attn_3x16`,
+`deep_geom_3x16`, `deep_geom_attn_3x16`) on the DFS full set at the `full_25`
+solver with the dpyscf-parity hyperparameters, pretrained by the published
+cloning protocol (`exchange_footing: paper`, the sampled-row objective on 800
+points per system, 20000 steps from 1e-3 to 1e-5, no clip, no energy term, no
+validation split) with `descriptor_coordinates: paper` and `ueg_gate: x2`.
+The files differ in the seed axis alone (pin
+`test_v8_arms_differ_from_arm_s_in_the_seed_keys_alone`):
+
+| arm | file | `inputs.seed_xc` | `seed_mix_atomic` | `respect_sc_flag` | `nonsc_weight` |
+|---|---|---|---|---|---|
+| S | `dfs_step8.v8_dfs_allsc.yaml` | `auto` | true | false | -- |
+| P | `dfs_step8.v8_dfs_parity.yaml` | `auto` | true | true | 0.5 |
+| A | `dfs_step8.v8_dfs_coldstart.yaml` | `minao` | false | false | -- |
+
+The wall is 96 h per cell with `inline_eval`, so every arm submits on
+`extended-96core` (the long-* queues cap at 48 h); a cell killed at the wall
+resubmits from its checkpoint, and the timeout escalation stays on the same
+queue at 168 h. The held-out evaluation is the pair BH76 + W4-11 under the
+cold-start channels; the reporting channel is `eval_holdout_coldstart_val_best`.
+The diet150 evaluation of these cells is a re-evaluation from the pull.
+
+Pretraining is shared. Arm S runs first and fits the four clones. On the
+cluster, from the repository root after `git pull`:
+
+```bash
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox
+git pull
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_dfs_allsc.yaml --partition extended-96core --max-nodes 4 --submit
+```
+
+After its four certificates pass (`python -m xcquinox.pipeline.cluster status
+<S_RUN>` shows the pretrain stage complete;
+`ls <S_RUN>/pretrain/*/fidelity_certificate.json` lists four files), submit
+each of the other two arms, hold its datagen job and its pretrain array
+before either can start, copy the clones in, release both. The pretrain
+array waits on the datagen job, and for a copied arm the datagen finds the
+shared file current and exits within minutes, so both jobs are held at once
+and right after the submission:
+
+```bash
+R=/gpfs/scratch/awills/xcquinox_runs/dfs_step8
+S_RUN=$(ls -d $R/v8_dfs_allsc/runs/run_* | tail -1)
+for ARM in parity coldstart; do
+  python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_dfs_$ARM.yaml --partition extended-96core --max-nodes 4 --submit
+  NEW=$(ls -d $R/v8_dfs_$ARM/runs/run_* | tail -1)
+  HELD=$(python -c "import json; print(' '.join(str(j['array_job_id']) for j in json.load(open('$NEW/jobs.json')) if j['kind'] in ('datagen', 'pretrain')))")
+  scontrol hold $HELD
+  mkdir -p $NEW/pretrain
+  cp -a $S_RUN/pretrain/. $NEW/pretrain/
+  ls $NEW/pretrain/*/fidelity_certificate.json
+  scontrol release $HELD
+done
+```
+
+Each pretrain task of a copied arm logs `pretrain KEPT`; a task logging
+`pretraining from scratch` means the copy was not in place (the hold came
+after the array had started, which the pretrain log's timestamp shows) and
+that arm's clones are its own refits, to be recorded with the results.
+Monitoring, the wall-kill recovery and the pull:
+
+```bash
+python -m xcquinox.pipeline.cluster status <run_dir>
+python -m xcquinox.pipeline.cluster resubmit <run_dir> --submit
+python -m xcquinox.pipeline.cluster pull auto --category dfs_step8
+```
+
+The pull categories are `dfs_step8/v8_dfs_allsc/runs`,
+`dfs_step8/v8_dfs_parity/runs` and `dfs_step8/v8_dfs_coldstart/runs`. Every
+cell is one whole node, and `--max-nodes 4` caps each arm's array on its own,
+so arm S holds four nodes while its array runs and arms P and A together
+hold eight. The v7 `full_25` arms ran to their 96 h wall per cell; arm S's
+four cells and then the eight of P and A are two waves of 96 h, about ten
+days of wall time plus the 48 h pretraining, queue time excluded.

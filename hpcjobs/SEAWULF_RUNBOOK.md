@@ -654,8 +654,12 @@ loss primer cites line by line) and the six v7 files: `dfs_step7.dfs6311_grid3_v
 `dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml` (the three group files),
 `dfs_step7.dfs6311_grid3_v7g1_rxn.yaml` (the reaction-energy control), and
 `dfs_step7.dfs6311_grid3_v7g1_c25.yaml` and `dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml`
-(the 25-cycle and the dpyscf-parity arms). `xcquinox/pipeline/tests/test_cluster_grid_config.py`
-holds this set equal to the index.
+(the 25-cycle and the dpyscf-parity arms), and the three files of campaign 1 of the v8
+program, `dfs_step8.v8_dfs_allsc.yaml`, `dfs_step8.v8_dfs_parity.yaml` and
+`dfs_step8.v8_dfs_coldstart.yaml` (the arms S, P and A of the seed-start campaign; the
+submission sheet is in `docs/pipeline/pull_and_figures.md`).
+`xcquinox/pipeline/tests/test_cluster_grid_config.py` holds this set equal to the files on
+disk, the personal `*.local.yaml` copies excepted.
 
 ### The held-out pools and the reference job's size cap
 
