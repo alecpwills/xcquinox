@@ -11,7 +11,6 @@ schema is closed in both directions.
 
 Tolerances are anchored to measured floors, quoted at each constant.
 """
-import json
 import os
 
 import numpy as np
@@ -23,50 +22,27 @@ import xcquinox.pipeline.pretrain_data_gen as pdg
 _TINY = (("He", 0), ("H", 1))
 _FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
                         "pretrain_data_default_reference.npz")
-#: The platform the fixture was recorded on, beside it. On that platform the
-#: pin is bit for bit; on any other the columns jax and libxc compute may
-#: move by a rounding residue, and the pin is a tolerance of a few ulp of
-#: each element. Without the sidecar the pin is bit for bit.
-_PLATFORM_SIDECAR = _FIXTURE[:-len(".npz")] + ".platform.json"
-#: The per-element relative tolerance off the recording platform, in ulp.
-#: Measured: one element of ``Fc_scan_mesh`` moved by one ulp on a hosted
-#: runner. Four covers a rounding-order difference of a few operations on
-#: any element, whatever its magnitude, and sits many orders below the
-#: relative change a protocol edit makes to a column.
+#: The per-element relative tolerance the recorded fixture is held to, in ulp.
+#: The columns jax and libxc compute carry the rounding residue of the
+#: machine's own BLAS and instruction order, so the recording is reproduced to
+#: a few ulp of each element rather than bit for bit. Measured: one element of
+#: ``Fc_scan_mesh`` moved by one ulp on a hosted runner. Four covers a
+#: rounding-order difference of a few operations on any element, whatever its
+#: magnitude, and sits many orders below the relative change a protocol edit
+#: makes to a column.
 _ULP_TOLERANCE = 4
 
 
-def _recorded_platform():
-    """The fixture's recording platform, or None without a sidecar."""
-    if not os.path.isfile(_PLATFORM_SIDECAR):
-        return None
-    with open(_PLATFORM_SIDECAR, "r", encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-def _on_recording_platform() -> bool:
-    """Whether the running platform is the one the fixture was recorded on,
-    field by field over the closed-shell fixtures' platform keys; True without
-    a sidecar, so a fixture with no recorded platform is held bit for bit."""
-    recorded = _recorded_platform()
-    if recorded is None:
-        return True
-    from xcquinox.pipeline.tests.record_closed_shell_reference import (
-        PLATFORM_KEYS, platform_fingerprint)
-    live = platform_fingerprint()
-    return all(recorded.get(key) == live.get(key) for key in PLATFORM_KEYS)
-
-
-def _assert_columns_match(got, ref, *, bitwise: bool):
-    """Hold every recorded key: dtype and shape always exactly, values bit for
-    bit when ``bitwise`` and otherwise within ``_ULP_TOLERANCE`` ulp of each
-    element, a relative tolerance (integer keys stay exact). Returns the keys
-    that moved with their largest absolute difference, for the report."""
+def _assert_columns_match(got, ref):
+    """Hold every recorded key: dtype and shape exactly, floating values
+    within ``_ULP_TOLERANCE`` ulp of each element (a relative tolerance) and
+    integer values exactly. Returns the keys that moved with their largest
+    absolute difference, for the report."""
     moved = []
     for key in sorted(ref):
         assert got[key].dtype == ref[key].dtype, key
         assert got[key].shape == ref[key].shape, key
-        if bitwise or not np.issubdtype(ref[key].dtype, np.floating):
+        if not np.issubdtype(ref[key].dtype, np.floating):
             np.testing.assert_array_equal(got[key], ref[key], err_msg=key)
             continue
         rtol = _ULP_TOLERANCE * float(np.finfo(ref[key].dtype).eps)
@@ -77,7 +53,7 @@ def _assert_columns_match(got, ref, *, bitwise: bool):
     return moved
 
 #: The new keys the default configuration gains. Everything else the default
-#: file carries is pinned bit-for-bit against the recorded fixture.
+#: file carries is held to the tolerance above against the recorded fixture.
 _NEW_DEFAULT_KEYS = sorted([
     "e_c_parent_scan_sys", "e_c_parent_sys", "e_lda_c_all", "e_lda_x_all",
     "e_x_parent_scan_sys", "e_x_parent_sys", "mesh_weight_fraction",
@@ -133,38 +109,33 @@ def _install_fake(monkeypatch, factory):
 
 def test_default_output_matches_the_recorded_reference(tmp_path):
     """Every column the generator writes at the default configuration is held
-    against the recorded fixture: bit for bit on the recording platform (the
-    sidecar names it), and within ``_ULP_TOLERANCE`` ulp of each key's largest
-    magnitude anywhere else, where the columns jax and libxc compute carry
-    the rounding residue of the machine's own BLAS and instruction order (a
-    hosted runner moved one element of ``Fc_scan_mesh`` by one ulp). New keys
-    may appear; recorded ones may not move beyond that, so a YAML already in
-    flight trains on the same numbers. The .npz container is a zip whose
-    headers carry write timestamps, so the pin is on array contents, not on
-    the file's bytes. Both atoms carry one s function, on which the
-    traceless-quadrupole bias of the orientation lock vanishes identically,
-    so the locked default reproduces the recording, which is at the pinned
-    reference density cutoff (``pyscf_determinism.REFERENCE_SMALL_RHO_CUTOFF``)."""
+    against the recorded fixture, within ``_ULP_TOLERANCE`` ulp of each
+    element, where the columns jax and libxc compute carry the rounding
+    residue of the machine's own BLAS and instruction order (a hosted runner
+    moved one element of ``Fc_scan_mesh`` by one ulp). New keys may appear;
+    recorded ones may not move beyond that, so a YAML already in flight trains
+    on the same numbers. The .npz container is a zip whose headers carry write
+    timestamps, so the pin is on array contents, not on the file's bytes. Both
+    atoms carry one s function, on which the traceless-quadrupole bias of the
+    orientation lock vanishes identically, so the locked default reproduces
+    the recording, which is at the pinned reference density cutoff
+    (``pyscf_determinism.REFERENCE_SMALL_RHO_CUTOFF``)."""
     ref = dict(np.load(_FIXTURE))
     _path, got = _gen(tmp_path)
     missing = sorted(set(ref) - set(got))
     assert not missing, f"the default output lost {missing}"
-    _assert_columns_match(got, ref, bitwise=_on_recording_platform())
+    _assert_columns_match(got, ref)
 
 
-def test_the_default_output_pin_is_tolerant_off_the_recording_platform(
-        monkeypatch, tmp_path):
-    """Off the recording platform a one-ulp movement of an element passes the
-    pin, a hundred-ulp movement fails it, and the same absolute movement on a
-    small element of the same column fails it, since the tolerance is per
-    element and not per column; on the recording platform the one ulp fails;
-    an integer column is exact on both; the refusal names the offending key
-    and no other; and the platform decision reads the sidecar field by field,
-    defaulting to the recording platform when no sidecar exists.
+def test_the_default_output_pin_is_a_few_ulp_per_element():
+    """A one-ulp movement of an element passes the pin, a hundred-ulp movement
+    fails it, and the same absolute movement on a small element of the same
+    column fails it, since the tolerance is per element and not per column; an
+    integer column is exact; and the refusal names the offending key and no
+    other.
 
     The large element is a power of two, so one ulp of it is exactly
     ``eps`` times its value and the movement is representable."""
-    import sys
     big = 2.0 ** 31
     ref = {"alpha": np.array([1.0, big]), "count": np.array([1, 2])}
     one_ulp = float(np.finfo(np.float64).eps) * big
@@ -175,44 +146,17 @@ def test_the_default_output_pin_is_tolerant_off_the_recording_platform(
     moved_small = {"alpha": ref["alpha"] + np.array([one_ulp, 0.0]),
                    "count": ref["count"].copy()}
 
-    def _refused(got, *, bitwise):
+    def _refused(got):
         with pytest.raises(AssertionError) as exc:
-            _assert_columns_match(got, ref, bitwise=bitwise)
+            _assert_columns_match(got, ref)
         return str(exc.value)
 
-    message = _refused(moved_one, bitwise=True)
-    assert "alpha" in message and "count" not in message
-    moved = _assert_columns_match(moved_one, ref, bitwise=False)
+    moved = _assert_columns_match(moved_one, ref)
     assert moved == [("alpha", one_ulp)]
-    assert "alpha" in _refused(moved_far, bitwise=False)
-    assert "alpha" in _refused(moved_small, bitwise=False)
-    message = _refused({"alpha": ref["alpha"], "count": ref["count"] + 1},
-                       bitwise=False)
+    assert "alpha" in _refused(moved_far)
+    assert "alpha" in _refused(moved_small)
+    message = _refused({"alpha": ref["alpha"], "count": ref["count"] + 1})
     assert "count" in message and "alpha" not in message
-
-    from xcquinox.pipeline.tests.record_closed_shell_reference import (
-        platform_fingerprint)
-    module = sys.modules[__name__]
-    sidecar = tmp_path / "reference.platform.json"
-    monkeypatch.setattr(module, "_PLATFORM_SIDECAR", str(sidecar))
-    assert _on_recording_platform() is True
-    live = platform_fingerprint()
-    sidecar.write_text(json.dumps(live), encoding="utf-8")
-    assert _on_recording_platform() is True
-    foreign = dict(live, cpu_model=live["cpu_model"] + " (foreign)")
-    sidecar.write_text(json.dumps(foreign), encoding="utf-8")
-    assert _on_recording_platform() is False
-
-
-def test_the_fixture_names_its_recording_platform():
-    """The sidecar beside the fixture exists and carries every platform key,
-    so a hosted runner takes the tolerant branch rather than failing the
-    bitwise pin on a rounding residue."""
-    from xcquinox.pipeline.tests.record_closed_shell_reference import (
-        PLATFORM_KEYS)
-    recorded = _recorded_platform()
-    assert recorded is not None, _PLATFORM_SIDECAR
-    assert set(PLATFORM_KEYS) <= set(recorded), sorted(recorded)
 
 
 def _legacy_view(ref):

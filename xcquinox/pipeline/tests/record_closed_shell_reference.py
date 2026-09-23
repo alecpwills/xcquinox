@@ -37,7 +37,7 @@ indicator's lower bound became a smooth positive part (``metagga.compute_alpha``
 width 1e-5; docs/open_items.md entry 27), which moves the five meta-GGA
 architectures' closed-shell numbers by the indicator's footprint (at most
 1.7e-10 on this record) and nothing else. It was the fixture the live tree was
-held to bitwise until the stack moved; the ae204537e fixture is kept and the
+compared against until the stack moved; the ae204537e fixture is kept and the
 comparison against it carries the measured footprint as its tolerance
 (``test_closed_shell_byte_identity._SMOOTH_ALPHA_DELTA``).
 
@@ -47,11 +47,12 @@ from the repository root on the current stack (jax 0.10.2, pyscf 2.14.0, numpy
 pinned at 1e-7 (``pyscf_determinism.REFERENCE_SMALL_RHO_CUTOFF``: pyscf 2.14
 prunes no grid point by default where 2.11 pruned at 1e-7, and with the pin the
 pruned grids of the two releases are identical bit for bit). It is the fixture
-the live tree is held to bitwise, and it carries every registered
+the live tree is compared against, and it carries every registered
 architecture, the three width and depth completions of 2026-09-11 included.
-The two earlier fixtures are the previous stack's records, held to their
-measured footprints (``test_closed_shell_byte_identity._PREVIOUS_STACK_DELTA``,
-which separates the stack's share from the workstation's).
+The two earlier fixtures are the previous stack's records, held to the larger
+of the comparison's tolerance and their measured footprints
+(``test_closed_shell_byte_identity._PREVIOUS_STACK_DELTA``, which separates
+the stack's share from the workstation's).
 
 The record is computed inside :func:`_reproducible_pyscf`, which pins the two
 pieces of PySCF state the reference SCF's LAST DIGITS depend on. Both were
@@ -83,12 +84,14 @@ across machines. The last digits of the reference SCF are those of the BLAS
 kernels the CPU selects and of the compiled libraries doing the arithmetic, so
 a record taken here is not reproducible bit for bit on another CPU: the same
 architecture read -67.00327081852355 against this fixture's -67.0032708185235
-on an AMD Milan cluster node -- three ulps, 4.3e-14 Ha, 6.4e-16 relative. Each
-fixture
-therefore carries a ``platform`` block -- the fields of :data:`PLATFORM_KEYS`,
-written by :func:`platform_fingerprint` -- beside its ``records`` block, and
-the comparison in ``test_closed_shell_byte_identity`` is bitwise only where
-the running platform reproduces that block. The fixture layout is::
+on an AMD Milan cluster node -- three ulps, 4.3e-14 Ha, 6.4e-16 relative. The
+comparison in ``test_closed_shell_byte_identity`` is therefore a relative
+tolerance, the same on every machine: wide enough to absorb that residue and
+orders below the code-path changes the oracle exists to catch. Each fixture
+carries a ``platform`` block as provenance -- the fields of
+:data:`PLATFORM_KEYS`, written by :func:`platform_fingerprint` -- beside its
+``records`` block; nothing in the comparison reads it. The fixture layout
+is::
 
     {"platform": {<PLATFORM_KEYS>}, "records": {<arch>: {<RECORD_KEYS>}}}
 """
@@ -186,13 +189,14 @@ def _reproducible_pyscf():
         MoleBase.max_memory = previous_memory
 
 
-#: The platform fields stamped into every fixture beside its records. The
-#: record's last digits are a property of the machine as well as of the code:
-#: the arithmetic is done by the BLAS kernels the CPU selects and by the
-#: compiled libraries around them, none of which the two pins above reach.
-#: Six fields name the machine and its numerical libraries; the last two are
-#: the recorder's own pins, so a fixture recorded at a different thread count
-#: or memory ceiling is not read as if it shared this one's summation order.
+#: The platform fields stamped into every fixture beside its records, as
+#: provenance. The record's last digits are a property of the machine as well
+#: as of the code: the arithmetic is done by the BLAS kernels the CPU selects
+#: and by the compiled libraries around them, none of which the two pins above
+#: reach. Six fields name the machine and its numerical libraries; the last
+#: two are the recorder's own pins, so a reader of a fixture can see the
+#: thread count and the memory ceiling its records were taken at. The
+#: comparison reads none of them.
 PLATFORM_KEYS = ("cpu_model", "numpy_version", "jax_version", "jaxlib_version",
                  "pyscf_version", "blas", "pyscf_threads",
                  "pinned_max_memory_mb")
@@ -217,8 +221,8 @@ def _blas_description():
 
     numpy 2 exposes its build metadata as a dict; ``get_info`` is kept as the
     fallback for an older numpy. A platform whose BLAS cannot be named reports
-    "unknown", which does not compare equal to a named one, so the comparison
-    takes its cross-platform branch rather than assuming a shared library.
+    "unknown", which records that the library could not be identified rather
+    than naming one it is not.
     """
     try:
         build = np.show_config("dicts")["Build Dependencies"]["blas"]
@@ -370,8 +374,8 @@ def _closed_shell_record(arch_name) -> dict:
 #: record states this in ``applied_before_imports``. Which single CPU is a
 #: residual dependence on a hybrid part: CPUs 0, 5 and 12 of the recording
 #: workstation agree and CPU 19, one of its efficiency cores, moves the
-#: potentials; the pinned CPU is recorded as ``cpu_index`` and the
-#: comparison holds a record from another CPU to the cross-platform floor.
+#: potentials; the pinned CPU is recorded as ``cpu_index``, and the comparison
+#: confines the live recorder to the fixture's CPU wherever that CPU exists.
 PINS = {
     "XLA_FLAGS": "--xla_cpu_multi_thread_eigen=false",
     "OMP_NUM_THREADS": "1",
@@ -418,7 +422,7 @@ def main(argv=None):
         # numeric library loads; run as a module, the package __init__
         # imports precede it (already_loaded names them). The record is
         # still written and states the pins it was taken under, so the
-        # comparison refuses it rather than reading it bitwise.
+        # comparison refuses it rather than comparing a record against it.
         print(f"# WARNING: recording under {pins}, not the pins {PINS} "
               f"(loaded before the pins: "
               f"{list(_BEFORE_PINS['already_loaded'])}); run this script "
