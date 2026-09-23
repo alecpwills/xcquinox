@@ -28,11 +28,12 @@ export OPENBLAS_NUM_THREADS="$$PYSCF_THREADS"
 echo "[thread-caps] allocation=$${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$$PYSCF_THREADS"
 
 # --- hold-out benchmark reference densities (single job, resumable) ---------
-# CCSD + PBE densities for the full W4-11+BH76 pool (no OEP stage); every
-# species' final npz is atomic + skip-if-complete, so a timeout/requeue
+# CCSD + PBE densities for the species of the held-out pools the run names
+# (no OEP stage), capped at the configured species size when one is stated;
+# every species' final npz is atomic + skip-if-complete, so a timeout/requeue
 # simply resumes. Starts once the train array has BEGUN (--dependency=after).
 python -m xcquinox.pipeline.benchmark_refs \
   --out-dir "${BENCH_REFS_DIR}" \
-  --pool all \
+  --pool ${BENCH_POOLS} \
   --basis "${BASIS}" \
   --grid-level ${GRID_LEVEL}${BENCH_DF_FLAGS}

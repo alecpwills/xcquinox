@@ -48,6 +48,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from xcquinox.pipeline.holdout_channels import FIGURE_CHANNELS
+
 _HERE = Path(__file__).resolve().parent
 _MV_PATH = _HERE / "merge_v4_arms.py"
 _mv_spec = importlib.util.spec_from_file_location("merge_v4_arms", _MV_PATH)
@@ -62,11 +64,9 @@ _RUN_NAME = re.compile(r"^run_\d{8}T\d{6}Z$")
 _ENTRY_KEYS = ("category", "run", "archs", "protocol", "pretrain")
 _IDENTITY_KEYS = ("basis:", "density_fit:", "grid_level:", "parent_anchor:",
                   "subset_ledger_path:")
-#: the held-out channels the figure suite renders; a spec counts as evaluated
-#: when it holds one of them (the cold-start channel is drawn inside figures,
-#: never as a set of its own)
-_EVAL_CHANNELS = ("eval_holdout", "eval_holdout_val_best", "eval_holdout_converged",
-                  "eval_holdout_converged_val_best")
+#: the held-out channels the figure suite renders as sets (the reporting
+#: channel first); a spec counts as evaluated when it holds one of them
+_EVAL_CHANNELS = FIGURE_CHANNELS
 _SPEC_DIR = re.compile(r"^spec_(\d{4})$")
 #: the run-level CCSD T1 table the benchmark-references backfill writes; the
 #: figure suite reads it beside a run's manifest for the model-free

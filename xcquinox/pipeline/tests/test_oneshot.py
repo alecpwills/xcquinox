@@ -360,3 +360,73 @@ def test_compute_vxc_nn_matches_pyscf_pbe_vxc_shape_and_magnitude(h2o_data):
     assert max_nn < 100.0 * max(max_pbe, 1.0)
 
 
+def test_a_marked_record_takes_the_fixed_density_energy(monkeypatch):
+    """A record marked for evaluation at the reference density takes the
+    fixed-density energy in FULL mode without entering the SCF, and under the
+    tail loss a trajectory of that one energy over the tail length.
+
+    The published protocol runs one pass at the converged density for a
+    non-self-consistent entry, so its energy is the functional evaluated at
+    that density and is constant across the reported cycles. The group's energy
+    stack is formed from the per-molecule trajectories, so the marked record
+    must keep the length the unmarked one has. The oracle for the value is the
+    fixed-density function itself; the oracle for the path is the solver: with
+    ``run_scf`` replaced by a stand-in that refuses to run, the marked record
+    still yields its energy while the unmarked one reaches the refusal. An
+    energy difference between the two paths is not used as the control: the
+    energy is stationary in the density, so a three-cycle SCF of a small
+    molecule can sit within round-off of the fixed-density value.
+    """
+    from xcquinox.pipeline import solver as solver_mod
+    from xcquinox.pipeline.oneshot import (
+        ONESHOT_AT_REFERENCE_KEY,
+        energy_trajectory_for_solver,
+        total_energy_for_solver,
+    )
+    from xcquinox.pipeline.solver import SolverConfig, SolverMode
+    from xcquinox.pipeline.tests.fixtures.molecules import h2_molecule
+
+    assert ONESHOT_AT_REFERENCE_KEY == "oneshot_at_reference"
+    model = _make_model(seed=0)
+    # the Coulomb integrals the unmarked FULL SCF of the control needs
+    md = precompute_fixed_density_data(h2_molecule(), required_keys=("eri",))
+    marked = dict(md, **{ONESHOT_AT_REFERENCE_KEY: True})
+
+    sc_full = SolverConfig(mode=SolverMode.FULL, max_cycles=3)
+    fixed = float(fixed_density_total_energy(model, md))
+    assert float(total_energy_for_solver(model, marked, sc_full)) == fixed
+
+    sc_tail = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
+                           scf_loss_use_tail=True, scf_loss_tail=2,
+                           scf_loss_weight_power=1.0)
+    traj = energy_trajectory_for_solver(model, md, sc_tail)   # the real SCF
+    traj_marked = energy_trajectory_for_solver(model, marked, sc_tail)
+    assert traj_marked.shape == traj.shape
+    # the tail length, not the cycle count: max_cycles 3, tail 2
+    assert traj_marked.shape == (sc_tail.scf_loss_tail,)
+    np.testing.assert_array_equal(np.asarray(traj_marked),
+                                  np.full(sc_tail.scf_loss_tail, fixed))
+
+    # A tail longer than the cycle count: the window is the cycle count on
+    # both paths, so the group's energy stack keeps one shape.
+    sc_long = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
+                           scf_loss_use_tail=True, scf_loss_tail=5,
+                           scf_loss_weight_power=1.0)
+    traj_long = energy_trajectory_for_solver(model, md, sc_long)
+    assert traj_long.shape == (3,)
+    assert energy_trajectory_for_solver(model, marked, sc_long).shape == (3,)
+
+    # The path: the SCF is never entered for a marked record, and is entered
+    # for the unmarked one, under a solver that refuses to run.
+    def _refuse(*_args, **_kwargs):
+        raise AssertionError("run_scf was entered")
+
+    monkeypatch.setattr(solver_mod, "run_scf", _refuse)
+    assert float(total_energy_for_solver(model, marked, sc_full)) == fixed
+    assert float(energy_trajectory_for_solver(model, marked, sc_tail)[0]) == fixed
+    with pytest.raises(AssertionError, match="run_scf was entered"):
+        total_energy_for_solver(model, md, sc_full)
+    with pytest.raises(AssertionError, match="run_scf was entered"):
+        energy_trajectory_for_solver(model, md, sc_tail)
+
+

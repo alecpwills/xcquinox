@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=xcq_wfmatrix
-# long-40core: the matrix is ONE process on ONE node (it drives every stage as
-# a subprocess of itself; nothing here queues anything) and needs a wall above
-# the 4 h cap of the short-* queues and the 12 h cap of the medium-* queues.
-# Override to match the login instance you submit from -- the *-96core-shared
-# queues exist only on milan1/milan2 and the *-28core queues only on
-# login1/login2:
-#   sbatch --partition=long-96core-shared --cpus-per-task=96 ...
-#   sbatch --partition=long-28core        --cpus-per-task=28 ...
-#SBATCH --partition=long-40core
+# long-96core-shared: the matrix is ONE process on ONE node (it drives every
+# stage as a subprocess of itself; nothing here queues anything) and needs a
+# wall above the 4 h cap of the short-* queues and the 12 h cap of the
+# medium-* queues; the node is held whole (--exclusive).
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=30:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=40
+#SBATCH --cpus-per-task=96
 #SBATCH --exclusive
 #SBATCH --mem=0
 #SBATCH --output=/gpfs/scratch/awills/workflow_matrix_%j.out
@@ -84,16 +80,14 @@
 # architecture returns.
 #
 # PARTITION CAP. hpcjobs/SEAWULF_RUNBOOK.md records short-* 4 h, medium-* 12 h,
-# and a 48 h MaxWall on every long-* QOS (40- and 96-core, shared included;
-# sacctmgr, 2026-08-27). Verify it before the first submission --
-#   sinfo -o "%20P %10l" -p long-40core
+# and a 48 h MaxWall on every long-* QOS (shared included; sacctmgr,
+# 2026-08-27). Verify it before the first submission --
+#   sinfo -o "%20P %10l" -p long-96core-shared
 # -- and if it caps below 30 h, no other long-* queue helps, since the 48 h is a
 # QOS cap they share: raise MATRIX_BATCHES (each submission then covers fewer
 # architectures and bounds lower) or move to an extended-* partition, whose cap
-# is 7 days. The choice of long-28core (--cpus-per-task=28) or long-96core-shared
-# (--cpus-per-task=96) is about the login instance you submit from, not about the
-# wall. An over-cap request is rejected by sbatch at submission, not after a
-# queue wait.
+# is 7 days. An over-cap request is rejected at submission, not after a queue
+# wait.
 #
 # THE PER-STAGE CAP (1800 s) is half the module's own hang detector,
 # DEFAULT_STAGE_TIMEOUT_S = 3600, and equals the per-stage wall the matrix's
@@ -113,13 +107,14 @@
 # genuinely needs longer, raise MATRIX_TIMEOUT_S and the --time request
 # together; the bound below scales with both.
 #
-# 17 architectures per submission, not 34: the registry holds 34, and 34 in one
-# job bounds at ceil(34/4) x 5.5 h = 49.5 h -- beyond the 48 h cap of every
-# long-* queue (only the extended-* partitions, 7-day caps, would take it).
-# MATRIX_BATCHES therefore defaults to 2, so the registry is covered by two
-# submissions (17 and 17 architectures), each bounded by this request.
-# MATRIX_BATCHES=1 puts all 34 in one job and is REFUSED at this request; no
-# long-* queue admits the 49.5 h it needs. A single-architecture run
+# Half the registry per submission: with N registered architectures, the whole
+# registry in one job bounds at ceil(N/4) x 5.5 h, which passes the 48 h cap of
+# every long-* queue once N exceeds 32 (only the extended-* partitions, 7-day
+# caps, would take it), and the registry is past that size. MATRIX_BATCHES
+# therefore defaults to 2, so the registry is covered by two submissions of
+# ceil(N/2) architectures, each bounded by this request. MATRIX_BATCHES=1 puts
+# the whole registry in one job and is REFUSED at this request; no long-*
+# queue admits the hours it needs. A single-architecture run
 # (MATRIX_ARCHS=<name>) bounds at 11 x 1800 s = 5.5 h and takes the whole
 # allocation (shards drop to 1), so submit it with --time=06:00:00 rather than
 # paying the 30 h request in queue time.
@@ -465,7 +460,7 @@ fi
 # workflow_matrix._base_env, at (SLURM_CPUS_PER_TASK / shards) threads -- the
 # allocation, not the machine, so the budget holds on a shared queue and on an
 # SMT node.
-THREADS="${SLURM_CPUS_PER_TASK:-40}"
+THREADS="${SLURM_CPUS_PER_TASK:-96}"
 export OMP_NUM_THREADS="$THREADS"
 export MKL_NUM_THREADS="$THREADS"
 export OPENBLAS_NUM_THREADS="$THREADS"

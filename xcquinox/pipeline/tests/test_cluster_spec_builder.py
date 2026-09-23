@@ -470,3 +470,188 @@ def test_build_solvers_to_config_roundtrip_builds_dfs_mixer():
     assert cfg.scf_loss_use_tail is True
 
 
+
+
+# ---------------------------------------------------------------------------
+# The per-cell SCF seed resolution
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_seed_xc_passes_minao_through(tmp_path):
+    """The resolver passes an explicit seed through verbatim and derives only
+    ``auto`` from the architecture's rung, so a run-wide superposition-of-
+    atomic-densities seed reaches the solver configuration of every cell
+    rather than being silently replaced by the pbe default.
+
+    Oracle: the resolver's return, and the solver configuration of every spec
+    built from a config whose inputs name the seed. The cells carry a FULL
+    solver because a non-pbe seed is accepted in no other mode: ONESHOT
+    evaluates at the stored PBE density and would ignore the seed.
+    """
+    from xcquinox.pipeline.cluster.spec_builder import resolve_seed_xc
+    base = _make_cfg(tmp_path)
+    inputs = dataclasses.replace(base.inputs, seed_xc="minao")
+    assert resolve_seed_xc(inputs, base.sweep.arch[0]) == "minao"
+
+    cfg = dataclasses.replace(
+        base,
+        inputs=inputs,
+        sweep=dataclasses.replace(base.sweep, solver=("full_3",)),
+        solvers={"full_3": SolverNamed(mode="FULL", max_cycles=3)},
+    )
+    out = build_training_specs(_make_pool(), _make_ledger(), cfg,
+                               get_domain_profile("dfs_step7"),
+                               str(tmp_path / "run"))
+    assert len(out) == len(expand_grid(cfg)) == 2
+    for cell, spec in out:
+        assert spec.solver_config.seed_source == "minao", cell
+
+
+# ---------------------------------------------------------------------------
+# The published clone's model class through the specs
+# ---------------------------------------------------------------------------
+
+def test_the_paper_class_reaches_the_training_specs(tmp_path):
+    """The published coordinates and uniform-gas gate are part of the
+    architecture identity: the specs carry both, so a task builds the model
+    class the run was configured for rather than the registry default.
+
+    Oracle: the architecture of every spec the builder returns.
+    """
+    from xcquinox.pipeline.cluster.grid_config import ModelConfig
+
+    cfg = _make_cfg(tmp_path)
+    cfg = dataclasses.replace(
+        cfg, sweep=dataclasses.replace(cfg.sweep, arch=("deep_3x16",)),
+        use_polarized_correlation=True,
+        model=ModelConfig(descriptor_coordinates="paper", ueg_gate="x2"))
+    built = build_training_specs(_make_pool(), _make_ledger(), cfg,
+                                 get_domain_profile("dfs_step7"),
+                                 str(tmp_path / "run"))
+    assert built, "no specs built"
+    for _cell, spec in built:
+        assert spec.arch.descriptor_coordinates == "paper"
+        assert spec.arch.ueg_gate == "x2"
+
+
+def _pool_with_sc_flags():
+    """The synthetic pool with a published-protocol self-consistency flag on
+    every point: the H2 AE point and the IP pair self-consistent, the H2O AE
+    point and the reaction not. The species Atoms carry the flags the
+    trajectory gives them: the H2O compound alone for its point (its anchors
+    self-consistent), every species of the reaction."""
+    flags = {"H2": True, "H2O": False, "N2_NO_rxn": False, "Li_IP": True}
+    out = []
+    for tp in _make_pool():
+        species = []
+        for s in tp.species:
+            a = s.copy()
+            if tp.name == "H2O":
+                a.info["sc"] = a.info["name"] != "H2O"
+            elif tp.name == "N2_NO_rxn":
+                a.info["sc"] = False
+            else:
+                a.info["sc"] = True
+            species.append(a)
+        out.append(dataclasses.replace(
+            tp, species=tuple(species),
+            metadata=dict(tp.metadata, sc=flags[tp.name])))
+    return out
+
+
+def _sc_ledger():
+    """The stub ledger with the three-point entry listed in an order that is
+    NOT sorted, so the recorded names are pinned to the sort and not to the
+    ledger's arrangement."""
+    ledger = _make_ledger()
+    ledger["l2/3"] = dict(ledger["l2/3"],
+                          point_names=["N2_NO_rxn", "H2O", "Li_IP"],
+                          point_kinds=["bh76", "ae", "ip13"])
+    return ledger
+
+
+def test_the_spec_builder_records_the_non_sc_points_and_threads_the_switch(
+        tmp_path):
+    """``build_training_specs`` records the sorted names of the chosen points
+    whose metadata flag is False, and threads the switch and the weight from
+    the hyperparameters.
+
+    The names are data about the chosen points and are recorded whether or not
+    the switch is on, so an arm can be read off its own spec; the switch and the
+    weight are what the loop consults. The oracle is a pool whose four points
+    carry known flags against the same pool with no flags at all, and a ledger
+    entry whose order differs from the sorted order.
+    """
+    domain = get_domain_profile("dfs_step7")
+    cfg = _make_cfg(tmp_path)
+
+    out = build_training_specs(_pool_with_sc_flags(), _sc_ledger(), cfg,
+                               domain, str(tmp_path / "run"))
+    (cell0, spec0), (cell1, spec1) = out
+    # Cell 0: the two AE points, one of them non-self-consistent.
+    assert cell0.subset_size == 2
+    assert spec0.nonsc_points == ("H2O",)
+    # the species each named point marks: the compound alone for the AE point
+    assert spec0.nonsc_species == (("H2O", ("H2O",)),)
+    # Cell 1: the reaction is non-self-consistent, the IP pair is not, and the
+    # names come out sorted rather than in ledger order.
+    assert cell1.subset_size == 3
+    assert spec1.nonsc_points == ("H2O", "N2_NO_rxn")
+    assert spec1.nonsc_species == (("H2O", ("H2O",)),
+                                   ("N2_NO_rxn", ("N2", "NO")))
+    for _cell, spec in out:
+        assert spec.respect_sc_flag is False
+        assert spec.nonsc_weight == 1.0
+
+    hp_on = dataclasses.replace(cfg.hyperparams, respect_sc_flag=True,
+                                nonsc_weight=0.5)
+    out_on = build_training_specs(
+        _pool_with_sc_flags(), _sc_ledger(),
+        dataclasses.replace(cfg, hyperparams=hp_on), domain,
+        str(tmp_path / "run_on"))
+    for _cell, spec in out_on:
+        assert spec.respect_sc_flag is True
+        assert spec.nonsc_weight == 0.5
+    assert out_on[1][1].nonsc_points == ("H2O", "N2_NO_rxn")
+
+    # A pool whose points carry no flag reads as fully self-consistent, the
+    # protocol of every campaign that predates the capability.
+    plain = build_training_specs(_make_pool(), _sc_ledger(), cfg, domain,
+                                 str(tmp_path / "run_plain"))
+    assert all(spec.nonsc_points == () for _cell, spec in plain)
+    assert all(spec.nonsc_species == () for _cell, spec in plain)
+
+
+def test_the_validation_attachment_refuses_a_species_its_pools_do_not_carry(
+        tmp_path, monkeypatch):
+    """A staged validation reaction naming a species the run's held-out pools
+    do not carry is refused. Dropping it, as the attachment once did, would
+    validate on fewer reactions than the staged record states and leave no
+    sign of it; and the pools it looks in are the run's own, not the pair.
+
+    Oracle: a two-species stub pool against a validation record naming a third.
+    """
+    import json
+    from types import SimpleNamespace
+    import xcquinox.pipeline.cluster.spec_builder as sb
+
+    run_dir = tmp_path / "run"
+    (run_dir / "validation").mkdir(parents=True)
+    (run_dir / "validation" / "val_reactions.json").write_text(json.dumps([
+        {"name": "r", "reactants": ["bh76@x"], "products": ["diet150@y"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 1.0}]))
+    seen = {}
+
+    def _fake_pools(names=("bh76", "w411"), basis="def2-svp", grid_level=1,
+                    refs_dir=None):
+        seen["names"] = tuple(names)
+        return {"bh76@x": object()}, []
+
+    monkeypatch.setattr(sb, "_load_full_held_out_pools", _fake_pools)
+    cfg = SimpleNamespace(inputs=SimpleNamespace(
+        val_refs_dir=str(tmp_path / "refs"), basis="def2-svp", grid_level=1,
+        held_out_pools=("bh76", "diet150")))
+    spec = SimpleNamespace(validate_every=10)
+    with pytest.raises(ValueError, match="diet150@y"):
+        sb._attach_validation_slice(spec, cfg, str(run_dir))
+    assert seen["names"] == ("bh76", "diet150")

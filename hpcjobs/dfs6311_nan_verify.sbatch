@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=xcq_nan_verify
-# long-40core, NOT long-96core: the production training array saturates the
-# 96-core queue and this verification must not compete with it for nodes.
-#SBATCH --partition=long-40core
+# long-96core-shared: the milan queue, one whole node (--exclusive, --mem=0).
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --exclusive
 #SBATCH --mem=0
-#SBATCH --cpus-per-task=40
+#SBATCH --cpus-per-task=96
 #SBATCH --output=/gpfs/scratch/awills/dfs6311_nan_verify_%j.out
 #SBATCH --mail-user=alec.wills@stonybrook.edu
 #SBATCH --mail-type=END,FAIL,TIME_LIMIT

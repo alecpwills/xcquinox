@@ -1,0 +1,5063 @@
+[
+  {
+    "name": "w411_h2_atomization",
+    "subset": "W4-11",
+    "index": 1,
+    "species": {
+      "w411@h2": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_alh3_atomization",
+    "subset": "W4-11",
+    "index": 2,
+    "species": {
+      "w411@alh3": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@al": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_alh_atomization",
+    "subset": "W4-11",
+    "index": 3,
+    "species": {
+      "w411@alh": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@al": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_sih4_atomization",
+    "subset": "W4-11",
+    "index": 4,
+    "species": {
+      "w411@sih4": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@si": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_bh3_atomization",
+    "subset": "W4-11",
+    "index": 5,
+    "species": {
+      "w411@bh3": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@b": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_bh_atomization",
+    "subset": "W4-11",
+    "index": 6,
+    "species": {
+      "w411@bh": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@b": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch2-trip_atomization",
+    "subset": "W4-11",
+    "index": 7,
+    "species": {
+      "w411@ch2-trip": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_sih_atomization",
+    "subset": "W4-11",
+    "index": 8,
+    "species": {
+      "w411@sih": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@si": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_si2h6_atomization",
+    "subset": "W4-11",
+    "index": 9,
+    "species": {
+      "w411@si2h6": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@si": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch3_atomization",
+    "subset": "W4-11",
+    "index": 10,
+    "species": {
+      "w411@ch3": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch4_atomization",
+    "subset": "W4-11",
+    "index": 11,
+    "species": {
+      "w411@ch4": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_b2h6_atomization",
+    "subset": "W4-11",
+    "index": 12,
+    "species": {
+      "w411@b2h6": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@b": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_sih3f_atomization",
+    "subset": "W4-11",
+    "index": 13,
+    "species": {
+      "w411@sih3f": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@si": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ph3_atomization",
+    "subset": "W4-11",
+    "index": 14,
+    "species": {
+      "w411@ph3": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@p": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c2h6_atomization",
+    "subset": "W4-11",
+    "index": 15,
+    "species": {
+      "w411@c2h6": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_propane_atomization",
+    "subset": "W4-11",
+    "index": 16,
+    "species": {
+      "w411@propane": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch2-sing_atomization",
+    "subset": "W4-11",
+    "index": 17,
+    "species": {
+      "w411@ch2-sing": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch_atomization",
+    "subset": "W4-11",
+    "index": 18,
+    "species": {
+      "w411@ch": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_h2s_atomization",
+    "subset": "W4-11",
+    "index": 19,
+    "species": {
+      "w411@h2s": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hs_atomization",
+    "subset": "W4-11",
+    "index": 20,
+    "species": {
+      "w411@hs": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c2h5f_atomization",
+    "subset": "W4-11",
+    "index": 21,
+    "species": {
+      "w411@c2h5f": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch3nh2_atomization",
+    "subset": "W4-11",
+    "index": 22,
+    "species": {
+      "w411@ch3nh2": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch3f_atomization",
+    "subset": "W4-11",
+    "index": 23,
+    "species": {
+      "w411@ch3f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_propene_atomization",
+    "subset": "W4-11",
+    "index": 24,
+    "species": {
+      "w411@propene": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_nh3_atomization",
+    "subset": "W4-11",
+    "index": 25,
+    "species": {
+      "w411@nh3": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ethanol_atomization",
+    "subset": "W4-11",
+    "index": 26,
+    "species": {
+      "w411@ethanol": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch3nh_atomization",
+    "subset": "W4-11",
+    "index": 27,
+    "species": {
+      "w411@ch3nh": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c2h4_atomization",
+    "subset": "W4-11",
+    "index": 28,
+    "species": {
+      "w411@c2h4": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_methanol_atomization",
+    "subset": "W4-11",
+    "index": 29,
+    "species": {
+      "w411@methanol": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hcl_atomization",
+    "subset": "W4-11",
+    "index": 30,
+    "species": {
+      "w411@hcl": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_nh2_atomization",
+    "subset": "W4-11",
+    "index": 31,
+    "species": {
+      "w411@nh2": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_nh_atomization",
+    "subset": "W4-11",
+    "index": 32,
+    "species": {
+      "w411@nh": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch2nh2_atomization",
+    "subset": "W4-11",
+    "index": 33,
+    "species": {
+      "w411@ch2nh2": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_bhf2_atomization",
+    "subset": "W4-11",
+    "index": 34,
+    "species": {
+      "w411@bhf2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@b": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_h2o_atomization",
+    "subset": "W4-11",
+    "index": 35,
+    "species": {
+      "w411@h2o": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hf_atomization",
+    "subset": "W4-11",
+    "index": 36,
+    "species": {
+      "w411@hf": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch2ch_atomization",
+    "subset": "W4-11",
+    "index": 37,
+    "species": {
+      "w411@ch2ch": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_oh_atomization",
+    "subset": "W4-11",
+    "index": 38,
+    "species": {
+      "w411@oh": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_propyne_atomization",
+    "subset": "W4-11",
+    "index": 39,
+    "species": {
+      "w411@propyne": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_acetaldehyde_atomization",
+    "subset": "W4-11",
+    "index": 40,
+    "species": {
+      "w411@acetaldehyde": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_allene_atomization",
+    "subset": "W4-11",
+    "index": 41,
+    "species": {
+      "w411@allene": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_sif4_atomization",
+    "subset": "W4-11",
+    "index": 42,
+    "species": {
+      "w411@sif4": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@si": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_bf3_atomization",
+    "subset": "W4-11",
+    "index": 43,
+    "species": {
+      "w411@bf3": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@b": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c2h3f_atomization",
+    "subset": "W4-11",
+    "index": 44,
+    "species": {
+      "w411@c2h3f": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_oxirane_atomization",
+    "subset": "W4-11",
+    "index": 45,
+    "species": {
+      "w411@oxirane": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch2f2_atomization",
+    "subset": "W4-11",
+    "index": 46,
+    "species": {
+      "w411@ch2f2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_alf3_atomization",
+    "subset": "W4-11",
+    "index": 47,
+    "species": {
+      "w411@alf3": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@al": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_bef2_atomization",
+    "subset": "W4-11",
+    "index": 48,
+    "species": {
+      "w411@bef2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@be": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch2c_atomization",
+    "subset": "W4-11",
+    "index": 49,
+    "species": {
+      "w411@ch2c": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_n2h4_atomization",
+    "subset": "W4-11",
+    "index": 50,
+    "species": {
+      "w411@n2h4": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ch2nh_atomization",
+    "subset": "W4-11",
+    "index": 51,
+    "species": {
+      "w411@ch2nh": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_alf_atomization",
+    "subset": "W4-11",
+    "index": 52,
+    "species": {
+      "w411@alf": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@al": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_acetic_atomization",
+    "subset": "W4-11",
+    "index": 53,
+    "species": {
+      "w411@acetic": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c2h2_atomization",
+    "subset": "W4-11",
+    "index": 54,
+    "species": {
+      "w411@c2h2": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_h2co_atomization",
+    "subset": "W4-11",
+    "index": 55,
+    "species": {
+      "w411@h2co": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_h2cn_atomization",
+    "subset": "W4-11",
+    "index": 56,
+    "species": {
+      "w411@h2cn": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_bf_atomization",
+    "subset": "W4-11",
+    "index": 57,
+    "species": {
+      "w411@bf": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@b": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_becl2_atomization",
+    "subset": "W4-11",
+    "index": 58,
+    "species": {
+      "w411@becl2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@be": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_t-hcoh_atomization",
+    "subset": "W4-11",
+    "index": 59,
+    "species": {
+      "w411@t-hcoh": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_alcl3_atomization",
+    "subset": "W4-11",
+    "index": 60,
+    "species": {
+      "w411@alcl3": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@al": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c-hcoh_atomization",
+    "subset": "W4-11",
+    "index": 61,
+    "species": {
+      "w411@c-hcoh": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_alcl_atomization",
+    "subset": "W4-11",
+    "index": 62,
+    "species": {
+      "w411@alcl": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@al": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ketene_atomization",
+    "subset": "W4-11",
+    "index": 63,
+    "species": {
+      "w411@ketene": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_sif_atomization",
+    "subset": "W4-11",
+    "index": 64,
+    "species": {
+      "w411@sif": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@si": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_formic_atomization",
+    "subset": "W4-11",
+    "index": 65,
+    "species": {
+      "w411@formic": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hcnh_atomization",
+    "subset": "W4-11",
+    "index": 66,
+    "species": {
+      "w411@hcnh": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_glyoxal_atomization",
+    "subset": "W4-11",
+    "index": 67,
+    "species": {
+      "w411@glyoxal": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hcof_atomization",
+    "subset": "W4-11",
+    "index": 68,
+    "species": {
+      "w411@hcof": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_nh2cl_atomization",
+    "subset": "W4-11",
+    "index": 69,
+    "species": {
+      "w411@nh2cl": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_cf4_atomization",
+    "subset": "W4-11",
+    "index": 70,
+    "species": {
+      "w411@cf4": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hccf_atomization",
+    "subset": "W4-11",
+    "index": 71,
+    "species": {
+      "w411@hccf": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hcn_atomization",
+    "subset": "W4-11",
+    "index": 72,
+    "species": {
+      "w411@hcn": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hnc_atomization",
+    "subset": "W4-11",
+    "index": 73,
+    "species": {
+      "w411@hnc": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_cch_atomization",
+    "subset": "W4-11",
+    "index": 74,
+    "species": {
+      "w411@cch": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hco_atomization",
+    "subset": "W4-11",
+    "index": 75,
+    "species": {
+      "w411@hco": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_co_atomization",
+    "subset": "W4-11",
+    "index": 76,
+    "species": {
+      "w411@co": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_oxirene_atomization",
+    "subset": "W4-11",
+    "index": 77,
+    "species": {
+      "w411@oxirene": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_f2co_atomization",
+    "subset": "W4-11",
+    "index": 78,
+    "species": {
+      "w411@f2co": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hocn_atomization",
+    "subset": "W4-11",
+    "index": 79,
+    "species": {
+      "w411@hocn": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hooh_atomization",
+    "subset": "W4-11",
+    "index": 80,
+    "species": {
+      "w411@hooh": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_t-n2h2_atomization",
+    "subset": "W4-11",
+    "index": 81,
+    "species": {
+      "w411@t-n2h2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hnco_atomization",
+    "subset": "W4-11",
+    "index": 82,
+    "species": {
+      "w411@hnco": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c-n2h2_atomization",
+    "subset": "W4-11",
+    "index": 83,
+    "species": {
+      "w411@c-n2h2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_cf2_atomization",
+    "subset": "W4-11",
+    "index": 84,
+    "species": {
+      "w411@cf2": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_co2_atomization",
+    "subset": "W4-11",
+    "index": 85,
+    "species": {
+      "w411@co2": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_fccf_atomization",
+    "subset": "W4-11",
+    "index": 86,
+    "species": {
+      "w411@fccf": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_dioxirane_atomization",
+    "subset": "W4-11",
+    "index": 87,
+    "species": {
+      "w411@dioxirane": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_cf_atomization",
+    "subset": "W4-11",
+    "index": 88,
+    "species": {
+      "w411@cf": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ssh_atomization",
+    "subset": "W4-11",
+    "index": 89,
+    "species": {
+      "w411@ssh": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hocl_atomization",
+    "subset": "W4-11",
+    "index": 90,
+    "species": {
+      "w411@hocl": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_nccn_atomization",
+    "subset": "W4-11",
+    "index": 91,
+    "species": {
+      "w411@nccn": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_n2_atomization",
+    "subset": "W4-11",
+    "index": 92,
+    "species": {
+      "w411@n2": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_n2h_atomization",
+    "subset": "W4-11",
+    "index": 93,
+    "species": {
+      "w411@n2h": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ocs_atomization",
+    "subset": "W4-11",
+    "index": 94,
+    "species": {
+      "w411@ocs": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_sio_atomization",
+    "subset": "W4-11",
+    "index": 95,
+    "species": {
+      "w411@sio": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@si": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_clcn_atomization",
+    "subset": "W4-11",
+    "index": 96,
+    "species": {
+      "w411@clcn": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hoo_atomization",
+    "subset": "W4-11",
+    "index": 97,
+    "species": {
+      "w411@hoo": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hcno_atomization",
+    "subset": "W4-11",
+    "index": 98,
+    "species": {
+      "w411@hcno": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_honc_atomization",
+    "subset": "W4-11",
+    "index": 99,
+    "species": {
+      "w411@honc": {
+        "exact": [],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hno_atomization",
+    "subset": "W4-11",
+    "index": 100,
+    "species": {
+      "w411@hno": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hof_atomization",
+    "subset": "W4-11",
+    "index": 101,
+    "species": {
+      "w411@hof": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c-hono_atomization",
+    "subset": "W4-11",
+    "index": 102,
+    "species": {
+      "w411@c-hono": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_t-hono_atomization",
+    "subset": "W4-11",
+    "index": 103,
+    "species": {
+      "w411@t-hono": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_cs2_atomization",
+    "subset": "W4-11",
+    "index": 104,
+    "species": {
+      "w411@cs2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_hnnn_atomization",
+    "subset": "W4-11",
+    "index": 105,
+    "species": {
+      "w411@hnnn": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_cs_atomization",
+    "subset": "W4-11",
+    "index": 106,
+    "species": {
+      "w411@cs": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_cn_atomization",
+    "subset": "W4-11",
+    "index": 107,
+    "species": {
+      "w411@cn": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_so3_atomization",
+    "subset": "W4-11",
+    "index": 108,
+    "species": {
+      "w411@so3": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_ccl2_atomization",
+    "subset": "W4-11",
+    "index": 109,
+    "species": {
+      "w411@ccl2": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_bn3pi_atomization",
+    "subset": "W4-11",
+    "index": 110,
+    "species": {
+      "w411@bn3pi": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@b": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_so2_atomization",
+    "subset": "W4-11",
+    "index": 111,
+    "species": {
+      "w411@so2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_no_atomization",
+    "subset": "W4-11",
+    "index": 112,
+    "species": {
+      "w411@no": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_so_atomization",
+    "subset": "W4-11",
+    "index": 113,
+    "species": {
+      "w411@so": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_n2o_atomization",
+    "subset": "W4-11",
+    "index": 114,
+    "species": {
+      "w411@n2o": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c-hooo_atomization",
+    "subset": "W4-11",
+    "index": 115,
+    "species": {
+      "w411@c-hooo": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_s2_atomization",
+    "subset": "W4-11",
+    "index": 116,
+    "species": {
+      "w411@s2": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_p4_atomization",
+    "subset": "W4-11",
+    "index": 117,
+    "species": {
+      "w411@p4": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@p": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "w411_cl2_atomization",
+    "subset": "W4-11",
+    "index": 118,
+    "species": {
+      "w411@cl2": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_o2_atomization",
+    "subset": "W4-11",
+    "index": 119,
+    "species": {
+      "w411@o2": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_f2_atomization",
+    "subset": "W4-11",
+    "index": 120,
+    "species": {
+      "w411@f2": {
+        "exact": [],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_t-hooo_atomization",
+    "subset": "W4-11",
+    "index": 121,
+    "species": {
+      "w411@t-hooo": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@h": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_s2o_atomization",
+    "subset": "W4-11",
+    "index": 122,
+    "species": {
+      "w411@s2o": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim16"
+        ]
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_p2_atomization",
+    "subset": "W4-11",
+    "index": 123,
+    "species": {
+      "w411@p2": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@p": {
+        "exact": [],
+        "formula": []
+      }
+    }
+  },
+  {
+    "name": "w411_clf_atomization",
+    "subset": "W4-11",
+    "index": 124,
+    "species": {
+      "w411@clf": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_no2_atomization",
+    "subset": "W4-11",
+    "index": 125,
+    "species": {
+      "w411@no2": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_clo_atomization",
+    "subset": "W4-11",
+    "index": 126,
+    "species": {
+      "w411@clo": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_s3_atomization",
+    "subset": "W4-11",
+    "index": 127,
+    "species": {
+      "w411@s3": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_cl2o_atomization",
+    "subset": "W4-11",
+    "index": 128,
+    "species": {
+      "w411@cl2o": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_s4-c2v_atomization",
+    "subset": "W4-11",
+    "index": 129,
+    "species": {
+      "w411@s4-c2v": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@s": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_of_atomization",
+    "subset": "W4-11",
+    "index": 130,
+    "species": {
+      "w411@of": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_c2_atomization",
+    "subset": "W4-11",
+    "index": 131,
+    "species": {
+      "w411@c2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@c": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_oclo_atomization",
+    "subset": "W4-11",
+    "index": 132,
+    "species": {
+      "w411@oclo": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_f2o_atomization",
+    "subset": "W4-11",
+    "index": 133,
+    "species": {
+      "w411@f2o": {
+        "exact": [
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_b2_atomization",
+    "subset": "W4-11",
+    "index": 134,
+    "species": {
+      "w411@b2": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@b": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_fo2_atomization",
+    "subset": "W4-11",
+    "index": 135,
+    "species": {
+      "w411@fo2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_cloo_atomization",
+    "subset": "W4-11",
+    "index": 136,
+    "species": {
+      "w411@cloo": {
+        "exact": [],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@cl": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_foof_atomization",
+    "subset": "W4-11",
+    "index": 137,
+    "species": {
+      "w411@foof": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@f": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_o3_atomization",
+    "subset": "W4-11",
+    "index": 138,
+    "species": {
+      "w411@o3": {
+        "exact": [],
+        "formula": [
+          "dfs"
+        ]
+      },
+      "w411@o": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "dfs",
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_bn_atomization",
+    "subset": "W4-11",
+    "index": 139,
+    "species": {
+      "w411@bn": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@b": {
+        "exact": [
+          "slim05"
+        ],
+        "formula": [
+          "slim05"
+        ]
+      },
+      "w411@n": {
+        "exact": [
+          "slim05",
+          "slim16"
+        ],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "w411_be2_atomization",
+    "subset": "W4-11",
+    "index": 140,
+    "species": {
+      "w411@be2": {
+        "exact": [],
+        "formula": []
+      },
+      "w411@be": {
+        "exact": [],
+        "formula": [
+          "slim05",
+          "slim16"
+        ]
+      }
+    }
+  }
+]

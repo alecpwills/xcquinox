@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=xcq_t1_backfill
-# long-40core: the backfill re-runs the CCSD stage (the SCF stage is served
-# from its cache) for every benchmark species whose reference file lacks the
-# T1 diagnostic -- one coupled-cluster calculation per species at the run's
+# long-96core-shared: the backfill re-runs the CCSD stage (the SCF stage is
+# served from its cache) for every benchmark species whose reference file lacks
+# the T1 diagnostic -- one coupled-cluster calculation per species at the run's
 # basis and grid, ~200 species -- and then writes the run-level
 # t1_diagnostics.json the figure layer's outlier-free variant reads. The
 # reference files are rewritten atomically with the key added and every
 # other array unchanged; a wall-kill leaves complete files complete, and a
 # file that already carries the key is skipped without any stage running.
-#SBATCH --partition=long-40core
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

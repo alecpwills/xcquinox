@@ -65,6 +65,7 @@ from xcquinox.pipeline.cluster.domain import get_domain_profile
 from xcquinox.pipeline.cluster.inputs import prepare_inputs
 from xcquinox.pipeline.cluster.submit import submit_jobs
 from xcquinox.pipeline.cluster.materialize import write_manifest
+from xcquinox.pipeline.holdout_channels import REPORTING_CHANNEL
 from xcquinox.pipeline.cluster.fidelity import (CERTIFICATE_FILENAME,
                                             VERDICT_PASS,
                                             _write_certificate_payload,
@@ -186,7 +187,6 @@ def _config_to_raw_dict(cfg) -> dict:
         # groups in aux_log.pkl where the reaction form would emit none.
         "ae_as_reactions": cfg.ae_as_reactions,
         "use_polarized_correlation": cfg.use_polarized_correlation,
-        "held_out_strict": cfg.held_out_strict,
         "defer_eval": cfg.defer_eval,
         # inline_eval MUST round-trip: load_grid_config reads it
         # (raw.get("inline_eval", ...)), and recovery/resubmit paths re-load
@@ -2306,10 +2306,12 @@ def _ssh_transport_arg(cm_opts) -> str:
 
 
 def _pull_inventory(run_dir: Path) -> str:
-    """One-line count of the figure-critical artifacts under a pulled run."""
+    """One-line count of the figure-critical artifacts under a pulled run,
+    the reporting channel's evaluations first."""
     def n(pattern: str) -> int:
         return len(sorted(run_dir.glob(pattern)))
-    return (f"val-best weights {n('checkpoints/*/model_val_best.eqx')} | "
+    return (f"reporting evals {n('checkpoints/*/' + REPORTING_CHANNEL)} | "
+            f"val-best weights {n('checkpoints/*/model_val_best.eqx')} | "
             f"val-best evals {n('checkpoints/*/eval_holdout_val_best')} | "
             f"holdout evals {n('checkpoints/*/eval_holdout')} | "
             f"pretrain xnets {n('pretrain/*/xnet.eqx')} | "

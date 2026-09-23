@@ -10,7 +10,8 @@ import jax.numpy as jnp
 import equinox as eqx
 import xcquinox.net as _xnet
 
-from xcquinox.pipeline.config import DESCRIPTOR_COORDINATES, ArchitectureConfig
+from xcquinox.pipeline.config import (DESCRIPTOR_COORDINATES, UEG_GATES,
+                                      ArchitectureConfig)
 from xcquinox.pipeline.constraints import Constraint, _compose_constraints
 from xcquinox.pipeline.metagga import (
     _ALPHA_MAX, _ALPHA_SMOOTHING_WIDTH, invert_smooth_positive_part)
@@ -186,6 +187,13 @@ class AlecGGA_XNet(eqx.Module):
       reduced gradient (and the indicator) and never the density (dpyscfl
       net.py ``get_scf`` lines 745 and 750, ``X_L(n_input=1, use=[1])`` and
       ``X_L(n_input=2, use=[1, 2])``). The width is the legacy width.
+    * ``"paper"`` -- the published clone's coordinates (arXiv:2605.10331,
+      ``preprocessing.py``): for the exchange network the same as ``"dfs"``,
+      the transformed reduced gradient alone.
+
+    ``ueg_gate`` selects the uniform-gas prefactor on the GGA rungs:
+    ``"tanh2"`` is ``tanh(s)^2``, ``"x2"`` the published clone's
+    ``(1 - exp(-s^2)) ln(1 + s)`` (``models.py``, ``lobf(x2 * netterm)``).
 
     With ``parent`` set the network is anchored to its parent functional
     (``parents.py``): see ``_core``.
@@ -221,8 +229,14 @@ class AlecGGA_XNet(eqx.Module):
     # treedef, not of the leaf stream, so a checkpoint does not reveal it (the
     # record beside the checkpoint does). None = today's network, byte for byte.
     parent: str | None = eqx.field(default=None, static=True)
-    # The coordinates the MLP reads the row in, "legacy" | "dfs" (class docstring).
+    # The coordinates the MLP reads the row in, "legacy" | "dfs" | "paper"
+    # (class docstring).
     descriptor_coordinates: str = eqx.field(default="legacy", static=True)
+    # The uniform-gas gate in front of the MLP on the GGA rungs, "tanh2"
+    # (tanh(s)^2, every model built before the field) | "x2" (the published
+    # clone's (1 - exp(-s^2)) ln(1 + s)). Static: part of the class record
+    # beside a checkpoint, not of the leaf stream (config.UEG_GATES).
+    ueg_gate: str = eqx.field(default="tanh2", static=True)
     net: eqx.nn.MLP
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
@@ -238,7 +252,8 @@ class AlecGGA_XNet(eqx.Module):
                  metagga_alpha_index: int = -1,
                  zero_init_final_layer: bool = False,
                  parent: str | None = None,
-                 descriptor_coordinates: str = "legacy"):
+                 descriptor_coordinates: str = "legacy",
+                 ueg_gate: str = "tanh2"):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_XNet: use_self_attention=True requires "
@@ -261,6 +276,18 @@ class AlecGGA_XNet(eqx.Module):
                 f"AlecGGA_XNet: descriptor_coordinates must be one of "
                 f"{DESCRIPTOR_COORDINATES}, got {descriptor_coordinates!r}"
             )
+        if ueg_gate not in UEG_GATES:
+            raise ValueError(
+                f"AlecGGA_XNet: ueg_gate must be one of {UEG_GATES}, got "
+                f"{ueg_gate!r}"
+            )
+        if meta_gga and ueg_gate != "tanh2":
+            raise ValueError(
+                f"AlecGGA_XNet: ueg_gate={ueg_gate!r} is a GGA-rung gate; the "
+                "meta-GGA rung's gate is the reference implementation's "
+                "x2 + tanh^2(x3), which already carries x2"
+            )
+        self.ueg_gate = ueg_gate
         self.n_extra_features = n_extra_features
         self.lob_lim = lob_lim
         self.lower_rho_cutoff = lower_rho_cutoff
@@ -338,7 +365,7 @@ class AlecGGA_XNet(eqx.Module):
         # log-compressed s; otherwise raw s. The tanh(s)² UEG gate below is
         # ALWAYS computed from raw s (it's a structural physics constraint,
         # not a feature transform).
-        if self.descriptor_coordinates == "dfs":
+        if self.descriptor_coordinates in ("dfs", "paper"):
             # DFS coordinates, dpyscfl net.py get_descriptors, spin-scaling
             # branch (the exchange network's): x_s = (1 - exp(-s^2)) ln(s + 1)
             # of the doubled channel (lines 195-198; PRB 104 L161109 eq. 9).
@@ -353,7 +380,7 @@ class AlecGGA_XNet(eqx.Module):
 
         if self.n_extra_features > 0:
             extras = jnp.atleast_1d(features).flatten()
-            if self.descriptor_coordinates == "dfs" and self.meta_gga:
+            if self.descriptor_coordinates in ("dfs", "paper") and self.meta_gga:
                 # x_alpha = ln((alpha + 1)/2) of the RAW indicator (dpyscfl
                 # net.py line 220; eq. 10) in place of the raw clamped column
                 # the legacy layout feeds; the other extras are unchanged.
@@ -377,6 +404,11 @@ class AlecGGA_XNet(eqx.Module):
             x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
             x3 = jnp.log((alpha + 1.0) / 2.0)
             tanhterm = jnp.atleast_1d(x2).flatten() + jnp.tanh(x3) ** 2
+        elif self.ueg_gate == "x2":
+            # The published clone's prefactor (arXiv:2605.10331 models.py,
+            # ``lobf(x2 * netterm)``): the transformed reduced gradient of the
+            # row's s, in place of tanh(s)^2.
+            tanhterm = _dfs_log_transform(s)
         else:
             tanhterm = jnp.tanh(s) ** 2
 
@@ -447,6 +479,12 @@ class AlecGGA_CNet(eqx.Module):
       the indicator column. Requires the polarized network (``x1`` is a DFS
       input); the width is ``3 + n_extra_features``, the legacy polarized
       width.
+    * ``"paper"`` -- the published clone's coordinates (arXiv:2605.10331,
+      ``preprocessing.py``): the ``"dfs"`` set with the same epsilon inside
+      the spin coordinate, ``x1 = ln(spinscale + 1e-5)``.
+
+    ``ueg_gate`` selects the uniform-gas prefactor on the GGA rungs as for
+    the exchange network: ``"tanh2"`` or the published ``"x2"``.
 
     With ``parent`` set the network is anchored to its parent functional
     relative to the model's polarized PW92 baseline (``parents.pbe_fc``):
@@ -475,8 +513,14 @@ class AlecGGA_CNet(eqx.Module):
     constraints: tuple = eqx.field(static=True)
     # Parent anchor, "pbe" | "scan" | None (see AlecGGA_XNet.parent).
     parent: str | None = eqx.field(default=None, static=True)
-    # The coordinates the MLP reads the row in, "legacy" | "dfs" (class docstring).
+    # The coordinates the MLP reads the row in, "legacy" | "dfs" | "paper"
+    # (class docstring).
     descriptor_coordinates: str = eqx.field(default="legacy", static=True)
+    # The uniform-gas gate in front of the MLP on the GGA rungs, "tanh2"
+    # (tanh(s)^2, every model built before the field) | "x2" (the published
+    # clone's (1 - exp(-s^2)) ln(1 + s)). Static: part of the class record
+    # beside a checkpoint, not of the leaf stream (config.UEG_GATES).
+    ueg_gate: str = eqx.field(default="tanh2", static=True)
     net: eqx.nn.MLP
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
@@ -493,7 +537,8 @@ class AlecGGA_CNet(eqx.Module):
                  metagga_alpha_index: int = -1,
                  zero_init_final_layer: bool = False,
                  parent: str | None = None,
-                 descriptor_coordinates: str = "legacy"):
+                 descriptor_coordinates: str = "legacy",
+                 ueg_gate: str = "tanh2"):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_CNet: use_self_attention=True requires "
@@ -526,13 +571,26 @@ class AlecGGA_CNet(eqx.Module):
                 f"AlecGGA_CNet: descriptor_coordinates must be one of "
                 f"{DESCRIPTOR_COORDINATES}, got {descriptor_coordinates!r}"
             )
-        if descriptor_coordinates == "dfs" and not use_spin_polarization:
+        if (descriptor_coordinates in ("dfs", "paper")
+                and not use_spin_polarization):
             raise ValueError(
-                "AlecGGA_CNet: descriptor_coordinates='dfs' requires "
-                "use_spin_polarization=True: x1 = ln(spinscale) is an input of "
-                "the DFS correlation network (dpyscfl net.py line 191), which "
-                "a zeta-blind row does not carry"
+                f"AlecGGA_CNet: descriptor_coordinates={descriptor_coordinates!r} "
+                "requires use_spin_polarization=True: x1 = ln(spinscale) is an "
+                "input of the DFS correlation network (dpyscfl net.py line "
+                "191), which a zeta-blind row does not carry"
             )
+        if ueg_gate not in UEG_GATES:
+            raise ValueError(
+                f"AlecGGA_CNet: ueg_gate must be one of {UEG_GATES}, got "
+                f"{ueg_gate!r}"
+            )
+        if meta_gga and ueg_gate != "tanh2":
+            raise ValueError(
+                f"AlecGGA_CNet: ueg_gate={ueg_gate!r} is a GGA-rung gate; the "
+                "meta-GGA rung's gate is the reference implementation's "
+                "x2 + tanh^2(x3), which already carries x2"
+            )
+        self.ueg_gate = ueg_gate
         self.parent = parent
         self.descriptor_coordinates = descriptor_coordinates
         self.n_extra_features = n_extra_features
@@ -623,7 +681,7 @@ class AlecGGA_CNet(eqx.Module):
             rs_mlp = rs
             s_mlp = s
 
-        if self.descriptor_coordinates == "dfs":
+        if self.descriptor_coordinates in ("dfs", "paper"):
             # DFS coordinates, dpyscfl net.py get_descriptors, the branch
             # without spin scaling (the correlation network's), in the order
             # C_L consumes them (get_scf lines 746 and 751):
@@ -642,7 +700,13 @@ class AlecGGA_CNet(eqx.Module):
             zeta_c = jnp.clip(zeta, -1.0, 1.0)
             spinscale = 0.5 * ((1.0 + zeta_c) ** (4 / 3) + (1.0 - zeta_c) ** (4 / 3))
             x0 = jnp.atleast_1d(jnp.log(rho ** (1 / 3) + _DFS_LOG_EPS)).flatten()
-            x1 = jnp.atleast_1d(jnp.log(spinscale)).flatten()
+            if self.descriptor_coordinates == "paper":
+                # The published clone puts the same epsilon inside the spin
+                # coordinate (preprocessing.py: x1 = log(zeta' + eps_log)).
+                x1 = jnp.atleast_1d(
+                    jnp.log(spinscale + _DFS_LOG_EPS)).flatten()
+            else:
+                x1 = jnp.atleast_1d(jnp.log(spinscale)).flatten()
             x_s = _dfs_log_transform(s)
             if self.n_extra_features > 0:
                 extras = jnp.atleast_1d(features).flatten()
@@ -686,6 +750,11 @@ class AlecGGA_CNet(eqx.Module):
             x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
             x3 = jnp.log((alpha + 1.0) / 2.0)
             tanhterm = jnp.atleast_1d(x2).flatten() + jnp.tanh(x3) ** 2
+        elif self.ueg_gate == "x2":
+            # The published clone's prefactor (arXiv:2605.10331 models.py,
+            # ``lobf(x2 * netterm)``): the transformed reduced gradient of the
+            # row's s, in place of tanh(s)^2.
+            tanhterm = _dfs_log_transform(s)
         else:
             tanhterm = jnp.tanh(s) ** 2
 
@@ -760,14 +829,16 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
     recovered from the row's ``metagga`` column (``_raw_indicator``), the
     exchange net on the doubled channel and the correlation net on the total
     density (``parents.scan_fx`` / ``scan_fc`` state the conventions).
-    ``arch.descriptor_coordinates`` selects the MLP coordinates ("dfs"
-    requires the polarized correlation network). MLP input widths: exchange
-    ``1 + n_extra`` in both coordinate sets; correlation ``2 + n_extra``
-    (legacy, zeta-blind), ``3 + n_extra`` (legacy polarized and dfs).
+    ``arch.descriptor_coordinates`` selects the MLP coordinates ("dfs" and
+    "paper" require the polarized correlation network) and ``arch.ueg_gate``
+    the uniform-gas gate of the GGA rungs. MLP input widths: exchange
+    ``1 + n_extra`` in every coordinate set; correlation ``2 + n_extra``
+    (legacy, zeta-blind), ``3 + n_extra`` (legacy polarized, dfs and paper).
     """
     _descs = arch.materialize_descriptors()
     n_extra_features = sum(d.n_features for d in _descs)
     coordinates = getattr(arch, "descriptor_coordinates", "legacy")
+    gate = str(getattr(arch, "ueg_gate", "tanh2"))
     parent = None
     zero_init_final_layer = arch.zero_init_final_layer
     if getattr(arch, "parent_anchor", False):
@@ -789,12 +860,13 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         # the registry entry says, so gated = 0 and F = F_parent at
         # initialization on both the plain and the attention paths.
         zero_init_final_layer = True
-    if coordinates == "dfs" and not arch.use_polarized_correlation:
+    if coordinates in ("dfs", "paper") and not arch.use_polarized_correlation:
         raise ValueError(
             f"create_network_pair: architecture {arch.name!r} has "
-            "descriptor_coordinates='dfs' with use_polarized_correlation="
-            "False; the DFS correlation network reads x1 = ln(spinscale), so "
-            "the polarized correlation network is required."
+            f"descriptor_coordinates={coordinates!r} with "
+            "use_polarized_correlation=False; the correlation network of that "
+            "coordinate set reads x1 = ln(spinscale), so the polarized "
+            "correlation network is required."
         )
     # DFS-faithful meta-GGA: the arch flags meta_gga -> the nets use the
     # (x2 + tanh^2(x3)) UEG gate + (exchange) the 1.174 Lieb-Oxford ceiling, reading
@@ -826,6 +898,7 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         meta_gga=meta_gga, metagga_alpha_index=metagga_alpha_index,
         zero_init_final_layer=zero_init_final_layer,
         parent=parent, descriptor_coordinates=coordinates,
+        ueg_gate=gate,
     )
     cnet = AlecGGA_CNet(
         n_extra_features=n_extra_features, depth=arch.depth, nodes=arch.nodes,
@@ -840,5 +913,6 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         meta_gga=meta_gga, metagga_alpha_index=metagga_alpha_index,
         zero_init_final_layer=zero_init_final_layer,
         parent=parent, descriptor_coordinates=coordinates,
+        ueg_gate=gate,
     )
     return xnet, cnet

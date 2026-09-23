@@ -11,7 +11,7 @@
 # provides (benchmark-refs dir, malloc arena cap, BLAS thread caps) is
 # replicated below -- without the refs dir the eval would silently null
 # every density column it overwrites.
-#SBATCH --partition=long-40core
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=06:00:00
 #SBATCH --nodes=1
 #SBATCH --exclusive

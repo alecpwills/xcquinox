@@ -473,6 +473,7 @@ def main(argv=None) -> int:
         f"patience={getattr(pt, 'patience', 0)}, "
         f"dfs_set={getattr(pt, 'dfs_set', False)}, "
         f"pool_atoms={getattr(pt, 'pool_atoms', False)}, "
+        f"slim_set={getattr(pt, 'slim_set', '')!r}, "
         f"exchange_footing={getattr(pt, 'exchange_footing', 'total')!r}, "
         f"mesh_fraction={getattr(pt, 'mesh_fraction', 0.3)}, "
         f"lr_decay_end={getattr(pt, 'lr_decay_end', 1.0)}, "

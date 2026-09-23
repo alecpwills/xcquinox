@@ -41,6 +41,14 @@ read-only. Its job is, on a compute node, before the train array starts:
      the preflight exits non-zero, so an architecture pretrained under another
      submission, a deleted certificate, or a partial pretrain array SLURM
      reported as complete all block the train array here.
+  8. (optional, ``cluster.preflight_coldstart_census``) Run the cold-start
+     convergence census (``coldstart_census``): the training solver from the
+     atomic guess on every training species, for one FULL-mode cell per swept
+     architecture with its certified checkpoint, written to
+     ``<run_dir>/coldstart_census.json`` with one summary line per
+     architecture in the log. A report, never a gate: a census that does not
+     complete, or finds species that do not converge, is logged and the train
+     array proceeds.
 
 If anything is incomplete, :func:`main` returns a non-zero exit code so the
 train array's ``afterok:<preflight>`` dependency correctly blocks.
@@ -84,6 +92,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 from xcquinox.pipeline import parallel
 from xcquinox.pipeline.config import get_architecture
@@ -299,6 +308,97 @@ def _compile_smoke_impl(specs, paths, run_dir) -> bool:
 # module global, so a patched value is honored) to run the gate wiring without
 # spawning the real worker subprocess.
 _compile_smoke = _compile_smoke_impl
+
+
+def _census_cells(specs):
+    """``([(index, arch), ...], [arch, ...])``: per distinct architecture the
+    first cell whose solver is FULL (the census starts it from the atomic
+    guess, which the solver accepts in FULL mode only), and the architectures
+    with no such cell."""
+    from xcquinox.pipeline.solver import SolverMode
+
+    chosen: dict = {}
+    for idx, (cell, spec) in enumerate(specs):
+        if cell.arch in chosen:
+            continue
+        kwargs = getattr(spec, "loss_kwargs_dict", None) or {}
+        sc = kwargs.get("solver_config") or getattr(spec, "solver_config", None)
+        if getattr(sc, "mode", None) == SolverMode.FULL:
+            chosen[cell.arch] = idx
+    skipped = sorted({cell.arch for cell, _ in specs} - set(chosen))
+    return [(chosen[arch], arch) for arch in sorted(chosen)], skipped
+
+
+def _coldstart_census_impl(specs, paths, run_dir) -> bool:
+    """Run the cold-start convergence census over one FULL cell per
+    architecture and write ``<run_dir>/coldstart_census.json``.
+
+    The census subprocess (``coldstart_census``) runs under the production
+    train-node thread environment, as the compile smoke does, on the CPU; its
+    whole output is persisted to ``logs/coldstart_census.out`` and each cell's
+    summary line is logged here. Returns ``True`` iff the subprocess completed
+    (rc 0); ``False`` otherwise. The verdict is REPORTED by :func:`main` and
+    never blocks the train array: the census records where the cold start
+    converges, it does not decide whether the run may proceed.
+    """
+    cells, skipped = _census_cells(specs)
+    if skipped:
+        _log("cold-start census: no FULL-mode cell for "
+             f"{', '.join(skipped)}; those architectures are not measured")
+    if not cells:
+        _log("cold-start census: no cell to measure")
+        return True
+    selected = [paths[idx] for idx, _arch in cells]
+    _log("cold-start census: measuring "
+         + ", ".join(f"{arch} (cell {idx})" for idx, arch in cells))
+
+    cores = int(os.environ.get("SLURM_CPUS_ON_NODE") or os.cpu_count() or 12)
+    blas_threads = max(1, cores // 12)
+    probe_env = {**os.environ,
+                 **parallel._thread_env(blas_threads, bound_worker=False)}
+    probe_env.pop(parallel.WORKER_BIND_CPUS_ENV, None)
+    probe_env.pop(parallel.WORKER_SLOT_ENV, None)
+    probe_env["JAX_PLATFORMS"] = "cpu"
+    probe_env.setdefault("JAX_ENABLE_X64", "1")
+
+    out_path = os.path.join(run_dir, "coldstart_census.json")
+    t0 = time.time()
+    proc = subprocess.run(
+        [sys.executable, "-m", "xcquinox.pipeline.cluster.coldstart_census",
+         *selected, "--out", out_path],
+        capture_output=True, text=True, env=probe_env,
+    )
+    stdout = proc.stdout or ""
+    text = stdout + "\n" + (proc.stderr or "")
+    try:
+        census_log = os.path.join(run_dir, "logs", "coldstart_census.out")
+        os.makedirs(os.path.dirname(census_log), exist_ok=True)
+        with open(census_log, "w") as fh:
+            fh.write(f"# cold-start census: cells "
+                     f"{[idx for idx, _ in cells]}, blas_threads="
+                     f"{blas_threads}, rc={proc.returncode}, "
+                     f"wall_s={time.time() - t0:.1f}\n\n")
+            fh.write(text)
+    except OSError as exc:
+        _log(f"cold-start census: could not persist the output ({exc})")
+    for line in stdout.splitlines():
+        if line.startswith("census "):
+            _log(line)
+    if proc.returncode == 0:
+        _log(f"cold-start census written to {out_path} "
+             f"({time.time() - t0:.1f} s)")
+        return True
+    where = (f"the cells written so far stand in {out_path}"
+             if os.path.isfile(out_path)
+             else f"no document was written to {out_path}")
+    _log(f"cold-start census did not complete (rc={proc.returncode}); "
+         f"{where}. Tail:\n{text[-500:]}")
+    return False
+
+
+# Seam: tests monkeypatch ``_preflight._coldstart_census`` as they do the
+# compile smoke.
+_coldstart_census = _coldstart_census_impl
 
 
 # ---------------------------------------------------------------------------
@@ -756,6 +856,20 @@ def main(argv=None) -> int:
         return 1
     _log(f"fidelity gate PASSED: {len(archs)}/{len(archs)} architecture "
          "certificate(s) released the gate")
+
+    # --- 10. optional cold-start convergence census -------------------------
+    # A report, never a gate: the census records where the training SCF
+    # converges from the atomic guess; a census that does not complete is
+    # logged as such and the array still proceeds.
+    if getattr(getattr(cfg, "cluster", None), "preflight_coldstart_census",
+               False):
+        _log("cold-start census enabled: running the training solver from the "
+             "atomic guess on every training species ...")
+        if _coldstart_census(specs, paths, run_dir):
+            _log("cold-start census completed")
+        else:
+            _log("cold-start census FAILED to complete; the census is a "
+                 "report and the train array is not blocked")
 
     _log(f"preflight SUCCEEDED: {n} specs staged + verified")
     return 0

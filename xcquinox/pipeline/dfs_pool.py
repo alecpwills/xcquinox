@@ -103,6 +103,20 @@ from ase.io import read
 # Spin field convention (per entry below): PySCF spin = 2S = N_α - N_β.
 # Closed-shell singlets: spin=0.  Doublets: spin=1.  Triplets: spin=2.
 # Quartets: spin=3.  Sources for each non-trivial spin are cited inline.
+
+# The self-consistency split of the published training, read from the
+# reference trajectory the published script trains on (the xcdiff data's
+# haunschild_pbe_reaction.traj): its entries carry an ``sc`` flag, False on
+# these nine AE molecules and on every reaction species; the other AE
+# molecules, the radicals HO and CH, the atoms and the IP entries carry no
+# flag, which the script reads as self-consistent. O2 is not among this
+# pool's entries; it is recorded so that an entry added later is stamped as
+# the trajectory has it. Recorded here so the pool stamps ``info["sc"]`` on
+# its Atoms and the training points carry it (``TrainingSpec.nonsc_points``,
+# consulted under ``respect_sc_flag``).
+DFS_NONSC_AE_HILLS = ("NO2", "HN", "O3", "N2O", "CH3", "CH2", "H2O", "H3N",
+                      "O2")
+
 DFS_AE_DATA = [
     # --- 10 linear closed-shell ---
     {"hill": "H2",   "name": "Dihydrogen",
@@ -308,6 +322,9 @@ BH76_MODES: tuple[str, ...] = ("reaction_energy", "barrier_height")
 DFS_BH76_REACTIONS = [
     {
         "name": "OH+N2_to_H+N2O",
+        # every reaction species is non-self-consistent in the published
+        # training (the provenance is stated at DFS_NONSC_AE_HILLS)
+        "sc": False,
         "reactants": ["HO", "N2"],
         "products": ["H", "N2O"],
         "coeffs": [-1.0, -1.0, +1.0, +1.0],
@@ -336,6 +353,7 @@ DFS_BH76_REACTIONS = [
     },
     {
         "name": "OH+CH3_to_O+CH4",
+        "sc": False,
         "reactants": ["HO", "CH3"],
         "products": ["O", "CH4"],
         "coeffs": [-1.0, -1.0, +1.0, +1.0],
@@ -364,6 +382,7 @@ DFS_BH76_REACTIONS = [
     },
     {
         "name": "HF+F_to_H+F2",
+        "sc": False,
         # NOTE: ASE's get_chemical_formula() / Atoms.get_chemical_formula()
         # returns "HF" for H-F (not "FH") despite Hill ordering.  The
         # MoleculeSpec.name set by the step-7 notebook builder uses Hill
@@ -427,6 +446,8 @@ DFS_BH76_REACTIONS = [
 DFS_IP13_PAIRS = [
     {
         "name": "Li_IP",
+        # the IP entries are self-consistent in the published training
+        "sc": True,
         "neutral": "Li",      # MoleculeSpec.name (Hill formula, charge=0)
         "cation":  "Li+",     # MoleculeSpec.name (charge=+1, separate spec)
         "neutral_spin": 1,    # NIST ASD Li I (²S)
@@ -446,6 +467,7 @@ DFS_IP13_PAIRS = [
     },
     {
         "name": "C_IP",
+        "sc": True,
         "neutral": "C",       # MoleculeSpec.name (Hill formula, charge=0)
         "cation":  "C+",      # MoleculeSpec.name (charge=+1, separate spec)
         "neutral_spin": 2,    # NIST ASD C I (³P)
@@ -535,6 +557,9 @@ def make_atom_atoms(sym: str, *, charge: int = 0, spin: int | None = None) -> At
     a.info["spin"] = int(spin)
     a.info["charge"] = int(charge)
     a.info["name"] = sym if charge == 0 else f"{sym}{'+' * charge if charge > 0 else '-' * (-charge)}"
+    # atoms are self-consistent in the published training; a reaction point
+    # overrides the flag on the species it builds from this
+    a.info["sc"] = True
     return a
 
 
@@ -601,6 +626,8 @@ def build_dfs_pool() -> dict:
             a.info["spin"] = int(entry["spin"])
             a.info["charge"] = int(entry.get("charge", 0))
             a.info["spin_source"] = entry.get("spin_source", "")
+            # the published training's self-consistency flag for this entry
+            a.info["sc"] = hill not in DFS_NONSC_AE_HILLS
             ae_atoms.append(a)
         else:
             missing.append(hill)
@@ -625,6 +652,7 @@ def build_dfs_pool() -> dict:
         a.info["charge"] = int(ref.get("charge", 0))
         a.info["spin_source"] = ref.get("spin_source", "")
         a.info["name"] = sym
+        a.info["sc"] = True
         atom_refs.append(a)
 
     return {

@@ -68,7 +68,7 @@ from xcquinox.pipeline.networks import (  # noqa: E402
 )
 from xcquinox.pipeline.eval_probes import build_probe_pool  # noqa: E402
 from xcquinox.pipeline.dfs_pool import make_atom_atoms  # noqa: E402
-from xcquinox.pipeline.full_benchmark_pools import gmtkn55_root  # noqa: E402
+from xcquinox.pipeline.full_benchmark_pools import gmtkn55_subset_dir  # noqa: E402
 from xcquinox.pipeline.cluster.spec_builder import atoms_to_mol_spec  # noqa: E402
 
 
@@ -88,9 +88,9 @@ PROBE = "probe_c_bh76_transfer"
 W411_MOLECULES = ("h2", "h2o", "ch4", "nh3", "co", "n2", "co2", "hf", "c2h2", "c2h4")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-# the GMTKN55 clone: XCQUINOX_GMTKN55_DIR, else data/gmtkn55 under the repository
-GMTKN55_DIR = str(gmtkn55_root())
-W411_DIR = os.path.join(GMTKN55_DIR, "W4-11")
+# The W4-11 subset of the GMTKN55 clone (XCQUINOX_GMTKN55_DIR, else data/gmtkn55
+# under the repository) is resolved where it is read, so the module imports on
+# a machine without the clone and the error names both candidate locations.
 OUTDIR = os.path.join(_HERE, "_constraint_demo_work")
 # Step- and baseline-tagged so runs never clobber each other: the original
 # 150-step figure (``constraint_pretrain_gmtkn55_demo.png``) and the unpolarized
@@ -184,11 +184,12 @@ def build_w411_ae_pool():
     Molecule geometries come from the clone's struc.xyz; atom species (with NIST
     ground-state spins) from make_atom_atoms. References are read straight from the
     GMTKN55 clone -- no transcription/fabrication."""
-    res_path = os.path.join(W411_DIR, ".res")
+    w411_dir = str(gmtkn55_subset_dir("W4-11"))
+    res_path = os.path.join(w411_dir, ".res")
     if not os.path.isfile(res_path):
         raise RuntimeError(
-            f"GMTKN55 W4-11 not found at {W411_DIR} (.res missing). The demo needs "
-            f"the local GMTKN55 clone at {GMTKN55_DIR}.")
+            f"GMTKN55 W4-11 at {w411_dir} carries no .res file; the demo needs "
+            "the clone data/gmtkn55/PROVENANCE.md records.")
     with open(res_path) as f:
         text = f.read()
     # $tmer {csv}/$f x <int coeffs...> $w <ref>
@@ -208,7 +209,7 @@ def build_w411_ae_pool():
         })
         # molecule geometry from the clone (closed-shell -> spin 0)
         if mol not in mol_specs:
-            xyz = os.path.join(W411_DIR, mol, "struc.xyz")
+            xyz = os.path.join(w411_dir, mol, "struc.xyz")
             if not os.path.isfile(xyz):
                 raise RuntimeError(f"W4-11 geometry missing: {xyz}")
             a = ase_read(xyz)

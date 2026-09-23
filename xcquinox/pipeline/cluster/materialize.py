@@ -261,6 +261,7 @@ def write_manifest(cells, paths, out_dir: str, *, model=None, cfg=None) -> str:
         "parent_anchor": bool(getattr(model, "parent_anchor", False)),
         "descriptor_coordinates": str(
             getattr(model, "descriptor_coordinates", "legacy")),
+        "ueg_gate": str(getattr(model, "ueg_gate", "tanh2")),
     }
 
     manifest_path = os.path.join(out_dir, "manifest.json")

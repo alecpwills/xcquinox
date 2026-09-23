@@ -27,6 +27,13 @@ from xcquinox.pipeline.solver import (
     _sym_break_diag,
 )
 
+#: A molecule record carrying this key (a Python bool, static under
+#: ``eqx.filter_jit``) is evaluated in one pass at its reference density
+#: whatever the solver mode: the published protocol's treatment of a
+#: non-self-consistent entry. The per-molecule loop sets it on the record
+#: copies it hands a marked group; the supply layer never writes it.
+ONESHOT_AT_REFERENCE_KEY = "oneshot_at_reference"
+
 
 @eqx.filter_jit
 def compute_exc_nn(model, rho, sigma, features, grid_weights):
@@ -607,8 +614,14 @@ def total_energy_for_solver(model, mol_data, solver_config=None, forward_only=Fa
       (``J[rho_PBE]`` acting on ``rho_scf != rho_PBE``) that is NOT a valid
       energy functional of any single density, using it drove FIXED_J specs
       to lowest train loss but 50+ kcal/mol eval atomization-energy error.
+
+    * A record marked with :data:`ONESHOT_AT_REFERENCE_KEY` -> the one-shot
+      energy at its reference density whatever the mode: the published
+      protocol's one pass for a non-self-consistent entry.
     """
     from xcquinox.pipeline.solver import SolverMode  # local: avoid import cycle
+    if mol_data.get(ONESHOT_AT_REFERENCE_KEY, False):
+        return fixed_density_total_energy(model, mol_data)
     if solver_config is not None and solver_config.mode == SolverMode.FULL:
         from xcquinox.pipeline.solver import run_scf
         result = run_scf(solver_config, model, mol_data, forward_only=forward_only)
@@ -694,8 +707,27 @@ def energy_trajectory_for_solver(model, mol_data, solver_config=None):
     and a trace was captured; otherwise the single reporting scalar reshaped to
     ``(1,)`` (so the per-step loss with one step + weight 1 reduces EXACTLY to
     the prior final-step behavior). All species in a spec share one
-    ``solver_config``, so the returned length is uniform and stackable."""
+    ``solver_config``, so the returned length is uniform and stackable.
+
+    A record marked with :data:`ONESHOT_AT_REFERENCE_KEY` returns its one-shot
+    energy repeated over the tail window (the published script's constant
+    trajectory for a non-self-consistent entry), at the length the manual
+    backend's trace gives an unmarked record: one entry per configured cycle,
+    sliced to the tail."""
     from xcquinox.pipeline.solver import SolverMode  # local: avoid import cycle
+    if (
+        solver_config is not None
+        and solver_config.mode == SolverMode.FULL
+        and solver_config.scf_loss_use_tail
+        and mol_data.get(ONESHOT_AT_REFERENCE_KEY, False)
+    ):
+        skip, _ = scf_tail_window(
+            solver_config.max_cycles,
+            solver_config.scf_loss_tail,
+            solver_config.scf_loss_weight_power,
+        )
+        energy = fixed_density_total_energy(model, mol_data)
+        return jnp.full((solver_config.max_cycles - skip,), energy)
     if (
         solver_config is not None
         and solver_config.mode == SolverMode.FULL

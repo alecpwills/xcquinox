@@ -64,6 +64,9 @@ _STORED_ORDER: Tuple[str, ...] = (
     "deep_rung35ms_3x16",
     "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
     "deep_cusp_mgga_3x16", "deep_rung35ms_mgga_3x16",
+    # the v8 geometric pair: the cusp columns on the 3x16 network, without and
+    # with attention (no 4x32 sibling; the base colours are set below)
+    "deep_geom_3x16", "deep_geom_attn_3x16",
 )
 
 # --------------------------------------------------------------------------- #
@@ -74,7 +77,9 @@ _STORED_ORDER: Tuple[str, ...] = (
 # --------------------------------------------------------------------------- #
 _DISPLAY_ORDER: Tuple[str, ...] = (
     "shallow", "shallow_attn", "medium", "medium_attn",
-    "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16", "deep_dm_3x16",
+    "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16",
+    "deep_geom_3x16", "deep_geom_attn_3x16",
+    "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
     "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
@@ -124,6 +129,14 @@ ARCH_COLOR["shallow"] = "#637939"
 ARCH_COLOR["shallow_attn"] = "#8ca252"
 ARCH_COLOR["medium"] = "#98df8a"
 ARCH_COLOR["medium_attn"] = "#c7e9c0"
+# v8 geometric pair base names (no 4x32 sibling to inherit from): tab20b's red
+# pair, the attention twin the lighter shade of its base, chosen by worst-case
+# CIEDE2000 separation against every colour above and the rung accents: 14.54
+# (#d6616b against tab10's red, deep_dm and its twin), the largest among the
+# six tab20b pairs no architecture carries (the magenta pair sits 4.84 from
+# tab10's pink); base-twin separation 13.57.
+ARCH_COLOR["deep_geom"] = "#d6616b"
+ARCH_COLOR["deep_geom_attn"] = "#e7969c"
 for _small in _STORED_ORDER[8:]:
     # Only width-twin names inherit by suffix-strip; a base name in the tail
     # (the size ladder) keeps its explicit entry above -- the unguarded strip

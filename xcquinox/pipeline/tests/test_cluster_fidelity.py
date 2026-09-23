@@ -988,3 +988,45 @@ def _free_atom(symbol, charge=0, spin=0):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# The uniform-gas gate in the certificate's model class
+# ---------------------------------------------------------------------------
+
+def test_the_certificate_class_check_reports_the_gate(tmp_path):
+    """The certificate records the uniform-gas gate the certified networks
+    carry, and a run of the other gate does not accept it.
+
+    Oracle: the payload the certificate writes (with the per-system
+    evaluation stubbed, so no SCF is paid for) and ``model_class_mismatches``
+    on hand-built certificates. A certificate written before the field
+    existed states nothing, which reads as the gate every model before it
+    carried, so the files of the earlier campaigns are read exactly as they
+    were.
+    """
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    cfg = _cfg()
+    cfg.model = SimpleNamespace(parent_anchor=False,
+                                descriptor_coordinates="legacy",
+                                ueg_gate="x2")
+    payload = fid.fidelity_certificate(
+        cfg, run_dir, "deep_3x16",
+        oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 0.5, "H2": 1.0}))
+    assert payload["ueg_gate"] == "x2"
+
+    assert fid.model_class_mismatches(cfg, payload) == []
+
+    tanh_cfg = _cfg()
+    tanh_cfg.model = SimpleNamespace(parent_anchor=False,
+                                     descriptor_coordinates="legacy",
+                                     ueg_gate="tanh2")
+    assert fid.model_class_mismatches(tanh_cfg, payload) == [
+        ("ueg_gate", "x2", "tanh2")]
+
+    legacy_cert = {"parent_anchor": False, "descriptor_coordinates": "legacy"}
+    assert fid.model_class_mismatches(tanh_cfg, legacy_cert) == []
+    assert fid.model_class_mismatches(cfg, legacy_cert) == [
+        ("ueg_gate", "tanh2", "x2")]

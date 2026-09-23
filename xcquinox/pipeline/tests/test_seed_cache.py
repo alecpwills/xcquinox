@@ -137,3 +137,30 @@ def test_link_pool_creates_geometry_qualified_links(tmp_path, monkeypatch):
     assert os.path.realpath(dst) == str(src)
     # idempotent rerun
     assert sc_mod.main(["/cfg.yaml", "--link-pool", str(pool_dir)]) == 0
+
+
+def test_the_pool_seed_link_uses_the_configured_pools(monkeypatch):
+    """The seed cache is re-keyed for the species of the pools the run evaluates. A
+    linker that always asked for the pair would leave every species of a wider pool
+    without a seed, and the missing seed surfaces only at the val-coverage gate of a
+    queued job.
+
+    Oracle: the pool names the loader seam received.
+    """
+    class _WidePools(_Cfg):
+        class inputs(_Cfg.inputs):
+            held_out_pools = ("bh76", "w411", "diet150")
+
+    seen = {}
+
+    def _fake_load(names, basis=None, grid_level=None, refs_dir=None):
+        seen["pools"] = tuple(names)
+        return {}
+
+    monkeypatch.setattr(sc_mod, "_load_held_out_pools", _fake_load)
+    assert sc_mod._held_out_pool_specs(_Cfg()) == {}
+    assert seen["pools"] == ("bh76", "w411")
+    assert sc_mod._held_out_pool_specs(_WidePools()) == {}
+    assert seen["pools"] == ("bh76", "w411", "diet150")
+
+

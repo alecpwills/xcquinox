@@ -30,7 +30,7 @@ and numpy 2.3.
 No upper bound is written into the declaration: the floors are one resolved set, and the
 bounds a library states about its own dependencies (pyscfad's `jax<0.11`) are the resolver's
 to enforce. The two previous caps are gone: pyscf was held below 2.12 because the
-closed-shell record's cross-platform bound had been measured against 2.11.0, and pyscfad
+closed-shell record's bound had been measured against 2.11.0, and pyscfad
 below 0.2 because 0.3.4 no longer carries the `define_xc_` that PySCF's mean-field method
 reaches; the development history records the move and what it changed for each.
 

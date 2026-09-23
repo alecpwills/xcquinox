@@ -653,3 +653,94 @@ def lob_preimage(F_parent, limit, z_max=40.0):
     num = jnp.maximum((limit - 1.0) * f, _TINY)
     den = jnp.maximum(limit - f, _TINY)
     return jnp.clip(jnp.log(num) - jnp.log(den), -z_max, z_max)
+
+
+# --- The published clone's reference forms ----------------------------------
+# The functional-cloning protocol of arXiv:2605.10331 forms its pretraining
+# targets from analytic expressions of its own (gitlab.com/saru1799/
+# xcquinox-clone, branch public, xcquinox_clone/reference_functionals.py:
+# ``__Fx_PBE_unpol``, ``__pw92_eps_c_wospin_point``, ``__Fc_PBE_wospin``,
+# ``eUEG_LDA_x_unpol`` and ``S``). They are PBE's on the TOTAL density for
+# every system, the correlation on that code's own PW92 amplitudes, which are
+# neither libxc's LDA_C_PW_MOD (the PBE numerator's) nor LDA_C_PW (the model
+# baseline's); the exchange constants are libxc's values written as literals.
+# Each function below is that code's expression in its own form, so a
+# pretraining file built on the ``paper`` footing carries the published
+# targets to rounding. ``mu`` and ``A[0]`` are the published literals, each
+# two ulp from the derived value stated above (``PBE_MU``, ``PBE_GAMMA``:
+# 5.6e-17 and 6.9e-18 apart, the spacing being 2.8e-17 and 3.5e-18).
+PAPER_PW92_A = (0.031090690869654895, 0.015545, 0.016887)
+PAPER_PBE_KAPPA = 0.804
+PAPER_PBE_MU = 0.2195149727645171
+PAPER_PBE_BETA = 0.06672455060314922
+
+
+def paper_pw92_eps_c(rho, zeta):
+    """``eps_c^PW92(rho, zeta)`` of the published clone
+    (``__pw92_eps_c_wospin_point``): Perdew and Wang's parametrization on the
+    amplitudes :data:`PAPER_PW92_A`, the standard ``alpha_1`` and
+    ``beta_1..4``, the exact ``f''(0)`` and the spin interpolation of
+    eqs. 8-10, on the total density ``rho`` and the polarization ``zeta``."""
+    rho = jnp.asarray(rho)
+    zeta = jnp.asarray(zeta)
+    rs = (3.0 / (4.0 * jnp.pi * rho)) ** (1.0 / 3.0)
+    g = []
+    for k in range(3):
+        a = PAPER_PW92_A[k]
+        b = (_PW_MOD_BETA1[k] * jnp.sqrt(rs) + _PW_MOD_BETA2[k] * rs
+             + _PW_MOD_BETA3[k] * rs ** 1.5 + _PW_MOD_BETA4[k] * rs ** 2)
+        g.append(-2.0 * a * (1.0 + _PW_MOD_ALPHA1[k] * rs)
+                 * jnp.log(1.0 + 1.0 / (2.0 * a * b)))
+    c0 = 1.0 / (2.0 ** (4.0 / 3.0) - 2.0)
+    f = ((1.0 + zeta) ** (4.0 / 3.0) + (1.0 - zeta) ** (4.0 / 3.0) - 2.0) * c0
+    fpp_0 = c0 * 8.0 / 9.0
+    g0, g1, g2 = g
+    return g0 - g2 * f / fpp_0 * (1.0 - zeta ** 4) + (g1 - g0) * f * zeta ** 4
+
+
+def paper_reduced_gradient(rho, sigma):
+    """``s`` of the published clone (``S``): ``sqrt(sigma) / (2 k_F rho + 1e-30)``
+    with ``k_F = (3 pi^2 rho)^(1/3)``, on the total density."""
+    rho = jnp.asarray(rho)
+    k_f = (3.0 * jnp.pi ** 2 * rho) ** (1.0 / 3.0)
+    return jnp.sqrt(jnp.asarray(sigma)) / (2.0 * k_f * rho + 1e-30)
+
+
+def paper_pbe_fx(rho, sigma):
+    """``F_x^PBE(s)`` of the published clone (``__Fx_PBE_unpol``) on the total
+    density: ``1 + kappa - kappa / (1 + mu s^2 / kappa)``."""
+    s = paper_reduced_gradient(rho, sigma)
+    return (1.0 + PAPER_PBE_KAPPA
+            - PAPER_PBE_KAPPA / (1.0 + PAPER_PBE_MU * s ** 2 / PAPER_PBE_KAPPA))
+
+
+def paper_pbe_fc(rho, sigma, zeta):
+    """``F_c^PBE`` of the published clone (``__Fc_PBE_wospin``): PBE's ``H``
+    over :func:`paper_pw92_eps_c`, ``F_c = 1 + H / eps_c``, with
+    ``phi = ((1 + zeta)^(2/3) + (1 - zeta)^(2/3)) / 2``,
+    ``k_s = sqrt(4 k_F / pi)``, ``t = sqrt(sigma) / (2 k_s phi rho)``, beta
+    :data:`PAPER_PBE_BETA` and ``gamma = (1 - ln 2) / pi^2`` as that code
+    forms it."""
+    rho = jnp.asarray(rho)
+    sigma = jnp.asarray(sigma)
+    zeta = jnp.asarray(zeta)
+    scaling_pol = 0.5 * ((1.0 + zeta) ** (2.0 / 3.0) + (1.0 - zeta) ** (2.0 / 3.0))
+    scaling_pol_3 = scaling_pol ** 3
+    k_f = (3.0 * jnp.pi ** 2 * rho) ** (1.0 / 3.0)
+    k_s = jnp.sqrt((4.0 * k_f) / jnp.pi)
+    t = jnp.abs(jnp.sqrt(sigma)) / (2.0 * k_s * scaling_pol * rho)
+    beta = PAPER_PBE_BETA
+    gamma = (1.0 - jnp.log(2.0)) / (jnp.pi ** 2)
+    e_heg_c = paper_pw92_eps_c(rho, zeta)
+    a = (beta / gamma) / (jnp.exp(-e_heg_c / (gamma * scaling_pol_3)) - 1.0)
+    h = gamma * jnp.log(1.0 + (beta / gamma) * t ** 2
+                        * ((1.0 + a * t ** 2) / (1.0 + a * t ** 2 + a ** 2 * t ** 4)))
+    h = h * scaling_pol_3
+    return 1.0 + (h / e_heg_c)
+
+
+def paper_lda_x_eps(rho):
+    """``eps_x^LDA(rho)`` of the published clone (``eUEG_LDA_x_unpol``):
+    ``-3/4 (3/pi)^(1/3) rho^(1/3)`` on the total density."""
+    rho = jnp.asarray(rho)
+    return -3.0 / 4.0 * (3.0 / jnp.pi) ** (1.0 / 3.0) * rho ** (1.0 / 3.0)

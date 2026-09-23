@@ -99,7 +99,7 @@ no model weights are opened.
 | Source file (per spec dir) | Feeds | Notes |
 |---|---|---|
 | `eval/per_molecule.json` | All IN-SAMPLE panels | Final-checkpoint eval of the trained molecules. There is no val-best variant of this file, so in-sample panels are identical across the two output dirs (only the title's checkpoint stamp differs). Carries `AE_error_kcalmol`, `AE_ref_kcalmol`, `density_rmse`, `density_l1`, `density_rmse_pbe`, `density_l1_pbe`, `ref_density_method`; it has NO PBE AE column. |
-| `eval_holdout*/per_reaction.json` | All held-out ENERGY panels | One row per evaluated benchmark reaction (`pool` = `bh76` or `w411`) with `abs_error_nn_kcalmol`, `abs_error_pbe_kcalmol`, `reaction_energy_ref_kcalmol`. These are the reactions the eval wrote -- the run's TEST slice, not the full canonical pool; the dataset footer line (Sec. 3) carries the live name-deduplicated counts. The channel variants `eval_holdout/`, `eval_holdout_best/`, `eval_holdout_val_best/` hold the final-step, train-best, and validation-best checkpoints' evals; `eval_holdout_coldstart/` (when present) is the FINAL checkpoint re-run as a cold-start trajectory diagnostic (minao seed, 25 cycles -- see its `eval_metadata.json` provenance stamp), read by `plot_scf_convergence.py --eval-subdir eval_holdout_coldstart`. |
+| `eval_holdout*/per_reaction.json` | All held-out ENERGY panels | One row per evaluated benchmark reaction (`pool` = `bh76` or `w411`) with `abs_error_nn_kcalmol`, `abs_error_pbe_kcalmol`, `reaction_energy_ref_kcalmol`. These are every reaction of every set the run evaluated, nothing excluded; each row carries its training overlap and, where the run validated, its `in_validation_slice` mark. The dataset footer line (Sec. 3) carries the live name-deduplicated counts. The channel variants `eval_holdout/`, `eval_holdout_best/`, `eval_holdout_val_best/` hold the final-step, train-best, and validation-best checkpoints' evals under the trained protocol; the cold-start pair `eval_holdout_coldstart/` (the final checkpoint) and `eval_holdout_coldstart_val_best/` (the validation-best checkpoint, the REPORTING channel a campaign's numbers are read from) re-runs them under the cold-start protocol (minao seed, 25 cycles -- see the `eval_metadata.json` provenance stamp), the trajectories read by `plot_scf_convergence.py`; the names are `xcquinox/pipeline/holdout_channels.py`'s. |
 | `eval_holdout*/per_molecule.json` | All held-out DENSITY panels | Per benchmark species: `density_rmse`, `density_l1` (NN vs CCSD) and `density_rmse_pbe`, `density_l1_pbe` (model-free PBE vs CCSD on the same grid). Atoms carry None by design (skipped as `atomic_system`, `xcquinox/pipeline/evaluation.py:203`). |
 | `pbe_density_errors.json` (run level) | Optional PBE density anchor | Written only by `reeval_holdout_fixed.py --pbe-density-only`; takes precedence over the inline PBE columns when present (`_pbe_density_map`, :4598). Absent on ordinary pulls. |
 
@@ -115,8 +115,9 @@ with w_i the DFT quadrature weights (`evaluation.py:241-242`; PBE twin at :152-1
 a grid-weight-AVERAGED error -- deliberately NOT the per-electron L1 of the DFS Letter's
 Eq. 20 and NOT the N_e^2-normalized form used inside the training loss (see Sec. 2.3).
 
-Checkpoint stamps: figure suptitles end in `final-step` (from `eval_holdout/`) or `val-best`
-(from `eval_holdout_val_best/`), mapped by `_ckpt_label` (:8186).
+Checkpoint stamps: figure suptitles end in the label of the channel the set was scored from
+(`final-step` for `eval_holdout/`, `val-best`, `cold-start-val-best` for the reporting
+channel, ...), the `CHANNEL_LABEL` table of `xcquinox/pipeline/holdout_channels.py`.
 
 ## 2. The metrics
 
@@ -519,7 +520,7 @@ these differences:
 ## 5. Regeneration
 
 One suite invocation refreshes every figure above for the pulled bases, both checkpoint
-variants; see `RUNBOOK_pull_and_figures.md` for the pull commands and the canonical
+variants; see `docs/pipeline/pull_and_figures.md` for the pull commands and the canonical
 
     python tools/analysis/make_ablation_arch_figure.py --suite \
         --domain dfs_step7 --bases <comma-separated basis subdirs> \
@@ -559,5 +560,4 @@ pair every such statement with the median or fraction-improved companion (on the
 val-best record the per-species direction reverses -- median NN/PBE Eq.-20 ratio 0.898,
 NN better on 150 of 199 species -- while the cell means beat PBE in 1 of 29 cells). And
 the comparison is depth-asymmetric: the NN leg is a 3-cycle capped SCF scored against a
-fully converged, model-free PBE twin; the symmetric-depth re-scoring
-(`rescore_depth_symmetric.py`) is the discriminating test.
+fully converged, model-free PBE twin; a depth-matched PBE leg is the discriminating test.

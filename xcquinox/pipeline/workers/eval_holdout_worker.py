@@ -20,9 +20,10 @@ import traceback
 
 def compute_shard(run_dir, spec_idx, names, basis, grid_level,
                   model_name="model.eqx",
-                  channel=None):
+                  channel=None, pools=("bh76", "w411")):
     """Evaluate ``names`` (a held-out molecule subset) for spec ``spec_idx`` of
-    ``run_dir``. Returns ``{energies, pbe_energies, mol_records}``.
+    ``run_dir``. Returns ``{energies, pbe_energies, mol_records}``. ``pools``
+    names the held-out pools whose union the shard's species are drawn from.
 
     Imports jax-touching modules lazily so the caller can pin thread env first.
     Reuses ``_eval_one_spec``'s path helpers and ``load_trained_model`` so the
@@ -41,7 +42,7 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
     from xcquinox.pipeline.eval_holdout import (
         load_trained_model, compute_holdout_per_molecule,
     )
-    from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
+    from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
 
     width = _read_width(run_dir)
     checkpoint_dir = _checkpoint_dir(run_dir, spec_idx, width)
@@ -61,9 +62,20 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
             solver_config=override(training_spec.solver_config))
     model = load_trained_model(training_spec, Path(model_path))
 
-    full_specs, _full_rxns = load_full_held_out_pools(
-        basis=basis, grid_level=grid_level)
-    subset = {n: full_specs[n] for n in names if n in full_specs}
+    full_specs, _full_rxns = load_held_out_pools(
+        tuple(pools), basis=basis, grid_level=grid_level)
+    # A shard name the pools do not carry is a fault, not a species to skip:
+    # the driver built the names from these same pools, so a mismatch means
+    # the worker and the driver disagree about what is being evaluated, and
+    # skipping would report a shorter shard as a complete one.
+    unknown = sorted(n for n in names if n not in full_specs)
+    if unknown:
+        raise KeyError(
+            f"the held-out pools {tuple(pools)} carry none of "
+            f"{len(unknown)} shard species ({', '.join(unknown[:5])}"
+            f"{', ...' if len(unknown) > 5 else ''}); the worker and the "
+            "driver disagree about the pool")
+    subset = {n: full_specs[n] for n in names}
 
     per = compute_holdout_per_molecule(training_spec, model, subset)
     return {
@@ -97,8 +109,13 @@ def main(args=None):
     parser.add_argument("--coldstart", action="store_true",
                         help="alias of --channel coldstart (the historical "
                              "flag of the eval_holdout_coldstart channel)")
+    parser.add_argument("--pools", default="bh76,w411",
+                        help="comma-separated held-out pools whose union the "
+                             "shard's species come from (default: the "
+                             "benchmark pair)")
     parsed = parser.parse_args(args)
     channel = parsed.channel or ("coldstart" if parsed.coldstart else None)
+    pools = tuple(p.strip() for p in parsed.pools.split(",") if p.strip())
 
     # Pin thread env BEFORE any JAX import (one BLAS thread per worker by
     # default so N workers saturate N cores without oversubscription). Respect
@@ -154,7 +171,7 @@ def main(args=None):
         shard = compute_shard(parsed.run_dir, parsed.spec_idx, names,
                               parsed.basis, parsed.grid_level,
                               model_name=parsed.model_name,
-                              channel=channel)
+                              channel=channel, pools=pools)
         with open(parsed.out_shard, "w") as f:
             json.dump(shard, f)
 

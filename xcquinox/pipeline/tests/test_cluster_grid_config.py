@@ -328,6 +328,122 @@ def _cfg_with(hp_kwargs=None, inputs_kwargs=None):
     )
 
 
+def test_the_sc_knobs_round_trip_and_are_bounded(tmp_path):
+    """The two non-self-consistency knobs survive the resolved-config round
+    trip, default off, and are bounded at submit time.
+
+    A knob parsed but not written back leaves every stage reading the default
+    while the submitted file states the arm; the seeding and census knobs are
+    held to the same contract by their own round-trip tests. The semantic rules
+    mirror ``TrainingSpec.validate``: the switch is read only by the
+    per-molecule loop, and the weight multiplies an energy channel, so a
+    negative value flips the sign of the term it scales.
+
+    Oracle: the raw dict written, reloaded, re-serialized by the writer the
+    submit path uses and reloaded again; and the pair of configs differing in
+    ``update_scheme`` alone, the per-molecule member validating.
+    """
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+
+    raw = _base_config_dict()
+    raw["hyperparams"]["respect_sc_flag"] = True
+    raw["hyperparams"]["nonsc_weight"] = 0.5
+    cfg = load_grid_config(_write(tmp_path, "sc.yaml", raw))
+    assert cfg.hyperparams.respect_sc_flag is True
+    assert cfg.hyperparams.nonsc_weight == 0.5
+    cfg2 = load_grid_config(
+        _write(tmp_path, "sc_resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.hyperparams.respect_sc_flag is True
+    assert cfg2.hyperparams.nonsc_weight == 0.5
+
+    # Default off: every existing configuration keeps the self-consistent
+    # protocol and an unscaled energy channel.
+    plain = load_grid_config(
+        _write(tmp_path, "plain_sc.yaml", _base_config_dict()))
+    assert plain.hyperparams.respect_sc_flag is False
+    assert plain.hyperparams.nonsc_weight == 1.0
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grid_semantics(
+            _cfg_with(hp_kwargs={"respect_sc_flag": True,
+                                 "update_scheme": "batched"}),
+            _StubDomain(pool_size=40))
+    message = str(excinfo.value)
+    assert "hyperparams.respect_sc_flag" in message, message
+    assert "update_scheme" in message, message
+    # Control: the same switch under the scheme that reads it.
+    validate_grid_semantics(
+        _cfg_with(hp_kwargs={"respect_sc_flag": True, "nonsc_weight": 0.5,
+                             "update_scheme": "per_molecule"}),
+        _StubDomain(pool_size=40))
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grid_semantics(
+            _cfg_with(hp_kwargs={"nonsc_weight": -1.0,
+                                 "update_scheme": "per_molecule"}),
+            _StubDomain(pool_size=40))
+    assert "hyperparams.nonsc_weight" in str(excinfo.value), str(excinfo.value)
+
+
+# --- The seed start as the one variable between the arms -------------------
+
+def test_seed_mixture_is_refused_on_a_cold_start_seed():
+    """``hyperparams.seed_mix_atomic`` with ``inputs.seed_xc: minao`` is
+    refused by ``validate_grid_semantics``, with both field names in the
+    message.
+
+    The mixture reads the run's own SCF seed as one endpoint and the atomic
+    guess as the other; a cold-start seed makes the two the same density, so
+    the arm executes the cold start and reports a mixture. The oracle is the
+    pair of configs differing in ``seed_xc`` alone: the resolved-per-rung form
+    passes. A third config keeps the cold start and drops the mixture, which
+    separates a rule that refuses the seed by itself from one that refuses the
+    pair.
+    """
+    hp_on = {"seed_mix_atomic": True, "update_scheme": "per_molecule"}
+    cfg = _cfg_with(hp_kwargs=hp_on, inputs_kwargs={"seed_xc": "minao"})
+    with pytest.raises(ValueError) as excinfo:
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+    message = str(excinfo.value)
+    assert "inputs.seed_xc" in message, message
+    assert "hyperparams.seed_mix_atomic" in message, message
+
+    # Controls: the mixture over a resolved parent seed, and the cold start
+    # without the mixture, are both legal.
+    validate_grid_semantics(
+        _cfg_with(hp_kwargs=hp_on, inputs_kwargs={"seed_xc": "auto"}),
+        _StubDomain(pool_size=40))
+    validate_grid_semantics(
+        _cfg_with(hp_kwargs={"update_scheme": "per_molecule"},
+                  inputs_kwargs={"seed_xc": "minao"}),
+        _StubDomain(pool_size=40))
+
+
+def test_the_census_knob_round_trips(tmp_path):
+    """``cluster.preflight_coldstart_census`` survives the resolved-config
+    round trip (asdict + YAML + reload), the path the preflight re-reads, and
+    defaults off.
+
+    A knob parsed but not stored, or stored but not written back, leaves the
+    preflight reading the default while the submitted file states the census:
+    the same class of silent drop the seeding and coldstart flags are held to
+    by ``test_seed_and_coldstart_resolved_round_trip``.
+    """
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+
+    raw = _base_config_dict()
+    raw["cluster"]["preflight_coldstart_census"] = True
+    cfg = load_grid_config(_write(tmp_path, "census.yaml", raw))
+    assert cfg.cluster.preflight_coldstart_census is True
+    cfg2 = load_grid_config(
+        _write(tmp_path, "census_resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.cluster.preflight_coldstart_census is True
+
+    # Default off: every existing configuration keeps its preflight.
+    plain = load_grid_config(_write(tmp_path, "plain.yaml", _base_config_dict()))
+    assert plain.cluster.preflight_coldstart_census is False
+
+
 # --- WS3 validation-slice cross-field + range guards (2026-06-20) -----------
 
 def test_validate_rejects_validate_every_without_val_refs_dir():
@@ -585,12 +701,12 @@ def test_walltime_bad_shapes_refused(tmp_path, key, literal):
 
 #: The campaign configs under version control: the template, the two grid-2
 #: campaigns the user guide walks through, the grid-3 lineage root the loss
-#: primer cites line by line, and the six v7 files (the three group files, the
-#: reaction-energy control and the two arms). ``hpcjobs/.gitignore`` excludes
+#: primer cites line by line, the six v7 files (the three group files, the
+#: reaction-energy control and the two arms) and the three campaign-1 files of
+#: the v8 program (one per seed arm). ``hpcjobs/.gitignore`` excludes
 #: ``configs/*.local.yaml`` (personal cluster-filled copies), so a fresh clone,
-#: a git worktree and the cluster checkout carry only these; counting whatever
-#: ``*.yaml`` happens to be on disk would make this file red wherever the
-#: untracked copies are absent. The set is held equal to the index below.
+#: a git worktree and the cluster checkout carry only these, and the test
+#: below holds the list equal to the directory's other ``*.yaml`` files.
 _TRACKED_CONFIGS = (
     "bh76w411_repr.svp_grid2.yaml",
     "bh76w411_repr.tzvpd_grid2_df.yaml",
@@ -601,6 +717,9 @@ _TRACKED_CONFIGS = (
     "dfs_step7.dfs6311_grid3_v7g1_size.yaml",
     "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml",
     "dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml",
+    "dfs_step8.v8_dfs_allsc.yaml",
+    "dfs_step8.v8_dfs_coldstart.yaml",
+    "dfs_step8.v8_dfs_parity.yaml",
     "step7.yaml",
 )
 
@@ -628,22 +747,26 @@ def _assert_walltimes_are_strings(path):
 
 
 def test_tracked_configs_carry_valid_walltimes():
-    """Every version-controlled campaign config and the shipped example load.
+    """Every version-controlled campaign config and the shipped example load,
+    and the tracked list is exactly the configuration files on disk.
 
-    The tracked set is listed by name rather than globbed: the count is then a
-    property of the repository, not of which untracked ``*.local.yaml`` copies
-    happen to sit in the working tree.
+    The list is held equal to the directory's ``*.yaml`` files with the
+    personal ``*.local.yaml`` copies excepted (the ones ``hpcjobs/.gitignore``
+    keeps out of the repository), so a file added to the tree and left out of
+    the list, or listed and deleted, is red.
     """
     tree = _config_tree()
     if tree is None:
         pytest.skip("cluster config tree not present in this checkout")
     cfg_dir, example = tree
+    on_disk = sorted(p.name for p in cfg_dir.glob("*.yaml")
+                     if not p.name.endswith(".local.yaml"))
+    assert on_disk == sorted(_TRACKED_CONFIGS), (
+        f"the tracked-configuration list and the files on disk differ: "
+        f"{sorted(set(on_disk) ^ set(_TRACKED_CONFIGS))}")
     for name in _TRACKED_CONFIGS:
-        path = cfg_dir / name
-        assert path.is_file(), f"tracked config missing: {path}"
-        _assert_walltimes_are_strings(path)
+        _assert_walltimes_are_strings(cfg_dir / name)
     _assert_walltimes_are_strings(example)
-    assert len(_TRACKED_CONFIGS) + 1 == 11, "tracked config count changed"
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +839,82 @@ def test_build_pretrain_parses_every_protocol_field():
     assert pt.patience == 8
 
 
+def test_the_held_out_pools_knob_defaults_to_the_pair_and_parses_a_list():
+    """The knob names which benchmark pools a run evaluates. Its default is the pair the
+    harness has always loaded, so a configuration written before the knob existed runs
+    the same set; a misspelt name, a repeated name and an empty list are refused rather
+    than silently evaluating a smaller pool that would be read as the full one.
+
+    Oracle: ``InputPaths`` built from the base config's ``inputs`` section.
+    """
+    from xcquinox.pipeline.cluster.grid_config import _build_inputs
+    base = _base_config_dict()["inputs"]
+    assert _build_inputs(dict(base)).held_out_pools == ("bh76", "w411")
+    parsed = _build_inputs(dict(base, held_out_pools=["diet150", "bh76"]))
+    assert parsed.held_out_pools == ("diet150", "bh76")
+    assert isinstance(parsed.held_out_pools, tuple)
+    for bad in (["bh76", "bh77"], ["bh76", "bh76"], [], "bh76", [None]):
+        with pytest.raises(ValueError):
+            _build_inputs(dict(base, held_out_pools=bad))
+
+
+def test_the_reference_size_cap_is_absent_or_a_positive_whole_number():
+    """The cap drops the species the reference generator would spend the longest on. It
+    is absent by default -- the historical behaviour, every species generated -- and a
+    zero, a negative or a fractional cap is refused: each of the three would either
+    empty the reference set or truncate to a bound other than the one written.
+
+    Oracle: ``InputPaths`` built from the base config's ``inputs`` section.
+    """
+    from xcquinox.pipeline.cluster.grid_config import _build_inputs
+    base = _base_config_dict()["inputs"]
+    assert _build_inputs(dict(base)).benchmark_refs_max_atoms is None
+    assert _build_inputs(
+        dict(base, benchmark_refs_max_atoms=12)).benchmark_refs_max_atoms == 12
+    for bad in (0, -1, 2.5, True, [3]):
+        with pytest.raises(ValueError):
+            _build_inputs(dict(base, benchmark_refs_max_atoms=bad))
+
+
+def test_the_pretraining_slim_set_knob_parses_its_two_values():
+    """The pretraining set may be the paper's drawn Slim05 molecules. The knob is empty
+    by default, so an existing configuration's pretraining data keeps its identity; a
+    value naming a set with no drawn list is refused at load rather than at the first
+    step of a queued job.
+
+    Oracle: ``_build_pretrain`` over a minimal pretrain section.
+    """
+    from xcquinox.pipeline.cluster.grid_config import _build_pretrain
+    assert _build_pretrain({"data_dir": "/d"}).slim_set == ""
+    assert _build_pretrain(
+        {"data_dir": "/d", "slim_set": "slim05"}).slim_set == "slim05"
+    for bad in ("slim16", "slim20", "SLIM05", "dfs", 5, True):
+        with pytest.raises(ValueError):
+            _build_pretrain({"data_dir": "/d", "slim_set": bad})
+
+
+def test_the_new_input_knobs_round_trip_through_the_resolved_config(tmp_path):
+    """Every stage after submit reads ``resolved_config.yaml`` rather than the config the
+    user wrote, so a knob the serializer drops reverts to its default on the evaluation,
+    the seed cache and the re-finalizer at once.
+
+    Oracle: the config dict written and reloaded through ``load_grid_config``.
+    """
+    import dataclasses
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+    cfg = _cfg()
+    inputs = dataclasses.replace(cfg.inputs,
+                                 held_out_pools=("diet150", "slim05"),
+                                 benchmark_refs_max_atoms=9)
+    cfg = dataclasses.replace(cfg, inputs=inputs)
+    path = _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg))
+    reloaded = load_grid_config(path)
+    assert reloaded.inputs.held_out_pools == ("diet150", "slim05")
+    assert reloaded.inputs.benchmark_refs_max_atoms == 9
+
+
+
+
 def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
     """The resolved_config.yaml round trip is what datagen, pretrain, preflight
     and eval all read; a dropped field is a silently reverted run."""
@@ -724,6 +923,7 @@ def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
     from xcquinox.pipeline.cluster.grid_config import (_build_pretrain,
                                                    pretrain_to_raw_dict)
     protocol = {
+        "slim_set": "slim05",
         "dfs_set": True, "pool_atoms": True,
         "parent_density": "auto", "exchange_footing": "spin_channel",
         "mesh_fraction": 0.25, "energy_term_weight": 1.0,
@@ -867,3 +1067,213 @@ def test_build_pretrain_bounds_every_protocol_number(key, value):
     with pytest.raises(ValueError) as exc:
         _build_pretrain({"data_dir": "/d", key: value})
     assert f"pretrain.{key}" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# The fourth SCF seed: the superposition-of-atomic-densities guess
+# ---------------------------------------------------------------------------
+
+
+def test_seed_xc_minao_round_trips_to_the_solver_seed(tmp_path):
+    """``minao`` is a run-wide seed choice beside pbe and scan: the config
+    carries it, the resolved config the workers re-read carries it, and the
+    per-cell resolution hands it to the solver configuration, which has
+    accepted the value since the coldstart channel was added
+    (``solver.py``: ``seed_source in ('pbe', 'scan', 'minao')``).
+
+    Oracle: the value at each of the three layers, with the solver in the FULL
+    mode a non-pbe seed requires, and the refusal message of a value that is
+    none of the four.
+    """
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+    from xcquinox.pipeline.cluster.spec_builder import (
+        _solver_config_from_named,
+        resolve_seed_xc,
+    )
+    d = _base_config_dict()
+    d["inputs"]["seed_xc"] = "minao"
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", d))
+    assert cfg.inputs.seed_xc == "minao"
+    cfg2 = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.inputs.seed_xc == "minao"
+
+    # The spec builder's own call shape: the per-cell resolution supplies
+    # seed_source, and a non-pbe seed is accepted only in FULL mode.
+    sc = _solver_config_from_named(
+        SolverNamed(mode="FULL", max_cycles=3),
+        seed_source=resolve_seed_xc(cfg2.inputs, cfg2.sweep.arch[0]))
+    assert sc.seed_source == "minao"
+
+    # The refusal names every accepted value, so the reader of the failure
+    # does not have to read the parser to learn what the fourth one is.
+    d["inputs"]["seed_xc"] = "hf"
+    with pytest.raises(ValueError) as exc:
+        load_grid_config(_write(tmp_path, "bad.yaml", d))
+    message = str(exc.value)
+    for value in ("pbe", "scan", "auto", "minao"):
+        assert value in message, (value, message)
+
+
+# ---------------------------------------------------------------------------
+# The published cloning protocol's configuration surface
+# ---------------------------------------------------------------------------
+
+def test_the_model_block_carries_the_gate(tmp_path):
+    """``model.ueg_gate`` is parsed, defaults to the gate every model before
+    the field carried, survives the resolved-config round trip the later
+    stages re-read, and refuses an unknown value naming both.
+
+    Oracle: the parsed configuration, and the refusal's own message.
+    """
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+
+    raw = _base_config_dict()
+    raw["model"] = {"ueg_gate": "x2", "descriptor_coordinates": "paper"}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    assert cfg.model.ueg_gate == "x2"
+    assert cfg.model.descriptor_coordinates == "paper"
+    cfg2 = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.model == cfg.model
+
+    plain = load_grid_config(
+        _write(tmp_path, "plain.yaml", _base_config_dict()))
+    assert plain.model.ueg_gate == "tanh2"
+
+    bad = _base_config_dict()
+    bad["model"] = {"ueg_gate": "X2"}
+    with pytest.raises(ValueError) as excinfo:
+        load_grid_config(_write(tmp_path, "bad.yaml", bad))
+    message = str(excinfo.value)
+    assert "ueg_gate" in message and "'tanh2'" in message and "'x2'" in message
+
+
+def _published_pretrain_block():
+    """The ``pretrain:`` block of the published cloning protocol: no clip, the
+    published targets, the sampled objective, the protocol set, no energy
+    term."""
+    return {"data_dir": "/shared/pretrain_data", "n_steps": 20000,
+            "lr_start": 1e-3, "lr_end": 1e-5, "lr_decay_start": 0.5,
+            "lr_decay_end": 0.9, "grad_clip": 0, "loss_weighting":
+            "rho_w_sampled", "points_per_system": 800, "sampling_seed": 42,
+            "exchange_footing": "paper", "dfs_set": True,
+            "energy_term_weight": 0.0}
+
+
+def test_the_pretrain_block_accepts_the_published_values(tmp_path):
+    """The published protocol's three refused values load: no clip, the
+    published targets, and a zero energy-term weight under the sampled
+    objective the paper actually ran.
+
+    The energy-weight refusal was measured under the integration-weighted
+    objective, so it stays in force there; a negative clip is still refused,
+    since only exactly zero means "no clip".
+
+    Oracle: ``validate_grid_semantics`` against a stub domain, and the two
+    refusals, each seen to fire.
+    """
+    raw = _base_config_dict()
+    raw["pretrain"] = _published_pretrain_block()
+    raw["fidelity"] = {"enforce": True}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    assert cfg.pretrain.grad_clip == 0.0
+    assert cfg.pretrain.exchange_footing == "paper"
+    assert cfg.pretrain.loss_weighting == "rho_w_sampled"
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+    measured = _base_config_dict()
+    measured["pretrain"] = {k: v for k, v in _published_pretrain_block().items()
+                            if k not in ("points_per_system", "sampling_seed")}
+    measured["pretrain"]["loss_weighting"] = "integration"
+    measured["pretrain"]["grad_clip"] = 1.0
+    measured["fidelity"] = {"enforce": True}
+    cfg_measured = load_grid_config(
+        _write(tmp_path, "measured.yaml", measured))
+    with pytest.raises(ValueError, match="energy_term_weight"):
+        validate_grid_semantics(cfg_measured, _StubDomain(pool_size=100))
+
+    negative = _base_config_dict()
+    negative["pretrain"] = _published_pretrain_block()
+    negative["pretrain"]["grad_clip"] = -1.0
+    path = _write(tmp_path, "negative.yaml", negative)
+    with pytest.raises(ValueError, match="grad_clip"):
+        validate_grid_semantics(load_grid_config(path),
+                                _StubDomain(pool_size=100))
+
+
+def test_the_paper_coordinates_require_the_polarized_network_at_the_parser(
+        tmp_path):
+    """The published coordinates read the spin coordinate in the correlation
+    network exactly as the dfs set does, so a run whose architectures would
+    be built zeta-blind is refused on the login node, before any job is
+    queued, and not inside the pretrain array.
+
+    Oracle: ``validate_grid_semantics`` on a run of the base architecture,
+    which carries no polarized flag, under each of the two coordinate sets,
+    seen to refuse both with the same requirement.
+    """
+    for coordinates in ("paper", "dfs"):
+        raw = _base_config_dict()
+        raw["model"] = {"descriptor_coordinates": coordinates}
+        cfg = load_grid_config(_write(tmp_path, f"{coordinates}.yaml", raw))
+        with pytest.raises(ValueError, match="polarized") as excinfo:
+            validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+        assert repr(coordinates) in str(excinfo.value)
+
+
+def test_the_paper_footing_refuses_an_energy_term(tmp_path):
+    """Under the published footing an open shell's per-system exchange table
+    integrates the total-density form rather than PBE's spin-scaled exchange,
+    so a per-system energy term at any positive weight is refused with the
+    footing named; the published protocol has no such term.
+
+    Oracle: the published block with a positive weight, seen to be refused,
+    and the same block at zero, which loads.
+    """
+    raw = _base_config_dict()
+    raw["pretrain"] = _published_pretrain_block()
+    raw["pretrain"]["energy_term_weight"] = 0.1
+    raw["fidelity"] = {"enforce": True}
+    cfg = load_grid_config(_write(tmp_path, "weighted.yaml", raw))
+    with pytest.raises(ValueError, match="energy_term_weight") as excinfo:
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+    assert "paper" in str(excinfo.value)
+
+    raw["pretrain"]["energy_term_weight"] = 0.0
+    cfg = load_grid_config(_write(tmp_path, "unweighted.yaml", raw))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_the_held_out_pool_names_are_stated_once():
+    """The parser's pool names and the loader's are one set: a pool the parser
+    admits and the loader refuses would fail at the first evaluation of a
+    queued run, and one the loader knows and the parser refuses could never be
+    configured.
+
+    Oracle: ``full_benchmark_pools.POOL_NAMES``.
+    """
+    from xcquinox.pipeline.cluster import grid_config as gc
+    from xcquinox.pipeline.full_benchmark_pools import POOL_NAMES
+    assert tuple(gc._HELD_OUT_POOLS) == tuple(POOL_NAMES)
+
+
+def test_the_retired_strict_key_warns_and_changes_nothing(tmp_path):
+    """The held-out exclusion switch is retired, not refused: a configuration
+    that still states it loads, says the key has no effect, and exposes no such
+    field. Refusing it outright would break every tracked configuration the
+    harness itself wrote; leaving it readable would let a run still exclude
+    reactions from a held-out set.
+
+    Oracle: a configuration carrying the key, and the loaded config's fields.
+    """
+    import dataclasses
+    raw = _base_config_dict()
+    raw["held_out_strict"] = True
+    with pytest.warns(UserWarning, match="held_out_strict"):
+        cfg = load_grid_config(_write(tmp_path, "retired.yaml", raw))
+    _assert_well_formed(cfg)
+    assert not hasattr(cfg, "held_out_strict")
+    assert "held_out_strict" not in {f.name for f in dataclasses.fields(cfg)}
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+    assert "held_out_strict" not in _config_to_raw_dict(cfg)

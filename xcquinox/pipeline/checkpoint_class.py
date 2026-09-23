@@ -44,12 +44,15 @@ a record of a checkpoint that is no longer there, and is refused
 (:class:`ClassRecordStale`) rather than believed.
 
 Payload, in the vocabulary of the records it sits beside
-(``pretrain_metadata.json`` for the two class fields, ``arch_name``,
+(``pretrain_metadata.json`` for the three class fields, ``arch_name``,
 ``meta_gga`` and ``use_polarized_correlation``; the fidelity certificate for
 ``parent`` and ``xcquinox_version``)::
 
     parent_anchor              bool   the class, compared by the readers
     descriptor_coordinates     str    the class, compared by the readers
+    ueg_gate                   str    the class, compared by the readers; a
+                                      record written before the field reads
+                                      as "tanh2"
     descriptor_log_transform   bool   the class, compared by the readers WHEN
                                       THE RECORD STATES IT (below)
     arch_name                  str    provenance
@@ -150,15 +153,22 @@ TEMPORARY_SUFFIX = ".tmp"
 DIGEST_CHUNK_BYTES = 1 << 20
 
 #: The class of a checkpoint with no record: what everything written before
-#: the anchor existed is. The two compared fields alone -- a checkpoint with no
-#: record states no descriptor log transform either, and the readers compare
+#: the anchor existed is. The three compared fields alone -- a checkpoint with
+#: no record states no descriptor log transform either, and the readers compare
 #: that field only where it is stated (:func:`require_matching_log_transform`).
-LEGACY_CLASS = {"parent_anchor": False, "descriptor_coordinates": "legacy"}
+LEGACY_CLASS = {"parent_anchor": False, "descriptor_coordinates": "legacy",
+                "ueg_gate": "tanh2"}
 
 #: The record field naming the descriptor log transform the checkpoint was
-#: written under. Optional in the record, unlike the two class fields: absent
+#: written under. Optional in the record, unlike the class fields: absent
 #: in every record written before it was added.
 LOG_TRANSFORM_FIELD = "descriptor_log_transform"
+
+#: The record field naming the uniform-gas gate the networks were written
+#: under. Absent in every record written before it was added, and read then
+#: as ``tanh2``, the gate every model before the field carried; a static field
+#: of both networks that changes no parameter shape.
+UEG_GATE_FIELD = "ueg_gate"
 
 
 class ModelClassMismatch(ValueError):
@@ -375,6 +385,7 @@ def model_class_of_arch(arch) -> dict:
         "parent_anchor": bool(getattr(arch, "parent_anchor", False)),
         "descriptor_coordinates": str(
             getattr(arch, "descriptor_coordinates", "legacy")),
+        UEG_GATE_FIELD: str(getattr(arch, UEG_GATE_FIELD, "tanh2")),
         LOG_TRANSFORM_FIELD: bool(
             getattr(arch, LOG_TRANSFORM_FIELD, False)),
     }
@@ -396,6 +407,7 @@ def model_class_of_model(model) -> dict:
         "parent_anchor": getattr(xnet, "parent", None) is not None,
         "descriptor_coordinates": str(
             getattr(xnet, "descriptor_coordinates", "legacy")),
+        UEG_GATE_FIELD: str(getattr(xnet, UEG_GATE_FIELD, "tanh2")),
         LOG_TRANSFORM_FIELD: bool(
             getattr(xnet, LOG_TRANSFORM_FIELD, False)),
     }
@@ -404,27 +416,31 @@ def model_class_of_model(model) -> dict:
 def is_legacy_class(model_class) -> bool:
     """Whether ``model_class`` is the unanchored legacy class.
 
-    The anchor and the coordinates alone. The descriptor log transform is
-    deliberately no part of this: what it decides is whether a checkpoint with
-    NO record beside it may be read, and the campaigns that left those
-    checkpoints set the transform on most of their architectures, so a rule
-    that read it here would refuse them all to the class that wrote them.
+    The anchor, the coordinates and the uniform-gas gate. The descriptor log
+    transform is deliberately no part of this: what it decides is whether a
+    checkpoint with NO record beside it may be read, and the campaigns that
+    left those checkpoints set the transform on most of their architectures,
+    so a rule that read it here would refuse them all to the class that wrote
+    them. A class stated without the gate is read at the gate every model
+    before the field carried.
     """
     return (not model_class["parent_anchor"]
-            and model_class["descriptor_coordinates"] == "legacy")
+            and model_class["descriptor_coordinates"] == "legacy"
+            and model_class.get(UEG_GATE_FIELD, "tanh2") == "tanh2")
 
 
 def describe_class(model_class) -> str:
     """One line naming a class, in the loaders' shared vocabulary.
 
-    The two fields every record states. The descriptor log transform is not
-    named here because it is compared only where the record carries it, and
-    its refusal (:func:`require_matching_log_transform`) names both values
-    itself.
+    The three fields every record states (the gate read at its default where
+    a record predates it). The descriptor log transform is not named here
+    because it is compared only where the record carries it, and its refusal
+    (:func:`require_matching_log_transform`) names both values itself.
     """
     return (f"parent_anchor={model_class['parent_anchor']}, "
             f"descriptor_coordinates="
-            f"{model_class['descriptor_coordinates']!r}")
+            f"{model_class['descriptor_coordinates']!r}, "
+            f"ueg_gate={model_class.get(UEG_GATE_FIELD, 'tanh2')!r}")
 
 
 def class_record(arch, *, sha256, size) -> dict:
@@ -698,9 +714,10 @@ def require_matching_class(checkpoint_path, want_class, *,
 
     ``want_class`` is the class of the skeleton about to be filled, from
     :func:`model_class_of_arch` (a spec's arch) or
-    :func:`model_class_of_model` (a built skeleton). Returns the two fields
-    every record states -- :data:`LEGACY_CLASS` when there is no record -- so
-    a caller can log what it accepted.
+    :func:`model_class_of_model` (a built skeleton). Returns the three fields
+    every record states (the gate at its default where a record predates it)
+    -- :data:`LEGACY_CLASS` when there is no record -- so a caller can log
+    what it accepted.
 
     The record is held to the ``.eqx`` on disk BEFORE the classes are
     compared (:func:`require_matching_digest`): a record that does not
@@ -725,18 +742,23 @@ def require_matching_class(checkpoint_path, want_class, *,
                 f"{describe_class(want_class)}: no model-class record "
                 f"({class_record_path(os.path.basename(path))}) stands beside "
                 "it, and the checkpoint's leaves do not reveal the class (the "
-                "anchor and the coordinates are static fields with no "
-                "parameters of their own). Every run that writes an anchored "
-                "or dfs checkpoint writes the record with it, so a checkpoint "
-                "without one was written by the unanchored legacy class.")
+                "anchor, the coordinates and the uniform-gas gate are static "
+                "fields with no parameters of their own). Every run that "
+                "writes an anchored, dfs, paper or x2-gated checkpoint writes "
+                "the record with it, so a checkpoint without one was written "
+                "by the unanchored legacy class.")
         return dict(LEGACY_CLASS)
     require_matching_digest(path, record)
     got_class = {
         "parent_anchor": bool(record.get("parent_anchor", False)),
         "descriptor_coordinates": str(
             record.get("descriptor_coordinates", "legacy")),
+        # A record written before the gate existed states nothing and is
+        # read at the gate every model before the field carried.
+        UEG_GATE_FIELD: str(record.get(UEG_GATE_FIELD, "tanh2")),
     }
-    if got_class != {key: want_class.get(key) for key in got_class}:
+    if got_class != {key: want_class.get(key, LEGACY_CLASS[key])
+                     for key in got_class}:
         raise ModelClassMismatch(
             f"refusing to load the {what} {path!r}: it was written as "
             f"{describe_class(got_class)}, but the model being built is "

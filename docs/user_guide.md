@@ -59,7 +59,7 @@ flowchart TB
 | Pretrain vs train | Pretrain fits the nets to PBE enhancement targets (a stable warm start). Train then tunes them to match your reference energies and densities. | `pretrain.py::run_pretrain` vs `train.py::run_training` |
 | SCF mode | `oneshot` scores on the fixed PBE density (fast). `FULL` is self-consistent: it re-solves with the net's own density each cycle (slower, more physical). | `solver.py::SolverMode` |
 | The 5 loss channels | `loss_AE` (atomization energy), `loss_BH76` (reaction barriers), `loss_IP13` (ionization potentials), `loss_vxc` (potential matching), `loss_rho` (density matching). The simple A/B/C/D losses use a subset; `L5_gradnorm_vxc_step7` uses all five with automatic GradNorm balancing. | `losses.py` |
-| In-sample vs held-out MAE | In-sample is the error on the molecules you trained on (optimistic). Held-out is the error on a disjoint BH76+W4-11 set, the real test of generalization, reported in kcal/mol vs PBE. | `evaluation.py`, `eval_holdout.py` |
+| In-sample vs held-out MAE | In-sample is the error on the molecules you trained on (optimistic). Held-out is the error on the BH76+W4-11 sets, each on its own geometries, the real test of generalization, reported in kcal/mol vs PBE. Nothing is excluded from a held-out set for overlapping the training molecules; the overlap is recorded per reaction and per molecule. | `evaluation.py`, `eval_holdout.py` |
 | Polarized correlation | For open-shell systems (atoms, radicals) the correlation net also takes spin polarization `zeta`. Enable with `use_polarized_correlation`. It is a different checkpoint family, so retrain when you flip it. | `config.py`, `models.py::_ec_baseline` |
 
 ---
@@ -211,9 +211,10 @@ queue for your login node.
 
 Top-level flags: `domain_profile` (the molecule pool, e.g. `bh76w411_step7`),
 `use_polarized_correlation` (spin-polarized correlation for open-shell species),
-`inline_eval`/`defer_eval` (run eval inside the train task vs. as its own array), `held_out_strict`
-(drop any held-out reaction that touches a training species, conservative and recommended),
-`on_precompute_failure` (`abort` vs `drop_failed_species`).
+`inline_eval`/`defer_eval` (run eval inside the train task vs. as its own array),
+`on_precompute_failure` (`abort` vs `drop_failed_species`). Nothing is excluded from a
+held-out set: every reaction is scored and its training overlap is annotated per reaction
+and per molecule.
 
 The DF/large-basis sibling `bh76w411_repr.tzvpd_grid2_df.yaml` differs only in `basis: def2-tzvpd`,
 `density_fit: true`, `auxbasis: def2-universal-jkfit`, and longer wall times.

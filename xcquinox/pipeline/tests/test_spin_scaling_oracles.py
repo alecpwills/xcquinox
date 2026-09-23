@@ -24,15 +24,15 @@ O2 is the central-difference check of the assembled UKS Fock pair against the
 assembled energy on H, Li, N and O with every descriptor active; the probe
 itself lives in ``test_solv01_split_xc`` beside the finite-difference harness.
 
-O3 is the closed-shell byte identity against the tree at ae204537e: rho_a =
+O3 is the closed-shell record against the tree at ae204537e: rho_a =
 rho_b makes the three per-channel feature blocks identical, so the exact spin
 scaling has no closed-shell content at all. The record, the archived fixture
 and the comparison live in ``test_closed_shell_byte_identity``; the case below
-is the per-architecture entry point the matrix selects. Bitwise equality is a
-statement about one machine, so the fixture states the platform it was
-recorded on and the comparison falls back to a documented relative floor on
-any other; the branch that ran is printed as an ``[O3]`` line in the case's
-own output, which is what the matrix's oracle log keeps.
+is the per-architecture entry point the matrix selects. The last digits of a
+record are the machine's as much as the code's, so the comparison is a
+relative tolerance rather than an equality; the movement it measured is
+printed as an ``[O3]`` line in the case's own output, which is what the
+matrix's oracle log keeps.
 
 O4 is the H atom: one electron in one orbital, so the symmetric doubled density
 diag(P_a, P_a) is a two-electron single-orbital system with tau = tau_W and
@@ -679,21 +679,20 @@ def test_o3_closed_shell_record_is_byte_identical_to_the_archived_tree(
         arch_name, capsys):
     """Oracle O3: on a closed-shell molecule the RKS and closed-shell UKS
     energies and potentials of this architecture reproduce the tree at
-    ae204537e digit for digit on the platform that recorded the fixture, and
-    within its documented cross-platform floor on any other.
+    ae204537e within the tolerance that module states.
 
     rho_a = rho_b makes the three per-channel blocks the same array, so the
-    exact spin scaling has no closed-shell content and the comparison is
-    equality rather than a tolerance -- an equality that only one machine can
-    be held to, since the last digits of the reference SCF are those of the
-    BLAS kernels its CPU selects (measured: three ulps, 4.3e-14 Ha, on
-    ``E_non_xc`` between this record's workstation and an AMD Milan cluster
-    node). The record, the archived fixtures, the platform fingerprint and
-    the comparison itself are in ``test_closed_shell_byte_identity``; this
+    exact spin scaling has no closed-shell content at all, and what remains
+    between two records of the same tree is the machine: the last digits of
+    the reference SCF are those of the BLAS kernels its CPU selects (measured:
+    three ulps, 4.3e-14 Ha, on ``E_non_xc`` between the recording workstation
+    and an AMD Milan cluster node), which the tolerance absorbs and a code
+    path change exceeds. The record, the archived fixtures and the comparison
+    itself are in ``test_closed_shell_byte_identity``; this
     case exists so the workflow matrix's ``oracle_selector`` reaches O3 for
-    one architecture along with O1, O2 and O4, and prints the branch that ran
-    into the oracle log. The record of an architecture is computed once per
-    process and shared by the two entry points.
+    one architecture along with O1, O2 and O4, and prints what the comparison
+    measured into the oracle log. The record of an architecture is computed
+    once per process and shared by the two entry points.
     """
     announce(assert_closed_shell_record_matches(arch_name), capsys)
 
@@ -771,10 +770,10 @@ def test_o4_h_atom_exchange_equals_the_spin_scaled_unpolarized_evaluation(
     library assembles, where the indicator sits at the smoothing's floor
     ``width / 2`` (its raw value is zero; docs/open_items.md #27).
 
-    Bounds: the block identity is measured bitwise on all 34 architectures
-    (doubling a density matrix is a binary scaling, so every contraction of
-    it is the doubled contraction); the energy identity is measured at
-    exactly 0.0 on all 34 against 1e-12, the empty beta channel contributing
+    Bounds: the block identity is measured bitwise on every registered
+    architecture (doubling a density matrix is a binary scaling, so every
+    contraction of it is the doubled contraction); the energy identity is
+    measured at exactly 0.0 on every one against 1e-12, the empty beta channel contributing
     1.1e-21 to 2.2e-21 Ha over two reference solutions (the rho_cutoff
     floor).
     """

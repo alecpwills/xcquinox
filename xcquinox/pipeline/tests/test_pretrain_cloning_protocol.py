@@ -164,3 +164,67 @@ def test_mesh_rows_ride_at_zero_weight_and_are_never_sampled():
     assert m[:100].sum() == 30 and m[100:160].sum() == 30
 
 
+
+
+# ---------------------------------------------------------------------------
+# The optimizer: the published clone runs Adam alone
+# ---------------------------------------------------------------------------
+
+_OPT_ARGS = dict(lr_start=1e-3, lr_end=1e-5, n_steps=N, lr_decay_start=0.5,
+                 lr_decay_end=0.9)
+
+
+def _updates(optimizer, params, gradient_sequence):
+    """The updates an optimizer produces over a sequence of gradients, its
+    moment state carried between steps."""
+    state = optimizer.init(params)
+    out = []
+    for grads in gradient_sequence:
+        updates, state = optimizer.update(grads, state, params)
+        out.append(np.asarray(updates["w"]))
+    return out
+
+
+def test_grad_clip_zero_disables_the_clip(tmp_path):
+    """``pretrain.grad_clip: 0`` means NO clip, which is the published
+    clone's optimizer (``optax.adam`` alone, ``train.py``), not a clip at
+    norm zero -- which would scale every gradient to zero and freeze the fit.
+
+    Oracle: ``optax.adam`` on the same learning-rate schedule, built here,
+    over two steps whose first gradient has global norm 100 and whose second
+    is small, so the clip shows in the second step through the moment state
+    as well as in the first. A clip at 1.0 on the same sequence must differ,
+    so the case is a comparison and not an identity that holds either way.
+    """
+    import optax
+
+    from xcquinox.pipeline.pretrain import _build_optimizer
+
+    params = {"w": jnp.array([1.0, 1.0])}
+    sequence = [{"w": jnp.array([60.0, 80.0])},
+                {"w": jnp.array([0.01, -0.02])}]
+
+    adam_alone = optax.adam(learning_rate=_lr_schedule(**_OPT_ARGS))
+    unclipped = _build_optimizer(grad_clip=0.0, **_OPT_ARGS)
+    clipped = _build_optimizer(grad_clip=1.0, **_OPT_ARGS)
+
+    want = _updates(adam_alone, params, sequence)
+    got = _updates(unclipped, params, sequence)
+    for a, b in zip(want, got):
+        np.testing.assert_array_equal(a, b)
+    assert float(np.max(np.abs(got[0]))) > 0.0
+
+    other = _updates(clipped, params, sequence)
+    assert max(float(np.max(np.abs(a - b))) for a, b in zip(want, other)) > 1e-12
+
+    # The spec the pretrain worker builds carries the value through to the
+    # optimizer, so the published protocol is not refused one layer above it.
+    import xcquinox.pipeline as pipeline
+    from xcquinox.pipeline.config import PretrainSpec
+
+    base = dict(arch=pipeline.get_architecture("shallow"),
+                data_dir=str(tmp_path),
+                checkpoint_dir=str(tmp_path / "ckpt"))
+    PretrainSpec(**base, grad_clip=0.0).validate()
+    with pytest.raises(ValueError, match="grad_clip"):
+        PretrainSpec(**base, grad_clip=-1.0).validate()

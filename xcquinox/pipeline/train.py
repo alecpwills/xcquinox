@@ -52,6 +52,7 @@ from xcquinox.pipeline.solver import SolverConfig, SolverMode
 from xcquinox.pipeline.data import precompute_fixed_density_data
 from xcquinox.pipeline.losses import make_loss
 from xcquinox.pipeline.models import AlecGGAModel
+from xcquinox.pipeline.oneshot import ONESHOT_AT_REFERENCE_KEY
 from xcquinox.pipeline.networks import create_network_pair
 from xcquinox.pipeline.defused_grad import defused_value_and_grad
 from xcquinox.pipeline.padding import common_pad_target
@@ -503,10 +504,13 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     checkpoint with no record at all is accepted only by that class, since
     nothing states what an anchored model would be loading.
 
-    ``descriptor_log_transform`` is the third such field and is compared ONLY
+    The uniform-gas gate (``ueg_gate``) is the third such field: a record
+    that states it is held to it, and a record written before the field is
+    read at ``tanh2``, the gate every model before it carried.
+    ``descriptor_log_transform`` is the fourth such field and is compared ONLY
     WHERE THE RECORD STATES IT, as the trained checkpoints' own record
     compares it (``checkpoint_class.require_matching_log_transform``): every
-    ``pretrain_metadata.json`` written before the key carries the two fields
+    ``pretrain_metadata.json`` written before the key carries the fields
     above and nothing else, and is read exactly as it was, since 26 of the 34
     registered architectures set the transform and reading a missing key as
     False would refuse their directories to the class that pretrained them.
@@ -519,17 +523,19 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     """
     want_anchor = bool(getattr(arch, "parent_anchor", False))
     want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
+    want_gate = str(getattr(arch, "ueg_gate", "tanh2"))
     md_path = os.path.join(pretrain_checkpoint, "pretrain_metadata.json")
     if not os.path.isfile(md_path):
-        if want_anchor or want_coords != "legacy":
+        if want_anchor or want_coords != "legacy" or want_gate != "tanh2":
             raise ValueError(
                 f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r} "
-                f"into a model with parent_anchor={want_anchor} and "
-                f"descriptor_coordinates={want_coords!r}: the directory carries "
+                f"into a model with parent_anchor={want_anchor}, "
+                f"descriptor_coordinates={want_coords!r} and "
+                f"ueg_gate={want_gate!r}: the directory carries "
                 "no pretrain_metadata.json recording the model class its "
                 "networks were written as, and the checkpoint's leaves do not "
-                "reveal it (the anchor and the coordinates are static fields "
-                "with no parameters of their own)")
+                "reveal it (the anchor, the coordinates and the uniform-gas "
+                "gate are static fields with no parameters of their own)")
         return
     try:
         with open(md_path) as f:
@@ -540,16 +546,22 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
             f"be read to check the model class it records: {exc}") from exc
     got_anchor = bool(md.get("parent_anchor", False))
     got_coords = str(md.get("descriptor_coordinates", "legacy"))
-    if got_anchor != want_anchor or got_coords != want_coords:
+    # A metadata file written before the gate existed states nothing about
+    # it and is read at the gate every model before the field carried.
+    got_gate = str(md.get("ueg_gate", "tanh2"))
+    if (got_anchor != want_anchor or got_coords != want_coords
+            or got_gate != want_gate):
         raise ValueError(
             f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r}: "
             f"its networks were written as parent_anchor={got_anchor}, "
-            f"descriptor_coordinates={got_coords!r} (pretrain_metadata.json"
+            f"descriptor_coordinates={got_coords!r}, ueg_gate={got_gate!r} "
+            "(pretrain_metadata.json"
             + ("" if "parent_anchor" in md else
                ", which predates the fields and so records the unanchored "
                "legacy class")
             + f"), but the model being built is parent_anchor={want_anchor}, "
-            f"descriptor_coordinates={want_coords!r}. The two are different "
+            f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}. "
+            "The two are different "
             "model classes with identical parameter shapes; loading across "
             "them would silently produce a model that is neither.")
     # The descriptor log transform, compared where the record states it. A
@@ -808,6 +820,12 @@ def _build_validation_data(spec):
             seed_source=seed_source,
             seed_cache_dir=seed_cache_dir,
             seed_density_fit=seed_density_fit,
+            # The training batch's own supply call: the atomic guess is
+            # requested exactly when the run mixes, so the validation records
+            # carry the training records' key set and a species shared by the
+            # two slices is one cache entry. The validation seed (dm_seed) is
+            # unchanged: the metric stays the same quantity.
+            with_minao_seed=bool(getattr(spec, "seed_mix_atomic", False)),
         )
         for m in val_mols
     }
@@ -1082,6 +1100,13 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
         # the DFS seed mixture, so a checkpoint states its seeding as it
         # states its mixer schedule (solver_config.mixer_kwargs)
         "seed_mix_atomic": bool(getattr(spec, "seed_mix_atomic", False)),
+        # the published protocol's non-self-consistent points: the switch,
+        # the weight and the recorded names, stated for every run
+        "respect_sc_flag": bool(getattr(spec, "respect_sc_flag", False)),
+        "nonsc_weight": float(getattr(spec, "nonsc_weight", 1.0)),
+        "nonsc_points": list(getattr(spec, "nonsc_points", ()) or ()),
+        "nonsc_species": [[name, list(names)] for name, names
+                          in (getattr(spec, "nonsc_species", ()) or ())],
         "optimizer": getattr(spec, "optimizer", "adamw_linear"),
         "balancing_active": (
             getattr(spec, "update_scheme", "batched") != "per_molecule"
@@ -1194,7 +1219,7 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
                              train_best_model, val_present, val_best_mae,
                              val_finite_metrics, val_best_model, epoch, update,
                              losses, aux_log, early_stopped, arch=None,
-                             plateau_state=None) -> None:
+                             plateau_state=None, mix_rng_state=None) -> None:
     """Write one resume checkpoint ATOMICALLY from PRE-CAPTURED state (WS5).
 
     Persists everything needed to continue the per_molecule loop exactly where
@@ -1223,7 +1248,10 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
     ``train_best_model`` / ``val_best_model`` are the captured best_model pytrees
     (or ``None``); ``resume_best.eqx`` / ``resume_val_best.eqx`` are written ONLY
     when the respective snapshot is present. ``val_present`` is True iff
-    validation ran (its scalars are then meaningful).
+    validation ran (its scalars are then meaningful). ``mix_rng_state`` is
+    the mixer's own rng state under ``seed_mix_atomic`` (``None`` when the
+    mixture is off), restored beside ``rng_state`` so a resumed run draws the
+    mixing coefficients an uninterrupted run would.
 
     ``arch`` is the model class the snapshots are written under; the loop
     passes ``spec.arch`` so each model file carries its class record
@@ -1256,6 +1284,10 @@ def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
         # np.random.RandomState uses get_state()/set_state() (NOT the stdlib
         # random getstate/setstate); the loop's rng is a RandomState.
         "rng_state": rng_state,
+        # the mixer's own stream (seed_mix_atomic), None with the mixture off;
+        # restored beside rng_state so the resumed run draws the betas an
+        # uninterrupted run would.
+        "mix_rng_state": mix_rng_state,
         # the plateau controller (adam_plateau): best, bad_epochs, lr; None otherwise
         "plateau_state": plateau_state,
         # _BestModelTracker (train-loss best) scalars.
@@ -1375,6 +1407,7 @@ def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
         "model": model,
         "opt_state": opt_state,
         "rng_state": state["rng_state"],
+        "mix_rng_state": state.get("mix_rng_state"),
         "order": [int(x) for x in state["order"]],
         "train_tracker": train_tracker,
         "val_tracker": val_tracker,
@@ -1833,6 +1866,10 @@ _DEFAULT_CHANNEL_WEIGHTS = {
     "loss_rho": 20.0,
 }
 
+#: The energy channels: the ones a non-self-consistent group's ``nonsc_weight``
+#: scales (the published script's ``nonSC_mult`` on the group's energy loss).
+_ENERGY_CHANNELS = ("loss_AE", "loss_BH76", "loss_IP13")
+
 
 def _effective_channel_weights(channel_weights_dict: dict) -> dict:
     """Merge a (possibly partial) user channel_weights over the density-dominant
@@ -1860,6 +1897,18 @@ def _training_groups(spec: TrainingSpec) -> list:
     lk = spec.loss_kwargs_dict
     reg_set = set(lk.get("regularize_atom_syms") or ())
     aux_only = set(lk.get("aux_only_names") or ())
+    # The published protocol's non-self-consistent points, by name, and the
+    # species each marks; a named point with no species listed marks its
+    # whole group. Every group carries ``sc`` (its flag) and
+    # ``nonsc_species`` (the names to mark, None for the whole group).
+    nonsc = set(getattr(spec, "nonsc_points", ()) or ())
+    nonsc_species = dict(getattr(spec, "nonsc_species", ()) or ())
+
+    def _flag(name):
+        if name not in nonsc:
+            return True, None
+        marks = nonsc_species.get(name)
+        return False, (tuple(marks) if marks else None)
 
     def _n_atoms(m):
         return sum(dict(m.atom_composition).values())
@@ -1872,14 +1921,18 @@ def _training_groups(spec: TrainingSpec) -> list:
             if s not in names:
                 names.append(s)
         species = tuple(by_name[n] for n in names if n in by_name)
+        sc, marks = _flag(r["name"])
         groups.append({"label": f"bh76:{r['name']}", "species": species,
-                       "bh76": (r,), "ip13": ()})
+                       "bh76": (r,), "ip13": (), "sc": sc,
+                       "nonsc_species": marks})
 
     for p in (lk.get("ip13_pairs") or ()):
         species = tuple(by_name[n] for n in (p["neutral"], p["cation"])
                         if n in by_name)
+        sc, marks = _flag(p["name"])
         groups.append({"label": f"ip13:{p['name']}", "species": species,
-                       "bh76": (), "ip13": (p,)})
+                       "bh76": (), "ip13": (p,), "sc": sc,
+                       "nonsc_species": marks})
 
     for m in spec.molecules:
         # Skip aux-forced polyatomics: a reaction-form AE compound
@@ -1890,8 +1943,10 @@ def _training_groups(spec: TrainingSpec) -> list:
         # re-apply density (weight 20) + vxc, double-supervising it per epoch.
         if (_n_atoms(m) > 1 and m.name in targets
                 and m.name not in aux_only):
+            sc, marks = _flag(m.name)
             groups.append({"label": f"ae:{m.name}", "species": (m,),
-                           "bh76": (), "ip13": ()})
+                           "bh76": (), "ip13": (), "sc": sc,
+                           "nonsc_species": marks})
 
     for m in spec.molecules:
         comp = dict(m.atom_composition)
@@ -1903,8 +1958,11 @@ def _training_groups(spec: TrainingSpec) -> list:
         # IP channel. Cations train through their IP13 group only.
         if (sum(comp.values()) == 1 and next(iter(comp)) in reg_set
                 and int(getattr(m, "charge", 0)) == 0):
+            # the atomic references are self-consistent in the published
+            # training
             groups.append({"label": f"anchor:{m.name}", "species": (m,),
-                           "bh76": (), "ip13": ()})
+                           "bh76": (), "ip13": (), "sc": True,
+                           "nonsc_species": None})
 
     if not groups:
         raise ValueError(
@@ -1923,6 +1981,21 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     species = group["species"]
     sub_mol_data = tuple(batch["mol_data"][name_to_idx[s.name]] for s in species)
 
+    # The published protocol's non-self-consistent points: under the switch,
+    # the records the group marks are the group's OWN copies (the batch record
+    # is shared with every other group the molecule belongs to, which must
+    # see it unmarked), evaluated in one pass at the reference density and
+    # left out of the density, potential and atomic-regularizer terms.
+    marked: set = set()
+    if (bool(getattr(spec, "respect_sc_flag", False))
+            and not group.get("sc", True)):
+        names = group.get("nonsc_species")
+        marked = set(names) if names else {s.name for s in species}
+        sub_mol_data = tuple(
+            dict(md, **{ONESHOT_AT_REFERENCE_KEY: True}) if s.name in marked
+            else md
+            for s, md in zip(species, sub_mol_data))
+
     lk = dict(spec.loss_kwargs_dict)
     lk["vxc_weight"] = 1.0
     lk["density_weight"] = 1.0
@@ -1930,19 +2003,26 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     lk["ip13_pairs"] = list(group["ip13"])
     lk["solver_config"] = (spec.loss_kwargs_dict.get("solver_config")
                            or spec.solver_config)
-    # Scope the atom-anchor allowlist to atoms actually present in this group.
+    # Scope the atom-anchor allowlist to atoms actually present in this group
+    # and not marked (a marked atom carries no per-molecule term).
     group_atom_syms = {
         next(iter(dict(s.atom_composition)))
-        for s in species if sum(dict(s.atom_composition).values()) == 1
+        for s in species
+        if sum(dict(s.atom_composition).values()) == 1
+        and s.name not in marked
     }
     # A CONFIGURED allowlist scopes to the group and an empty scope must
     # STAY empty: None means "regularize every single-atom MoleculeSpec"
     # (losses back-compat), which silently anchored every atom in groups
     # whose atoms miss the allowlist. Only an UNCONFIGURED run (no
-    # allowlist at all) keeps the regularize-everything default.
+    # allowlist at all) keeps the regularize-everything default; with a
+    # marked atom in the group that default becomes the explicit list of
+    # the group's unmarked atoms.
     run_reg = spec.loss_kwargs_dict.get("regularize_atom_syms")
-    if run_reg is None:
+    if run_reg is None and not marked:
         lk["regularize_atom_syms"] = None
+    elif run_reg is None:
+        lk["regularize_atom_syms"] = tuple(sorted(group_atom_syms))
     else:
         lk["regularize_atom_syms"] = tuple(
             s for s in run_reg if s in group_atom_syms)
@@ -1954,6 +2034,17 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     lk.pop("pbe_anchor_sample", None)
 
     sub_loss = make_loss(spec.loss_name, molecules=species, **lk)
+    nonsc_weight = float(getattr(spec, "nonsc_weight", 1.0))
+    if marked and lk.get("regularize_atom_syms") and nonsc_weight > 0.0:
+        # The loop scales this group's energy channels by nonsc_weight, and
+        # the atomic regularizer of the group's unmarked atoms rides in the
+        # AE channel; the published script adds those atoms' energy terms
+        # unscaled, so the regularizer's weight is raised by the same factor
+        # and the term stays at the run's own value.
+        w_atomic = getattr(sub_loss, "w_atomic", None)
+        if w_atomic is not None:
+            lk["w_atomic"] = float(w_atomic) / nonsc_weight
+            sub_loss = make_loss(spec.loss_name, molecules=species, **lk)
     sub_targets = {s.name: batch["targets"][s.name]
                    for s in species if s.name in batch["targets"]}
     sub_batch = {
@@ -1967,7 +2058,7 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
 def _require_minao_seed(prepared) -> None:
     """seed_mix_atomic needs dm_minao on every molecule of every group; a missing
     one is refused before the first update, by name."""
-    for label, _gloss, gbatch in prepared:
+    for label, _gloss, gbatch, _gcw in prepared:
         for md in gbatch["mol_data"]:
             if md.get("dm_minao") is None:
                 raise ValueError(
@@ -1976,21 +2067,41 @@ def _require_minao_seed(prepared) -> None:
                     f"group {label!r}")
 
 
+def _mixer_seed(seed: int) -> int:
+    """The seed of the mixer's own rng stream: the spec seed spawned through a
+    fixed key, so the stream is a function of the spec seed alone and is
+    neither the loop's shuffle stream nor the shuffle stream of any other
+    spec seed."""
+    return int(np.random.SeedSequence(int(seed), spawn_key=(1,))
+               .generate_state(1)[0])
+
+
 def _mix_seed_batch(gbatch: dict, rng) -> dict:
     """The DFS seed mixture as the executed dpyscf script forms it
     (scripts/train.py 385-393 with utils.py 296-337: dm_in = dm_init * (1 -
     mixing) + dm_realinit * mixing, dm_init the CONVERGED density, dm_realinit
     the minao guess, mixing = rand / 2 + 1 / 2): for each molecule of the
-    group, D0 = (1 - beta) D_PBE + beta D_minao with beta = (r + 1) / 2, r ~
-    U(0, 1), so the seed is at least half the atomic guess and never the PBE
-    density itself; beta is drawn from the loop's rng at every update so the resume checkpoint's
-    rng_state covers the sequence. Only dm_seed is replaced; every other array
-    of the molecule dict is shared, and the mixture is formed before padding."""
+    group, D0 = (1 - beta) D_seed + beta D_minao with beta = (r + 1) / 2, r ~
+    U(0, 1), so the seed is at least half the atomic guess and never the
+    converged density itself. D_seed is the run's own SCF seed (``dm_seed``:
+    the PBE density on the GGA rung, where the supply layer aliases it to
+    ``dm_pbe``; the SCAN density under a SCAN seed), which is what dm_init is
+    in the script, the converged density of the run's own functional. beta is
+    drawn from ``rng``, the mixer's own stream, at every update, so the resume
+    checkpoint's ``mix_rng_state`` covers the sequence and the loop's shuffle
+    stream is left to the group order. Only dm_seed is replaced; every other
+    array of the molecule dict is shared, and the mixture is formed before
+    padding. A record marked for the one pass at its reference density keeps
+    its seed and still consumes its draw, as the script draws ``mixing``
+    before testing the entry's flag."""
     mixed = []
     for md in gbatch["mol_data"]:
         beta = (float(rng.uniform()) + 1.0) / 2.0
+        if md.get(ONESHOT_AT_REFERENCE_KEY, False):
+            mixed.append(md)
+            continue
         new = dict(md)
-        new["dm_seed"] = (1.0 - beta) * md["dm_pbe"] + beta * md["dm_minao"]
+        new["dm_seed"] = (1.0 - beta) * md["dm_seed"] + beta * md["dm_minao"]
         mixed.append(new)
     out = dict(gbatch)
     out["mol_data"] = tuple(mixed)
@@ -2014,6 +2125,16 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     pad_target = (common_pad_target(batch["mol_data"])
                   if getattr(spec, "pad_group_to_common_shape", False) else None)
     groups = _training_groups(spec)
+    respect_sc = bool(getattr(spec, "respect_sc_flag", False))
+    nonsc_weight = float(getattr(spec, "nonsc_weight", 1.0))
+    if respect_sc and nonsc_weight == 0.0:
+        # the published script skips a non-self-consistent group outright at
+        # weight zero: no optimizer step and no schedule slot for it
+        groups = [g for g in groups if g.get("sc", True)]
+        if not groups:
+            raise ValueError(
+                "respect_sc_flag with nonsc_weight 0 leaves no training "
+                "group: every group of the spec is non-self-consistent")
     n_groups = len(groups)
     n_epochs = spec.n_steps
     total_updates = max(1, n_epochs * n_groups)
@@ -2040,7 +2161,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     resume_enabled = checkpoint_every > 0
     checkpoint_dir = spec.checkpoint_dir
 
-    def _step(model, opt_state, gbatch, gloss):
+    def _step(model, opt_state, gbatch, gloss, gcw):
         # De-fused value-and-gradient: identical (loss, grads) to the fused
         # eqx.filter_value_and_grad(scalar_loss) but each molecule's SCF compiles
         # at per-molecule size, so the 6-311++G(3df,2pd)+grid3 groups no longer
@@ -2049,13 +2170,23 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         # utility jits per molecule internally (see xcquinox.pipeline.defused_grad),
         # and is loss-agnostic (any AlecLoss, via the shared energy-stack hook).
         (loss_val, comps), grads = defused_value_and_grad(
-            gloss, model, gbatch, cw, relative, pad_target=pad_target)
+            gloss, model, gbatch, gcw, relative, pad_target=pad_target)
         updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         model = eqx.apply_updates(model, updates)
         return model, opt_state, loss_val, comps, grads
 
+    def _group_weights(g):
+        """The run's channel weights, the energy channels scaled by
+        nonsc_weight for a non-self-consistent group under the switch (the
+        published script's nonSC_mult on the group's energy loss)."""
+        if respect_sc and not g.get("sc", True):
+            return {k: (v * nonsc_weight if k in _ENERGY_CHANNELS else v)
+                    for k, v in cw.items()}
+        return cw
+
     prepared = [
-        (g["label"], *_build_group_loss_and_batch(spec, g, batch))
+        (g["label"], *_build_group_loss_and_batch(spec, g, batch),
+         _group_weights(g))
         for g in groups
     ]
 
@@ -2063,6 +2194,12 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     if mix_seed:
         _require_minao_seed(prepared)
     rng = np.random.RandomState(spec.seed)
+    # The mixer's own stream, drawn by nothing but the mixture, so the group
+    # order of every epoch is the same whether the mixture is on or off: the
+    # seed start is the one variable between the arms. None with the mixture
+    # off.
+    mix_rng = (np.random.RandomState(_mixer_seed(spec.seed)) if mix_seed
+               else None)
     order = np.arange(n_groups)
     losses_list: list = []
     aux_log: list = []
@@ -2109,6 +2246,13 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         try:
             restored = _load_resume_checkpoint(
                 checkpoint_dir, model_skeleton=model, opt_state_skeleton=opt_state)
+            # A set written without the mixer's stream cannot continue the
+            # betas where the killed run left them; it is refused here, inside
+            # the guarded load, so the run starts fresh with the warning below.
+            if mix_seed and restored.get("mix_rng_state") is None:
+                raise ValueError(
+                    "the resume set carries no mix_rng_state, so the mixer's "
+                    "stream cannot continue where the killed run left it")
         except Exception as exc:  # noqa: BLE001 -- corrupt ckpt -> start fresh
             warnings.warn(
                 f"WS5: could not load resume checkpoint in {checkpoint_dir} "
@@ -2121,6 +2265,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             if plateau is not None and restored.get("plateau_state") is not None:
                 plateau.from_state(restored["plateau_state"])
             rng.set_state(restored["rng_state"])
+            if mix_rng is not None:
+                mix_rng.set_state(restored["mix_rng_state"])
             order[:] = restored["order"]     # continue the killed run's perm
             tracker = restored["train_tracker"]
             losses_list = restored["losses"]
@@ -2151,6 +2297,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         _live["model"] = model
         _live["opt_state"] = opt_state
         _live["rng_state"] = rng.get_state()
+        _live["mix_rng_state"] = (mix_rng.get_state() if mix_rng is not None
+                                  else None)
         _live["order"] = list(order)
         _live["epoch"] = epochs_run
         _live["update"] = update
@@ -2176,6 +2324,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         _write_resume_checkpoint(
             checkpoint_dir, model=_live["model"], opt_state=_live["opt_state"],
             rng_state=_live["rng_state"], order=_live["order"],
+            mix_rng_state=_live["mix_rng_state"],
             train_best_loss=_live["train_best_loss"],
             train_recent=_live["train_recent"],
             train_window=_live["train_window"],
@@ -2201,11 +2350,11 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         for epoch in range(start_epoch, n_epochs):
             rng.shuffle(order)
             for gi in order:
-                label, gloss, gbatch = prepared[gi]
+                label, gloss, gbatch, gcw = prepared[gi]
                 if mix_seed:
-                    gbatch = _mix_seed_batch(gbatch, rng)
+                    gbatch = _mix_seed_batch(gbatch, mix_rng)
                 model, opt_state, loss_val, comps, grads = _step(
-                    model, opt_state, gbatch, gloss)
+                    model, opt_state, gbatch, gloss, gcw)
                 loss_py = float(loss_val)
                 _abort_if_nonfinite(loss_val, comps, loop="per_molecule",
                                     step=update, group=label, grads=grads)

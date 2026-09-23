@@ -5,7 +5,8 @@
 # =============================================================================
 # Pool = the full BH76+W4-11 reaction set (domain_profile: bh76w411_step7); each
 # (arch, subset_size) cell trains on the alpha_on JSD-representative subset of
-# that size and is evaluated on the COMPLEMENT (held_out_strict: true). The
+# that size and is evaluated on the whole pool, the training overlap annotated
+# per reaction rather than excluded from it. The
 # preflight generates CCSD reference densities ONLY for the training-subset
 # species (ledger-scoped), so it stays small. Descriptors (cusp/dm) are computed
 # per-arch at train time. Same arch/loss/solver setup as the ablation runs.
@@ -110,7 +111,6 @@ domain_profile: bh76w411_step7
 on_precompute_failure: abort
 bh76_mode: reaction_energy
 use_polarized_correlation: true
-held_out_strict: true
 
 inline_eval: true
 defer_eval: false

@@ -154,14 +154,14 @@ class AtomizationEnergyMetric(Metric):
 def pbe_density_errors(mol_data) -> tuple:
     """Model-free PBE-vs-reference weighted grid density errors.
 
-    The PBE leg prefers ``mol_data['rho_pbe_ref_grid']`` -- the reference
-    calculation's own PBE density on the same grid as ``rho_ref_grid`` --
-    and falls back to the locally recomputed ``mol_data['rho_grid']`` for
-    records without it. Either way the baseline needs no model and no
-    extra SCF: it is the :class:`DensityRMSEMetric` formula with rho_pbe
-    in place of rho_nn.
-    Returns ``(rmse, l1)``, or ``(None, None)`` when no reference density is
-    loaded.
+    The PBE leg reads ``mol_data['rho_pbe_ref_grid']``, the reference
+    calculation's own PBE density on the same grid as ``rho_ref_grid``, and
+    nothing else: the locally recomputed ``mol_data['rho_grid']`` is a
+    second PBE twin from another SCF and is never substituted. The baseline
+    needs no model and no extra SCF: it is the :class:`DensityRMSEMetric`
+    formula with rho_pbe in place of rho_nn (:func:`density_error_terms`).
+    Returns ``(rmse, l1)``, or ``(None, None)`` when no reference density or
+    no reference PBE density is loaded.
 
     The returned errors are grid-weight-AVERAGED (see
     :class:`DensityRMSEMetric`), distinct from the DFS per-electron density
@@ -172,22 +172,32 @@ def pbe_density_errors(mol_data) -> tuple:
     rho_ref = mol_data.get("rho_ref_grid")
     if rho_ref is None:
         return None, None
-    # Prefer the reference calculation's own PBE density (same DF setting,
-    # grid and orientation as rho_ref_grid) over the locally recomputed
-    # rho_grid: the two PBE twins measured 0.39 percent apart on c2, and
-    # that provenance difference is not a PBE-vs-reference error.
+    # The baseline is the reference calculation's own PBE density (same DF
+    # setting, grid and orientation as rho_ref_grid) and nothing else. The
+    # locally recomputed rho_grid is a second PBE twin, measured 0.39 percent
+    # apart on c2, and that provenance difference is not a PBE-vs-reference
+    # error; without the reference's PBE density there is no baseline.
     rho_pbe = mol_data.get("rho_pbe_ref_grid")
     if rho_pbe is None:
-        rho_pbe = mol_data["rho_grid"]
-    rho_pbe = jnp.asarray(rho_pbe)
+        return None, None
+    return density_error_terms(rho_pbe, rho_ref, mol_data["grid_weights"])
+
+
+def density_error_terms(rho, rho_ref, w) -> tuple:
+    """Grid-weight-averaged RMSE and L1 of one density against the reference
+    on one grid, ``(sqrt(sum(w (rho - rho_ref)^2) / sum(w)), sum(w |rho -
+    rho_ref|) / sum(w))`` as floats, the convention of
+    :class:`DensityRMSEMetric`. Model-free, so any baseline density on the
+    reference grid is measured the same way (the reference calculation's PBE
+    twin, a SCAN density recomputed on that grid). Two densities of different
+    length raise rather than broadcast."""
+    rho = jnp.asarray(rho)
     rho_ref = jnp.asarray(rho_ref)
-    if rho_pbe.shape != rho_ref.shape:
+    if rho.shape != rho_ref.shape:
         raise ValueError(
-            f"density shape mismatch: rho_pbe {rho_pbe.shape} vs "
-            f"rho_ref {rho_ref.shape}"
-        )
-    w = jnp.asarray(mol_data["grid_weights"])
-    diff = rho_pbe - rho_ref
+            f"density shape mismatch: rho {rho.shape} vs rho_ref {rho_ref.shape}")
+    w = jnp.asarray(w)
+    diff = rho - rho_ref
     rmse = float(jnp.sqrt(jnp.sum(w * diff ** 2) / jnp.sum(w)))
     l1 = float(jnp.sum(w * jnp.abs(diff)) / jnp.sum(w))
     return rmse, l1
@@ -221,14 +231,16 @@ def density_eps_terms(rho, rho_ref, w):
 def pbe_density_eps(mol_data) -> tuple:
     """Model-free DFS Eq. 20 terms for the stored PBE density vs the loaded
     reference: ``(density_eps_l1_pbe, n_electrons, grid_weight_sum)``, or
-    ``(None, None, None)`` when no reference density is present (the
-    historical skip semantics of :func:`pbe_density_errors`)."""
+    ``(None, None, None)`` when no reference density or no reference PBE
+    density is present (the skip semantics of :func:`pbe_density_errors`;
+    the locally recomputed ``rho_grid`` is never substituted for the
+    baseline)."""
     rho_ref = mol_data.get("rho_ref_grid")
     if rho_ref is None:
         return None, None, None
     rho_pbe = mol_data.get("rho_pbe_ref_grid")
     if rho_pbe is None:
-        rho_pbe = mol_data["rho_grid"]
+        return None, None, None
     return density_eps_terms(rho_pbe, rho_ref,
                              mol_data["grid_weights"])
 

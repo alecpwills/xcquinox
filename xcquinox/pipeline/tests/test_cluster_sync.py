@@ -267,6 +267,21 @@ def _materialize_fake_run(root: Path) -> Path:
     (spec / "eval_holdout_coldstart" / "per_molecule.json").write_text("[]\n")
     (spec / "eval_holdout_coldstart" / "eval_metadata.json").write_text(
         '{"channel": "eval_holdout_coldstart", "coldstart": true}\n')
+    # The reporting channel: the validation-best checkpoint under the
+    # cold-start override, written beside the final-checkpoint cold-start
+    # pass. Same small CSV/JSON artifacts plus the provenance stamp, no *.eqx.
+    (spec / "eval_holdout_coldstart_val_best").mkdir()
+    (spec / "eval_holdout_coldstart_val_best" / "test_set.csv").write_text(
+        "set,mae_nn_kcalmol,mae_pbe_kcalmol,delta_nn_minus_pbe\n"
+        "test_set_held_out_combined,13.4,11.8,1.600000\n")
+    (spec / "eval_holdout_coldstart_val_best"
+     / "per_reaction.json").write_text("[]\n")
+    (spec / "eval_holdout_coldstart_val_best"
+     / "per_molecule.json").write_text("[]\n")
+    (spec / "eval_holdout_coldstart_val_best"
+     / "eval_metadata.json").write_text(
+        '{"channel": "eval_holdout_coldstart_val_best", "coldstart": true, '
+        '"channel_override": "coldstart"}\n')
     # Converged-SCF channel (the 5th and 6th passes): the final and the
     # validation-best checkpoints re-evaluated under a converged pyscfad SCF.
     # Same small CSV/JSON artifacts plus the provenance stamp naming the
@@ -395,6 +410,10 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "checkpoints/spec_0000/eval_holdout_coldstart/per_reaction.json",
         "checkpoints/spec_0000/eval_holdout_coldstart/per_molecule.json",
         "checkpoints/spec_0000/eval_holdout_coldstart/eval_metadata.json",
+        "checkpoints/spec_0000/eval_holdout_coldstart_val_best/test_set.csv",
+        "checkpoints/spec_0000/eval_holdout_coldstart_val_best/per_reaction.json",
+        "checkpoints/spec_0000/eval_holdout_coldstart_val_best/per_molecule.json",
+        "checkpoints/spec_0000/eval_holdout_coldstart_val_best/eval_metadata.json",
         "checkpoints/spec_0000/eval_holdout_converged/test_set.csv",
         "checkpoints/spec_0000/eval_holdout_converged/per_reaction.json",
         "checkpoints/spec_0000/eval_holdout_converged/per_molecule.json",
@@ -558,3 +577,27 @@ def test_cmd_pull_auto_one_ssh_one_rsync(monkeypatch, tmp_path):
     assert argv[-1] == str(tmp_path / "local") + "/"
 
 
+
+
+def test_the_pull_inventory_counts_the_reporting_channel(tmp_path):
+    """The one-line count printed after a pull states the reporting channel.
+
+    The line is what a pull is read against: it says how much of the
+    figure-critical data actually arrived. With the reporting channel absent
+    from it, a pull that dropped the channel every figure set is now drawn
+    from reads exactly like a complete one.
+    """
+    from xcquinox.pipeline.cluster.__main__ import _pull_inventory
+
+    run = _materialize_fake_run(tmp_path / "remote")
+    line = _pull_inventory(run)
+    assert "reporting evals 1" in line, line
+    # the counts the line already carried are unchanged
+    assert "val-best evals 1" in line, line
+    assert "holdout evals 1" in line, line
+    assert "val-best weights 1" in line, line
+
+    # a run without the channel counts zero rather than omitting the count
+    bare = tmp_path / "bare" / "run_20260101T000000Z"
+    (bare / "checkpoints" / "spec_0000" / "eval_holdout").mkdir(parents=True)
+    assert "reporting evals 0" in _pull_inventory(bare)

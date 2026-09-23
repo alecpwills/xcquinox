@@ -1,0 +1,12 @@
+{
+  "parent_anchor": false,
+  "descriptor_coordinates": "dfs",
+  "descriptor_log_transform": true,
+  "arch_name": "deep_attn_3x16",
+  "meta_gga": false,
+  "use_polarized_correlation": true,
+  "parent": null,
+  "xcquinox_version": "1+unknown",
+  "sha256": "310c5f098243e7e5fc65945df9ebbd67846817ffee8aa92431094d838bcaabd4",
+  "size": 32272
+}

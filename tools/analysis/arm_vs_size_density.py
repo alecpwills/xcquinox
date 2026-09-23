@@ -43,6 +43,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+from xcquinox.pipeline.holdout_channels import (  # noqa: E402
+    figure_suffix, resolve_channel)
+
 _HERE = Path(__file__).resolve().parent
 CSV_NAME = "arm_vs_size_density.csv"
 PNG_NAME = "arm_vs_size_density.png"
@@ -411,18 +414,23 @@ def latex_rows(family_dir) -> List[str]:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--run-dir", required=True, help="the merged family view")
-    ap.add_argument("--eval-channel", default="val_best",
-                    help="held-out channel: eval_holdout_<channel> (default val_best)")
+    ap.add_argument("--eval-channel", default=None,
+                    help="held-out channel: eval_holdout_<channel> (default: the "
+                         "view's reporting channel, coldstart_val_best where the "
+                         "view carries it, else val_best)")
     ap.add_argument("--family-dir", default=None,
-                    help="the figure set holding the two pool CSVs (default "
-                         "figures_dfs_step7_v7_family_<channel> beside this script)")
+                    help="the figure set holding the two pool CSVs (default: the "
+                         "channel's family set beside this script, "
+                         "figures_dfs_step7_v7_family<suffix>)")
     ap.add_argument("--out-dir", default=None,
                     help="where the CSV and PNG land (default: the family directory)")
     args = ap.parse_args(argv)
     run = Path(args.run_dir)
-    eval_subdir = f"eval_holdout_{args.eval_channel}"
+    eval_subdir = (resolve_channel(run) if args.eval_channel is None
+                   else f"eval_holdout_{args.eval_channel}")
     fam = Path(args.family_dir) if args.family_dir \
-        else _HERE / f"figures_dfs_step7_v7_family_{args.eval_channel}"
+        else _HERE / f"figures_dfs_step7_v7_family{figure_suffix(eval_subdir)}"
+    print(f"held-out channel: {eval_subdir}")
     out_dir = Path(args.out_dir) if args.out_dir else fam
     out_dir.mkdir(parents=True, exist_ok=True)
 

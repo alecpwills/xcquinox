@@ -22,9 +22,38 @@ import xcquinox.pipeline.pretrain_data_gen as pdg
 _TINY = (("He", 0), ("H", 1))
 _FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
                         "pretrain_data_default_reference.npz")
+#: The per-element relative tolerance the recorded fixture is held to, in ulp.
+#: The columns jax and libxc compute carry the rounding residue of the
+#: machine's own BLAS and instruction order, so the recording is reproduced to
+#: a few ulp of each element rather than bit for bit. Measured: one element of
+#: ``Fc_scan_mesh`` moved by one ulp on a hosted runner. Four covers a
+#: rounding-order difference of a few operations on any element, whatever its
+#: magnitude, and sits many orders below the relative change a protocol edit
+#: makes to a column.
+_ULP_TOLERANCE = 4
+
+
+def _assert_columns_match(got, ref):
+    """Hold every recorded key: dtype and shape exactly, floating values
+    within ``_ULP_TOLERANCE`` ulp of each element (a relative tolerance) and
+    integer values exactly. Returns the keys that moved with their largest
+    absolute difference, for the report."""
+    moved = []
+    for key in sorted(ref):
+        assert got[key].dtype == ref[key].dtype, key
+        assert got[key].shape == ref[key].shape, key
+        if not np.issubdtype(ref[key].dtype, np.floating):
+            np.testing.assert_array_equal(got[key], ref[key], err_msg=key)
+            continue
+        rtol = _ULP_TOLERANCE * float(np.finfo(ref[key].dtype).eps)
+        np.testing.assert_allclose(got[key], ref[key], rtol=rtol, atol=0.0,
+                                   err_msg=key)
+        if not np.array_equal(got[key], ref[key]):
+            moved.append((key, float(np.max(np.abs(got[key] - ref[key])))))
+    return moved
 
 #: The new keys the default configuration gains. Everything else the default
-#: file carries is pinned bit-for-bit against the recorded fixture.
+#: file carries is held to the tolerance above against the recorded fixture.
 _NEW_DEFAULT_KEYS = sorted([
     "e_c_parent_scan_sys", "e_c_parent_sys", "e_lda_c_all", "e_lda_x_all",
     "e_x_parent_scan_sys", "e_x_parent_sys", "mesh_weight_fraction",
@@ -79,52 +108,55 @@ def _install_fake(monkeypatch, factory):
 # ---------------------------------------------------------------------------
 
 def test_default_output_matches_the_recorded_reference(tmp_path):
-    """Every column the generator writes at the default configuration is
-    bit-identical to the recorded fixture, so a YAML already in flight trains
-    on the same numbers. New keys may appear; old ones may not move. (The
-    .npz CONTAINER is a zip whose headers carry write timestamps, so the pin
-    is on array contents, not on the file's bytes.) The recording predates
-    the orientation lock; both atoms carry one s function, on which the
-    traceless-quadrupole bias vanishes identically, so the locked default
-    reproduces it.
-
-    The fixture was re-recorded when the iso-orbital indicator's lower bound
-    became a smooth positive part (``metagga.compute_alpha``, width 1e-5;
-    docs/open_items.md entry 27). Against the previous recording exactly two
-    keys moved: ``metagga_all`` on 1200 of 1200 rows, from the hard clip's
-    0.0 (largest raw residue 1.4e-10) to the smoothing's floor 5.0e-6 (both
-    atoms are one orbital in this basis), and ``metagga_mesh`` on 560 of 560
-    rows by at most 5.0e-6 (the alpha = 0 nodes by the floor, the others by
-    ``width^2 / (4 alpha)`` <= 2.5e-10); every other key -- rho, sigma, the
-    PBE and SCAN targets, cusp, dm, rung35, rung35ms, weights, zeta, on the
-    atomic rows and on the mesh -- is bit-identical.
-
-    The fixture was re-recorded once more on the pyscf 2.14.0 / jax 0.10.2
-    stack (2026-09-21), with the reference SCF's density cutoff pinned at
-    1e-7 (``pyscf_determinism.REFERENCE_SMALL_RHO_CUTOFF``) so the grid is
-    the one the previous recording used. Against the jax 0.7.0 recording
-    five keys moved, every one a column jax computes and none that pyscf
-    computes: ``metagga_all`` on 156 of 1200 rows by at most 1.0e-11 (XLA
-    0.10 contracts the kinetic-energy density's einsum in another order,
-    one ulp of tau on 116 of the 576 He points, which the same contraction
-    in numpy does not show; both atoms are one orbital, so tau - tau_W is a
-    rounding residue that the smooth floor maps to 5.0e-6 and the ulp to
-    1e-11 there), through the indicator ``Fx_scan_all`` on 32 rows by at
-    most 4.5e-13 and ``Fc_scan_all`` on 48 rows by at most 1.2e-15 (libxc's
-    own values are bit-identical between the two releases on fixed inputs)
-    and ``e_c_parent_scan_sys`` of the H atom by 1.3e-19, and ``cusp_all``
-    on 1010 of 2400 entries by at most 1.1e-16, one ulp of a value below
-    one (the column is jax's exponential and hyperbolic tangent of the same
-    geometry); rho, sigma, the weights, the PBE targets, dm, rung35,
-    rung35ms, zeta and the mesh are bit-identical."""
+    """Every column the generator writes at the default configuration is held
+    against the recorded fixture, within ``_ULP_TOLERANCE`` ulp of each
+    element, where the columns jax and libxc compute carry the rounding
+    residue of the machine's own BLAS and instruction order (a hosted runner
+    moved one element of ``Fc_scan_mesh`` by one ulp). New keys may appear;
+    recorded ones may not move beyond that, so a YAML already in flight trains
+    on the same numbers. The .npz container is a zip whose headers carry write
+    timestamps, so the pin is on array contents, not on the file's bytes. Both
+    atoms carry one s function, on which the traceless-quadrupole bias of the
+    orientation lock vanishes identically, so the locked default reproduces
+    the recording, which is at the pinned reference density cutoff
+    (``pyscf_determinism.REFERENCE_SMALL_RHO_CUTOFF``)."""
     ref = dict(np.load(_FIXTURE))
     _path, got = _gen(tmp_path)
     missing = sorted(set(ref) - set(got))
     assert not missing, f"the default output lost {missing}"
-    for key in sorted(ref):
-        assert got[key].dtype == ref[key].dtype, key
-        assert got[key].shape == ref[key].shape, key
-        np.testing.assert_array_equal(got[key], ref[key], err_msg=key)
+    _assert_columns_match(got, ref)
+
+
+def test_the_default_output_pin_is_a_few_ulp_per_element():
+    """A one-ulp movement of an element passes the pin, a hundred-ulp movement
+    fails it, and the same absolute movement on a small element of the same
+    column fails it, since the tolerance is per element and not per column; an
+    integer column is exact; and the refusal names the offending key and no
+    other.
+
+    The large element is a power of two, so one ulp of it is exactly
+    ``eps`` times its value and the movement is representable."""
+    big = 2.0 ** 31
+    ref = {"alpha": np.array([1.0, big]), "count": np.array([1, 2])}
+    one_ulp = float(np.finfo(np.float64).eps) * big
+    moved_one = {"alpha": ref["alpha"] + np.array([0.0, one_ulp]),
+                 "count": ref["count"].copy()}
+    moved_far = {"alpha": ref["alpha"] + np.array([0.0, 100.0 * one_ulp]),
+                 "count": ref["count"].copy()}
+    moved_small = {"alpha": ref["alpha"] + np.array([one_ulp, 0.0]),
+                   "count": ref["count"].copy()}
+
+    def _refused(got):
+        with pytest.raises(AssertionError) as exc:
+            _assert_columns_match(got, ref)
+        return str(exc.value)
+
+    moved = _assert_columns_match(moved_one, ref)
+    assert moved == [("alpha", one_ulp)]
+    assert "alpha" in _refused(moved_far)
+    assert "alpha" in _refused(moved_small)
+    message = _refused({"alpha": ref["alpha"], "count": ref["count"] + 1})
+    assert "count" in message and "alpha" not in message
 
 
 def _legacy_view(ref):

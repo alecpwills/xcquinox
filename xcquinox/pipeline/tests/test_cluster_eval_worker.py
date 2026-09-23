@@ -341,11 +341,12 @@ def _full_mode_spec():
 # Held-out species slice
 # ---------------------------------------------------------------------------
 
-def _slice_fixture(monkeypatch, run_dir):
+def _slice_fixture(monkeypatch, run_dir, pools=("bh76", "w411")):
     """Wire the held-out seams so _run_held_out_eval runs no SCF.
 
     The pool stub is the six-species matrix slice plus one species outside it,
-    so a slice that is applied is distinguishable from one that is not.
+    so a slice that is applied is distinguishable from one that is not. The
+    recorded pool names let a caller assert which pools the stage asked for.
     """
     from types import SimpleNamespace
     import xcquinox.pipeline.eval_holdout as eh
@@ -353,7 +354,8 @@ def _slice_fixture(monkeypatch, run_dir):
     spec = _full_mode_spec()
     ckpt_dir = _write_model(run_dir, 0)
     cfg = SimpleNamespace(cluster=SimpleNamespace(eval_workers=1),
-                          held_out_strict=False)
+                          inputs=SimpleNamespace(held_out_pools=tuple(pools)),
+                          )
     pool = {n: f"spec_{n}" for n in
             ("h", "h2", "o", "oh", "n2o", "n2ohts", "c2h6")}
     rxns = [
@@ -363,9 +365,19 @@ def _slice_fixture(monkeypatch, run_dir):
     ]
     seen = {}
     monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
-    monkeypatch.setattr(fbp, "load_full_held_out_pools",
-                        lambda basis=None, grid_level=None: (dict(pool),
-                                                             list(rxns)))
+
+    def _load(names, basis=None, grid_level=None, refs_dir=None):
+        seen["pools"] = tuple(names)
+        return dict(pool), list(rxns)
+
+    def _load_with_conflicts(names, basis=None, grid_level=None, refs_dir=None):
+        specs, reactions = _load(names, basis=basis, grid_level=grid_level,
+                                 refs_dir=refs_dir)
+        return specs, reactions, []
+
+    monkeypatch.setattr(fbp, "load_held_out_pools", _load)
+    monkeypatch.setattr(fbp, "load_held_out_pools_with_conflicts",
+                        _load_with_conflicts, raising=False)
     monkeypatch.setattr(ev, "_held_out_basis_grid", lambda cfg: ("def2-svp", 1))
 
     def _capture(**kw):
@@ -403,6 +415,85 @@ def test_sliced_channel_is_marked_before_the_evaluation_runs(run_dir,
     assert mark["env_var"] == HELDOUT_SPECIES_SLICE_ENV
 
 
+def test_the_eval_stage_loads_the_pools_the_configuration_names(run_dir, monkeypatch):
+    """The evaluated pool is the run's own: a stage that loaded the pair whatever the
+    configuration said would report a channel over reactions the run never asked for,
+    under a name that says otherwise.
+
+    Oracle: the pool names the loader seam received.
+    """
+    spec, cfg, ckpt_dir, seen = _slice_fixture(monkeypatch, run_dir,
+                                               pools=("bh76", "diet150"))
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+    assert seen["pools"] == ("bh76", "diet150")
+
+
+def test_the_shard_command_carries_the_pools(run_dir, monkeypatch):
+    """The shard workers reload the pools themselves, so the pool selection has to reach
+    them on the command line; a command that omitted it would have every worker compute
+    the pair's species while the orchestrator scored another pool's reactions.
+
+    Oracle: the command the parallel driver renders for one shard.
+    """
+    from xcquinox.pipeline.cluster import _holdout_parallel as hp
+
+    commands = []
+
+    class _Recorded(RuntimeError):
+        """Raised by the launcher stand-in once the command is recorded: the
+        driver's later tiers would evaluate on the stand-in spec."""
+
+    def _fake_run_workers(jobs, max_parallel=1):
+        commands.extend(list(job.cmd) for job in jobs)
+        raise _Recorded()
+
+    monkeypatch.setattr(hp.parallel, "run_workers", _fake_run_workers)
+    monkeypatch.setattr(hp.parallel, "eval_worker_ladder",
+                        lambda total_cpus, top=1: [(1, 1)])
+    with pytest.raises(_Recorded):
+        hp.run_holdout_with_escalation(
+            run_dir, 0, "SPEC", "MODEL", [], {"h2": "spec_h2"},
+            os.path.join(run_dir, "out"), basis="def2-svp", grid_level=1,
+            n_workers_top=1, total_cpus=1,
+            pools=("bh76", "diet150"))
+    assert commands, "the driver rendered no worker command"
+    cmd = commands[0]
+    assert "--pools" in cmd
+    assert cmd[cmd.index("--pools") + 1] == "bh76,diet150"
+
+
+def test_the_shard_worker_loads_the_pools_its_command_names(run_dir, monkeypatch):
+    """The worker resolves its own pool selection, defaulting to the historical pair so
+    a command written before the flag existed loads what it always loaded.
+
+    Oracle: the pool names the worker hands its shard computation.
+    """
+    from xcquinox.pipeline.workers import eval_holdout_worker as w
+
+    seen = {}
+
+    def _fake_compute_shard(run_dir_, spec_idx, names, basis, grid_level,
+                            model_name="model.eqx", channel=None,
+                            pools=("bh76", "w411")):
+        seen["pools"] = tuple(pools)
+        return {"energies": {}, "pbe_energies": {}, "mol_records": []}
+
+    monkeypatch.setattr(w, "compute_shard", _fake_compute_shard)
+    names_file = os.path.join(run_dir, "names.json")
+    with open(names_file, "w") as f:
+        json.dump(["h2"], f)
+    out_shard = os.path.join(run_dir, "shard.json")
+    base = ["--run-dir", run_dir, "--spec-idx", "0", "--names-file", names_file,
+            "--out-shard", out_shard, "--basis", "def2-svp", "--grid-level", "1"]
+    assert w.main(list(base)) == 0
+    assert seen["pools"] == ("bh76", "w411")
+    assert w.main(base + ["--pools", "bh76,diet150"]) == 0
+    assert seen["pools"] == ("bh76", "diet150")
+
+
+
+
 # ---------------------------------------------------------------------------
 # An empty post-split reaction set is refused, not averaged
 # ---------------------------------------------------------------------------
@@ -412,3 +503,43 @@ def test_sliced_channel_is_marked_before_the_evaluation_runs(run_dir,
 # A channel directory holds the output of its last pass only
 # ---------------------------------------------------------------------------
 
+
+
+def test_the_eval_stage_marks_the_validation_slice_and_drops_nothing():
+    """The stage returns every reaction it was given, each carrying
+    ``in_validation_slice``: the reactions the in-loop validation consumed are
+    marked so the reported row can average the complement, and no reaction
+    leaves the set. A spec that never validated marks nothing.
+
+    Oracle: a four-reaction set against a spec whose recorded validation slice
+    names one of them.
+    """
+    import json
+    from types import SimpleNamespace
+    import xcquinox.pipeline.cluster._eval_one_spec as eos
+
+    reactions = [
+        {"name": f"r{i}", "reactants": [f"bh76@a{i}"],
+         "products": [f"bh76@b{i}"], "coeffs": [-1.0, 1.0],
+         "reaction_energy_ref": float(i)} for i in range(4)]
+
+    never = SimpleNamespace(validate_every=0, validation_molecules=(),
+                            validation_reactions_path=None)
+    out = eos._annotate_validation_slice(reactions, never)
+    assert [r["name"] for r in out] == ["r0", "r1", "r2", "r3"]
+    assert not any(r["in_validation_slice"] for r in out)
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "val_reactions.json")
+        with open(path, "w") as fh:
+            json.dump([reactions[2]], fh)
+        validated = SimpleNamespace(validate_every=10,
+                                    validation_molecules=("bh76@a2",),
+                                    validation_reactions_path=path,
+                                    val_frac=0.25)
+        marked = eos._annotate_validation_slice(reactions, validated)
+    assert [r["name"] for r in marked] == ["r0", "r1", "r2", "r3"]
+    assert [r["in_validation_slice"] for r in marked] == [False, False,
+                                                          True, False]
+    assert "in_validation_slice" not in reactions[0]

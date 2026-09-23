@@ -154,11 +154,11 @@ _ATOM_GROUND_SPIN: dict[str, int] = {
 # r(CH) (1.0918537 A against 1.0874456 A), so a DFS record of one of these
 # three names must never win. The three are therefore certified at the pool
 # geometry, not at the DFS pretraining geometry; the pool species are also the
-# ones the held-out atomization energies are scored on. All three keys resolve
-# to BH76 entries -- "H2O" and "CH4" exist only there, and "n2" is in both
-# sets, where the merge keeps BH76 (load_full_held_out_pools) -- so the three
-# come from one benchmark's geometries and the certificate does not invent a
-# second merge policy. The lower-case W4-11 twins ("h2o", "ch4") carry the
+# ones the held-out atomization energies are scored on. All three keys name
+# BH76 species -- "H2O" and "CH4" exist only there, and "n2" is in both sets
+# at different geometries -- so the three come from one benchmark's
+# geometries, and the certificate names that set rather than inventing a
+# precedence. The lower-case W4-11 twins ("h2o", "ch4") carry the
 # same molecules at other geometries and are deliberately not used. Pool H2O
 # is r = 0.9569131 A with a 104.5169 degree bond angle.
 _FIXED_MOLECULE_POOL_NAMES: tuple[tuple[str, str], ...] = (
@@ -496,14 +496,16 @@ def identity_mismatches(cfg, cert) -> list:
 
 def model_class_mismatches(cfg, cert, arch_name=None) -> list:
     """``[(key, recorded, wanted), ...]`` for the model-class fields a
-    certificate records -- ``parent_anchor``, ``descriptor_coordinates`` and
-    ``descriptor_log_transform`` -- that differ from the class this run
-    builds. A certificate written before the first two fields existed records
-    neither, which reads as the unanchored legacy class it certified; a run of
-    any other class must not accept it.
+    certificate records -- ``parent_anchor``, ``descriptor_coordinates``,
+    ``ueg_gate`` and ``descriptor_log_transform`` -- that differ from the
+    class this run builds. A certificate written before the first fields
+    existed records none of them, which reads as the unanchored legacy class
+    it certified (the gate at ``tanh2``); a run of any other class must not
+    accept it.
 
-    The first two are read from the run's ``model`` block, which is what sets
-    them for every architecture of the run. The third is a property of the
+    The anchor, the coordinates and the gate are read from the run's
+    ``model`` block, which is what sets them for every architecture of the
+    run. The transform is a property of the
     ARCHITECTURE -- no run-level switch states it, and neither the polarized
     override nor ``config.apply_model_block`` touches it -- so its expected
     value is the registry entry's, for ``arch_name``: the architecture the
@@ -532,6 +534,12 @@ def model_class_mismatches(cfg, cert, arch_name=None) -> list:
         out.append(("parent_anchor", got_anchor, want_anchor))
     if got_coords != want_coords:
         out.append(("descriptor_coordinates", got_coords, want_coords))
+    # The uniform-gas gate: read from the run's model block like the two
+    # above; a certificate written before the field reads as ``tanh2``.
+    want_gate = str(getattr(model_block, "ueg_gate", "tanh2"))
+    got_gate = str(cert.get("ueg_gate", "tanh2"))
+    if got_gate != want_gate:
+        out.append(("ueg_gate", got_gate, want_gate))
     got_transform = cert.get("descriptor_log_transform")
     name = arch_name if arch_name is not None else cert.get("arch")
     if got_transform is not None and isinstance(name, str):
@@ -828,7 +836,8 @@ def build_oracle_set(cfg, arch_name: str) -> tuple:
     not to this function.
     """
     from xcquinox.pipeline.config import MoleculeSpec
-    from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
+    from xcquinox.pipeline.full_benchmark_pools import (load_full_bh76,
+                                                        load_full_w411)
     from xcquinox.pipeline.dfs_pretrain_set import dfs_pretrain_records
 
     basis = cfg.inputs.basis
@@ -847,9 +856,16 @@ def build_oracle_set(cfg, arch_name: str) -> tuple:
                 "certificate needs exactly one spin per free atom")
         atom_spin[key] = int(spin)
 
-    pool_specs, _pool_reactions = load_full_held_out_pools(
-        basis=basis, grid_level=grid_level)
-    for ms in pool_specs.values():
+    # The certificate is not a held-out evaluation: it needs one free atom per
+    # element and the three fixed molecules at ONE benchmark's geometries, so
+    # it reads the two sets by their own species names rather than through the
+    # set-qualified held-out keys. The three molecules are BH76's, as the
+    # comment on ``_FIXED_MOLECULE_POOL_NAMES`` states; a free atom the two
+    # sets disagree on is refused by the guard above.
+    bh76_specs, _bh76_rxns = load_full_bh76(basis=basis, grid_level=grid_level)
+    w411_specs, _w411_rxns = load_full_w411(basis=basis, grid_level=grid_level)
+    pool_specs = bh76_specs
+    for ms in list(bh76_specs.values()) + list(w411_specs.values()):
         if is_atom_system(ms):
             _add_atom(ms.atom_composition[0][0], ms.charge, ms.spin,
                       "BH76/W4-11 pools")
@@ -1536,6 +1552,9 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "parent_anchor": bool(getattr(arch, "parent_anchor", False)),
         "descriptor_coordinates": str(
             getattr(arch, "descriptor_coordinates", "legacy")),
+        # The uniform-gas gate, a static field of both networks as the two
+        # above are; a certificate written before it reads as ``tanh2``.
+        "ueg_gate": str(getattr(arch, "ueg_gate", "tanh2")),
         "descriptor_log_transform": bool(
             getattr(arch, "descriptor_log_transform", False)),
         "xcquinox_version": running_xcquinox_version(),

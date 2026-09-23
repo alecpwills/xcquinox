@@ -97,7 +97,7 @@ names it any more, and the development history records it beside the v7 results.
 Cheap insurance before queuing 40 jobs:
 
 ```bash
-salloc -p debug-40core -c 4 --mem=8G -t 00:15:00
+salloc -p short-96core-shared -c 4 --mem=8G -t 00:15:00
 # once you land on the compute node:
 ls $GROUP/Alec/xcquinox/
 ls $SCRATCH/
@@ -182,7 +182,7 @@ and pretrain to an **8 h** wall (a 2 h train wall previously killed 15/40 specs
 mid-training). The *short* queues cap at **4 h**, so the whole graph goes on a
 queue that allows 8 h -- `long-96core-shared` is simplest (`--partition` is the
 base for all four stages). On `login1`/`login2`, use `long-28core` instead.
-SeaWulf queue max-walls: `short-* 4 h`, `medium-* 12 h`, `long-28core 2 days`; every `long-*` QOS (40- and 96-core, shared included) caps MaxWall at 48 h, and the `extended-*` partitions carry 7-day caps (sacctmgr, 2026-08-27). To shorten/lengthen a stage ad-hoc, add
+SeaWulf queue max-walls: `short-* 4 h`, `medium-* 12 h`, `long-28core 2 days`; every `long-*` QOS (shared included) caps MaxWall at 48 h, and the `extended-*` partitions carry 7-day caps (sacctmgr, 2026-08-27). To shorten/lengthen a stage ad-hoc, add
 `--time` (all stages) or `--{train,eval,preflight,pretrain}-time`.
 
 **Allocation = whole node per task.** Every stage defaults to `exclusive`
@@ -636,14 +636,14 @@ it, and every one of them is listed here.
 | `dfs6311_scan_pool.sbatch` | the SCAN reference energies and densities over the held-out pool that the figures' SCAN comparator reads (`precompute_scan_pool.py`) | `test_job_digest.py`, `test_thread_caps.py` |
 | `dfs6311_smoke_vma.sbatch` | the instrumented compile-smoke probe of the heaviest cell | -- |
 | `job_digest.sh` | the digest-on-exit helper the standalone jobs source | `test_job_digest.py` |
-| `nonempirical_pool.sbatch` | the nonempirical-functional calibration pool for the gamma fit (`RUNBOOK_pull_and_figures.md`) | `test_standalone_sbatch_activation.py`, `test_thread_caps.py` |
+| `nonempirical_pool.sbatch` | the nonempirical-functional calibration pool for the gamma fit (`docs/pipeline/pull_and_figures.md`) | `test_standalone_sbatch_activation.py`, `test_thread_caps.py` |
 | `probe_mgga_levers.sbatch` | the meta-GGA lever study: fourteen pretrainings, each with its certificate | `test_thread_caps.py` |
 | `probe_pretrain_energy_weight.py`, `probe_pretrain_energy_weight.sbatch` | the per-system energy-term weight of the pretraining objective | `test_thread_caps.py` |
 | `reeval_c2_patch.py` | patches wrong-branch c2 reference values in pulled held-out artifacts | -- |
 | `reeval_holdout_spec.sbatch` | re-runs the full evaluation of one completed spec (open item 33) | -- |
-| `refinalize_verbatim_holdout.sbatch` | refinalizes completed held-out evaluations under the verbatim rule (open item 17) | -- |
+| `refinalize_holdout.sbatch` | refinalizes completed held-out evaluations under the verbatim rule (open item 17) | -- |
 | `seed_cache_scan.sbatch` | builds the SCAN seed cache the meta-GGA group's `inputs.seed_cache_dir` names; a prerequisite of `configs/dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml` | -- |
-| `t1_backfill.sbatch` | backfills the T1 diagnostic into the benchmark references (`RUNBOOK_pull_and_figures.md`) | -- |
+| `t1_backfill.sbatch` | backfills the T1 diagnostic into the benchmark references (`docs/pipeline/pull_and_figures.md`) | -- |
 | `workflow_matrix.sbatch` | the workflow-matrix driver: one process on one node running every stage of `cluster/examples/workflow_matrix_template.yaml` | `test_workflow_matrix_sbatch.py`, `test_standalone_sbatch_activation.py`, `test_thread_caps.py` |
 
 Tracked configurations under `configs/`: `step7.yaml` (the template of section 5),
@@ -654,8 +654,28 @@ loss primer cites line by line) and the six v7 files: `dfs_step7.dfs6311_grid3_v
 `dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml` (the three group files),
 `dfs_step7.dfs6311_grid3_v7g1_rxn.yaml` (the reaction-energy control), and
 `dfs_step7.dfs6311_grid3_v7g1_c25.yaml` and `dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml`
-(the 25-cycle and the dpyscf-parity arms). `xcquinox/pipeline/tests/test_cluster_grid_config.py`
-holds this set equal to the index.
+(the 25-cycle and the dpyscf-parity arms), and the three files of campaign 1 of the v8
+program, `dfs_step8.v8_dfs_allsc.yaml`, `dfs_step8.v8_dfs_parity.yaml` and
+`dfs_step8.v8_dfs_coldstart.yaml` (the arms S, P and A of the seed-start campaign; the
+submission sheet is in `docs/pipeline/pull_and_figures.md`).
+`xcquinox/pipeline/tests/test_cluster_grid_config.py` holds this set equal to the files on
+disk, the personal `*.local.yaml` copies excepted.
+
+### The held-out pools and the reference job's size cap
+
+`inputs.held_out_pools` names the pools a run evaluates, validates against and builds
+references for (`bh76`, `w411`, `diet150`, `slim05`, `slim16`; the pair by default), and
+`inputs.benchmark_refs_max_atoms` caps the species the reference job generates CCSD
+densities for; a species above the cap gets no reference and its density leg is reported
+absent. Size the capped set before submitting, on the login node with the environment
+active (nothing is computed):
+
+```bash
+python -m xcquinox.pipeline.benchmark_refs --out-dir /dev/null --pool diet150 --max-atoms 16 --list-species
+```
+
+The species of the diet set that are also BH76 or W4-11 species carry those pools' names
+and reuse their reference files; the rest are named with their subset's tag.
 
 ---
 
@@ -667,6 +687,8 @@ holds this set equal to the index.
   scripts/{pretrain,preflight,train_array,eval_array}.sbatch
   specs/spec_0000.spec ...                               one materialized TrainingSpec per array task (preflight writes)
   manifest.json                                        idx → GridCell → spec file → hash (preflight writes)
+  coldstart_census.json                                the cold-start convergence census, one cell per architecture (preflight writes, with cluster.preflight_coldstart_census)
+  logs/coldstart_census.out                            the census subprocess output (preflight writes, with the census)
   checkpoints/spec_0000/ ...                             model.eqx, losses, eval/, eval_df.csv (train/eval write)
   jobs.json                                            submitted-job records (pretrain/preflight/train/eval)
   logs/{pretrain,preflight,train,eval}_*.out

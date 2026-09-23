@@ -301,11 +301,17 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         mapping["BENCH_REFS_DIR"] = bench_dir
         mapping["BASIS"] = cfg.inputs.basis
         mapping["GRID_LEVEL"] = int(cfg.inputs.grid_level)
+        # the pools the run evaluates, and the species-size cap when stated
+        mapping["BENCH_POOLS"] = ",".join(
+            getattr(cfg.inputs, "held_out_pools", ("bh76", "w411")))
         df_flags = ""
         if cfg.inputs.density_fit:
-            df_flags = " --density-fit"
+            df_flags += " --density-fit"
             if cfg.inputs.auxbasis:
                 df_flags += f" --auxbasis {cfg.inputs.auxbasis}"
+        max_atoms = getattr(cfg.inputs, "benchmark_refs_max_atoms", None)
+        if max_atoms is not None:
+            df_flags += f" --max-atoms {int(max_atoms)}"
         # Orientation lock: held-out refs must lock the SAME component as the
         # training refs / functional. A bare float is shell-safe unquoted.
         ol = float(getattr(cfg.inputs, "orientation_lock_strength", 0.0) or 0.0)

@@ -436,12 +436,14 @@ def build_parser():
                         "fitted under integration, where the (r_s, s, alpha) "
                         "mesh carries its 0.3 share; under the live "
                         "rho_w_sampled objective the mesh rows carry no weight.")
-    p.add_argument("--descriptor-coordinates", choices=("legacy", "dfs"),
+    p.add_argument("--descriptor-coordinates", choices=("legacy", "dfs", "paper"),
                    default=None,
                    help="Without --config: the network's input coordinates, "
                         "applied as a run's model block applies them ('dfs', "
                         "what every v7 configuration states, puts "
-                        "ln((alpha+1)/2) in place of the raw indicator). The "
+                        "ln((alpha+1)/2) in place of the raw indicator; "
+                        "'paper' is the published clone's set, 'dfs' with the "
+                        "epsilon inside the spin coordinate). The "
                         "default is the registry's 'legacy', which every table "
                         "written before this flag existed was measured under.")
     p.add_argument("--recon-rtol", type=float, default=DEFAULT_RECON_RTOL,

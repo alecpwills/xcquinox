@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=xcq_scan_pool
-# long-40core, NOT long-96core: the 96-core queue is saturated by the production
-# training array and this job must not queue behind it or compete with it for
-# nodes (same reasoning as the CH/NO relock job). One KS-SCF per species is not
-# a 96-core problem; --exclusive with --mem=0 still takes the whole node.
-#SBATCH --partition=long-40core
+# long-96core-shared: the milan queue. One KS-SCF per species is not a 96-core
+# problem; --exclusive with --mem=0 still takes the whole node.
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --exclusive
 #SBATCH --mem=0
-#SBATCH --cpus-per-task=40
+#SBATCH --cpus-per-task=96
 #SBATCH --output=/gpfs/scratch/awills/scan_pool_%j.out
 #SBATCH --mail-user=alec.wills@stonybrook.edu
 #SBATCH --mail-type=END,FAIL,TIME_LIMIT

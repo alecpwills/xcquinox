@@ -43,6 +43,7 @@ Reaction-dict schema (matches
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -74,19 +75,47 @@ W411_JSON_PATH = _DATA_DIR / "w411_full_pool.json"
 
 # GMTKN55 source root, the regen script reads from here; runtime loaders
 # only touch it when XCQUINOX_REBUILD_FULL_POOLS=1.
-def gmtkn55_root() -> Path:
-    """The GMTKN55 clone: ``XCQUINOX_GMTKN55_DIR`` when set, else ``data/gmtkn55`` under
-    the repository (an ignored checkout; ``data/gmtkn55/PROVENANCE.md`` records the URL and
-    the pinned commit)."""
+#: The directory a clone of the collection may carry under its own top level,
+#: with the subsets beneath it (the layout of the checkout under ``data/``).
+_COLLECTION_DIR = "gmtkn55"
+#: The subset whose directory decides between the two layouts.
+_PROBE_SUBSET = "BH76"
+
+
+def _configured_root() -> Path:
+    """``XCQUINOX_GMTKN55_DIR`` when set, else ``data/gmtkn55`` under the repository."""
     env = os.environ.get("XCQUINOX_GMTKN55_DIR")
     if env:
         return Path(env)
     return Path(__file__).resolve().parents[2] / "data" / "gmtkn55"
 
 
-_GMTKN55_ROOT = gmtkn55_root()
-BH76_SOURCE_DIR = _GMTKN55_ROOT / "BH76"
-W411_SOURCE_DIR = _GMTKN55_ROOT / "W4-11"
+def gmtkn55_root() -> Path:
+    """The directory holding the GMTKN55 subsets: ``XCQUINOX_GMTKN55_DIR`` when set, else
+    ``data/gmtkn55`` under the repository (an ignored checkout; ``data/gmtkn55/PROVENANCE.md``
+    records the URL and the pinned commit). A clone whose top level repeats the collection's
+    name carries the subsets one level down, as ``data/gmtkn55/gmtkn55/BH76``; that level
+    is returned then. Nothing is raised here, so the module imports on a machine without the
+    clone; :func:`gmtkn55_subset_dir` refuses at the point of reading."""
+    root = _configured_root()
+    nested = root / _COLLECTION_DIR
+    if not (root / _PROBE_SUBSET).is_dir() and (nested / _PROBE_SUBSET).is_dir():
+        return nested
+    return root
+
+
+def gmtkn55_subset_dir(name: str) -> Path:
+    """The directory of one GMTKN55 subset under :func:`gmtkn55_root`. Where it is absent
+    the error names both candidate locations, the flat one and the nested one, so a clone
+    at the wrong depth is diagnosed rather than reported as a missing file."""
+    subset = gmtkn55_root() / name
+    if subset.is_dir():
+        return subset
+    root = _configured_root()
+    raise FileNotFoundError(
+        f"GMTKN55 subset {name!r} not found: neither {root / name} nor "
+        f"{root / _COLLECTION_DIR / name} is a directory (set XCQUINOX_GMTKN55_DIR to the "
+        f"clone, or fetch it as data/gmtkn55/PROVENANCE.md records)")
 
 
 # ---------------------------------------------------------------------------
@@ -116,20 +145,47 @@ _RE_W411_LINE = re.compile(
 _RE_EHT = re.compile(r"\$eht\s+charge\s*=\s*(-?\d+)\s+unpaired\s*=\s*(\d+)")
 
 
-def _read_coord_meta(species_dir: Path) -> Tuple[int, int]:
-    """Return (charge, 2S) parsed from ``<species>/coord``'s ``$eht`` block.
+def _read_int_file(path: Path) -> int | None:
+    """The integer a one-line metadata file (``.CHRG`` / ``.UHF``) carries,
+    or None when the file is absent or carries none."""
+    if not path.is_file():
+        return None
+    m = re.search(r"[-+]?\d+", path.read_text(encoding="utf-8", errors="ignore"))
+    return int(m.group(0)) if m else None
 
-    Defaults to (0, 0) if the file is missing or the block is absent,
-    closed-shell neutral is the right fallback for the molecule majority.
+
+def _electron_parity_spin(species_dir: Path, charge: int) -> int:
+    """The unpaired-electron count an odd electron count forces: 1 for an
+    odd count, 0 for an even one, from the geometry's elements."""
+    from ase.data import atomic_numbers
+    n_elec = sum(atomic_numbers[e] for e, _, _, _ in
+                 _read_struc_xyz_angstrom(species_dir)) - int(charge)
+    return n_elec % 2
+
+
+def _read_coord_meta(species_dir: Path) -> Tuple[int, int]:
+    """Return (charge, 2S) of a species directory.
+
+    The ``$eht charge= unpaired=`` block of ``coord`` when present; else the
+    subset's ``.CHRG`` and ``.UHF`` files beside the geometry (the
+    collection's other convention); else charge 0 and the spin the electron
+    count's parity forces, so a one-electron system is never recorded as a
+    closed shell. A directory without a geometry is (0, 0).
     """
     coord_file = species_dir / "coord"
-    if not coord_file.is_file():
-        return 0, 0
-    text = coord_file.read_text(encoding="utf-8", errors="ignore")
-    m = _RE_EHT.search(text)
-    if not m:
-        return 0, 0
-    return int(m.group(1)), int(m.group(2))
+    if coord_file.is_file():
+        m = _RE_EHT.search(coord_file.read_text(encoding="utf-8",
+                                                errors="ignore"))
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    charge = _read_int_file(species_dir / ".CHRG")
+    unpaired = _read_int_file(species_dir / ".UHF")
+    charge = 0 if charge is None else charge
+    if unpaired is not None:
+        return charge, unpaired
+    if not (species_dir / "struc.xyz").is_file():
+        return charge, 0
+    return charge, _electron_parity_spin(species_dir, charge)
 
 
 def _read_struc_xyz_angstrom(species_dir: Path) -> List[Tuple[str, float, float, float]]:
@@ -351,12 +407,13 @@ def build_bh76_pool_dict() -> Dict[str, Any]:
     ``species_charges`` filled from the parsed coord files for fast
     PROBE_C-schema consumption at cluster runtime.
     """
-    species_names, reactions = _parse_bh76_res(BH76_SOURCE_DIR / ".res")
+    source_dir = gmtkn55_subset_dir("BH76")
+    species_names, reactions = _parse_bh76_res(source_dir / ".res")
     species_dicts: List[Dict[str, Any]] = []
     spin_lookup: Dict[str, int] = {}
     charge_lookup: Dict[str, int] = {}
     for sp_name in species_names:
-        sd = _build_species_dict(sp_name, BH76_SOURCE_DIR)
+        sd = _build_species_dict(sp_name, source_dir)
         species_dicts.append(sd)
         spin_lookup[sp_name] = sd["spin"]
         charge_lookup[sp_name] = sd["charge"]
@@ -373,12 +430,13 @@ def build_w411_pool_dict() -> Dict[str, Any]:
 
     Same schema as :func:`build_bh76_pool_dict`.
     """
-    species_names, reactions = _parse_w411_res(W411_SOURCE_DIR / ".res")
+    source_dir = gmtkn55_subset_dir("W4-11")
+    species_names, reactions = _parse_w411_res(source_dir / ".res")
     species_dicts: List[Dict[str, Any]] = []
     spin_lookup: Dict[str, int] = {}
     charge_lookup: Dict[str, int] = {}
     for sp_name in species_names:
-        sd = _build_species_dict(sp_name, W411_SOURCE_DIR)
+        sd = _build_species_dict(sp_name, source_dir)
         species_dicts.append(sd)
         spin_lookup[sp_name] = sd["spin"]
         charge_lookup[sp_name] = sd["charge"]
@@ -520,34 +578,144 @@ def load_full_w411(
     return mol_specs, reactions
 
 
+#: Every held-out pool a configuration may name, in the order a union lists
+#: them by default: the two tracked benchmark pools, then the GMTKN55 sets
+#: of ``gmtkn55_sets`` (the diet set and the two Slim sets).
+POOL_NAMES: Tuple[str, ...] = ("bh76", "w411", "diet150", "slim05", "slim16")
+#: The pair every configuration evaluated before a pool selection existed.
+DEFAULT_POOL_NAMES: Tuple[str, ...] = ("bh76", "w411")
+
+
+def _pool_loader(name: str):
+    """The loader of one pool by name; the GMTKN55 sets are imported at the
+    call so this module stays importable without them."""
+    if name == "bh76":
+        return load_full_bh76
+    if name == "w411":
+        return load_full_w411
+    from xcquinox.pipeline import gmtkn55_sets
+    if name == "diet150":
+        return gmtkn55_sets.load_full_diet150
+    if name in ("slim05", "slim16"):
+        return lambda **kw: gmtkn55_sets.load_full_slim(name, **kw)
+    raise ValueError(f"unknown held-out pool {name!r}; the pools are {POOL_NAMES}")
+
+
+#: The separator between a held-out set's name and a species' own name in the
+#: key the evaluation computes energies under. Every set is evaluated on its
+#: own species, so a name two sets carry is two species and two SCFs; the key
+#: says which set a number belongs to. An at sign is used rather than a path
+#: separator because the key is embedded in flat file names by the reference
+#: job and by the SCF, CCSD and seed caches, and no GMTKN55 system name
+#: carries one.
+SET_SEPARATOR = "@"
+
+
+def qualified_species_name(pool: str, system: str) -> str:
+    """The evaluation key of a species: its set and its own name."""
+    if SET_SEPARATOR in str(system):
+        raise ValueError(
+            f"species name {system!r} of pool {pool!r} carries the set "
+            f"separator {SET_SEPARATOR!r}")
+    return f"{pool}{SET_SEPARATOR}{system}"
+
+
+def split_qualified_name(name: str) -> Tuple[str, str]:
+    """``(pool, system)`` of a qualified species key."""
+    pool, sep, system = str(name).partition(SET_SEPARATOR)
+    if not sep:
+        raise ValueError(f"species key {name!r} names no held-out set")
+    return pool, system
+
+
+def reference_file_name(pool: str, system: str) -> str:
+    """The benchmark reference file of one species of one set. Every set
+    carries its own reference for a name the sets share, so the file is named
+    by the set as well."""
+    return f"{qualified_species_name(pool, system)}.npz"
+
+
+def _reference_path(refs_dir, pool: str, system: str) -> str | None:
+    """The species' reference file under ``refs_dir``, or None when the
+    directory is unset or holds no such file."""
+    resolved = _resolve_refs_dir(refs_dir)
+    if not resolved:
+        return None
+    cand = os.path.join(resolved, reference_file_name(pool, system))
+    return cand if os.path.isfile(cand) else None
+
+
+def _qualify_reaction(rxn: Dict[str, Any], pool: str) -> Dict[str, Any]:
+    """A reaction of ``pool`` with every species name it carries qualified,
+    so it resolves inside its own set and nowhere else."""
+    out = dict(rxn)
+    out["source_pool"] = pool
+    # ``systems`` keeps the GMTKN55 system names of the set's own definition
+    # and is not an evaluation key, so it is left as the set wrote it.
+    for key in ("reactants", "products"):
+        if key in out:
+            out[key] = [qualified_species_name(pool, n) for n in out[key]]
+    for key in ("species_spins", "species_charges"):
+        if key in out and isinstance(out[key], dict):
+            out[key] = {qualified_species_name(pool, n): v
+                        for n, v in out[key].items()}
+    return out
+
+
+def load_held_out_pools(
+    names: Sequence[str],
+    basis: str = "def2-svp",
+    grid_level: int | None = 1,
+    refs_dir: str | os.PathLike | None = None,
+) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
+    """``({qualified_name: MoleculeSpec}, [reaction_dict, ...])`` over the
+    named pools, each set on its own definitions.
+
+    A species is keyed by its set and its own name
+    (:func:`qualified_species_name`), so no two sets share a key and none is
+    dropped: a molecule two sets carry is evaluated once per set, at that
+    set's geometry, against that set's reference file. Reactions concatenate
+    in the order named, each carrying the qualified names of its own set.
+    An unknown, repeated or missing pool name is refused.
+    """
+    names = tuple(names)
+    if not names:
+        raise ValueError("no held-out pool named; the pools are "
+                         f"{POOL_NAMES}")
+    unknown = [n for n in names if n not in POOL_NAMES]
+    if unknown:
+        raise ValueError(f"unknown held-out pool(s) {unknown}; the pools are "
+                         f"{POOL_NAMES}")
+    if len(set(names)) != len(names):
+        raise ValueError(f"a held-out pool is named twice: {names}")
+    merged: Dict[str, MoleculeSpec] = {}
+    reactions: List[Dict[str, Any]] = []
+    for name in names:
+        specs, rxns = _pool_loader(name)(basis=basis, grid_level=grid_level,
+                                         refs_dir=refs_dir)
+        for sp_name, ms in specs.items():
+            key = qualified_species_name(name, sp_name)
+            merged[key] = dataclasses.replace(
+                ms, name=key,
+                external_data_path=_reference_path(refs_dir, name, sp_name))
+        reactions.extend(_qualify_reaction(r, name) for r in rxns)
+    return merged, reactions
+
+
 def load_full_held_out_pools(
     basis: str = "def2-svp",
     grid_level: int | None = 1,
     refs_dir: str | os.PathLike | None = None,
 ) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
-    """Convenience: union of BH76 + W4-11.
+    """BH76 and W4-11, the pair every configuration evaluates unless it names
+    its pools (:data:`DEFAULT_POOL_NAMES`), each on its own definitions.
 
-    Species dicts merge by name (e.g. ``h``, ``c``, ``o``, ``n``, ``f`` appear
-    in both sets, same MoleculeSpec for both). Reactions concatenate (BH76
-    first, then W4-11). Total: 76 + 140 = 216 reactions over 214 unique
-    species (79 BH76 + 152 W4-11, 17 overlap). ``refs_dir`` semantics as
+    The two sets share fourteen system names at different geometries; each
+    keeps its own, under its own key. ``refs_dir`` semantics as
     :func:`load_full_bh76`.
     """
-    bh76_mols, bh76_rxns = load_full_bh76(basis=basis, grid_level=grid_level,
-                                          refs_dir=refs_dir)
-    w411_mols, w411_rxns = load_full_w411(basis=basis, grid_level=grid_level,
-                                          refs_dir=refs_dir)
-    merged_mols: Dict[str, MoleculeSpec] = dict(bh76_mols)
-    for sp_name, ms in w411_mols.items():
-        if sp_name in merged_mols:
-            # When the same species appears in both sets the geometries may
-            # differ marginally (different GMTKN55 source dirs). Keep the
-            # BH76 version, it covers the barrier-height species set which
-            # matters most for the eval comparison. Document the conflict
-            # at debug-print level for the operator.
-            continue
-        merged_mols[sp_name] = ms
-    return merged_mols, list(bh76_rxns) + list(w411_rxns)
+    return load_held_out_pools(DEFAULT_POOL_NAMES, basis=basis,
+                               grid_level=grid_level, refs_dir=refs_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -628,11 +796,10 @@ def slice_held_out_pools(
     if missing:
         raise ValueError(
             f"held-out species slice names {missing}, absent from the pool of "
-            f"{len(mol_specs)} species. Pool names are case-sensitive: the "
-            "W4-11 leg is lower case throughout ('h2', 'o', 'ch4') while BH76 "
-            "capitalises many of its species ('H2', 'O', 'CH4'), and 11 names "
-            "exist in both forms as separate entries closing different "
-            "reactions."
+            f"{len(mol_specs)} species. A species key carries the set it "
+            f"belongs to ('bh76{SET_SEPARATOR}h2', 'w411{SET_SEPARATOR}h2'), "
+            "and the names inside a set are case-sensitive: the W4-11 leg is "
+            "lower case throughout while BH76 capitalises many of its species."
         )
     kept_names = set(wanted)
     kept_specs = {n: mol_specs[n] for n in wanted}

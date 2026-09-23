@@ -260,7 +260,8 @@ def test_pyscfad_refuses_dm_dependent_descriptors_under_reassemble(monkeypatch):
 
     # Geometry-only and descriptor-free architectures are unaffected: cusp is
     # the only descriptor without a compute_from_dm.
-    for name in ("deep_3x16", "deep_attn_3x16", "deep_cusp_3x16"):
+    for name in ("deep_3x16", "deep_attn_3x16", "deep_cusp_3x16",
+                 "deep_geom_3x16", "deep_geom_attn_3x16"):
         for policy in (FeaturePolicy.REASSEMBLE, FeaturePolicy.FROZEN):
             _reject_dm_dependent_descriptors(_model(name), policy)
 

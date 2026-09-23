@@ -9,14 +9,16 @@ assertions on counts adjust accordingly.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
+from pathlib import Path
 
 import pytest
 
 from xcquinox.pipeline.full_benchmark_pools import (
     load_full_bh76,
     load_full_w411,
-    load_full_held_out_pools,
 )
 from xcquinox.pipeline.config import MoleculeSpec
 
@@ -152,21 +154,6 @@ def test_species_dicts_yield_valid_mol_specs():
         assert ms.spin >= 0, (name, ms.spin)
 
 
-def test_load_full_held_out_pools_merges_species():
-    """Combined pool: BH76 + W4-11 species merged (no duplicate by name)."""
-    bh76_mols, bh76_rxns = load_full_bh76()
-    w411_mols, w411_rxns = load_full_w411()
-    all_mols, all_rxns = load_full_held_out_pools()
-    # Reactions concatenate; species merge.
-    assert len(all_rxns) == len(bh76_rxns) + len(w411_rxns)
-    assert len(all_mols) <= len(bh76_mols) + len(w411_mols)
-    # Every species in BH76 or W4-11 must appear in the merged dict.
-    for name in bh76_mols:
-        assert name in all_mols, name
-    for name in w411_mols:
-        assert name in all_mols, name
-
-
 # ---------------------------------------------------------------------------
 # Round-trip a single reaction (sanity that the parser preserves the math)
 # ---------------------------------------------------------------------------
@@ -247,3 +234,236 @@ def test_slice_held_out_pools_keeps_only_closed_reactions():
     assert [r["name"] for r in kept_rxns] == ["closed"]
 
 
+# ---------------------------------------------------------------------------
+# The GMTKN55 source clone: where it is resolved, and that the tracked caches
+# still come out of it
+# ---------------------------------------------------------------------------
+
+#: The repository root: this file sits at ``xcquinox/pipeline/tests/``.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+#: The two subsets the pool builders parse.
+_SUBSETS = ("BH76", "W4-11")
+
+
+def _serialize_pool(data) -> bytes:
+    """A pool dict as ``tools/rebuild_full_benchmark_pools.py`` writes it:
+    two-space indent, insertion order kept, non-ASCII verbatim, and the closing
+    newline its writer appends after the dump."""
+    return (json.dumps(data, indent=2, sort_keys=False,
+                       ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _missing_sources() -> list[str]:
+    """The subsets whose ``.res`` is on disk under neither layout of the
+    GMTKN55 clone. Resolved without ``gmtkn55_root()`` on purpose: a skip
+    decided by the resolution under test would hide the failure the
+    regeneration test exists to report."""
+    env = os.environ.get("XCQUINOX_GMTKN55_DIR")
+    root = Path(env) if env else _REPO_ROOT / "data" / "gmtkn55"
+    return [name for name in _SUBSETS
+            if not (root / name / ".res").is_file()
+            and not (root / "gmtkn55" / name / ".res").is_file()]
+
+
+def test_gmtkn55_root_descends_into_a_nested_checkout(tmp_path, monkeypatch):
+    """A clone whose own top directory repeats the collection name carries
+    every subset one level below the configured root, and the root resolves to
+    the level that holds the subsets -- the level the two pool builders read.
+
+    Oracle: a tree carrying ``<root>/gmtkn55/BH76`` and no ``<root>/BH76``,
+    which is the layout of the clone under ``data/gmtkn55``.
+    """
+    from xcquinox.pipeline.full_benchmark_pools import gmtkn55_root
+    (tmp_path / "gmtkn55" / "BH76").mkdir(parents=True)
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(tmp_path))
+    assert gmtkn55_root() == tmp_path / "gmtkn55"
+
+
+def test_gmtkn55_root_keeps_a_flat_checkout(tmp_path, monkeypatch):
+    """The descent is taken only where the subsets are not at the root: a
+    clone holding them directly resolves to itself even with a directory of
+    the collection's name beside them, and a machine carrying no clone at all
+    gets the root back rather than an error: the resolver imports everywhere,
+    and the subset accessor is what refuses, at the point of reading.
+
+    Oracle: two trees -- the subsets at the root with a decoy one level below,
+    and a root with nothing under it.
+    """
+    from xcquinox.pipeline.full_benchmark_pools import gmtkn55_root
+    (tmp_path / "BH76").mkdir()
+    (tmp_path / "gmtkn55" / "BH76").mkdir(parents=True)
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(tmp_path))
+    assert gmtkn55_root() == tmp_path
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(bare))
+    assert gmtkn55_root() == bare
+
+
+def test_gmtkn55_subset_dir_names_both_candidates(tmp_path, monkeypatch):
+    """The subset accessor resolves a subset under either layout, and where
+    the subset is under neither it reports both paths it looked at, so the
+    reader of the failure knows which clone belongs where.
+
+    Oracle: three trees -- flat, nested, and empty.
+    """
+    from xcquinox.pipeline.full_benchmark_pools import gmtkn55_subset_dir
+
+    flat = tmp_path / "flat"
+    (flat / "BH76").mkdir(parents=True)
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(flat))
+    assert gmtkn55_subset_dir("BH76") == flat / "BH76"
+
+    nested = tmp_path / "nested"
+    for name in _SUBSETS:
+        (nested / "gmtkn55" / name).mkdir(parents=True)
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(nested))
+    assert gmtkn55_subset_dir("W4-11") == nested / "gmtkn55" / "W4-11"
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(bare))
+    with pytest.raises(FileNotFoundError) as exc:
+        gmtkn55_subset_dir("BH76")
+    message = str(exc.value)
+    assert str(bare / "BH76") in message, message
+    assert str(bare / "gmtkn55" / "BH76") in message, message
+
+
+def test_the_tracked_pools_regenerate_byte_for_byte():
+    """The tracked caches are what the source produces now: each builder's
+    dict, serialized the way the regeneration script serializes it, equals the
+    tracked file byte for byte. A cache that no longer regenerates is a cache
+    whose provenance has been lost.
+
+    Oracle: ``xcquinox/pipeline/data/{bh76,w411}_full_pool.json`` as tracked.
+    """
+    missing = _missing_sources()
+    if missing:
+        pytest.skip("the GMTKN55 clone is not on this machine: no .res for "
+                    f"{', '.join(missing)} under data/gmtkn55 in either "
+                    "layout")
+    from xcquinox.pipeline.full_benchmark_pools import (
+        BH76_JSON_PATH,
+        W411_JSON_PATH,
+        build_bh76_pool_dict,
+        build_w411_pool_dict,
+    )
+    for builder, json_path in ((build_bh76_pool_dict, BH76_JSON_PATH),
+                               (build_w411_pool_dict, W411_JSON_PATH)):
+        regenerated = _serialize_pool(builder())
+        tracked = Path(json_path).read_bytes()
+        assert regenerated == tracked, (
+            f"{Path(json_path).name}: {len(regenerated)} bytes regenerated "
+            f"against {len(tracked)} tracked")
+
+
+
+
+# ---------------------------------------------------------------------------
+# Every set under its own keys: no merge, no precedence, no conflict list
+# ---------------------------------------------------------------------------
+
+def test_two_sets_sharing_a_species_name_keep_their_own_geometries(monkeypatch):
+    """A system name two sets carry is two species, each keyed ``<pool>/<system>``
+    and each holding its own geometry, and every reaction names its species in
+    that vocabulary. Nothing merges, nothing takes precedence and no conflict is
+    reported anywhere: the merge is what scored one set's reactions on the other
+    set's molecules.
+
+    Oracle: two synthetic loaders installed in place of the pool loaders, one
+    carrying a name at 0.74 A and the other the same name at 0.80 A.
+    """
+    import xcquinox.pipeline.full_benchmark_pools as fbp
+
+    def _spec(name, z):
+        return fbp._dict_to_mol_spec(
+            {"name": name, "atom": f"H 0 0 0; H 0 0 {z}",
+             "atom_composition": [["H", 2]], "charge": 0, "spin": 0},
+            "def2-svp", 1, None)
+
+    first = {"x": _spec("x", 0.74), "y": _spec("y", 0.74)}
+    second = {"x": _spec("x", 0.80), "y": _spec("y", 0.74),
+              "z": _spec("z", 0.74)}
+    rxn_first = [{"name": "r1", "source_pool": "bh76", "reactants": ["x"],
+                  "products": ["y"], "coeffs": [-1.0, 1.0],
+                  "reaction_energy_ref": 1.0,
+                  "species_spins": {"x": 0, "y": 0},
+                  "species_charges": {"x": 0, "y": 0}}]
+    rxn_second = [{"name": "r2", "source_pool": "w411", "reactants": ["x"],
+                   "products": ["z"], "coeffs": [-1.0, 1.0],
+                   "reaction_energy_ref": 2.0,
+                   "species_spins": {"x": 0, "z": 0},
+                   "species_charges": {"x": 0, "z": 0}}]
+    loaders = {"bh76": lambda **kw: (first, rxn_first),
+               "w411": lambda **kw: (second, rxn_second)}
+    monkeypatch.setattr(fbp, "_pool_loader", lambda name: loaders[name])
+
+    specs, reactions = fbp.load_held_out_pools(("bh76", "w411"))
+    assert set(specs) == {"bh76@x", "bh76@y", "w411@x", "w411@y", "w411@z"}
+    assert specs["bh76@x"].atom != specs["w411@x"].atom
+    assert specs["bh76@x"].atom == first["x"].atom
+    assert specs["bh76@x"].name == "bh76@x"
+    assert specs["w411@x"].name == "w411@x"
+    assert first["x"].name == "x", "the single-pool loader's own spec was renamed"
+    assert specs["w411@x"].atom == second["x"].atom
+    by_name = {r["name"]: r for r in reactions}
+    assert by_name["r1"]["reactants"] == ["bh76@x"]
+    assert by_name["r1"]["products"] == ["bh76@y"]
+    assert by_name["r2"]["reactants"] == ["w411@x"]
+    assert by_name["r2"]["products"] == ["w411@z"]
+    assert set(by_name["r1"]["species_spins"]) == {"bh76@x", "bh76@y"}
+    assert set(by_name["r2"]["species_charges"]) == {"w411@x", "w411@z"}
+    # the loaders hand back their cached dicts, so the qualification must not
+    # be written into them: a second load has to name the species the same way
+    again_specs, again_rxns = fbp.load_held_out_pools(("bh76", "w411"))
+    assert set(again_specs) == set(specs)
+    assert [r["reactants"] for r in again_rxns] == \
+        [r["reactants"] for r in reactions]
+    assert rxn_first[0]["reactants"] == ["x"], "the pool's own dict was rewritten"
+    # nothing reports a conflict, because no two sets share a key
+    assert not hasattr(fbp, "load_held_out_pools_with_conflicts")
+
+
+def test_the_tracked_pair_carries_both_geometries_of_every_shared_name(tmp_path):
+    """Over the tracked pair, a system name both sets carry resolves to two
+    species under two keys whose geometries differ, and the union holds every
+    species of both sets. The merge dropped one of each such pair, so those
+    W4-11 atomization energies were scored on BH76's molecules.
+
+    Oracle: ``xcquinox/pipeline/data/{bh76,w411}_full_pool.json`` as tracked.
+    """
+    import xcquinox.pipeline.full_benchmark_pools as fbp
+    bh76, _ = load_full_bh76(basis="def2-svp", grid_level=1)
+    w411, _ = load_full_w411(basis="def2-svp", grid_level=1)
+    union, reactions = fbp.load_held_out_pools(("bh76", "w411"),
+                                               basis="def2-svp", grid_level=1)
+    assert len(union) == len(bh76) + len(w411)
+    shared = sorted(set(bh76) & set(w411))
+    differing = sorted(n for n in shared if bh76[n].atom != w411[n].atom)
+    assert len(differing) == 14, differing
+    for name in differing:
+        assert union[f"bh76@{name}"].atom == bh76[name].atom
+        assert union[f"w411@{name}"].atom == w411[name].atom
+    named = {n for r in reactions
+             for n in list(r["reactants"]) + list(r["products"])}
+    assert named <= set(union)
+    assert all(n.startswith(("bh76@", "w411@")) for n in named)
+    assert all(union[key].name == key for key in union)
+    # the pair loader is the same union, so every reader joins on these keys
+    pair, pair_rxns = fbp.load_full_held_out_pools(basis="def2-svp",
+                                                   grid_level=1)
+    assert set(pair) == set(union)
+    assert len(pair_rxns) == len(reactions)
+    # the reference wiring follows the key: one file per set, so the two sets'
+    # species of one name resolve to two references
+    refs = tmp_path / "refs"
+    refs.mkdir(parents=True)
+    (refs / "bh76@n2o.npz").write_bytes(b"")
+    with_refs, _ = fbp.load_held_out_pools(("bh76", "w411"), basis="def2-svp",
+                                            grid_level=1, refs_dir=str(refs))
+    assert with_refs["bh76@n2o"].external_data_path == str(
+        refs / "bh76@n2o.npz")
+    assert with_refs["w411@n2o"].external_data_path is None
