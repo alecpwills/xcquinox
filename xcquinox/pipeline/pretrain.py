@@ -1218,10 +1218,17 @@ def _build_optimizer(
 ) -> optax.GradientTransformation:
     """Build canonical optimizer chain for pretraining.
 
-    Chain order: clip_by_global_norm -> adam(lr_schedule).
+    Chain order: clip_by_global_norm -> adam(lr_schedule); at ``grad_clip``
+    exactly 0 the clip is omitted and the optimizer is Adam alone, the
+    published cloning protocol's (arXiv:2605.10331, ``train.py``). A negative
+    value is refused here as it is by the validators above, so a clip at a
+    negative norm can reach the update from no path.
     LR schedule: :func:`_lr_schedule` (optional constant warmup, linear
     decay over the configured window, optional constant tail at the floor).
     """
+    if grad_clip < 0:
+        raise ValueError(
+            f"grad_clip must be >= 0 (0 disables the clip), got {grad_clip}")
     lr_schedule = _lr_schedule(
         lr_start=lr_start,
         lr_end=lr_end,
@@ -1229,6 +1236,8 @@ def _build_optimizer(
         lr_decay_start=lr_decay_start,
         lr_decay_end=lr_decay_end,
     )
+    if grad_clip == 0:
+        return optax.adam(learning_rate=lr_schedule)
     return optax.chain(
         optax.clip_by_global_norm(grad_clip),
         optax.adam(learning_rate=lr_schedule),
@@ -1423,7 +1432,32 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             "footing but carries no per-channel exchange block (no 'rho_x'). "
             "Regenerate it with pretrain_data_gen.ensure_pretrain_data."
         )
+    if (_manifest is not None and x_suffix == "_x"
+            and manifest_footing != "spin_channel"):
+        # The converse: a per-channel block the run WOULD read beside a
+        # manifest naming a total-density footing. The block decides what the
+        # exchange network trains on, so the manifest's footing must be the
+        # block's before it is recorded as the run's.
+        raise ValueError(
+            f"run_pretrain: {npz_path!r} carries a per-channel exchange block "
+            f"('rho_x') but its manifest declares the {manifest_footing!r} "
+            "footing. Regenerate the file with "
+            "pretrain_data_gen.ensure_pretrain_data."
+        )
     energy_weight = float(getattr(spec, "energy_term_weight", 0.0))
+    # The footing the run records: the manifest's where there is one (the
+    # published footing shares the total block layout, so the block alone
+    # cannot name it), else the block's.
+    file_footing = (manifest_footing if _manifest is not None
+                    else ("spin_channel" if x_suffix == "_x" else "total"))
+    if file_footing == "paper" and energy_weight > 0.0:
+        raise ValueError(
+            f"run_pretrain: {npz_path!r} was built on the 'paper' footing, "
+            "whose per-system exchange table integrates the published "
+            "total-density form rather than PBE's spin-scaled exchange of an "
+            f"open shell; an energy term at weight {energy_weight} would pull "
+            "toward that value. The published protocol has no energy term: "
+            "set pretrain.energy_term_weight to 0.0.")
     if energy_weight > 0.0:
         # Named one by one rather than probed on 'system_all' alone: a file
         # carrying the row index but not the per-system table, the LDA column
@@ -1977,6 +2011,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "parent_anchor": bool(getattr(spec.arch, "parent_anchor", False)),
         "descriptor_coordinates": str(
             getattr(spec.arch, "descriptor_coordinates", "legacy")),
+        "ueg_gate": str(getattr(spec.arch, "ueg_gate", "tanh2")),
         # The descriptor log transform, recorded for the same reason: a static
         # field of both networks and of the cusp descriptor
         # (ArchitectureConfig.materialize_descriptors ->
@@ -2005,13 +2040,16 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # read: which systems the fit saw, on which parent density, at which
         # exchange footing, and how hard the per-system energy term pulled.
         "reference_xc": want_reference,
-        # Derived from the BLOCK THE RUN READ, not copied from the manifest:
-        # `x_suffix` is the selector itself and `descriptors` is the tensor
-        # the exchange loss was built on, so a run that fell back to the
-        # total-density rows cannot record the per-channel footing. Both row
-        # counts include the mesh rows when the mesh was appended, which is
-        # what `pretrain_mesh` above distinguishes.
-        "exchange_footing": "spin_channel" if x_suffix == "_x" else "total",
+        # The manifest's footing where the file has one, held above to the
+        # block the run read in both directions (a manifest claiming the
+        # per-channel footing beside a file with no exchange block, and a
+        # per-channel block beside a manifest naming a total-density
+        # footing, are both refused; the published footing shares the total
+        # block layout, so the block alone cannot name it); the block's
+        # footing otherwise.
+        # Both row counts include the mesh rows when the mesh was appended,
+        # which is what `pretrain_mesh` above distinguishes.
+        "exchange_footing": file_footing,
         "energy_term_weight": energy_weight,
         "n_systems": n_systems,
         "n_rows_x": int(descriptors.shape[0]),
@@ -2116,15 +2154,19 @@ def _metadata_preflight(
     # dfs-coordinate skeleton would change the model class silently.
     want_anchor = bool(getattr(arch, "parent_anchor", False))
     want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
+    want_gate = str(getattr(arch, "ueg_gate", "tanh2"))
     got_anchor = bool(md.get("parent_anchor", False))
     got_coords = str(md.get("descriptor_coordinates", "legacy"))
-    if got_anchor != want_anchor or got_coords != want_coords:
+    got_gate = str(md.get("ueg_gate", "tanh2"))
+    if (got_anchor != want_anchor or got_coords != want_coords
+            or got_gate != want_gate):
         raise ValueError(
             f"legacy checkpoint metadata {metadata_path}: networks recorded "
             f"as parent_anchor={got_anchor}, descriptor_coordinates="
-            f"{got_coords!r}, but the arch to load them into is "
-            f"parent_anchor={want_anchor}, descriptor_coordinates="
-            f"{want_coords!r}; the two model classes share their parameter "
+            f"{got_coords!r}, ueg_gate={got_gate!r}, but the arch to load "
+            f"them into is parent_anchor={want_anchor}, "
+            f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}; "
+            "the two model classes share their parameter "
             "shapes and cannot be told apart from the leaves"
         )
     return md

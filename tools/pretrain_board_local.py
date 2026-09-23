@@ -456,7 +456,7 @@ def build_parser():
                    help="directory for the dataset and the checkpoints "
                         "(default: a temporary directory)")
     p.add_argument("--coordinates", default="dfs",
-                   choices=("dfs", "legacy"))
+                   choices=("dfs", "legacy", "paper"))
     p.add_argument("--threads", type=int, default=4,
                    help="OpenMP/BLAS worker count (default 4)")
     p.add_argument("--anchored-only", action="store_true",

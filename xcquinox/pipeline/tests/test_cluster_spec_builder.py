@@ -505,3 +505,30 @@ def test_resolve_seed_xc_passes_minao_through(tmp_path):
     assert len(out) == len(expand_grid(cfg)) == 2
     for cell, spec in out:
         assert spec.solver_config.seed_source == "minao", cell
+
+
+# ---------------------------------------------------------------------------
+# The published clone's model class through the specs
+# ---------------------------------------------------------------------------
+
+def test_the_paper_class_reaches_the_training_specs(tmp_path):
+    """The published coordinates and uniform-gas gate are part of the
+    architecture identity: the specs carry both, so a task builds the model
+    class the run was configured for rather than the registry default.
+
+    Oracle: the architecture of every spec the builder returns.
+    """
+    from xcquinox.pipeline.cluster.grid_config import ModelConfig
+
+    cfg = _make_cfg(tmp_path)
+    cfg = dataclasses.replace(
+        cfg, sweep=dataclasses.replace(cfg.sweep, arch=("deep_3x16",)),
+        use_polarized_correlation=True,
+        model=ModelConfig(descriptor_coordinates="paper", ueg_gate="x2"))
+    built = build_training_specs(_make_pool(), _make_ledger(), cfg,
+                                 get_domain_profile("dfs_step7"),
+                                 str(tmp_path / "run"))
+    assert built, "no specs built"
+    for _cell, spec in built:
+        assert spec.arch.descriptor_coordinates == "paper"
+        assert spec.arch.ueg_gate == "x2"

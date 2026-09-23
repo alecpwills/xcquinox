@@ -503,10 +503,13 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     checkpoint with no record at all is accepted only by that class, since
     nothing states what an anchored model would be loading.
 
-    ``descriptor_log_transform`` is the third such field and is compared ONLY
+    The uniform-gas gate (``ueg_gate``) is the third such field: a record
+    that states it is held to it, and a record written before the field is
+    read at ``tanh2``, the gate every model before it carried.
+    ``descriptor_log_transform`` is the fourth such field and is compared ONLY
     WHERE THE RECORD STATES IT, as the trained checkpoints' own record
     compares it (``checkpoint_class.require_matching_log_transform``): every
-    ``pretrain_metadata.json`` written before the key carries the two fields
+    ``pretrain_metadata.json`` written before the key carries the fields
     above and nothing else, and is read exactly as it was, since 26 of the 34
     registered architectures set the transform and reading a missing key as
     False would refuse their directories to the class that pretrained them.
@@ -519,17 +522,19 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     """
     want_anchor = bool(getattr(arch, "parent_anchor", False))
     want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
+    want_gate = str(getattr(arch, "ueg_gate", "tanh2"))
     md_path = os.path.join(pretrain_checkpoint, "pretrain_metadata.json")
     if not os.path.isfile(md_path):
-        if want_anchor or want_coords != "legacy":
+        if want_anchor or want_coords != "legacy" or want_gate != "tanh2":
             raise ValueError(
                 f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r} "
-                f"into a model with parent_anchor={want_anchor} and "
-                f"descriptor_coordinates={want_coords!r}: the directory carries "
+                f"into a model with parent_anchor={want_anchor}, "
+                f"descriptor_coordinates={want_coords!r} and "
+                f"ueg_gate={want_gate!r}: the directory carries "
                 "no pretrain_metadata.json recording the model class its "
                 "networks were written as, and the checkpoint's leaves do not "
-                "reveal it (the anchor and the coordinates are static fields "
-                "with no parameters of their own)")
+                "reveal it (the anchor, the coordinates and the uniform-gas "
+                "gate are static fields with no parameters of their own)")
         return
     try:
         with open(md_path) as f:
@@ -540,16 +545,22 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
             f"be read to check the model class it records: {exc}") from exc
     got_anchor = bool(md.get("parent_anchor", False))
     got_coords = str(md.get("descriptor_coordinates", "legacy"))
-    if got_anchor != want_anchor or got_coords != want_coords:
+    # A metadata file written before the gate existed states nothing about
+    # it and is read at the gate every model before the field carried.
+    got_gate = str(md.get("ueg_gate", "tanh2"))
+    if (got_anchor != want_anchor or got_coords != want_coords
+            or got_gate != want_gate):
         raise ValueError(
             f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r}: "
             f"its networks were written as parent_anchor={got_anchor}, "
-            f"descriptor_coordinates={got_coords!r} (pretrain_metadata.json"
+            f"descriptor_coordinates={got_coords!r}, ueg_gate={got_gate!r} "
+            "(pretrain_metadata.json"
             + ("" if "parent_anchor" in md else
                ", which predates the fields and so records the unanchored "
                "legacy class")
             + f"), but the model being built is parent_anchor={want_anchor}, "
-            f"descriptor_coordinates={want_coords!r}. The two are different "
+            f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}. "
+            "The two are different "
             "model classes with identical parameter shapes; loading across "
             "them would silently produce a model that is neither.")
     # The descriptor log transform, compared where the record states it. A

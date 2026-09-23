@@ -365,12 +365,18 @@ class ModelConfig:
     configurations only.
 
     ``descriptor_coordinates`` selects the coordinates the networks' MLPs read
-    a row in: ``"legacy"`` (today's layout, byte for byte) or ``"dfs"`` (the
+    a row in: ``"legacy"`` (today's layout, byte for byte), ``"dfs"`` (the
     coordinate set of Dick and Fernandez-Serra, PRB 104, L161109 (2021), as
-    ``networks.py`` states them). Both default to the pre-anchor model class.
+    ``networks.py`` states them) or ``"paper"`` (the published clone's, the
+    dfs set with the epsilon inside the spin coordinate). ``ueg_gate``
+    selects the uniform-gas gate in front of the GGA networks' MLPs:
+    ``"tanh2"`` (``tanh(s)^2``, every model built before the field) or
+    ``"x2"`` (the published clone's transformed reduced gradient). All three
+    default to the pre-anchor model class.
     """
     parent_anchor: bool = False
     descriptor_coordinates: str = "legacy"
+    ueg_gate: str = "tanh2"
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +416,7 @@ class PretrainConfig:
     # lr_decay_start is a FRACTION of n_steps, in [0, 1], matches the
     # PretrainSpec convention in xcquinox.pipeline.config.
     lr_decay_start: float = 0.2      # (E) step-7 pretrain decay onset
-    grad_clip: float = 1.0           # (E) step-7 pretrain grad-clip
+    grad_clip: float = 1.0           # (E) step-7 pretrain grad-clip; 0 = no clip
     seed: int = 42
     # PretrainSpec.loss_weighting is a str validated to {"unweighted",
     # "integration"}. Step-7 uses "integration" exclusively.
@@ -436,8 +442,11 @@ class PretrainConfig:
     # How OPEN-SHELL exchange rows are posed. "spin_channel" is the exact
     # spin-scaling footing the production UKS exchange evaluates, per channel
     # at (2 rho_sigma, 4 sigma_sigma_sigma, features of diag(P_sigma,
-    # P_sigma)); "total" is the historical total-density footing. The footing
-    # is part of the data's identity, so a change regenerates the file.
+    # P_sigma)); "total" is the historical total-density footing; "paper" is
+    # the published clone's, every system's rows on the total density with
+    # that code's own target expressions (pretrain_data_gen.EXCHANGE_FOOTINGS).
+    # The footing is part of the data's identity, so a change regenerates the
+    # file.
     exchange_footing: str = "total"
     # Share of the total integration weight carried by the synthetic
     # (r_s, s, alpha) mesh, which is kept as a regularizer only. Must equal
@@ -1170,7 +1179,7 @@ def _build_inputs(d: dict) -> InputPaths:
 # ``test_the_seed_range_is_stated_once``, so a value one layer admits and the
 # other refuses cannot ship.
 _PARENT_DENSITIES = ("pbe", "scan", "auto")
-_EXCHANGE_FOOTINGS = ("total", "spin_channel")
+_EXCHANGE_FOOTINGS = ("total", "spin_channel", "paper")
 _LOSS_WEIGHTINGS = ("unweighted", "integration", "rho_w_sampled")
 # jax.random.PRNGKey wraps modulo 2**32 instead of raising, so a seed outside
 # that range silently ALIASES another run's initialization (measured:
@@ -1341,11 +1350,10 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         # int(lr_decay_start * n_steps).
         lr_decay_start=_config_number(d, "lr_decay_start", 0.2, minimum=0,
                                       maximum=1),
-        # optax.clip_by_global_norm(0.0) zeroes every gradient and (-1.0)
-        # reverses it; neither is a run, and the consumer has no None branch
-        # (a None reaches the update and raises there, not at load).
-        grad_clip=_config_number(d, "grad_clip", 1.0, minimum=0,
-                                 minimum_open=True),
+        # 0 is no clip (the published cloning protocol runs Adam alone, and
+        # pretrain._build_optimizer omits the clip at 0); a negative value
+        # would reverse every gradient and is refused.
+        grad_clip=_config_number(d, "grad_clip", 1.0, minimum=0),
         seed=_config_number(d, "seed", 42, whole=True, minimum=0,
                             maximum=_MAX_SEED),
         loss_weighting=_pretrain_choice(
@@ -1461,7 +1469,10 @@ def _fidelity_tolerance(d, key: str, default: float = 1.0) -> float:
 #: well as in ``config.DESCRIPTOR_COORDINATES`` for the reason
 #: ``_PARENT_DENSITIES`` is: this parser runs on the login node without the
 #: library; the two are pinned equal by the test suite.
-_DESCRIPTOR_COORDINATES = ("legacy", "dfs")
+_DESCRIPTOR_COORDINATES = ("legacy", "dfs", "paper")
+#: The uniform-gas gates of the GGA networks, stated here as well as in
+#: ``config.UEG_GATES`` for the same reason and pinned equal the same way.
+_UEG_GATES = ("tanh2", "x2")
 
 
 def _build_model_block(d) -> ModelConfig:
@@ -1493,7 +1504,13 @@ def _build_model_block(d) -> ModelConfig:
             f"grid config key 'model.descriptor_coordinates' must be one of "
             f"{', '.join(repr(v) for v in _DESCRIPTOR_COORDINATES)}, got "
             f"{coords!r}")
-    return ModelConfig(parent_anchor=anchor, descriptor_coordinates=coords)
+    gate = d.get("ueg_gate", "tanh2")
+    if not isinstance(gate, str) or gate not in _UEG_GATES:
+        raise ValueError(
+            f"grid config key 'model.ueg_gate' must be one of "
+            f"{', '.join(repr(v) for v in _UEG_GATES)}, got {gate!r}")
+    return ModelConfig(parent_anchor=anchor, descriptor_coordinates=coords,
+                       ueg_gate=gate)
 
 
 def _build_fidelity(d) -> FidelityConfig:
@@ -2065,18 +2082,19 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                     "formed against; a zeta-blind network disagrees with them "
                     "by 14.9 mHa on the N atom). Set "
                     "use_polarized_correlation: true at the run level.")
+    run_coords = str(getattr(model_block, "descriptor_coordinates", "legacy"))
     if model_block is not None and (
-            getattr(model_block, "descriptor_coordinates", "legacy") == "dfs"
+            run_coords in ("dfs", "paper")
             and not bool(getattr(cfg, "use_polarized_correlation", False))):
         for a in _canon_axis(cfg.sweep.arch):
             if not get_architecture(a).use_polarized_correlation:
                 raise ValueError(
-                    f"model.descriptor_coordinates is 'dfs' but architecture "
-                    f"{a!r} would be built with use_polarized_correlation="
-                    "False; the DFS correlation network reads x1 = "
-                    "ln(spinscale), so the polarized correlation network is "
-                    "required. Set use_polarized_correlation: true at the "
-                    "run level.")
+                    f"model.descriptor_coordinates is {run_coords!r} but "
+                    f"architecture {a!r} would be built with "
+                    "use_polarized_correlation=False; the correlation network "
+                    "of that coordinate set reads x1 = ln(spinscale), so the "
+                    "polarized correlation network is required. Set "
+                    "use_polarized_correlation: true at the run level.")
 
     # --- subset_size bounds -------------------------------------------------
     pool_size = getattr(domain, "pool_size", None)
@@ -2231,9 +2249,10 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"pretrain.lr_start ({pt.lr_start}) must be >= lr_end "
             f"({pt.lr_end})"
         )
-    if pt.grad_clip <= 0:
+    if pt.grad_clip < 0:
         raise ValueError(
-            f"pretrain.grad_clip must be > 0, got {pt.grad_clip}"
+            f"pretrain.grad_clip must be >= 0 (0 disables the clip), got "
+            f"{pt.grad_clip}"
         )
     if pt.loss_weighting not in _LOSS_WEIGHTINGS:
         raise ValueError(
@@ -2257,8 +2276,19 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         )
     if pt.exchange_footing not in _EXCHANGE_FOOTINGS:
         raise ValueError(
-            f"pretrain.exchange_footing must be 'total' or 'spin_channel', "
-            f"got {pt.exchange_footing!r}"
+            "pretrain.exchange_footing must be one of "
+            + ", ".join(repr(v) for v in _EXCHANGE_FOOTINGS)
+            + f", got {pt.exchange_footing!r}"
+        )
+    if pt.exchange_footing == "paper" and pt.energy_term_weight > 0.0:
+        raise ValueError(
+            f"pretrain.energy_term_weight is {pt.energy_term_weight} with "
+            "pretrain.exchange_footing: paper. The published targets pose an "
+            "open shell's exchange on the total density, so the file's "
+            "per-system exchange table is not PBE's spin-scaled exchange "
+            "energy there and the energy term would pull toward a value the "
+            "SCF never evaluates; the published protocol has no energy term. "
+            "Set energy_term_weight: 0.0 under this footing."
         )
     # The bound is the CONSUMER's: pretrain_data_gen._check_generator_arguments
     # requires 0 < mesh_fraction < 1, so a share of exactly zero loads here and
@@ -2300,19 +2330,27 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # energy-weight sweep the refusal names measured that no weight brings
     # a point-wise fit of the parent to the certificate (Section 2); 0.0 is
     # exact for an anchored run and is stated without a sweep.
+    # The measurement behind the refusal was made under the integration-
+    # weighted objective; the published objective (loss_weighting
+    # rho_w_sampled, the plain mean over the sampled rows) is not covered by
+    # it, and there the certificate decides after the run, whatever the
+    # footing. The release is by objective alone.
     anchored_run = bool(getattr(getattr(cfg, "model", None),
                                 "parent_anchor", False))
     if (pt.dfs_set and cfg.fidelity.enforce and pt.energy_term_weight == 0.0
-            and not anchored_run):
+            and not anchored_run and pt.loss_weighting != "rho_w_sampled"):
         raise ValueError(
             "pretrain.energy_term_weight is 0.0 with pretrain.dfs_set: true "
-            "and fidelity.enforce: true. At exactly zero the per-system "
+            "and fidelity.enforce: true under loss_weighting "
+            f"{pt.loss_weighting!r}. At exactly zero the per-system "
             "energy term is not small, it is NOT EVALUATED (pretrain.py "
             "short-circuits on `energy_weight == 0.0`), so this run would "
             "fit the protocol pretraining set with the integration-weighted "
             "point-wise objective ALONE -- the pre-protocol objective under "
             "which NO architecture reached its parent inside these "
-            "tolerances: measured "
+            "tolerances (the published objective, loss_weighting "
+            "rho_w_sampled, is not covered by that measurement and is not "
+            "refused here): measured "
             "atomization-energy offsets of 2.3 to 56.1 kcal/mol against "
             f"fidelity.tol_AE = {cfg.fidelity.tol_AE} kcal/mol. The "
             "certificate would then FAIL on every architecture, after the "

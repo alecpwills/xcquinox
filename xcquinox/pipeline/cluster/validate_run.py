@@ -419,6 +419,14 @@ def validate_run(run_dir: str, config_path: str | None = None):
                 f"pretrain/{arch_name}: descriptor_coordinates="
                 f"{meta.get('descriptor_coordinates', 'legacy')!r}, config "
                 f"says {want_coords!r}")
+        # The uniform-gas gate, a static field like the two above; metadata
+        # written before the field reads as tanh2.
+        want_gate = str(getattr(model_block, "ueg_gate", "tanh2"))
+        if str(meta.get("ueg_gate", "tanh2")) != want_gate:
+            failures.append(
+                f"pretrain/{arch_name}: ueg_gate="
+                f"{meta.get('ueg_gate', 'tanh2')!r}, config says "
+                f"{want_gate!r}")
         try:
             reg = get_architecture(arch_name)
         except KeyError:

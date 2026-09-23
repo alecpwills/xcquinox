@@ -278,3 +278,24 @@ def test_no_tracked_text_names_the_retired_runbook():
     assert citations_of("pull_and_figures.md"), "the scan read no tracked text"
     dead = citations_of(_RETIRED_RUNBOOK)
     assert dead == [], f"the retired name is still cited at {dead}"
+
+
+#: the page that states the published cloning protocol row by row against this
+#: tree's implementation of it
+_PRETRAIN_PARITY = "docs/pipeline/pretrain_parity.md"
+
+
+def test_the_parity_page_is_reachable():
+    """The cloning-protocol parity page is tracked and carried by the site's
+    table of contents, so a reader arriving at the documentation finds the
+    statement of what this tree does and does not reproduce.
+
+    Oracle: ``git ls-files`` for the page, and the toctree entries of every
+    tracked page of the site.
+    """
+    tracked = _tracked("docs")
+    assert _PRETRAIN_PARITY in tracked, (
+        f"{_PRETRAIN_PARITY} is not tracked")
+    listed = listed_documents(_site_pages())
+    name = _PRETRAIN_PARITY[len("docs/"):].rsplit(".", 1)[0]
+    assert name in listed, f"{_PRETRAIN_PARITY} is in no table of contents"

@@ -166,8 +166,17 @@ class ArchitectureConfig:
     # receive x_alpha = ln((alpha + 1)/2) in place of the raw indicator
     # (networks.py states each). A NEW checkpoint family where the widths
     # change (the correlation MLP); the parent anchor reads the row's physical
-    # quantities and is unchanged by the choice.
+    # quantities and is unchanged by the choice. "paper" is the dfs set with
+    # the epsilon inside the spin coordinate too (DESCRIPTOR_COORDINATES).
     descriptor_coordinates: str = "legacy"
+    # ueg_gate: the uniform-gas gate in front of both MLPs on the GGA rungs.
+    # "tanh2" is tanh(s)^2, every model built before the field; "x2" is the
+    # published clone's (1 - exp(-s^2)) ln(1 + s), the transformed reduced
+    # gradient itself (arXiv:2605.10331, models.py). A static field of both
+    # networks, so a checkpoint's leaves do not reveal it and the class record
+    # beside the checkpoint states it. The meta-GGA rung keeps its own gate
+    # and refuses "x2".
+    ueg_gate: str = "tanh2"
 
     def __post_init__(self):
         if not isinstance(self.name, str):
@@ -218,6 +227,11 @@ class ArchitectureConfig:
                 f"ArchitectureConfig.descriptor_coordinates must be one of "
                 f"{DESCRIPTOR_COORDINATES}, got "
                 f"{self.descriptor_coordinates!r}"
+            )
+        if self.ueg_gate not in UEG_GATES:
+            raise ValueError(
+                f"ArchitectureConfig.ueg_gate must be one of {UEG_GATES}, "
+                f"got {self.ueg_gate!r}"
             )
         if not isinstance(self.num_heads, int) or isinstance(self.num_heads, bool):
             raise TypeError(
@@ -394,7 +408,8 @@ class ArchitectureConfig:
                   meta_gga: bool = False,
                   zero_init_final_layer: bool = False,
                   parent_anchor: bool = False,
-                  descriptor_coordinates: str = "legacy"):
+                  descriptor_coordinates: str = "legacy",
+                  ueg_gate: str = "tanh2"):
         """Factory that accepts str | (str, dict) | FeatureSpec for each entry.
 
         ``num_heads`` is required when ``attention=True`` (no silent default,
@@ -467,13 +482,23 @@ class ArchitectureConfig:
             zero_init_final_layer=zero_init_final_layer,
             parent_anchor=parent_anchor,
             descriptor_coordinates=descriptor_coordinates,
+            ueg_gate=ueg_gate,
         )
 
 
 #: The coordinate sets the networks' MLPs can read a row in
 #: (``ArchitectureConfig.descriptor_coordinates``; the harness parser states
-#: the same set as ``grid_config._DESCRIPTOR_COORDINATES``).
-DESCRIPTOR_COORDINATES = ("legacy", "dfs")
+#: the same set as ``grid_config._DESCRIPTOR_COORDINATES``). ``paper`` is the
+#: published clone's set: the dfs coordinates with the epsilon of the density
+#: coordinate inside the spin coordinate as well (arXiv:2605.10331,
+#: preprocessing.py).
+DESCRIPTOR_COORDINATES = ("legacy", "dfs", "paper")
+
+#: The uniform-gas gates in front of the GGA networks' MLPs
+#: (``ArchitectureConfig.ueg_gate``; the harness parser states the same set as
+#: ``grid_config._UEG_GATES``): ``tanh2`` is ``tanh(s)^2``, every model built
+#: before the field; ``x2`` is the published clone's ``(1 - exp(-s^2)) ln(1 + s)``.
+UEG_GATES = ("tanh2", "x2")
 
 
 def anchored(arch: ArchitectureConfig) -> ArchitectureConfig:
@@ -488,17 +513,21 @@ def anchored(arch: ArchitectureConfig) -> ArchitectureConfig:
 
 def apply_model_block(arch: ArchitectureConfig, model) -> ArchitectureConfig:
     """Apply a run's ``model:`` block to a registry architecture: the parent
-    anchor (:func:`anchored`) when ``model.parent_anchor`` and the descriptor
-    coordinates when ``model.descriptor_coordinates`` is stated. ``model`` is
-    duck-typed (``grid_config.ModelConfig`` or anything carrying the two
-    attributes) so the login-node parser need not be imported here. One
-    implementation for every point a run resolves an architecture -- the
-    training specs, the pretrain stage, the certificate, the run validator --
-    so the resolved identity cannot differ between them."""
+    anchor (:func:`anchored`) when ``model.parent_anchor``, the descriptor
+    coordinates when ``model.descriptor_coordinates`` is stated and the
+    uniform-gas gate when ``model.ueg_gate`` is. ``model`` is duck-typed
+    (``grid_config.ModelConfig`` or anything carrying the attributes) so the
+    login-node parser need not be imported here. One implementation for every
+    point a run resolves an architecture -- the training specs, the pretrain
+    stage, the certificate, the run validator -- so the resolved identity
+    cannot differ between them."""
     out = arch
     coords = getattr(model, "descriptor_coordinates", None)
     if coords is not None and coords != out.descriptor_coordinates:
         out = replace(out, descriptor_coordinates=coords)
+    gate = getattr(model, "ueg_gate", None)
+    if gate is not None and gate != out.ueg_gate:
+        out = replace(out, ueg_gate=gate)
     if getattr(model, "parent_anchor", False):
         out = anchored(out)
     return out
@@ -1013,8 +1042,10 @@ class PretrainSpec:
             raise ValueError(
                 f"sampling_seed must be in [0, {MAX_SEED}], got "
                 f"{self.sampling_seed}")
-        if self.grad_clip <= 0:
-            raise ValueError(f"grad_clip must be > 0, got {self.grad_clip}")
+        if self.grad_clip < 0:
+            raise ValueError(
+                f"grad_clip must be >= 0 (0 disables the clip), got "
+                f"{self.grad_clip}")
         if self.energy_term_weight < 0:
             raise ValueError(
                 f"energy_term_weight must be >= 0, got "

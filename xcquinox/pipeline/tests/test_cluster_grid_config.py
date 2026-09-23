@@ -913,3 +913,133 @@ def test_seed_xc_minao_round_trips_to_the_solver_seed(tmp_path):
     message = str(exc.value)
     for value in ("pbe", "scan", "auto", "minao"):
         assert value in message, (value, message)
+
+
+# ---------------------------------------------------------------------------
+# The published cloning protocol's configuration surface
+# ---------------------------------------------------------------------------
+
+def test_the_model_block_carries_the_gate(tmp_path):
+    """``model.ueg_gate`` is parsed, defaults to the gate every model before
+    the field carried, survives the resolved-config round trip the later
+    stages re-read, and refuses an unknown value naming both.
+
+    Oracle: the parsed configuration, and the refusal's own message.
+    """
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+
+    raw = _base_config_dict()
+    raw["model"] = {"ueg_gate": "x2", "descriptor_coordinates": "paper"}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    assert cfg.model.ueg_gate == "x2"
+    assert cfg.model.descriptor_coordinates == "paper"
+    cfg2 = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.model == cfg.model
+
+    plain = load_grid_config(
+        _write(tmp_path, "plain.yaml", _base_config_dict()))
+    assert plain.model.ueg_gate == "tanh2"
+
+    bad = _base_config_dict()
+    bad["model"] = {"ueg_gate": "X2"}
+    with pytest.raises(ValueError) as excinfo:
+        load_grid_config(_write(tmp_path, "bad.yaml", bad))
+    message = str(excinfo.value)
+    assert "ueg_gate" in message and "'tanh2'" in message and "'x2'" in message
+
+
+def _published_pretrain_block():
+    """The ``pretrain:`` block of the published cloning protocol: no clip, the
+    published targets, the sampled objective, the protocol set, no energy
+    term."""
+    return {"data_dir": "/shared/pretrain_data", "n_steps": 20000,
+            "lr_start": 1e-3, "lr_end": 1e-5, "lr_decay_start": 0.5,
+            "lr_decay_end": 0.9, "grad_clip": 0, "loss_weighting":
+            "rho_w_sampled", "points_per_system": 800, "sampling_seed": 42,
+            "exchange_footing": "paper", "dfs_set": True,
+            "energy_term_weight": 0.0}
+
+
+def test_the_pretrain_block_accepts_the_published_values(tmp_path):
+    """The published protocol's three refused values load: no clip, the
+    published targets, and a zero energy-term weight under the sampled
+    objective the paper actually ran.
+
+    The energy-weight refusal was measured under the integration-weighted
+    objective, so it stays in force there; a negative clip is still refused,
+    since only exactly zero means "no clip".
+
+    Oracle: ``validate_grid_semantics`` against a stub domain, and the two
+    refusals, each seen to fire.
+    """
+    raw = _base_config_dict()
+    raw["pretrain"] = _published_pretrain_block()
+    raw["fidelity"] = {"enforce": True}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    assert cfg.pretrain.grad_clip == 0.0
+    assert cfg.pretrain.exchange_footing == "paper"
+    assert cfg.pretrain.loss_weighting == "rho_w_sampled"
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+    measured = _base_config_dict()
+    measured["pretrain"] = {k: v for k, v in _published_pretrain_block().items()
+                            if k not in ("points_per_system", "sampling_seed")}
+    measured["pretrain"]["loss_weighting"] = "integration"
+    measured["pretrain"]["grad_clip"] = 1.0
+    measured["fidelity"] = {"enforce": True}
+    cfg_measured = load_grid_config(
+        _write(tmp_path, "measured.yaml", measured))
+    with pytest.raises(ValueError, match="energy_term_weight"):
+        validate_grid_semantics(cfg_measured, _StubDomain(pool_size=100))
+
+    negative = _base_config_dict()
+    negative["pretrain"] = _published_pretrain_block()
+    negative["pretrain"]["grad_clip"] = -1.0
+    path = _write(tmp_path, "negative.yaml", negative)
+    with pytest.raises(ValueError, match="grad_clip"):
+        validate_grid_semantics(load_grid_config(path),
+                                _StubDomain(pool_size=100))
+
+
+def test_the_paper_coordinates_require_the_polarized_network_at_the_parser(
+        tmp_path):
+    """The published coordinates read the spin coordinate in the correlation
+    network exactly as the dfs set does, so a run whose architectures would
+    be built zeta-blind is refused on the login node, before any job is
+    queued, and not inside the pretrain array.
+
+    Oracle: ``validate_grid_semantics`` on a run of the base architecture,
+    which carries no polarized flag, under each of the two coordinate sets,
+    seen to refuse both with the same requirement.
+    """
+    for coordinates in ("paper", "dfs"):
+        raw = _base_config_dict()
+        raw["model"] = {"descriptor_coordinates": coordinates}
+        cfg = load_grid_config(_write(tmp_path, f"{coordinates}.yaml", raw))
+        with pytest.raises(ValueError, match="polarized") as excinfo:
+            validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+        assert repr(coordinates) in str(excinfo.value)
+
+
+def test_the_paper_footing_refuses_an_energy_term(tmp_path):
+    """Under the published footing an open shell's per-system exchange table
+    integrates the total-density form rather than PBE's spin-scaled exchange,
+    so a per-system energy term at any positive weight is refused with the
+    footing named; the published protocol has no such term.
+
+    Oracle: the published block with a positive weight, seen to be refused,
+    and the same block at zero, which loads.
+    """
+    raw = _base_config_dict()
+    raw["pretrain"] = _published_pretrain_block()
+    raw["pretrain"]["energy_term_weight"] = 0.1
+    raw["fidelity"] = {"enforce": True}
+    cfg = load_grid_config(_write(tmp_path, "weighted.yaml", raw))
+    with pytest.raises(ValueError, match="energy_term_weight") as excinfo:
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+    assert "paper" in str(excinfo.value)
+
+    raw["pretrain"]["energy_term_weight"] = 0.0
+    cfg = load_grid_config(_write(tmp_path, "unweighted.yaml", raw))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))

@@ -91,8 +91,9 @@ def test_record_schema_carries_no_module_path():
     from xcquinox.pipeline import checkpoint_class as cc
     record = cc.class_record(_anchored_dfs_arch(), sha256="0" * 64, size=1)
     assert set(record) == {
-        "parent_anchor", "descriptor_coordinates", cc.LOG_TRANSFORM_FIELD, "arch_name",
-        "meta_gga", "use_polarized_correlation", "parent", "xcquinox_version", "sha256",
+        "parent_anchor", "descriptor_coordinates", cc.UEG_GATE_FIELD,
+        cc.LOG_TRANSFORM_FIELD, "arch_name", "meta_gga",
+        "use_polarized_correlation", "parent", "xcquinox_version", "sha256",
         "size"}
     assert not any("module" in key or "class_path" in key for key in record)
     assert not any(isinstance(value, str) and value.startswith("xcquinox.")
@@ -629,3 +630,116 @@ _V7_SPEC = _V7_RUN / "specs/spec_0000.spec"
 _V7_PRESENT = _V7_CHECKPOINT.is_file() and _V7_SPEC.is_file()
 
 
+
+
+# ---------------------------------------------------------------------------
+# The uniform-gas gate as a class field
+# ---------------------------------------------------------------------------
+
+def _gate_arch(gate):
+    """The base architecture with the uniform-gas gate set.
+
+    ``ueg_gate`` alone separates the two: the coordinates, the descriptors and
+    every width are the base architecture's, so one's leaves fit the other's
+    skeleton exactly as they do across the anchor.
+    """
+    return _base_arch(ueg_gate=gate)
+
+
+def test_the_class_record_names_the_gate(tmp_path):
+    """The uniform-gas gate joins the model class: it changes what the
+    networks compute and no parameter shape, so a checkpoint written under one
+    gate deserialises into the other's skeleton in silence unless the record
+    states it.
+
+    Oracle: the record the writer put down, the two readings of the class
+    (from the architecture and from the model it builds) and the loader's
+    refusals, each seen to fire. A record written before the field existed
+    states nothing and is read as the gate every model before the field
+    carried, so an existing checkpoint loads exactly as it did.
+    """
+    import json as _json
+
+    from xcquinox.pipeline.checkpoint_class import (class_record_path,
+                                                is_legacy_class)
+
+    assert model_class_of_arch(_gate_arch("tanh2"))["ueg_gate"] == "tanh2"
+    assert model_class_of_arch(_gate_arch("x2"))["ueg_gate"] == "x2"
+    assert model_class_of_model(_model(_gate_arch("x2")))["ueg_gate"] == "x2"
+    assert is_legacy_class(model_class_of_arch(_gate_arch("tanh2"))) is True
+    assert is_legacy_class(model_class_of_arch(_gate_arch("x2"))) is False
+
+    ckpt = str(tmp_path / "model.eqx")
+    _write_checkpoint(ckpt, _gate_arch("tanh2"))
+    assert read_class_record(ckpt)["ueg_gate"] == "tanh2"
+
+    with pytest.raises(ModelClassMismatch) as excinfo:
+        require_matching_class(ckpt, model_class_of_arch(_gate_arch("x2")))
+    message = str(excinfo.value)
+    assert "'tanh2'" in message and "'x2'" in message, message
+    require_matching_class(ckpt, model_class_of_arch(_gate_arch("tanh2")))
+
+    record_path = class_record_path(ckpt)
+    record = _json.loads(pathlib.Path(record_path).read_text())
+    record.pop("ueg_gate")
+    pathlib.Path(record_path).write_text(_json.dumps(record))
+    with pytest.raises(ModelClassMismatch):
+        require_matching_class(ckpt, model_class_of_arch(_gate_arch("x2")))
+    require_matching_class(ckpt, model_class_of_arch(_gate_arch("tanh2")))
+
+
+def test_the_gate_reaches_the_pretraining_records_and_their_readers(tmp_path):
+    """The pretraining record, the training loader that reads it, the legacy
+    metadata preflight and the run manifest carry the uniform-gas gate as
+    they carry the anchor and the coordinates: a record without the field is
+    the gate every model before it carried, a record stating the field is held
+    to it, and a directory with no record admits that gate alone.
+
+    Oracle: each reader seen to accept and to refuse on hand-written records,
+    and the manifest's own ``model`` block.
+    """
+    import json as _json
+    from types import SimpleNamespace
+
+    from xcquinox.pipeline.cluster.materialize import write_manifest
+    from xcquinox.pipeline.pretrain import _metadata_preflight
+    from xcquinox.pipeline.train import _require_matching_model_class
+
+    pre = tmp_path / "pre"
+    pre.mkdir()
+    record = pre / "pretrain_metadata.json"
+    record.write_text(_json.dumps(
+        {"parent_anchor": False, "descriptor_coordinates": "legacy"}))
+    _require_matching_model_class(str(pre), _gate_arch("tanh2"))
+    with pytest.raises(ValueError, match="ueg_gate"):
+        _require_matching_model_class(str(pre), _gate_arch("x2"))
+    record.write_text(_json.dumps(
+        {"parent_anchor": False, "descriptor_coordinates": "legacy",
+         "ueg_gate": "x2"}))
+    _require_matching_model_class(str(pre), _gate_arch("x2"))
+    with pytest.raises(ValueError, match="ueg_gate"):
+        _require_matching_model_class(str(pre), _gate_arch("tanh2"))
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    _require_matching_model_class(str(bare), _gate_arch("tanh2"))
+    with pytest.raises(ValueError, match="ueg_gate"):
+        _require_matching_model_class(str(bare), _gate_arch("x2"))
+
+    arch = _gate_arch("x2")
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(_json.dumps(
+        {"depth": arch.depth, "nodes": arch.nodes, "parent_anchor": False,
+         "descriptor_coordinates": "legacy"}))
+    with pytest.raises(ValueError, match="ueg_gate"):
+        _metadata_preflight(metadata_path=str(legacy), arch=arch)
+    _metadata_preflight(metadata_path=str(legacy), arch=_gate_arch("tanh2"))
+
+    for gate, block in (("x2", SimpleNamespace(parent_anchor=False,
+                                               descriptor_coordinates="paper",
+                                               ueg_gate="x2")),
+                        ("tanh2", SimpleNamespace(parent_anchor=False,
+                                                  descriptor_coordinates="legacy"))):
+        out = tmp_path / f"run_{gate}"
+        out.mkdir()
+        path = write_manifest([], [], str(out), model=block)
+        assert _json.loads(pathlib.Path(path).read_text())["model"]["ueg_gate"] == gate

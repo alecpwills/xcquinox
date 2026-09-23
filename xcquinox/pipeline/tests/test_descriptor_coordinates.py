@@ -430,3 +430,213 @@ def test_the_architecture_describes_its_coordinate_set():
     assert legacy.describe() != dfs.describe()
     assert dfs.describe().get("descriptor_coordinates") == "dfs"
     assert legacy.describe().get("descriptor_coordinates") == "legacy"
+
+
+# ---------------------------------------------------------------------------
+# The published clone's coordinates and uniform-gas gate
+# ---------------------------------------------------------------------------
+
+class _SelectColumn(eqx.Module):
+    """A stand-in for a network's MLP returning one column of the vector it is
+    handed, so the coordinate at that index is read straight off the forward."""
+    index: int = eqx.field(static=True)
+
+    def __call__(self, netinp):
+        return netinp[self.index:self.index + 1]
+
+
+class _Unit(eqx.Module):
+    """A stand-in for a network's MLP returning one, so the forward carries
+    the uniform-gas gate alone."""
+
+    def __call__(self, netinp):
+        return jnp.ones((1,))
+
+
+def _with_probe(net, probe):
+    """``net`` with ``probe`` in place of its MLP."""
+    return eqx.tree_at(lambda m: m.net, net, probe)
+
+
+def _gated_value(net, row, *, polarized):
+    """The gated MLP output the forward carries, recovered by inverting the
+    network's own bounded map (``parents.lob_preimage``)."""
+    rho, sigma, zeta = row
+    packed = (_pack_row_polarized(rho, sigma, zeta, jnp.zeros((0,))) if polarized
+              else _pack_row(rho, sigma, jnp.zeros((0,))))
+    return float(parents.lob_preimage(net(packed).squeeze(), net.lobf.limit))
+
+
+def _separated_rows(n=24, seed=20260923):
+    """Rows whose reduced gradient stays away from zero, so the uniform-gas
+    gate is of order one and the gated value divides by it without loss, and
+    whose polarizations span the interval."""
+    rng = np.random.default_rng(seed)
+    rho = 10.0 ** rng.uniform(-3.0, 1.0, size=n)
+    s = rng.uniform(0.5, 4.0, size=n)
+    k_F = (3.0 * np.pi ** 2 * rho) ** (1.0 / 3.0)
+    sigma = (s * 2.0 * k_F * rho) ** 2
+    zeta = rng.uniform(-1.0, 1.0, size=n)
+    zeta[0] = 0.0
+    return [(float(rho[i]), float(sigma[i]), float(zeta[i])) for i in range(n)]
+
+
+def _spinscale(zeta):
+    return 0.5 * ((1.0 + zeta) ** (4.0 / 3.0) + (1.0 - zeta) ** (4.0 / 3.0))
+
+
+def test_paper_coordinates_add_the_epsilon_to_x1():
+    """Under ``"paper"`` the correlation network's spin coordinate is
+    ``ln(spinscale + 1e-5)``, the offset the published preprocessing puts
+    inside BOTH logarithms; under ``"dfs"`` it is ``ln(spinscale)``.
+
+    Oracle: the published ``preprocessing.transform_inputs_for_pyscf_grad_rho``
+    (``eps_log = 1e-5``; ``x1 = log(zeta_prime + eps_log)``), against the
+    coordinate read off the forward with the MLP replaced by the column
+    selector at index 1 and the bounded map inverted.
+    """
+    rows = _separated_rows()
+    for coordinates, expected in (("paper", lambda z: np.log(_spinscale(z) + _LOGE)),
+                                  ("dfs", lambda z: np.log(_spinscale(z)))):
+        arch = _arch("deep_3x16", coordinates)
+        _xnet, cnet = create_network_pair(arch, seed=31)
+        probed = _with_probe(cnet, _SelectColumn(index=1))
+        for rho, sigma, zeta in rows:
+            gate = float(np.tanh(np.sqrt(sigma)
+                                 / (2.0 * (3.0 * np.pi ** 2 * rho) ** (1 / 3) * rho)) ** 2)
+            got = _gated_value(probed, (rho, sigma, zeta), polarized=True) / gate
+            assert abs(got - float(expected(zeta))) < 1e-12, (
+                coordinates, rho, sigma, zeta)
+
+    # The offset is what separates the two coordinate sets: at zeta = 0 the
+    # DFS coordinate is exactly zero and the published one is not.
+    arch = _arch("deep_3x16", "paper")
+    _xnet, cnet = create_network_pair(arch, seed=31)
+    probed = _with_probe(cnet, _SelectColumn(index=1))
+    assert abs(_gated_value(probed, rows[0], polarized=True)) > 0.0
+
+
+def test_paper_coordinates_for_exchange_are_the_dfs_coordinates():
+    """The published exchange network reads the transformed reduced gradient
+    alone, which is what ``"dfs"`` already gives it: the two exchange networks
+    agree bit for bit on the same leaves.
+
+    Oracle: the two forwards themselves, compared exactly. The correlation
+    networks are compared too, and must NOT agree, so the case cannot pass by
+    the two coordinate sets being the same everywhere.
+    """
+    rows = _separated_rows()
+    xnet_paper, cnet_paper = create_network_pair(_arch("deep_3x16", "paper"),
+                                                 seed=31)
+    xnet_dfs, cnet_dfs = create_network_pair(_arch("deep_3x16", "dfs"), seed=31)
+    for rho, sigma, _zeta in rows:
+        packed = _pack_row(rho, sigma, jnp.zeros((0,)))
+        np.testing.assert_array_equal(np.asarray(xnet_paper(packed)),
+                                      np.asarray(xnet_dfs(packed)))
+    differs = [abs(_gated_value(_with_probe(cnet_paper, _SelectColumn(index=1)),
+                                row, polarized=True)
+                   - _gated_value(_with_probe(cnet_dfs, _SelectColumn(index=1)),
+                                  row, polarized=True))
+               for row in rows]
+    assert max(differs) > 0.0
+
+
+def test_the_x2_gate_multiplies_the_network_by_the_transformed_reduced_gradient():
+    """``ueg_gate="x2"`` puts the published prefactor
+    ``(1 - exp(-s^2)) ln(1 + s)`` in front of the MLP in both networks, in
+    place of ``tanh(s)^2``.
+
+    Oracle: the published ``models.py`` forward (``lobterm =
+    self.lobf(x2 * netterm)``) with ``x2`` the third transformed input of
+    ``preprocessing.transform_inputs_for_pyscf_grad_rho``, against the gate
+    read off the forward with the MLP replaced by the constant one.
+    """
+    rows = _separated_rows()
+    for gate_name, expected in (("x2", _x_s), ("tanh2", lambda s: jnp.tanh(s) ** 2)):
+        arch = dataclasses.replace(_arch("deep_3x16", "paper"),
+                                   ueg_gate=gate_name)
+        xnet, cnet = create_network_pair(arch, seed=31)
+        for rho, sigma, zeta in rows:
+            s = _reduced_gradient(rho, sigma)
+            want = float(jnp.atleast_1d(expected(s)).flatten()[0])
+            got_x = _gated_value(_with_probe(xnet, _Unit()), (rho, sigma, zeta),
+                                 polarized=False)
+            got_c = _gated_value(_with_probe(cnet, _Unit()), (rho, sigma, zeta),
+                                 polarized=True)
+            assert abs(got_x - want) < 1e-12, (gate_name, rho, sigma)
+            assert abs(got_c - want) < 1e-12, (gate_name, rho, sigma)
+
+
+def test_the_x2_gate_is_refused_on_the_meta_gga_rung():
+    """The meta-GGA gate is the reference implementation's
+    ``x2 + tanh^2(x3)``, which already carries ``x2``; asking for the GGA
+    ``x2`` gate there would drop the iso-orbital term in silence.
+
+    Oracle: the constructors, seen to raise.
+    """
+    from xcquinox.pipeline.networks import AlecGGA_CNet, AlecGGA_XNet
+
+    with pytest.raises(ValueError, match="ueg_gate"):
+        AlecGGA_XNet(n_extra_features=1, depth=3, nodes=16, meta_gga=True,
+                     metagga_alpha_index=0, ueg_gate="x2")
+    with pytest.raises(ValueError, match="ueg_gate"):
+        AlecGGA_CNet(n_extra_features=1, depth=3, nodes=16, meta_gga=True,
+                     metagga_alpha_index=0, use_spin_polarization=True,
+                     ueg_gate="x2")
+    with pytest.raises(ValueError, match="ueg_gate"):
+        AlecGGA_XNet(n_extra_features=0, depth=3, nodes=16, ueg_gate="X2")
+
+
+def test_the_gate_and_the_coordinates_reach_the_networks_from_the_model_block():
+    """A run's ``model:`` block carries both fields to the built networks
+    through the one helper every resolver of an architecture uses.
+
+    Oracle: the static fields of the networks the block's architecture
+    builds, and the architecture's own description.
+    """
+    from xcquinox.pipeline.cluster.grid_config import ModelConfig
+    from xcquinox.pipeline.config import apply_model_block
+
+    block = ModelConfig(ueg_gate="x2", descriptor_coordinates="paper")
+    arch = apply_model_block(_arch("deep_3x16", "legacy"), block)
+    assert arch.descriptor_coordinates == "paper"
+    assert arch.ueg_gate == "x2"
+    assert arch.describe().get("ueg_gate") == "x2"
+
+    xnet, cnet = create_network_pair(arch, seed=31)
+    assert xnet.descriptor_coordinates == "paper"
+    assert cnet.descriptor_coordinates == "paper"
+    assert xnet.ueg_gate == "x2"
+    assert cnet.ueg_gate == "x2"
+
+    default = create_network_pair(_arch("deep_3x16", "dfs"), seed=31)[0]
+    assert default.ueg_gate == "tanh2"
+
+
+def test_the_geometric_architectures_pretrain_on_the_published_inputs_plus_the_cusp_pair():
+    """A descriptor-carrying architecture under the published coordinates
+    keeps the published MLP inputs and appends its descriptor columns: the
+    exchange MLP reads ``[x2, cusp0, cusp1]`` and the correlation MLP
+    ``[x0, x1, x2, cusp0, cusp1]``.
+
+    Oracle: the first linear layer's input width of each network, and the
+    column count ``pretrain._assemble_pretrain_descriptors`` assembles for the
+    exchange network from a file carrying a two-column cusp block.
+    """
+    from xcquinox.pipeline.pretrain import _assemble_pretrain_descriptors
+
+    arch = _arch("deep_cusp_3x16", "paper")
+    xnet, cnet = create_network_pair(arch, seed=31)
+    assert xnet.net.layers[0].in_features == 3
+    assert cnet.net.layers[0].in_features == 5
+
+    pretrain_data = {
+        "rho_all": jnp.asarray([0.5, 0.1, 2.0]),
+        "sigma_all": jnp.asarray([0.2, 0.5, 5.0]),
+        "zeta_all": jnp.asarray([0.0, -0.8, 0.3]),
+        "cusp_all": jnp.asarray([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]),
+    }
+    assembled = _assemble_pretrain_descriptors(arch, pretrain_data)
+    assert assembled.shape == (3, 4)
+    np.testing.assert_array_equal(np.asarray(assembled[:, 2:]),
+                                  np.asarray(pretrain_data["cusp_all"]))

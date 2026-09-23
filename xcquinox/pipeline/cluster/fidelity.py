@@ -496,14 +496,16 @@ def identity_mismatches(cfg, cert) -> list:
 
 def model_class_mismatches(cfg, cert, arch_name=None) -> list:
     """``[(key, recorded, wanted), ...]`` for the model-class fields a
-    certificate records -- ``parent_anchor``, ``descriptor_coordinates`` and
-    ``descriptor_log_transform`` -- that differ from the class this run
-    builds. A certificate written before the first two fields existed records
-    neither, which reads as the unanchored legacy class it certified; a run of
-    any other class must not accept it.
+    certificate records -- ``parent_anchor``, ``descriptor_coordinates``,
+    ``ueg_gate`` and ``descriptor_log_transform`` -- that differ from the
+    class this run builds. A certificate written before the first fields
+    existed records none of them, which reads as the unanchored legacy class
+    it certified (the gate at ``tanh2``); a run of any other class must not
+    accept it.
 
-    The first two are read from the run's ``model`` block, which is what sets
-    them for every architecture of the run. The third is a property of the
+    The anchor, the coordinates and the gate are read from the run's
+    ``model`` block, which is what sets them for every architecture of the
+    run. The transform is a property of the
     ARCHITECTURE -- no run-level switch states it, and neither the polarized
     override nor ``config.apply_model_block`` touches it -- so its expected
     value is the registry entry's, for ``arch_name``: the architecture the
@@ -532,6 +534,12 @@ def model_class_mismatches(cfg, cert, arch_name=None) -> list:
         out.append(("parent_anchor", got_anchor, want_anchor))
     if got_coords != want_coords:
         out.append(("descriptor_coordinates", got_coords, want_coords))
+    # The uniform-gas gate: read from the run's model block like the two
+    # above; a certificate written before the field reads as ``tanh2``.
+    want_gate = str(getattr(model_block, "ueg_gate", "tanh2"))
+    got_gate = str(cert.get("ueg_gate", "tanh2"))
+    if got_gate != want_gate:
+        out.append(("ueg_gate", got_gate, want_gate))
     got_transform = cert.get("descriptor_log_transform")
     name = arch_name if arch_name is not None else cert.get("arch")
     if got_transform is not None and isinstance(name, str):
@@ -1536,6 +1544,9 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "parent_anchor": bool(getattr(arch, "parent_anchor", False)),
         "descriptor_coordinates": str(
             getattr(arch, "descriptor_coordinates", "legacy")),
+        # The uniform-gas gate, a static field of both networks as the two
+        # above are; a certificate written before it reads as ``tanh2``.
+        "ueg_gate": str(getattr(arch, "ueg_gate", "tanh2")),
         "descriptor_log_transform": bool(
             getattr(arch, "descriptor_log_transform", False)),
         "xcquinox_version": running_xcquinox_version(),
