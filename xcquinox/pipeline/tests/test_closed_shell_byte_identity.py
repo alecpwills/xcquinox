@@ -722,6 +722,22 @@ def test_the_reference_carries_the_recorded_keys(fixture):
             arch_name)
 
 
+#: One configuration under two registry names: the v8 geometric entry and the
+#: cusp twin it is registered from (every field but the name equal).
+_SAME_CONFIGURATION = ("deep_geom_3x16", "deep_cusp_3x16")
+
+
+def test_two_names_of_one_configuration_share_a_record():
+    """The live fixture's records of ``deep_geom_3x16`` and ``deep_cusp_3x16``
+    are equal key by key: the two names build the same network from the same
+    seed, so a record that depended on the name (an initialization seeded
+    from it, a feature block keyed by it) would separate them here."""
+    records = _reference(_FIXTURE)
+    geom, cusp = (records[name] for name in _SAME_CONFIGURATION)
+    assert geom == cusp, {k: (geom.get(k), cusp[k]) for k in cusp
+                          if geom.get(k) != cusp[k]}
+
+
 # ---------------------------------------------------------------------------
 # The two branches of the comparison
 # ---------------------------------------------------------------------------
@@ -890,7 +906,8 @@ _POST_ARCHIVE_ARCH = "deep_mgga_3x32"
 #: recorded: absent from both historical fixtures by construction, present in
 #: the live one, and compared against the live fixture alone. A name added to
 #: the registry joins this tuple or the historical coverage test names it.
-_POST_ARCHIVE_ARCHS = ("deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32")
+_POST_ARCHIVE_ARCHS = ("deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32",
+                       "deep_geom_3x16", "deep_geom_attn_3x16")
 
 #: Architectures registered after the live fixture was last recorded,
 #: awaiting their records from its platform (the recorder command is in the

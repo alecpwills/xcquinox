@@ -613,11 +613,19 @@ def test_the_gate_and_the_coordinates_reach_the_networks_from_the_model_block():
     assert default.ueg_gate == "tanh2"
 
 
-def test_the_geometric_architectures_pretrain_on_the_published_inputs_plus_the_cusp_pair():
+@pytest.mark.parametrize("arch_name", ("deep_cusp_3x16", "deep_geom_3x16",
+                                       "deep_geom_attn_3x16"))
+def test_the_geometric_architectures_pretrain_on_the_published_inputs_plus_the_cusp_pair(
+        arch_name):
     """A descriptor-carrying architecture under the published coordinates
     keeps the published MLP inputs and appends its descriptor columns: the
     exchange MLP reads ``[x2, cusp0, cusp1]`` and the correlation MLP
     ``[x0, x1, x2, cusp0, cusp1]``.
+
+    The statement is made on each of the three cusp-carrying 3x16 entries.
+    The attention block sits after the first layer, so it changes neither
+    MLP's input width, and the assembled block is read off the architecture's
+    descriptor list, which is the same two-column cusp block on all three.
 
     Oracle: the first linear layer's input width of each network, and the
     column count ``pretrain._assemble_pretrain_descriptors`` assembles for the
@@ -625,7 +633,7 @@ def test_the_geometric_architectures_pretrain_on_the_published_inputs_plus_the_c
     """
     from xcquinox.pipeline.pretrain import _assemble_pretrain_descriptors
 
-    arch = _arch("deep_cusp_3x16", "paper")
+    arch = _arch(arch_name, "paper")
     xnet, cnet = create_network_pair(arch, seed=31)
     assert xnet.net.layers[0].in_features == 3
     assert cnet.net.layers[0].in_features == 5

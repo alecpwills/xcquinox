@@ -107,13 +107,14 @@
 # genuinely needs longer, raise MATRIX_TIMEOUT_S and the --time request
 # together; the bound below scales with both.
 #
-# 17 architectures per submission, not 34: the registry holds 34, and 34 in one
-# job bounds at ceil(34/4) x 5.5 h = 49.5 h -- beyond the 48 h cap of every
-# long-* queue (only the extended-* partitions, 7-day caps, would take it).
-# MATRIX_BATCHES therefore defaults to 2, so the registry is covered by two
-# submissions (17 and 17 architectures), each bounded by this request.
-# MATRIX_BATCHES=1 puts all 34 in one job and is REFUSED at this request; no
-# long-* queue admits the 49.5 h it needs. A single-architecture run
+# Half the registry per submission: with N registered architectures, the whole
+# registry in one job bounds at ceil(N/4) x 5.5 h, which passes the 48 h cap of
+# every long-* queue once N exceeds 32 (only the extended-* partitions, 7-day
+# caps, would take it), and the registry is past that size. MATRIX_BATCHES
+# therefore defaults to 2, so the registry is covered by two submissions of
+# ceil(N/2) architectures, each bounded by this request. MATRIX_BATCHES=1 puts
+# the whole registry in one job and is REFUSED at this request; no long-*
+# queue admits the hours it needs. A single-architecture run
 # (MATRIX_ARCHS=<name>) bounds at 11 x 1800 s = 5.5 h and takes the whole
 # allocation (shards drop to 1), so submit it with --time=06:00:00 rather than
 # paying the 30 h request in queue time.

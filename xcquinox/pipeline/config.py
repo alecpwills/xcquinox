@@ -635,6 +635,21 @@ ARCHITECTURES = {
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True,
                               zero_init_final_layer=True),
+    # The v8 geometric pair: the cusp descriptor's two columns (the nuclear-cusp
+    # proximity and the compressed nuclear charge) on the 3x16 network, without
+    # and with attention. deep_geom_3x16 is deep_cusp_3x16 under the campaign's
+    # name, field for field; deep_cusp_3x16 stays for the records that name it.
+    "deep_geom_3x16":           ArchitectureConfig.from_spec("deep_geom_3x16",          3, 16,
+                              descriptors=["cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_geom_attn_3x16":      ArchitectureConfig.from_spec("deep_geom_attn_3x16",     3, 16,
+                              attention=True, num_heads=4,
+                              descriptors=["cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
     # Rung-3.5 localized-DM archs (ADDITIVE). The leaky deep_dm/deep_combined
     # entries above are KEPT so a pending in-flight array task still resolves
     # them. deep_rung35_3x16 (cusp + localized rung-3.5 DM occupancy) replaces

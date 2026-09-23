@@ -128,7 +128,7 @@ def test_architecture_config_field_validation(field, value, exc):
 # differ from deep_mgga_3x16 in shape alone.
 def test_architectures_registry_key_set():
     from xcquinox.pipeline.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 34
+    assert len(ARCHITECTURES) == 36
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -160,6 +160,9 @@ def test_architectures_registry_key_set():
         # capacity question of its plateau against the atom certificate.
         # Probe-only until measured: excluded from the v6 campaign.
         "deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32",
+        # The v8 geometric pair: the cusp descriptor's two columns on the 3x16
+        # GGA network, with and without attention.
+        "deep_geom_3x16", "deep_geom_attn_3x16",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
 
@@ -170,6 +173,44 @@ def test_architectures_registry_key_set():
 # registry entry spells out, so a flag the entry forgot -- or one added to
 # ArchitectureConfig later with a default the three take and their parent does
 # not -- turns this red instead of being read as capacity.
+
+
+def test_the_geometric_pair_is_the_cusp_twin_with_and_without_attention():
+    """The two geometric entries are deep_cusp_3x16 under another name, the
+    attention twin adding only the attention block.
+
+    Oracle: the registry entry compared field by field against
+    ``dataclasses.replace`` of deep_cusp_3x16, so a keyword the entry forgot
+    -- or one added to ArchitectureConfig later whose default the pair takes
+    and deep_cusp_3x16 does not -- fails here instead of being read as the
+    geometric architecture. The three flags and the descriptor list are stated
+    again on their own so the failure names which of them moved.
+    """
+    import dataclasses
+    from xcquinox.pipeline.config import get_architecture
+
+    cusp = get_architecture("deep_cusp_3x16")
+    plain = get_architecture("deep_geom_3x16")
+    attn = get_architecture("deep_geom_attn_3x16")
+
+    want_plain = dataclasses.replace(cusp, name="deep_geom_3x16")
+    want_attn = dataclasses.replace(cusp, name="deep_geom_attn_3x16",
+                                    attention=True, num_heads=4)
+    for got, want in ((plain, want_plain), (attn, want_attn)):
+        differing = {f.name: (getattr(got, f.name), getattr(want, f.name))
+                     for f in dataclasses.fields(got)
+                     if getattr(got, f.name) != getattr(want, f.name)}
+        assert not differing, (got.name, differing)
+        assert got == want, got.name
+
+    for cfg in (plain, attn):
+        assert cfg.depth == 3 and cfg.nodes == 16, cfg.name
+        assert cfg.zero_init_final_layer is True, cfg.name
+        assert cfg.descriptor_log_transform is True, cfg.name
+        assert cfg.dm_entropy_intensive is True, cfg.name
+        assert [d.name for d in cfg.descriptors] == ["cusp"], cfg.name
+    assert plain.attention is False
+    assert attn.attention is True and attn.num_heads == 4
 
 
 # §13.2 item (13)
@@ -356,7 +397,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.pipeline.config import ARCHITECTURES
     from xcquinox.pipeline.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 34  # +8 (2026-06-20) +3 rung-3.5 (2026-06-28) +3 meta-GGA (2026-07-02) +2 mgga stacks (2026-08-10) +3 mgga width/depth completions (2026-09-11)
+    assert len(ARCHITECTURES) == 36
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)

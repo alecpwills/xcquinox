@@ -851,3 +851,19 @@ the existing references from their cached SCF payloads without a new SCF.
 
 **Why deferred:** a change to the reference file format on the training side, with its own tests
 and review; the v8 campaigns report the held-out baseline.
+
+---
+
+## 36. The slide deck manifest's registry excerpts no longer anchor
+
+**WHAT:** `tools/analysis/slide_code_notes.py` excerpts source lines for the v7 deck by line
+range with an anchor string. Four of its five `xcquinox/pipeline/config.py` rows (p9.2 to p9.5)
+fail their anchor at the current tree (`excerpt_lines` reports the source shifted above the
+range), and the registration of the geometric pair moves the `deep_cusp_mgga_3x16` anchor
+further down. The default mode prints pointer lines and exits 0, and no test module covers the
+tool, so the drift is silent.
+
+**Remedy:** the manifest rows locate their excerpts by anchor string alone (a search, not a line
+range), and a test asserts that every row's anchor is found exactly once in its file.
+
+**Why deferred:** the deck is a v7 artifact; the tool's rewrite carries its own tests and review.

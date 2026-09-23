@@ -67,6 +67,8 @@ EXPECTED_DISPLAY = {
     "deep_3x16":                   "deep0_3x16",
     "deep_attn_3x16":              "deep0_attn_3x16",
     "deep_cusp_3x16":              "deep0_cusp_3x16",
+    "deep_geom_3x16":              "deep0_geom_3x16",
+    "deep_geom_attn_3x16":         "deep0_geom_attn_3x16",
     "deep_dm_3x16":                "deep0_dm_3x16",
     "deep_combined_3x16":          "deep0_combined_3x16",
     "deep_combined_attn_3x16":     "deep0_combined_attn_3x16",

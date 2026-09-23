@@ -771,10 +771,10 @@ def test_o4_h_atom_exchange_equals_the_spin_scaled_unpolarized_evaluation(
     library assembles, where the indicator sits at the smoothing's floor
     ``width / 2`` (its raw value is zero; docs/open_items.md #27).
 
-    Bounds: the block identity is measured bitwise on all 34 architectures
-    (doubling a density matrix is a binary scaling, so every contraction of
-    it is the doubled contraction); the energy identity is measured at
-    exactly 0.0 on all 34 against 1e-12, the empty beta channel contributing
+    Bounds: the block identity is measured bitwise on every registered
+    architecture (doubling a density matrix is a binary scaling, so every
+    contraction of it is the doubled contraction); the energy identity is
+    measured at exactly 0.0 on every one against 1e-12, the empty beta channel contributing
     1.1e-21 to 2.2e-21 Ha over two reference solutions (the rho_cutoff
     floor).
     """
