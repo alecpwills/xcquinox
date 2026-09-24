@@ -2366,9 +2366,12 @@ def test_validation_records_carry_the_atomic_guess_under_the_mixture(
     assert guess is not None
     assert np.asarray(guess).shape == np.asarray(on_data["H2"]["dm_seed"]).shape
     assert off_data["H2"]["dm_minao"] is None
-    # the validation seed does not move: the metric is the same quantity.
-    np.testing.assert_array_equal(np.asarray(on_data["H2"]["dm_seed"]),
-                                  np.asarray(off_data["H2"]["dm_seed"]))
+    # the validation seed does not move: the metric is the same quantity,
+    # held at the module's density-matrix tolerance rather than bit for bit,
+    # since the two precompute runs may sum in a different thread order.
+    np.testing.assert_allclose(np.asarray(on_data["H2"]["dm_seed"]),
+                               np.asarray(off_data["H2"]["dm_seed"]),
+                               rtol=0, atol=1e-12)
 
 
 # ---------------------------------------------------------------------------
