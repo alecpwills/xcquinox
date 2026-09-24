@@ -24,34 +24,10 @@ certificate and a density channel supervised against coupled-cluster references.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Getting started
+   :caption: Documentation
 
-   install
-   user_guide
-
-.. toctree::
-   :maxdepth: 2
-   :caption: The pipeline
-
-   architecture/pipeline_training_flow
-   pipeline/pull_and_figures
-   pipeline/pretrain_parity
+   getting_started
    api
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Methodology notes
-
-   notes/HOLDOUT_SET
-   notes/LOSS_PRIMER
-   notes/README_density_figures
-   notes/figure_glossary
-
-.. toctree::
-   :maxdepth: 1
-   :caption: The record
-
-   open_items
 
 Indices and tables
 ==================

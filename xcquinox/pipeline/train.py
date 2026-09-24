@@ -1094,8 +1094,7 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
         # Runtime weighting truth: the nominal loss_kwargs pre-scales and the
         # configured balancing block above are NOT what the per-molecule loop
         # applies -- it ignores the balancer and weights the RAW channels with
-        # the fixed effective_channel_weights (pre-scales forced to 1.0). See
-        # docs/notes/LOSS_PRIMER.md.
+        # the fixed effective_channel_weights (pre-scales forced to 1.0).
         "update_scheme": getattr(spec, "update_scheme", "batched"),
         # the DFS seed mixture, so a checkpoint states its seeding as it
         # states its mixer schedule (solver_config.mixer_kwargs)

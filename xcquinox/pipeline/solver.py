@@ -71,7 +71,7 @@ class SolverConfig:
     scf_loss_tail: int = 10
     scf_loss_weight_power: float = 2.0
     # SCF convergence freeze (solver_manual.py): True, the protocol of every
-    # campaign through v7 (docs/open_items.md 13), stops the state once the energy
+    # campaign through v7, stops the state once the energy
     # step falls under conv_tol; False runs every cycle of max_cycles as
     # dpyscf's loop does, only the converged flag latching (2026-09-08).
     freeze_on_convergence: bool = True

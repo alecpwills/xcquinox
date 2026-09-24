@@ -430,8 +430,8 @@ _TOL_UKS = 5e-7
 # At the production identity (6-311++G(3df,2pd), grid level 3, O atom, the
 # ``slow``-marked case) the figures on record -- every architecture between
 # 1.5e-9 (deep_3x16) and 7.5e-8 (deep_mgga_3x16), the mask keeping 99.6% of
-# the grid -- were taken on the superseded linear probe (docs/open_items.md
-# entry 28 re-measures on the cluster). The def2-svp floor is tighter because
+# the grid -- were taken on the superseded linear probe. The def2-svp floor
+# is tighter because
 # the basis carries 39 functions and the grid 13344 points with a wider dynamic
 # range, not because a term is missing: the descriptor-free control holds
 # 6.2e-9 at every step from 1e-4 to 1e-8, i.e. it is round-off rather than
@@ -557,7 +557,7 @@ _UKS_FD_SPECIES = {
 # shell-peaked (4.07e11 on the outermost shell, 1.15e1 below it, log-log
 # slope -0.43 against 2 rho), so a 1e-6 step moves the raw indicator by
 # 1e3-1e5 there, beyond any linear regime of the energy, whatever the width
-# of the smooth positive part (docs/open_items.md entry 30). That is a
+# of the smooth positive part. That is a
 # property of the probe direction, not of the potential.
 #
 # 1e-2 admits every measured case (the mask removed 0 points on every atom
@@ -606,7 +606,7 @@ def _uks_fd_path(P0, md, eps=_FD_EPS, seed=20260821):
     ``alpha_raw = 0`` -- H, whose tail carries no such response, reads
     3.8e-10 along the linear form at the 1e-7 step, against 7.4e-4 with the
     hard clip -- but it cannot make a step of 1e-6 small against a response
-    of 1e10 (docs/open_items.md entry 30).
+    of 1e10.
 
     A channel with no electron carries an identically zero density matrix
     that the SCF never populates, so its Fock block is not part of the
@@ -639,7 +639,7 @@ def _assert_uks_fd_consistency(model, md, arch_name, label, eps=_FD_EPS):
     P_sigma), and ``compute_vc_polarized_per_spin`` on the total block, plus
     the three chain-rule contractions that differentiate the three P -> f
     maps, every column live in every block (the manual solver's one-electron
-    gate on the indicator's response is retired; docs/open_items.md entry 27).
+    gate on the indicator's response is retired).
 
     Grid points whose guard status -- the density-tail and zeta-clip
     thresholds of the network evaluation -- differs between the two displaced

@@ -165,7 +165,7 @@ def compute_rung35_multishell_occupancy(proj_ao_stack: jnp.ndarray,
     s-type projectors only, so this implements the radial channels (l = 0); with
     a single m per shell the invariant ``sqrt(sum_m c_{nlm}^2)`` reduces to the
     occupancy itself. Angular channels need solid-harmonic fakemols and are not
-    implemented -- see ``docs/open_items.md``.
+    implemented.
 
     Parameters
     ----------

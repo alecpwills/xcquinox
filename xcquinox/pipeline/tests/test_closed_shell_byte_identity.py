@@ -27,7 +27,7 @@ fixed so that the comparison cannot read them as a moved code path:
   reproduced it on all 31 architectures bitwise (commit 96fb36fc3).
 * ``closed_shell_reference_smooth_alpha.json`` -- the tree in which the lower
   bound of the iso-orbital indicator became a smooth positive part of width
-  1e-5 (``metagga.compute_alpha``; docs/open_items.md entry 27). That change
+  1e-5 (``metagga.compute_alpha``). That change
   has closed-shell content by construction -- the indicator of every
   meta-GGA block moves by ``width^2 / (4 alpha_raw)`` away from zero and by
   up to ``width / 2`` at a one-orbital point -- so against the ae204537e

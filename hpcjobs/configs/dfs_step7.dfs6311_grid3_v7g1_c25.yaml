@@ -78,8 +78,7 @@
 # (versioneer records 1+unknown on both sides). Each kept task exits 0 in
 # seconds, the preflight re-checks the same facts, and every cell then
 # starts from the SAME weights as its g1 counterpart -- the arm differs from
-# g1 in the number of SCF cycles alone. Runbook: docs/pipeline/
-# pull_and_figures.md, "The 25-cycle arm". Should the copy be
+# g1 in the number of SCF cycles alone. Should the copy be
 # missing when the pretrain task starts, the task refits from the shared
 # data under the protocol stated here (seed 42) and certifies on its own;
 # the record must then say so, because the starting weights would no longer
@@ -88,7 +87,7 @@
 # WHAT full_25 TRAINS. Each update runs 25 linear-mixing cycles from the
 # PBE seed (alpha_t = 0.3^t + 0.3 on the t-th update, the first at 1.3 as
 # the SI equation reads), freezes the state once the
-# energy step falls under conv_tol (docs/open_items.md 13), scores the energy on
+# energy step falls under conv_tol, scores the energy on
 # the last 10 cycles with weights (i/(N-1))^2 (at N = 3 the same rule keeps
 # all three cycles with the first at weight 0, so the cycle count also widens
 # the energy objective's window; the reference-parity deviation on the

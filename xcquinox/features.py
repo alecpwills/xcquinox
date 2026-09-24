@@ -148,9 +148,7 @@ def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
     # manifold: measured, Tr[(DS)^n]/N returns 2^(n-1) for H2, N2 and CO alike,
     # and the participation ratio (Tr[DS])^2/Tr[(DS)^2] returns N_occ. A useful
     # replacement must probe the EIGENVECTORS -- the spatial and bonding
-    # structure -- not the spectrum. See the descriptor specification of 2026-08-09
-    # for the candidates screened and docs/open_items.md for what a
-    # local replacement has to satisfy.
+    # structure -- not the spectrum.
     #
     # Removing it also repaired the dm_statistics architectures' energy/potential
     # consistency: their finite-difference residual went from

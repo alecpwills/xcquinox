@@ -56,8 +56,7 @@
 # the recorded checkpoint.dir is provenance, not a gate. Each kept task exits
 # 0 in seconds, the preflight re-checks the same facts, and every cell then
 # starts from the SAME weights as its g1 counterpart -- the control differs
-# from the arm in the objective alone. Runbook: docs/pipeline/
-# pull_and_figures.md, "Reaction-energy control arm". Should the copy
+# from the arm in the objective alone. Should the copy
 # be missing when a pretrain task starts, the task refits from the shared
 # data under the protocol stated here (seed 42) and certifies on its own;
 # the record must then say so, because the starting weights would no longer

@@ -653,8 +653,7 @@ def test_o2_fock_pair_is_the_derivative_of_the_energy_on_the_open_shell_atoms(
     rank-one boundary of a one-electron channel, which is what a linear
     displacement of such a channel runs into -- and not the boundary of the
     positive semidefinite cone, which Li's alpha channel leaves on its own
-    while still reproducing dE/dP to 1.2e-10 (docs/open_items.md entries 27
-    and 30).
+    while still reproducing dE/dP to 1.2e-10.
 
     Scope of this probe: the raw indicator is stationary along every
     rank-preserving rotation of a one-orbital block, so the H cells are
@@ -768,7 +767,7 @@ def test_o4_h_atom_exchange_equals_the_spin_scaled_unpolarized_evaluation(
     spin-unpolarized evaluation on that system. The beta channel is empty and
     contributes only the model's rho_cutoff floor. Evaluated at the block the
     library assembles, where the indicator sits at the smoothing's floor
-    ``width / 2`` (its raw value is zero; docs/open_items.md #27).
+    ``width / 2`` (its raw value is zero).
 
     Bounds: the block identity is measured bitwise on every registered
     architecture (doubling a density matrix is a binary scaling, so every

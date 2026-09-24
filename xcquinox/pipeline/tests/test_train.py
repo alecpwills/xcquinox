@@ -509,7 +509,7 @@ def test_per_molecule_loop_early_stops_and_writes_val_best(
 # early_stopped/epochs_run/val_* keys) plus the runtime-weighting truth keys
 # (update_scheme / balancing_active / effective_channel_weights -- added so
 # the artifact reports the weights the loop ACTUALLY applied, not only the
-# nominal loss_kwargs/balancing config; see docs/notes/LOSS_PRIMER.md)
+# nominal loss_kwargs/balancing config)
 # and the optimizer the run was fit under (adamw_linear on the linear schedule
 # or adam_plateau on the reduce-on-plateau controller), which is method and is
 # recorded for every run, not only for the arm that changes it.

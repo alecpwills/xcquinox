@@ -286,8 +286,8 @@ def test_manual_uks_li_beta_response_annihilates_the_occupied_orbital(
     Ha per point to F_beta[1, 2], so a 1e-14 relative change of the density
     matrix moves the raw indicator by 4e-4 --
     40 widths -- and the beta Fock by 0.37 Ha (measured; 0.93 with the hard
-    clip, 0.2-0.5 at every width from 1e-9 to 1e-5; docs/open_items.md entry
-    30). What that movement can and cannot do is pinned here:
+    clip, 0.2-0.5 at every width from 1e-9 to 1e-5). What that movement can
+    and cannot do is pinned here:
 
     * it never touches the occupied orbital. The raw indicator is stationary
       along every rank-preserving rotation of a one-orbital block, so the
@@ -476,7 +476,7 @@ def _rotation_path(P0, s_matrix, seed=20260824):
     MIXER output, a convex combination of two rank-nocc projectors, which is
     rank two for a one-electron block. This path is therefore the geometry
     that keeps a probe off the rank-one boundary, not the only density the
-    loop visits (docs/open_items.md entry 30)."""
+    loop visits."""
     from scipy.linalg import expm
     ev, evec = np.linalg.eigh(np.asarray(s_matrix))
     s_half = evec @ np.diag(np.sqrt(ev)) @ evec.T
@@ -522,7 +522,7 @@ def test_manual_uks_fock_at_the_li_fixed_point(monkeypatch):
     while the beta block stays rank one -- reproduces dE/dP at the same
     floor as the constrained direction (measured 3.8e-10 relative on a
     derivative of 1.183 at the 1e-5 step). That last statement is what
-    closing docs/open_items.md entry 27 changed: with the occupancy gate live
+    the smooth positive part changed: with the occupancy gate live
     the two-channel probes read 5.5e-2, the response the gate dropped off
     the single-orbital manifold.
 
@@ -623,9 +623,8 @@ def test_manual_uks_fock_at_the_li_fixed_point(monkeypatch):
     assert rel_u > 1e-2, (
         f"the unrestricted direction reads rel={rel_u:.3e} (FD={fd_u:.10e} "
         f"analytic={an_u:.10e}); the measured 0.88 is the descriptor's tail "
-        f"rank-one channel's indicator tail response (docs/open_items.md "
-        f"entry 30). Below this bound the tail behaviour of the indicator "
-        f"has changed -- re-anchor this test and entry 30")
+        f"rank-one channel's indicator tail response. Below this bound the "
+        f"tail behaviour of the indicator has changed -- re-anchor this test")
 
 
 def test_manual_uks_frozen_refuses_a_record_without_per_spin_blocks():
