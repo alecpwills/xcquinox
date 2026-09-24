@@ -34,7 +34,7 @@ output is accepted.
 ``closed_shell_reference_smooth_alpha.json`` was produced by the same script
 run from the repository root against the tree in which the iso-orbital
 indicator's lower bound became a smooth positive part (``metagga.compute_alpha``,
-width 1e-5; docs/open_items.md entry 27), which moves the five meta-GGA
+width 1e-5), which moves the five meta-GGA
 architectures' closed-shell numbers by the indicator's footprint (at most
 1.7e-10 on this record) and nothing else. It was the fixture the live tree was
 compared against until the stack moved; the ae204537e fixture is kept and the

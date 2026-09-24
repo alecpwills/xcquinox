@@ -220,7 +220,7 @@ DEFAULT_ARCHS = ("deep_3x16", "deep_cusp_3x16", "deep_rung35_3x16",
 
 #: The campaign's explicit pretraining atom list, verbatim from the tracked
 #: campaign files' ``pretrain.atoms``, every DFS-domain configuration stating
-#: the same block, and held equal to them by test. Under
+#: the same block. Under
 #: ``dfs_set`` + ``pool_atoms`` it is almost
 #: entirely redundant -- H, C, N, O and F are pool atoms and Li is one of the
 #: DFS inventory's eight -- and contributes exactly ONE system neither

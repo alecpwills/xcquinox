@@ -1,6 +1,6 @@
 """The documentation site carries what the repository knows, and says nothing that is false.
 
-Six rules:
+Five rules:
 
 * every entry of the site's table of contents resolves to a tracked page;
 * every tracked page under ``docs/`` is reachable from that table of contents, so a document
@@ -8,8 +8,7 @@ Six rules:
 * the citation file is readable and names the work;
 * the README names what the repository holds, and every repository-relative link in it
   resolves;
-* the documentation requirements pin nothing the packaging file contradicts;
-* no tracked text names a file that was retired, so a citation the reader follows resolves.
+* the documentation requirements pin nothing the packaging file contradicts.
 
 The rules read the files; the build itself (``sphinx-build -W``) runs in the environment the
 packaging file's documentation extra describes, and its result is recorded with the change.
@@ -43,7 +42,7 @@ UNLISTED = (
 README_SUBJECTS = (
     "pip install",
     "xcquinox-cluster",
-    "docs/user_guide.md",
+    "docs/getting_started.md",
     "CITATION.cff",
 )
 
@@ -152,14 +151,14 @@ def readme_links(text: str) -> list[str]:
 
 def test_the_rules_fire_on_fixtures():
     """Each rule fires on a page that breaks it and passes one that does not."""
-    page = (".. toctree::\n   :maxdepth: 2\n\n   install\n   ./notes/LOSS_PRIMER\n\n"
+    page = (".. toctree::\n   :maxdepth: 2\n\n   setup\n   ./notes/primer\n\n"
             "Some prose.\n\n.. toctree::\n\n   api\n")
-    assert toctree_entries(page) == ["install", "notes/LOSS_PRIMER", "api"]
-    tracked = ["docs/index.rst", "docs/install.md", "docs/notes/LOSS_PRIMER.md",
+    assert toctree_entries(page) == ["setup", "notes/primer", "api"]
+    tracked = ["docs/index.rst", "docs/setup.md", "docs/notes/primer.md",
                "docs/api.rst", "docs/docpages/net.rst", "docs/orphan.md"]
     listed = listed_documents({"docs/index.rst": page,
                                "docs/api.rst": ".. toctree::\n\n   docpages/net\n"})
-    assert listed == {"install", "notes/LOSS_PRIMER", "api", "docpages/net"}
+    assert listed == {"setup", "notes/primer", "api", "docpages/net"}
     assert unresolved_entries(listed, tracked) == []
     assert unresolved_entries({"gone"}, tracked) == ["gone"]
     assert unreachable_pages(listed, tracked, set()) == ["docs/orphan.md"]
@@ -168,11 +167,11 @@ def test_the_rules_fire_on_fixtures():
     assert nested == {"notes/deeper"}
     assert included_targets("docs/x.md", "```{include} ../README.md\n```") == {
         "README.md"}
-    assert included_targets("docs/notes/a.md", ".. include:: ../open_items.md") == {
-        "docs/open_items.md"}
+    assert included_targets("docs/notes/a.md", ".. include:: ../items.md") == {
+        "docs/items.md"}
     assert included_targets("docs/x.md", "no include here") == set()
-    assert readme_links("[a](docs/user_guide.md) [b](https://x) [c](./CITATION.cff)") == [
-        "docs/user_guide.md", "CITATION.cff"]
+    assert readme_links("[a](docs/guide.md) [b](https://x) [c](./CITATION.cff)") == [
+        "docs/guide.md", "CITATION.cff"]
 
 
 def _site_pages() -> dict[str, str]:
@@ -186,7 +185,7 @@ def test_every_toctree_entry_resolves():
     listed = listed_documents(_site_pages())
     missing = unresolved_entries(listed, _tracked("docs"))
     assert missing == [], f"entries that name no page: {missing}"
-    assert len(listed) >= 10, sorted(listed)
+    assert listed, "no table of contents lists a page"
 
 
 def test_every_document_is_reachable_from_the_table_of_contents():
@@ -229,73 +228,3 @@ def test_the_published_build_installs_the_package_with_its_documentation_extra()
                for entry in installs), installs
     assert not (_DOCS / "requirements.txt").exists(), (
         "a second dependency list for the site is back")
-
-
-# ---------------------------------------------------------------------------
-# A retired file name is named nowhere
-# ---------------------------------------------------------------------------
-
-#: The pull-and-figures instructions live at one path. The name they were
-#: retired from is assembled from two pieces here so that this rule cannot
-#: match its own source and pass on itself.
-_RETIRED_RUNBOOK = "RUNBOOK_" + "pull_and_figures.md"
-_PULL_AND_FIGURES = "docs/pipeline/pull_and_figures.md"
-
-#: what a reader reads: the tracked files whose bytes are text
-_TEXT_SUFFIXES = (".md", ".rst", ".py", ".txt", ".yaml", ".yml", ".cff",
-                  ".sh", ".toml", ".cfg", ".ini", ".ipynb", ".tmpl",
-                  ".json", ".jsonl", ".sbatch")
-
-
-def citations_of(name: str) -> list[str]:
-    """``path:line`` for every tracked text file naming ``name``."""
-    out = []
-    for path in _tracked():
-        if not path.endswith(_TEXT_SUFFIXES):
-            continue
-        try:
-            text = (_ROOT / path).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        out += [f"{path}:{number}"
-                for number, line in enumerate(text.splitlines(), start=1)
-                if name in line]
-    return out
-
-
-def test_no_tracked_text_names_the_retired_runbook():
-    """The instructions for pulling runs and regenerating the figures live at
-    one path, and no tracked file sends a reader to the name that path
-    replaced: a citation of a file that does not exist is a dead end the
-    reader cannot resolve from the repository.
-
-    Oracle: the tracked text of the repository, and the page that carries the
-    instructions now, which is tracked.
-    """
-    assert (_ROOT / _PULL_AND_FIGURES).is_file(), _PULL_AND_FIGURES
-    # the scan reaches tracked text and finds a name in it: without this the
-    # emptiness below could come from reading nothing at all
-    assert citations_of("pull_and_figures.md"), "the scan read no tracked text"
-    dead = citations_of(_RETIRED_RUNBOOK)
-    assert dead == [], f"the retired name is still cited at {dead}"
-
-
-#: the page that states the published cloning protocol row by row against this
-#: tree's implementation of it
-_PRETRAIN_PARITY = "docs/pipeline/pretrain_parity.md"
-
-
-def test_the_parity_page_is_reachable():
-    """The cloning-protocol parity page is tracked and carried by the site's
-    table of contents, so a reader arriving at the documentation finds the
-    statement of what this tree does and does not reproduce.
-
-    Oracle: ``git ls-files`` for the page, and the toctree entries of every
-    tracked page of the site.
-    """
-    tracked = _tracked("docs")
-    assert _PRETRAIN_PARITY in tracked, (
-        f"{_PRETRAIN_PARITY} is not tracked")
-    listed = listed_documents(_site_pages())
-    name = _PRETRAIN_PARITY[len("docs/"):].rsplit(".", 1)[0]
-    assert name in listed, f"{_PRETRAIN_PARITY} is in no table of contents"

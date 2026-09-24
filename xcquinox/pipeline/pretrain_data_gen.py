@@ -43,8 +43,8 @@ molecular grids are not reproduced -- and, since 2026-08-10, augments
 meta-GGA pretrains with the parameter-space mesh defined below. The mesh is a
 deliberate EXTENSION of the SI's: 3-D ``(r_s, s, alpha)`` rather than 2-D at
 fixed density, covering correlation as well as exchange, at a stated flat 30%
-loss-weight share per channel rather than equal weight per node (see
-LOSS_PRIMER Sec. 8 for the deviation row). The atomic warm-start plus mesh is
+loss-weight share per channel rather than equal weight per node. The
+atomic warm-start plus mesh is
 subsequently refined by self-consistent training on the molecular pool, so
 the remaining deviation affects only the pretraining seed.
 """
