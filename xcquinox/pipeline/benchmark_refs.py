@@ -57,7 +57,11 @@ from xcquinox.pipeline.external_refs import (
     run_scf_with_cache,
 )
 from xcquinox.pipeline import full_benchmark_pools
+from xcquinox.pipeline.full_benchmark_pools import reference_file_name
 
+#: The historical pool names of ``--pool``; ``all`` is the benchmark pair.
+#: Any pool of ``full_benchmark_pools.POOL_NAMES`` and any comma-separated
+#: list of them is accepted as well (:func:`pool_names_of`).
 POOL_CHOICES: Tuple[str, ...] = ("bh76", "w411", "all")
 
 # Keys every density-only reference npz must carry. All are in
@@ -175,21 +179,62 @@ def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int,
     return True
 
 
-def load_benchmark_species(pool: str = "all", *, basis: str = "def2-svp",
-                           grid_level: int = 2) -> Dict[str, MoleculeSpec]:
-    """Sorted ``{name: MoleculeSpec}`` for the requested benchmark pool.
+def pool_names_of(pool: str) -> Tuple[str, ...]:
+    """The held-out pools ``--pool`` names: ``all`` is the benchmark pair, a
+    single name is that pool, a comma-separated list is that union; an
+    unknown name is refused."""
+    if pool == "all":
+        return tuple(full_benchmark_pools.DEFAULT_POOL_NAMES)
+    names = tuple(p.strip() for p in str(pool).split(",") if p.strip())
+    unknown = [n for n in names if n not in full_benchmark_pools.POOL_NAMES]
+    if not names or unknown:
+        raise ValueError(
+            f"pool must be 'all', one of {full_benchmark_pools.POOL_NAMES} or "
+            f"a comma-separated list of them, got {pool!r}")
+    return names
 
-    Sorting fixes the species order so ``--shard i/N`` slices are stable
-    across invocations and disjoint across array tasks."""
-    if pool not in POOL_CHOICES:
-        raise ValueError(f"pool must be one of {POOL_CHOICES}, got {pool!r}")
-    loader = {
-        "bh76": full_benchmark_pools.load_full_bh76,
-        "w411": full_benchmark_pools.load_full_w411,
-        "all": full_benchmark_pools.load_full_held_out_pools,
-    }[pool]
-    mol_specs, _reactions = loader(basis=basis, grid_level=grid_level)
+
+def n_atoms_of(ms: MoleculeSpec) -> int:
+    """The atom count of a species from its composition."""
+    return sum(int(n) for _e, n in ms.atom_composition)
+
+
+def load_benchmark_species(pool: str = "all", *, basis: str = "def2-svp",
+                           grid_level: int = 2,
+                           max_atoms: Optional[int] = None
+                           ) -> Dict[str, MoleculeSpec]:
+    """Sorted ``{name: MoleculeSpec}`` for the requested pool selection, each
+    species keyed by the set it belongs to and its own name
+    (``<pool>@<system>``, :func:`reference_file_name`).
+
+    Every set carries its own species, so a system two sets name gets one
+    reference per set, computed at that set's own geometry and written to a
+    file of its own. Sorting fixes the species order so ``--shard i/N`` slices
+    are stable across invocations and disjoint across array tasks.
+    ``max_atoms`` drops every species with more atoms than the cap and prints
+    the dropped names, so a reference set smaller than the pool reads as a
+    capped set."""
+    names = pool_names_of(pool)
+    mol_specs, _reactions = full_benchmark_pools.load_held_out_pools(
+        names, basis=basis, grid_level=grid_level)
+    if max_atoms is not None:
+        dropped = sorted(n for n, ms in mol_specs.items()
+                         if n_atoms_of(ms) > int(max_atoms))
+        if dropped:
+            print(f"benchmark_refs: {len(dropped)} species above the cap of "
+                  f"{int(max_atoms)} atoms get no reference: "
+                  f"{', '.join(dropped)}", flush=True)
+        mol_specs = {n: ms for n, ms in mol_specs.items() if n not in dropped}
     return dict(sorted(mol_specs.items()))
+
+
+def species_listing(mol_specs: Dict[str, MoleculeSpec]) -> str:
+    """One line per species -- name, atom count, charge, 2S -- and a count
+    line, the sizing of a reference build before it is submitted."""
+    lines = [f"{name}  atoms={n_atoms_of(ms)}  charge={ms.charge}  "
+             f"spin={ms.spin}" for name, ms in mol_specs.items()]
+    lines.append(f"{len(mol_specs)} species")
+    return "\n".join(lines)
 
 
 def resolve_slice(n: int, *, shard: Optional[str] = None,
@@ -405,8 +450,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--out-dir", required=True,
                    help="reference dir; final <name>.npz per species, "
                         "_intermediates/ + _runlogs/ underneath")
-    p.add_argument("--pool", choices=POOL_CHOICES, default="all",
-                   help="benchmark pool to cover (default all = BH76+W4-11)")
+    p.add_argument("--pool", default="all",
+                   help="held-out pool(s) to cover: all (= bh76,w411), one of "
+                        f"{', '.join(full_benchmark_pools.POOL_NAMES)}, or a "
+                        "comma-separated list of them")
+    p.add_argument("--max-atoms", type=int, default=None,
+                   help="skip every species with more atoms than this; the "
+                        "skipped names are printed and their density leg is "
+                        "reported absent by the evaluation")
+    p.add_argument("--list-species", action="store_true",
+                   help="print the species the selection covers (name, atom "
+                        "count, charge, 2S) and exit without generating")
     p.add_argument("--basis", default="def2-svp")
     p.add_argument("--grid-level", type=int, default=2,
                    help="MUST match the eval run's resolved grid_level "
@@ -441,7 +495,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.error("--auxbasis only makes sense with --density-fit")
 
     mol_specs = load_benchmark_species(args.pool, basis=args.basis,
-                                       grid_level=args.grid_level)
+                                       grid_level=args.grid_level,
+                                       max_atoms=args.max_atoms)
+    if args.list_species:
+        print(species_listing(mol_specs), flush=True)
+        return 0
     all_names = list(mol_specs)
     sl = resolve_slice(len(all_names), shard=args.shard,
                        species_slice=args.species_slice)

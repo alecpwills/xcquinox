@@ -147,7 +147,7 @@ def scan_density_record(dm, ao, weights, rho_ref, *,
     """
     import numpy as np
 
-    from xcquinox.pipeline.evaluation import density_eps_terms, pbe_density_errors
+    from xcquinox.pipeline.evaluation import density_eps_terms, density_error_terms
 
     dm = np.asarray(dm)
     dm_tot = dm[0] + dm[1] if dm.ndim == 3 else dm
@@ -166,9 +166,7 @@ def scan_density_record(dm, ao, weights, rho_ref, *,
                 f"SCAN density integrates to {n_e_scan:.6f} electrons, expected "
                 f"{float(n_electrons_expected):.6f} -- the AO grid does not match "
                 "the grid the reference weights were written for")
-    md = {"rho_grid": rho_scan, "rho_ref_grid": rho_ref,
-          "grid_weights": weights}
-    rmse, l1 = pbe_density_errors(md)
+    rmse, l1 = density_error_terms(rho_scan, rho_ref, weights)
     eps, n_e_ref, wsum = density_eps_terms(rho_scan, rho_ref, weights)
     return {"density_rmse_scan": float(rmse), "density_l1_scan": float(l1),
             "density_eps_l1_scan": float(eps), "n_electrons": float(n_e_ref),
@@ -217,14 +215,14 @@ def _reference_lock(refs_dir: Path, name: str) -> Optional[float]:
 
 def _load_pool(pool: str, *, basis: str, grid_level: int) -> Dict[str, object]:
     """``{name: MoleculeSpec}`` for the requested pool, sorted by name so the
-    resume order is stable. ``all`` = BH76 + W4-11 (the held-out union)."""
+    resume order is stable. ``all`` = BH76 + W4-11. Every key carries the set
+    it belongs to, as the held-out evaluation and the seed-cache link do, so a
+    single-set run writes the same intermediate names a paired run does."""
     from xcquinox.pipeline import full_benchmark_pools as fbp
-    loader = {
-        "all": fbp.load_full_held_out_pools,
-        "bh76": fbp.load_full_bh76,
-        "w411": fbp.load_full_w411,
-    }[pool]
-    mol_specs, _reactions = loader(basis=basis, grid_level=grid_level)
+    names = {"all": ("bh76", "w411"), "bh76": ("bh76",),
+             "w411": ("w411",)}[pool]
+    mol_specs, _reactions = fbp.load_held_out_pools(
+        names, basis=basis, grid_level=grid_level)
     return dict(sorted(mol_specs.items()))
 
 

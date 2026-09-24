@@ -192,6 +192,15 @@ class HyperParams:
     plateau_patience: int = 10
     plateau_factor: float = 0.1
     seed_mix_atomic: bool = False
+    # The published protocol's non-self-consistent points (the trajectory's
+    # flag, carried on the pool and recorded on every spec as its
+    # ``nonsc_points``): with ``respect_sc_flag`` the per-molecule loop
+    # evaluates such a group's energies at the reference density in one
+    # pass, drops its per-molecule and atomic-regularizer terms, scales its
+    # energy loss by ``nonsc_weight`` and drops the group at weight zero.
+    # Off by default: byte-identical to every existing sweep.
+    respect_sc_flag: bool = False
+    nonsc_weight: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -275,12 +284,30 @@ class InputPaths:
     # pending arm (e.g. the v4 mgga stacks) to the new protocol on resubmit.
     # "auto" = rung-derived per arch (rungs.seed_xc_for_arch: the meta-GGA
     # family seeds from converged SCAN, everything else from PBE); "scan"
-    # forces SCAN for every arch (controlled experiments only).
+    # forces SCAN for every arch (controlled experiments only); "minao"
+    # starts every SCF from the superposition of atomic densities, the cold
+    # start, with no converged parent density involved (FULL solvers only).
     seed_xc: str = "pbe"
     # Root of the SCAN seed cache (run_scf_with_cache layout: the per-species
     # npz files live under ``<seed_cache_dir>/_intermediates/``). Required
     # when any cell resolves a "scan" seed.
     seed_cache_dir: str | None = None
+    # The held-out pools the run evaluates, validates against and builds
+    # references for, in this order (``full_benchmark_pools.POOL_NAMES``: the
+    # benchmark pair, the diet set, the two Slim sets). The default is the
+    # pair every earlier configuration evaluated.
+    held_out_pools: tuple[str, ...] = ("bh76", "w411")
+    # The species-size cap of the reference job: a species with more atoms
+    # than this gets no CCSD reference and its density leg is reported absent.
+    # None generates every species.
+    benchmark_refs_max_atoms: int | None = None
+
+
+#: The held-out pools a configuration may name; restated from
+#: ``full_benchmark_pools.POOL_NAMES`` because that module pulls the training
+#: stack and the parser runs on the login node (the two are held equal by a
+#: test).
+_HELD_OUT_POOLS = ("bh76", "w411", "diet150", "slim05", "slim16")
 
 
 # ---------------------------------------------------------------------------
@@ -363,12 +390,18 @@ class ModelConfig:
     configurations only.
 
     ``descriptor_coordinates`` selects the coordinates the networks' MLPs read
-    a row in: ``"legacy"`` (today's layout, byte for byte) or ``"dfs"`` (the
+    a row in: ``"legacy"`` (today's layout, byte for byte), ``"dfs"`` (the
     coordinate set of Dick and Fernandez-Serra, PRB 104, L161109 (2021), as
-    ``networks.py`` states them). Both default to the pre-anchor model class.
+    ``networks.py`` states them) or ``"paper"`` (the published clone's, the
+    dfs set with the epsilon inside the spin coordinate). ``ueg_gate``
+    selects the uniform-gas gate in front of the GGA networks' MLPs:
+    ``"tanh2"`` (``tanh(s)^2``, every model built before the field) or
+    ``"x2"`` (the published clone's transformed reduced gradient). All three
+    default to the pre-anchor model class.
     """
     parent_anchor: bool = False
     descriptor_coordinates: str = "legacy"
+    ueg_gate: str = "tanh2"
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +441,7 @@ class PretrainConfig:
     # lr_decay_start is a FRACTION of n_steps, in [0, 1], matches the
     # PretrainSpec convention in xcquinox.pipeline.config.
     lr_decay_start: float = 0.2      # (E) step-7 pretrain decay onset
-    grad_clip: float = 1.0           # (E) step-7 pretrain grad-clip
+    grad_clip: float = 1.0           # (E) step-7 pretrain grad-clip; 0 = no clip
     seed: int = 42
     # PretrainSpec.loss_weighting is a str validated to {"unweighted",
     # "integration"}. Step-7 uses "integration" exclusively.
@@ -427,6 +460,10 @@ class PretrainConfig:
     # extend. Both default False, so an existing YAML is unchanged.
     dfs_set: bool = False
     pool_atoms: bool = False
+    # The published study's pretraining molecules: "slim05" adds the 25 the
+    # study draws from the Slim05 set (``gmtkn55_sets.slim_pretrain_records``)
+    # after the DFS inventory and before the pool atoms; "" adds nothing.
+    slim_set: str = ""
     # The density the targets sit on: "pbe", "scan", or "auto" for the
     # architecture's rung baseline. "pbe" is every file written before this
     # change; "auto" splits a mixed-rung sweep across two data files.
@@ -434,8 +471,11 @@ class PretrainConfig:
     # How OPEN-SHELL exchange rows are posed. "spin_channel" is the exact
     # spin-scaling footing the production UKS exchange evaluates, per channel
     # at (2 rho_sigma, 4 sigma_sigma_sigma, features of diag(P_sigma,
-    # P_sigma)); "total" is the historical total-density footing. The footing
-    # is part of the data's identity, so a change regenerates the file.
+    # P_sigma)); "total" is the historical total-density footing; "paper" is
+    # the published clone's, every system's rows on the total density with
+    # that code's own target expressions (pretrain_data_gen.EXCHANGE_FOOTINGS).
+    # The footing is part of the data's identity, so a change regenerates the
+    # file.
     exchange_footing: str = "total"
     # Share of the total integration weight carried by the synthetic
     # (r_s, s, alpha) mesh, which is kept as a regularizer only. Must equal
@@ -558,6 +598,16 @@ class ClusterResources:
     # large-basis task OOMing at XLA/LLVM compile time). Default False ->
     # byte-identical (no probe, no extra subprocess).
     preflight_compile_smoke: bool = False
+    # Opt-in cold-start convergence census. When True the preflight runs the
+    # training solver from the atomic guess on every training species, for
+    # one FULL-mode cell per swept architecture, with the certified
+    # pretrained checkpoint (cluster/coldstart_census.py), and writes
+    # <run_dir>/coldstart_census.json. A report, never a gate: a species that
+    # does not converge is recorded and the array is not blocked. Cost, inside
+    # the preflight's own wall: one reference SCF per species and descriptor
+    # set, then the solver's cycles per species and architecture. Default
+    # False -> byte-identical (no census, no extra subprocess).
+    preflight_coldstart_census: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +641,6 @@ class GridConfig:
     # the training subset (strict overlap filtering) so held-out = the true
     # complement with no leakage. Required for the representative-subset
     # (BH76+W4-11) runs where training subset + held-out partition one benchmark.
-    held_out_strict: bool = False
     # Run-level toggle: when True, the eval array is NOT submitted up front. The
     # initial ``submit`` queues pretrain+preflight+train plus a tiny launcher job
     # (afterany on train) that submits the eval array only after train terminates,
@@ -607,11 +656,13 @@ class GridConfig:
     # eval, there IS no separate eval array to defer). Default False ->
     # byte-identical (eval as a separate array).
     inline_eval: bool = False
-    # ``eval_coldstart`` (2026-08-14): when True, each spec's held-out eval
-    # additionally writes the ``eval_holdout_coldstart`` channel -- the FINAL
-    # checkpoint re-evaluated under a cold-start trajectory diagnostic
+    # ``eval_coldstart``: when True, each spec's held-out eval additionally
+    # writes the cold-start channel pair -- the FINAL checkpoint into
+    # ``eval_holdout_coldstart`` and, when it exists, the validation-best
+    # checkpoint into ``eval_holdout_coldstart_val_best``, the reporting
+    # channel -- both re-evaluated under the cold-start override
     # (seed_source="minao", max_cycles=25, conv_tol=1e-12; mode stays FULL).
-    # Default False -> byte-identical (three channels as before).
+    # Default False -> the three trained-protocol channels alone.
     eval_coldstart: bool = False
     # ``eval_converged`` (2026-09-07): when True, each spec's held-out eval
     # additionally writes the ``eval_holdout_converged`` channel (and its
@@ -657,6 +708,14 @@ def _require(d: dict, key: str, ctx: str):
 #: fails on a key the harness itself once wrote is a worse failure than the
 #: silence the refusal below exists to end.
 _RETIRED_PRETRAIN_KEYS = ("pretrain_root",)
+
+#: Top-level keys the loader once read. ``held_out_strict`` selected an
+#: exclusion of the held-out sets: reactions whose species the training set
+#: also carried left the reported score. Nothing is excluded from a held-out
+#: set any more -- every reaction is evaluated and the training overlap is
+#: annotated per reaction and per molecule -- so the key has no effect, and
+#: twelve shipped configurations state it.
+_RETIRED_ROOT_KEYS = ("held_out_strict",)
 
 
 def _reject_unknown_keys(d, dc_type, ctx: str, *, retired=()):
@@ -1056,6 +1115,8 @@ def _build_hyperparams(d: dict) -> HyperParams:
         plateau_patience=int(d.get("plateau_patience", 10)),
         plateau_factor=float(d.get("plateau_factor", 0.1)),
         seed_mix_atomic=bool(d.get("seed_mix_atomic", False)),
+        respect_sc_flag=bool(d.get("respect_sc_flag", False)),
+        nonsc_weight=float(d.get("nonsc_weight", 1.0)),
     )
 
 
@@ -1135,11 +1196,36 @@ def _build_inputs(d: dict) -> InputPaths:
             "SCF may land anywhere on it -- so the run record states why that "
             "was acceptable")
     seed_xc = str(d.get("seed_xc", "pbe"))
-    if seed_xc not in ("pbe", "scan", "auto"):
+    if seed_xc not in ("pbe", "scan", "minao", "auto"):
         raise ValueError(
-            f"{ctx}.seed_xc must be one of 'pbe'/'scan'/'auto', got "
+            f"{ctx}.seed_xc must be one of 'pbe'/'scan'/'minao'/'auto', got "
             f"{seed_xc!r}"
         )
+    pools_raw = d.get("held_out_pools", ("bh76", "w411"))
+    if isinstance(pools_raw, str) or not isinstance(pools_raw, (list, tuple)):
+        raise ValueError(
+            f"grid config key '{ctx}.held_out_pools' must be a list of pool "
+            f"names from {_HELD_OUT_POOLS}, got {type(pools_raw).__name__} "
+            f"({pools_raw!r})")
+    pools = tuple(pools_raw)
+    if not pools:
+        raise ValueError(
+            f"grid config key '{ctx}.held_out_pools' names no pool; the pools "
+            f"are {_HELD_OUT_POOLS}")
+    for pool in pools:
+        if not isinstance(pool, str) or pool not in _HELD_OUT_POOLS:
+            raise ValueError(
+                f"grid config key '{ctx}.held_out_pools' names an unknown pool "
+                f"{pool!r}; the pools are {_HELD_OUT_POOLS}")
+    if len(set(pools)) != len(pools):
+        raise ValueError(
+            f"grid config key '{ctx}.held_out_pools' names a pool twice: "
+            f"{list(pools)}")
+    max_atoms = d.get("benchmark_refs_max_atoms")
+    if max_atoms is not None:
+        max_atoms = _config_number(d, "benchmark_refs_max_atoms", None,
+                                   whole=True, minimum=0, minimum_open=True,
+                                   ctx=ctx)
     return InputPaths(
         external_refs_dir=_require(d, "external_refs_dir", ctx),
         subset_ledger_path=_require(d, "subset_ledger_path", ctx),
@@ -1155,6 +1241,8 @@ def _build_inputs(d: dict) -> InputPaths:
         val_refs_dir=d.get("val_refs_dir"),
         seed_xc=seed_xc,
         seed_cache_dir=d.get("seed_cache_dir"),
+        held_out_pools=pools,
+        benchmark_refs_max_atoms=max_atoms,
     )
 
 
@@ -1168,8 +1256,10 @@ def _build_inputs(d: dict) -> InputPaths:
 # ``test_the_seed_range_is_stated_once``, so a value one layer admits and the
 # other refuses cannot ship.
 _PARENT_DENSITIES = ("pbe", "scan", "auto")
-_EXCHANGE_FOOTINGS = ("total", "spin_channel")
+_EXCHANGE_FOOTINGS = ("total", "spin_channel", "paper")
 _LOSS_WEIGHTINGS = ("unweighted", "integration", "rho_w_sampled")
+# The Slim sets with a pretraining draw ("" = none); slim05 alone carries one.
+_SLIM_SETS = ("", "slim05")
 # jax.random.PRNGKey wraps modulo 2**32 instead of raising, so a seed outside
 # that range silently ALIASES another run's initialization (measured:
 # PRNGKey(-1) == PRNGKey(2**32 - 1), PRNGKey(2**32) == PRNGKey(0)) while the
@@ -1339,11 +1429,10 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         # int(lr_decay_start * n_steps).
         lr_decay_start=_config_number(d, "lr_decay_start", 0.2, minimum=0,
                                       maximum=1),
-        # optax.clip_by_global_norm(0.0) zeroes every gradient and (-1.0)
-        # reverses it; neither is a run, and the consumer has no None branch
-        # (a None reaches the update and raises there, not at load).
-        grad_clip=_config_number(d, "grad_clip", 1.0, minimum=0,
-                                 minimum_open=True),
+        # 0 is no clip (the published cloning protocol runs Adam alone, and
+        # pretrain._build_optimizer omits the clip at 0); a negative value
+        # would reverse every gradient and is refused.
+        grad_clip=_config_number(d, "grad_clip", 1.0, minimum=0),
         seed=_config_number(d, "seed", 42, whole=True, minimum=0,
                             maximum=_MAX_SEED),
         loss_weighting=_pretrain_choice(
@@ -1391,6 +1480,7 @@ def _build_pretrain(d: dict) -> PretrainConfig:
                                          minimum_open=True),
         sampling_seed=_config_number(d, "sampling_seed", 0, whole=True,
                                      minimum=0, maximum=_MAX_SEED),
+        slim_set=_pretrain_choice(d, "slim_set", "", _SLIM_SETS),
     )
     # The decay window is [lr_decay_start, lr_decay_end]; an end before the
     # start is not a schedule and is refused at load rather than at the node.
@@ -1459,7 +1549,10 @@ def _fidelity_tolerance(d, key: str, default: float = 1.0) -> float:
 #: well as in ``config.DESCRIPTOR_COORDINATES`` for the reason
 #: ``_PARENT_DENSITIES`` is: this parser runs on the login node without the
 #: library; the two are pinned equal by the test suite.
-_DESCRIPTOR_COORDINATES = ("legacy", "dfs")
+_DESCRIPTOR_COORDINATES = ("legacy", "dfs", "paper")
+#: The uniform-gas gates of the GGA networks, stated here as well as in
+#: ``config.UEG_GATES`` for the same reason and pinned equal the same way.
+_UEG_GATES = ("tanh2", "x2")
 
 
 def _build_model_block(d) -> ModelConfig:
@@ -1491,7 +1584,13 @@ def _build_model_block(d) -> ModelConfig:
             f"grid config key 'model.descriptor_coordinates' must be one of "
             f"{', '.join(repr(v) for v in _DESCRIPTOR_COORDINATES)}, got "
             f"{coords!r}")
-    return ModelConfig(parent_anchor=anchor, descriptor_coordinates=coords)
+    gate = d.get("ueg_gate", "tanh2")
+    if not isinstance(gate, str) or gate not in _UEG_GATES:
+        raise ValueError(
+            f"grid config key 'model.ueg_gate' must be one of "
+            f"{', '.join(repr(v) for v in _UEG_GATES)}, got {gate!r}")
+    return ModelConfig(parent_anchor=anchor, descriptor_coordinates=coords,
+                       ueg_gate=gate)
 
 
 def _build_fidelity(d) -> FidelityConfig:
@@ -1700,6 +1799,8 @@ def _build_cluster(d: dict, *, text: str = "",
         benchmark_refs_allocation=d.get("benchmark_refs_allocation",
                                         "exclusive"),
         preflight_compile_smoke=bool(d.get("preflight_compile_smoke", False)),
+        preflight_coldstart_census=bool(
+            d.get("preflight_coldstart_census", False)),
     )
 
 
@@ -1852,7 +1953,8 @@ def load_grid_config(path: str) -> GridConfig:
             "the parser keeps only the last, so the others are dead text. "
             "State the objective exactly once."
         )
-    _reject_unknown_keys(raw, GridConfig, "<root>")
+    _reject_unknown_keys(raw, GridConfig, "<root>",
+                         retired=_RETIRED_ROOT_KEYS)
 
     return GridConfig(
         sweep=_build_sweep(_require(raw, "sweep", "<root>")),
@@ -1867,7 +1969,6 @@ def load_grid_config(path: str) -> GridConfig:
         bh76_mode=raw.get("bh76_mode", "reaction_energy"),
         ae_as_reactions=bool(raw.get("ae_as_reactions", False)),
         use_polarized_correlation=bool(raw.get("use_polarized_correlation", False)),
-        held_out_strict=bool(raw.get("held_out_strict", False)),
         defer_eval=bool(raw.get("defer_eval", False)),
         inline_eval=bool(raw.get("inline_eval", False)),
         eval_coldstart=bool(raw.get("eval_coldstart", False)),
@@ -2063,18 +2164,19 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                     "formed against; a zeta-blind network disagrees with them "
                     "by 14.9 mHa on the N atom). Set "
                     "use_polarized_correlation: true at the run level.")
+    run_coords = str(getattr(model_block, "descriptor_coordinates", "legacy"))
     if model_block is not None and (
-            getattr(model_block, "descriptor_coordinates", "legacy") == "dfs"
+            run_coords in ("dfs", "paper")
             and not bool(getattr(cfg, "use_polarized_correlation", False))):
         for a in _canon_axis(cfg.sweep.arch):
             if not get_architecture(a).use_polarized_correlation:
                 raise ValueError(
-                    f"model.descriptor_coordinates is 'dfs' but architecture "
-                    f"{a!r} would be built with use_polarized_correlation="
-                    "False; the DFS correlation network reads x1 = "
-                    "ln(spinscale), so the polarized correlation network is "
-                    "required. Set use_polarized_correlation: true at the "
-                    "run level.")
+                    f"model.descriptor_coordinates is {run_coords!r} but "
+                    f"architecture {a!r} would be built with "
+                    "use_polarized_correlation=False; the correlation network "
+                    "of that coordinate set reads x1 = ln(spinscale), so the "
+                    "polarized correlation network is required. Set "
+                    "use_polarized_correlation: true at the run level.")
 
     # --- subset_size bounds -------------------------------------------------
     pool_size = getattr(domain, "pool_size", None)
@@ -2136,6 +2238,24 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         raise ValueError(
             "hyperparams.seed_mix_atomic is applied by the per-molecule loop (update_scheme per_molecule) only; "
             f"got update_scheme={hp.update_scheme!r}")
+    # Under a minao seed the run's SCF seed is the atomic guess, so the two
+    # endpoints of the mixture coincide: every mixed seed would be the cold
+    # start itself while the record states a mixed-seed protocol.
+    if hp.seed_mix_atomic and getattr(cfg.inputs, "seed_xc", "pbe") == "minao":
+        raise ValueError(
+            "hyperparams.seed_mix_atomic mixes the run's SCF seed with the "
+            "atomic guess, and inputs.seed_xc='minao' makes that seed the "
+            "atomic guess itself: every mixture would be the cold start while "
+            "the record states a mixed-seed protocol. Use seed_xc 'auto', 'pbe' "
+            "or 'scan' with the mixture, or 'minao' without it.")
+    if hp.respect_sc_flag and hp.update_scheme != "per_molecule":
+        raise ValueError(
+            "hyperparams.respect_sc_flag is applied by the per-molecule loop (update_scheme per_molecule) only; "
+            f"got update_scheme={hp.update_scheme!r}")
+    # finite and non-negative: NaN fails the first comparison, inf the second
+    if not (hp.nonsc_weight >= 0.0 and hp.nonsc_weight < float("inf")):
+        raise ValueError(
+            f"hyperparams.nonsc_weight must be finite and >= 0, got {hp.nonsc_weight!r}")
     if hp.plateau_patience < 0:
         raise ValueError(
             f"hyperparams.plateau_patience must be >= 0, got {hp.plateau_patience}")
@@ -2229,9 +2349,10 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"pretrain.lr_start ({pt.lr_start}) must be >= lr_end "
             f"({pt.lr_end})"
         )
-    if pt.grad_clip <= 0:
+    if pt.grad_clip < 0:
         raise ValueError(
-            f"pretrain.grad_clip must be > 0, got {pt.grad_clip}"
+            f"pretrain.grad_clip must be >= 0 (0 disables the clip), got "
+            f"{pt.grad_clip}"
         )
     if pt.loss_weighting not in _LOSS_WEIGHTINGS:
         raise ValueError(
@@ -2255,8 +2376,19 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         )
     if pt.exchange_footing not in _EXCHANGE_FOOTINGS:
         raise ValueError(
-            f"pretrain.exchange_footing must be 'total' or 'spin_channel', "
-            f"got {pt.exchange_footing!r}"
+            "pretrain.exchange_footing must be one of "
+            + ", ".join(repr(v) for v in _EXCHANGE_FOOTINGS)
+            + f", got {pt.exchange_footing!r}"
+        )
+    if pt.exchange_footing == "paper" and pt.energy_term_weight > 0.0:
+        raise ValueError(
+            f"pretrain.energy_term_weight is {pt.energy_term_weight} with "
+            "pretrain.exchange_footing: paper. The published targets pose an "
+            "open shell's exchange on the total density, so the file's "
+            "per-system exchange table is not PBE's spin-scaled exchange "
+            "energy there and the energy term would pull toward a value the "
+            "SCF never evaluates; the published protocol has no energy term. "
+            "Set energy_term_weight: 0.0 under this footing."
         )
     # The bound is the CONSUMER's: pretrain_data_gen._check_generator_arguments
     # requires 0 < mesh_fraction < 1, so a share of exactly zero loads here and
@@ -2298,19 +2430,27 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # energy-weight sweep the refusal names measured that no weight brings
     # a point-wise fit of the parent to the certificate (Section 2); 0.0 is
     # exact for an anchored run and is stated without a sweep.
+    # The measurement behind the refusal was made under the integration-
+    # weighted objective; the published objective (loss_weighting
+    # rho_w_sampled, the plain mean over the sampled rows) is not covered by
+    # it, and there the certificate decides after the run, whatever the
+    # footing. The release is by objective alone.
     anchored_run = bool(getattr(getattr(cfg, "model", None),
                                 "parent_anchor", False))
     if (pt.dfs_set and cfg.fidelity.enforce and pt.energy_term_weight == 0.0
-            and not anchored_run):
+            and not anchored_run and pt.loss_weighting != "rho_w_sampled"):
         raise ValueError(
             "pretrain.energy_term_weight is 0.0 with pretrain.dfs_set: true "
-            "and fidelity.enforce: true. At exactly zero the per-system "
+            "and fidelity.enforce: true under loss_weighting "
+            f"{pt.loss_weighting!r}. At exactly zero the per-system "
             "energy term is not small, it is NOT EVALUATED (pretrain.py "
             "short-circuits on `energy_weight == 0.0`), so this run would "
             "fit the protocol pretraining set with the integration-weighted "
             "point-wise objective ALONE -- the pre-protocol objective under "
             "which NO architecture reached its parent inside these "
-            "tolerances: measured "
+            "tolerances (the published objective, loss_weighting "
+            "rho_w_sampled, is not covered by that measurement and is not "
+            "refused here): measured "
             "atomization-energy offsets of 2.3 to 56.1 kcal/mol against "
             f"fidelity.tol_AE = {cfg.fidelity.tol_AE} kcal/mol. The "
             "certificate would then FAIL on every architecture, after the "

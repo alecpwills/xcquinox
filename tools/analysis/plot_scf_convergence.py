@@ -69,8 +69,10 @@ def collect_spec_scf_traces(run_dir: Path, spec_idx: int,
                             ) -> List[Dict[str, Any]]:
     """All per-molecule SCF traces for one spec (only molecules with a trace).
 
-    ``eval_subdir`` selects the channel; ``eval_holdout_coldstart`` carries
-    the 25-cycle cold-start trajectories this figure exists to display."""
+    ``eval_subdir`` selects the channel; the cold-start pair
+    (``eval_holdout_coldstart`` and its val-best twin, the reporting channel)
+    carries the 25-cycle cold-start trajectories this figure exists to
+    display."""
     # Imported at the guard, not at module scope: this script has no
     # other use for the training package and importing it here would
     # pull jax / pyscf / equinox into every invocation.
@@ -188,20 +190,27 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--run-dir", default=None)
     p.add_argument("--specs", default=None,
                    help="comma-separated spec indices (default: all with data)")
-    p.add_argument("--eval-subdir", default="eval_holdout",
-                   help="channel to read traces from (eval_holdout / "
-                        "eval_holdout_coldstart)")
+    p.add_argument("--eval-subdir", default=None,
+                   help="channel to read traces from (default: the run's "
+                        "reporting channel, eval_holdout_coldstart_val_best "
+                        "where the run carries it, else the trained "
+                        "protocol's val-best channel, else eval_holdout)")
     p.add_argument("--outdir", default=str(
         Path(__file__).resolve().parent / "figures_ablation_notransform"
         / "scf_convergence"))
     args = p.parse_args(argv)
 
     run_dir = _resolve_run_dir(args.run_dir)
+    if args.eval_subdir is None:
+        # Imported at the call, as the slice guard is: the script keeps the
+        # training package out of its import.
+        from xcquinox.pipeline.holdout_channels import resolve_channel
+        args.eval_subdir = resolve_channel(run_dir)
     outdir = Path(args.outdir).expanduser().resolve()
     specs = ([int(t) for t in args.specs.split(",") if t.strip()]
              if args.specs else _discover_specs_with_traces(
                  run_dir, eval_subdir=args.eval_subdir))
-    print(f"run_dir: {run_dir}  specs: {specs}")
+    print(f"run_dir: {run_dir}  channel: {args.eval_subdir}  specs: {specs}")
     n = 0
     for idx in specs:
         traces = collect_spec_scf_traces(run_dir, idx,

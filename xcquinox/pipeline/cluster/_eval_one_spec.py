@@ -192,8 +192,10 @@ def _aggregate_per_molecule(pm_rows, ae_key="AE_error_kcalmol",
         return sum(vals) / len(vals) if vals else float("nan")
 
     rho_rmse = _mean_finite(rho_key)
-    # PBE-vs-CCSD baseline density error (model-free; nan when no benchmark
-    # CCSD reference densities were wired -- the historical schema).
+    # PBE-vs-CCSD baseline density error (model-free): nan when the records
+    # carry no reference density, or a reference without its own PBE density
+    # (the training-side OEP references carry none; the baseline is never the
+    # locally recomputed twin).
     rho_rmse_pbe = _mean_finite("density_rmse_pbe")
     # n_eval: AE-contributing molecules only (matches the mae denominator).
     return mae, rho_rmse, len(ae_errs), rho_rmse_pbe
@@ -254,7 +256,7 @@ def _apply_species_slice(idx, full_specs, full_rxns, holdout_dir):
     Returns ``(mol_specs, reactions, slice_names)``; ``slice_names`` is None
     when no slice is named, in which case the pool is returned untouched and
     the channel carries no mark -- the full 216-reaction BH76 + W4-11 pool
-    (214 species, measured 2026-08-20) stays the default. ``holdout_dir`` is
+    (231 species, each set's own) stays the default. ``holdout_dir`` is
     the channel directory as a :class:`pathlib.Path`, not a string: the mark
     is written through ``mkdir`` and the ``/`` operator, and the directory is
     created here if the evaluation has not yet made it.
@@ -266,11 +268,8 @@ def _apply_species_slice(idx, full_specs, full_rxns, holdout_dir):
     either mark, because a slice covers a handful of species chosen for a
     workflow test and its MAE is not the pool MAE the architectures are
     compared on. The counts in ``sliced_eval.json`` are the species slice's
-    own; ``n_reactions`` in ``eval_metadata.json`` is what was evaluated,
-    i.e. after :func:`_test_slice_reactions` has also dropped the validation
-    complement, so the two reaction counts differ for a spec that validated.
-    ``n_species`` agrees between the two files: that filter drops reactions
-    only, never species.
+    own, and ``n_reactions`` in ``eval_metadata.json`` is what was evaluated;
+    the two agree, since nothing is dropped after the slice.
 
     The sliced containers are new objects (``slice_held_out_pools`` rebuilds
     the species dict and the reaction list); the reaction dicts and
@@ -300,57 +299,48 @@ def _apply_species_slice(idx, full_specs, full_rxns, holdout_dir):
     return sliced_specs, sliced_rxns, names
 
 
-def _test_slice_reactions(reactions, training_spec):
-    """Return the held-out reactions to REPORT. WS3.
+def _annotate_validation_slice(reactions, training_spec):
+    """Every held-out reaction, each marked ``in_validation_slice``.
 
-    When the spec GENUINELY ran in-loop validation the held-out pool was split
+    When the spec GENUINELY ran in-loop validation the held-out set was split
     val/test by :func:`eval_holdout.split_held_out`; the val slice drove
-    early-stop / validation-best selection, so reporting it here would leak the
-    selection signal into the reported generalization metric. We therefore report
-    ONLY the test slice (the deterministic complement of the val slice for the
-    same ``val_frac``).
+    early-stop and validation-best selection, so a reported number over it
+    carries the selection signal. Nothing is dropped for that -- every
+    reaction of the set is evaluated and written -- and the mark is what the
+    reported row and any later reading separate on.
 
-    FIX 1 (2026-06-20): the gate MUST match the TRAIN-side activation, not
-    ``validate_every`` alone. Training validates only in
-    :func:`train._run_per_molecule_loop` (the only loop with the validation hook)
-    and only when :func:`train._build_validation_data` returns data -- i.e.
-    ``validate_every > 0`` AND non-empty ``validation_molecules`` AND a
-    ``validation_reactions_path``. A partial/misconfigured spec (or any
-    ``update_scheme='batched'`` run, which has NO validation hook) therefore never
-    splits off a val slice, so the FULL held-out set is reported (no silent,
-    non-comparable ~20% shrink). split_held_out is deterministic, so when
-    validation DID run the kept set is the exact complement of the val slice the
-    training used."""
+    The gate matches the TRAIN-side activation, not ``validate_every`` alone.
+    Training validates only in :func:`train._run_per_molecule_loop` and only
+    when :func:`train._build_validation_data` returns data, so a partial spec
+    or any ``update_scheme='batched'`` run splits off no val slice and every
+    reaction is marked False. The RECORDED val slice governs when present:
+    the staged ``validation/val_reactions.json`` is what early-stop consumed.
+    The mark is by PHYSICAL identity, not name, so a duplicate of a val
+    barrier under a permuted-reactant name is marked with it."""
     validated = (
         int(getattr(training_spec, "validate_every", 0)) > 0
         and bool(getattr(training_spec, "validation_molecules", ()))
         and getattr(training_spec, "validation_reactions_path", None)
     )
     if not validated:
-        return reactions
+        return [{**r, "in_validation_slice": False} for r in reactions]
     from xcquinox.pipeline.eval_holdout import (reaction_identity_key,
-                                            split_held_out)
-    # The RECORDED val slice governs when present: the staged
-    # validation/val_reactions.json is what training's early-stop actually
-    # consumed, so re-evals of existing runs keep their historical partition
-    # even after the split hash changed keys. Exclusion is by PHYSICAL
-    # identity, not name, so a pool duplicate of a val barrier under a
-    # permuted-reactant name (four BH76 entries) is excluded with it --
-    # validation-best selection saw that barrier regardless of its name.
+                                                split_held_out)
+    val_ids = None
     val_path = getattr(training_spec, "validation_reactions_path", None)
     if val_path and os.path.isfile(str(val_path)):
         try:
             with open(str(val_path)) as f:
                 val_rxns = json.load(f)
-            val_ids = {reaction_identity_key(r) for r in val_rxns}
-            if val_ids:
-                return [r for r in reactions
-                        if reaction_identity_key(r) not in val_ids]
+            val_ids = {reaction_identity_key(r) for r in val_rxns} or None
         except (OSError, json.JSONDecodeError, TypeError):
-            pass
-    _val, test = split_held_out(
-        reactions, val_frac=float(getattr(training_spec, "val_frac", 0.2)))
-    return test
+            val_ids = None
+    if val_ids is None:
+        val, _test = split_held_out(
+            reactions, val_frac=float(getattr(training_spec, "val_frac", 0.2)))
+        val_ids = {reaction_identity_key(r) for r in val}
+    return [{**r, "in_validation_slice": reaction_identity_key(r) in val_ids}
+            for r in reactions]
 
 
 #: What one held-out pass writes into its channel directory: the three tables
@@ -388,7 +378,8 @@ def _clear_pass_outputs(holdout_dir, names) -> None:
 def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                        training_spec, holdout_subdir="eval_holdout",
                        channel=None) -> None:
-    """Full-pool held-out eval (BH76 + W4-11) for one trained spec.
+    """Full-pool held-out eval over the run's held-out pools for one trained
+    spec.
 
     Parallelizes across molecule shards BY DEFAULT (adaptive degradation via
     ``_holdout_parallel.run_holdout_with_escalation``), auto-detecting the usable
@@ -420,7 +411,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
             load_trained_model,
             run_full_holdout_eval,
         )
-        from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
+        from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
         from xcquinox.pipeline.cluster.grid_config import _resolve_eval_workers
         from xcquinox.pipeline.parallel import detect_available_cpus
 
@@ -429,7 +420,11 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         # pass's start; its tables do, until this pass ends (PASS_OUTPUTS)
         _clear_pass_outputs(holdout_dir, _CLEARED_AT_START)
         model_name = os.path.basename(model_path)
-        _log(idx, f"starting full-pool held-out eval (BH76 + W4-11) "
+        # the pools the configuration names; the benchmark pair for a
+        # configuration written before the selection existed
+        pools = tuple(getattr(getattr(cfg, "inputs", None), "held_out_pools",
+                              ("bh76", "w411")))
+        _log(idx, f"starting full-pool held-out eval ({', '.join(pools)}) "
                   f"[{model_name} -> {holdout_subdir}]")
         t1 = time.time()
         model = load_trained_model(training_spec, _Path(model_path))
@@ -439,43 +434,38 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         # evaluates the held-out set in def2-svp (invalid comparison).
         _hb, _hg = _held_out_basis_grid(cfg)
         _log(idx, f"held-out pool basis={_hb} grid_level={_hg}")
-        full_specs, full_rxns = load_full_held_out_pools(
-            basis=_hb, grid_level=_hg,
+        full_specs, full_rxns = load_held_out_pools(
+            pools, basis=_hb, grid_level=_hg,
         )
         n_pool = len(full_rxns)
         full_specs, full_rxns, _slice_names = _apply_species_slice(
             idx, full_specs, full_rxns, holdout_dir)
 
-        # WS3: report ONLY the TEST slice when in-loop validation ran (the val
-        # slice drove early-stop and must not leak into the reported metric); the
-        # full set otherwise (byte-identical to pre-WS3). split_held_out is
-        # deterministic, so this is the exact complement of the val slice the
-        # training used.
+        # Every reaction of the set is evaluated and written; the ones the
+        # in-loop validation consumed are MARKED, so the reported row can
+        # average the complement (the val slice drove early-stop and its
+        # numbers carry that selection) while the set itself stays whole.
         n_before = len(full_rxns)
-        full_rxns = _test_slice_reactions(full_rxns, training_spec)
-        if len(full_rxns) != n_before:
-            _log(idx, f"held-out eval: reporting TEST slice only "
-                      f"({len(full_rxns)}/{n_before} reactions; val slice "
-                      f"excluded, validate_every="
+        full_rxns = _annotate_validation_slice(full_rxns, training_spec)
+        n_val = sum(1 for r in full_rxns if r.get("in_validation_slice"))
+        if n_val:
+            _log(idx, f"held-out eval: {n_val}/{n_before} reactions are the "
+                      f"validation slice and are marked, not dropped "
+                      f"(validate_every="
                       f"{getattr(training_spec, 'validate_every', 0)})")
 
-        # An empty reaction set has no MAE. The filter above runs AFTER the
-        # species slice and can take everything the slice left (a slice
-        # closing few reactions, all of them recorded in the val slice), so
-        # the emptiness is checked here, before any energy is computed, and
-        # the channel is failed rather than stamped over an average of
-        # nothing. A pool that arrived empty is a different fault and is left
-        # to the loader.
+        # An empty reaction set has no MAE. The species slice can take
+        # everything the pool held, so the emptiness is checked here, before
+        # any energy is computed, and the channel is failed rather than
+        # stamped over an average of nothing. A pool that arrived empty is a
+        # different fault and is left to the loader.
         if n_pool and not full_rxns:
             _slice_desc = (", ".join(_slice_names) if _slice_names
                            else "no slice")
             raise RuntimeError(
                 f"held-out channel {holdout_subdir} for spec {idx} would "
                 f"average NO reactions: the {n_pool}-reaction pool reduced "
-                f"to {n_before} under the species slice ({_slice_desc}) and "
-                f"to 0 under the validation-complement filter "
-                f"(validate_every="
-                f"{getattr(training_spec, 'validate_every', 0)}). An empty "
+                f"to 0 under the species slice ({_slice_desc}). An empty "
                 "reaction set has no MAE.")
 
         # Parallelize the ~200-molecule held-out loop across the node's CPUs by
@@ -494,8 +484,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                     run_dir, idx, training_spec, model, full_rxns, full_specs,
                     holdout_dir, basis=_hb, grid_level=_hg,
                     n_workers_top=n_top, total_cpus=detect_available_cpus(),
-                    strict=bool(getattr(cfg, "held_out_strict", False)),
-                    model_name=model_name, channel=channel)
+                    model_name=model_name, channel=channel, pools=pools)
             except Exception as pexc:  # noqa: BLE001
                 _log(idx, f"held-out parallel path failed "
                           f"({type(pexc).__name__}: {pexc}); serial fallback")
@@ -503,8 +492,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         if result is None:
             result = run_full_holdout_eval(
                 training_spec=training_spec, model=model,
-                mol_specs=full_specs, reactions=full_rxns, out_dir=holdout_dir,
-                strict=bool(getattr(cfg, "held_out_strict", False)))
+                mol_specs=full_specs, reactions=full_rxns, out_dir=holdout_dir)
 
         # Channel provenance stamp: per-row columns alone cannot distinguish
         # a cold-start pass from a capped warm one (both report cycles_run at
@@ -662,7 +650,13 @@ def main(argv=None) -> int:
     #   <ckpt>/eval_holdout/per_reaction.json  (per-reaction NN + PBE errors)
     # On exception: writes <ckpt>/eval_holdout/failure.json with the trace
     # and returns 0 (the in-sample artifact is the authoritative success
-    # signal for the SLURM array task).
+    # signal for the SLURM array task). The channel directories and the
+    # checkpoint files of every pass below are the held-out channel
+    # vocabulary's (imported here, after the JAX routing above).
+    from xcquinox.pipeline.holdout_channels import (
+        CHANNEL_BEST, CHANNEL_COLDSTART, CHANNEL_COLDSTART_VAL_BEST,
+        CHANNEL_CONVERGED, CHANNEL_CONVERGED_VAL_BEST, CHANNEL_VAL_BEST,
+        MODEL_BEST, MODEL_VAL_BEST, OVERRIDE_COLDSTART, OVERRIDE_CONVERGED)
     _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                        training_spec)
 
@@ -674,10 +668,10 @@ def main(argv=None) -> int:
     # set (eval_holdout_best/) -- doubling the data return. Fully isolated from
     # the final pass (own checkpoint, own output dir, own _shards). No-ops
     # silently when the run never captured a best snapshot (older runs).
-    best_path = os.path.join(checkpoint_dir, "model_best.eqx")
+    best_path = os.path.join(checkpoint_dir, MODEL_BEST)
     if os.path.isfile(best_path):
         _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, best_path,
-                           training_spec, holdout_subdir="eval_holdout_best")
+                           training_spec, holdout_subdir=CHANNEL_BEST)
     else:
         _log(idx, "no model_best.eqx -- skipping best-checkpoint held-out eval "
                   "(only eval_holdout/ produced)")
@@ -689,21 +683,23 @@ def main(argv=None) -> int:
     # the SAME test slice. No-ops silently when validation was disabled / older
     # runs never produced the snapshot. Fully isolated (own checkpoint, own dir,
     # own _shards) from the final + best passes.
-    val_best_path = os.path.join(checkpoint_dir, "model_val_best.eqx")
+    val_best_path = os.path.join(checkpoint_dir, MODEL_VAL_BEST)
     if os.path.isfile(val_best_path):
         _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, val_best_path,
-                           training_spec, holdout_subdir="eval_holdout_val_best")
+                           training_spec, holdout_subdir=CHANNEL_VAL_BEST)
     else:
         _log(idx, "no model_val_best.eqx -- skipping validation-best held-out "
                   "eval (in-loop validation disabled or older run)")
 
-    # --- 2026-08-14: OPTIONAL cold-start channel (eval_coldstart: true) ------
-    # A 4th pass on the FINAL checkpoint under the cold-start trajectory
-    # diagnostic: the spec's solver is REPLACED HERE, before dispatch, so the
-    # in-process serial-leftover tier and the serial fallback inherit the
-    # override; the shard workers apply the SAME shared helper via
-    # --coldstart (they reload the spec pickle themselves). Only FULL-mode
-    # specs qualify (the override is undefined for one-shot protocols).
+    # --- OPTIONAL cold-start channel pair (eval_coldstart: true) -------------
+    # The final checkpoint under the cold-start override and, when the
+    # validation-best checkpoint exists, that checkpoint too: the latter is
+    # the reporting channel, the channel a campaign's numbers are read from.
+    # The spec's solver is REPLACED HERE, before dispatch, so the in-process
+    # serial-leftover tier and the serial fallback inherit the override; the
+    # shard workers apply the SAME shared helper via --coldstart (they reload
+    # the spec pickle themselves). Only FULL-mode specs qualify (the override
+    # is undefined for one-shot protocols).
     if bool(getattr(cfg, "eval_coldstart", False)):
         _sc = getattr(training_spec, "solver_config", None)
         if _sc is not None and getattr(getattr(_sc, "mode", None),
@@ -715,17 +711,25 @@ def main(argv=None) -> int:
                 training_spec, solver_config=coldstart_solver_config(_sc))
             _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                                cold_spec,
-                               holdout_subdir="eval_holdout_coldstart",
-                               channel="coldstart")
+                               holdout_subdir=CHANNEL_COLDSTART,
+                               channel=OVERRIDE_COLDSTART)
+            if os.path.isfile(val_best_path):
+                _run_held_out_eval(
+                    run_dir, idx, cfg, checkpoint_dir, val_best_path,
+                    cold_spec,
+                    holdout_subdir=CHANNEL_COLDSTART_VAL_BEST,
+                    channel=OVERRIDE_COLDSTART)
+            else:
+                _log(idx, "no model_val_best.eqx -- cold-start channel on the "
+                          "final checkpoint only")
         else:
             _log(idx, "eval_coldstart requested but the spec has no FULL-mode "
                       "solver_config -- skipping the cold-start channel")
 
-    # --- 2026-09-07: OPTIONAL converged-SCF channel (eval_converged: true) --
-    # A fifth pass under a CONVERGED SCF (pyscfad backend, PBE seed, DIIS,
-    # 100 cycles at 1e-8 Ha) on the FINAL checkpoint and, when the val-best
-    # checkpoint exists, a sixth on it: the figures' headline is the
-    # validation-best channel. The spec's solver is replaced HERE, before
+    # --- OPTIONAL converged-SCF channel pair (eval_converged: true) ----------
+    # The FINAL checkpoint under a CONVERGED SCF (pyscfad backend, PBE seed,
+    # DIIS, 100 cycles at 1e-8 Ha) and, when the val-best checkpoint exists,
+    # that checkpoint too. The spec's solver is replaced HERE, before
     # dispatch, exactly as for the cold-start channel; the shard workers apply
     # the same shared override via --channel converged.
     if bool(getattr(cfg, "eval_converged", False)):
@@ -739,14 +743,14 @@ def main(argv=None) -> int:
                 training_spec, solver_config=converged_solver_config(_sc))
             _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                                conv_spec,
-                               holdout_subdir="eval_holdout_converged",
-                               channel="converged")
+                               holdout_subdir=CHANNEL_CONVERGED,
+                               channel=OVERRIDE_CONVERGED)
             if os.path.isfile(val_best_path):
                 _run_held_out_eval(
                     run_dir, idx, cfg, checkpoint_dir, val_best_path,
                     conv_spec,
-                    holdout_subdir="eval_holdout_converged_val_best",
-                    channel="converged")
+                    holdout_subdir=CHANNEL_CONVERGED_VAL_BEST,
+                    channel=OVERRIDE_CONVERGED)
             else:
                 _log(idx, "no model_val_best.eqx -- converged channel on the "
                           "final checkpoint only")

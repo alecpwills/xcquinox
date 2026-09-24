@@ -10,11 +10,15 @@ import pytest
 
 from xcquinox.pipeline import rungs
 
-# The 11 v4-campaign archs and their rungs, pinned explicitly.
-_V4_RUNGS = {
+# The campaign architectures and their rungs, pinned explicitly: the v4 sweep
+# and the v8 geometric pair, whose cusp columns carry no beyond-GGA ingredient
+# and so leave it on the GGA rung with the PBE seed.
+_CAMPAIGN_RUNGS = {
     "deep_3x16": rungs.RUNG_GGA,
     "deep_attn_3x16": rungs.RUNG_GGA,
     "deep_cusp_3x16": rungs.RUNG_GGA,
+    "deep_geom_3x16": rungs.RUNG_GGA,
+    "deep_geom_attn_3x16": rungs.RUNG_GGA,
     "deep_rung35_3x16": rungs.RUNG_R35,
     "deep_rung35_attn_3x16": rungs.RUNG_R35,
     "deep_rung35ms_3x16": rungs.RUNG_R35,
@@ -33,8 +37,8 @@ _MGGA_FAMILY = (
 )
 
 
-@pytest.mark.parametrize("arch,rung", sorted(_V4_RUNGS.items()))
-def test_rung_of_pins_all_v4_archs(arch, rung):
+@pytest.mark.parametrize("arch,rung", sorted(_CAMPAIGN_RUNGS.items()))
+def test_rung_of_pins_the_campaign_architectures(arch, rung):
     assert rungs.rung_of(arch) == rung
 
 
@@ -55,7 +59,7 @@ def test_rung_from_ingredients_mapping():
 
 
 def test_seed_xc_phase1_mgga_scan_policy():
-    for arch in _V4_RUNGS:
+    for arch in _CAMPAIGN_RUNGS:
         expected = "scan" if arch in _MGGA_FAMILY else "pbe"
         assert rungs.seed_xc_for_arch(arch) == expected, arch
     # default policy is the production phase-1 policy

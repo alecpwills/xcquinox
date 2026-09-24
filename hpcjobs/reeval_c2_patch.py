@@ -114,13 +114,17 @@ import sys
 import time
 from pathlib import Path
 
+from xcquinox.pipeline.holdout_channels import (CHANNEL_MODEL,
+                                                CHANNEL_OVERRIDE,
+                                                HOLDOUT_CHANNELS)
+
 # ---------------------------------------------------------------------------
 # Anchors and identities (measured on run_20260827T163330Z, 2026-08-31)
 # ---------------------------------------------------------------------------
 
-SPECIES = "c2"
+SPECIES = "w411@c2"
 REACTION_NAME = "w411_c2_atomization"
-C_ATOM = "c"
+C_ATOM = "w411@c"
 
 #: Stable-branch E_pbe(c2): bit-identical across the 72 clean channels of
 #: the pulled run (18 specs x 4 channels).
@@ -174,16 +178,10 @@ BAND_FACTOR = 10.0
 #: source-text test so the two cannot drift.
 KCAL_PER_HA = 627.5094740631
 
-CHANNELS = ("eval_holdout", "eval_holdout_best", "eval_holdout_val_best",
-            "eval_holdout_coldstart")
-#: Checkpoint evaluated by each channel (cluster/_eval_one_spec.py:539,
-#: 631-649, 661-673).
-CHANNEL_MODEL = {
-    "eval_holdout": "model.eqx",
-    "eval_holdout_best": "model_best.eqx",
-    "eval_holdout_val_best": "model_val_best.eqx",
-    "eval_holdout_coldstart": "model.eqx",
-}
+#: Every held-out channel the eval stage writes, and the checkpoint each one
+#: evaluates (``CHANNEL_MODEL``), from the held-out channel vocabulary; a
+#: channel's solver override is applied by :func:`channel_solver_config`.
+CHANNELS = HOLDOUT_CHANNELS
 PATCH_ARTIFACTS = ("per_molecule.json", "per_reaction.json", "test_set.csv",
                    "eval_metadata.json")
 
@@ -445,7 +443,7 @@ def _fetch_command(run_dir, pending_specs) -> str:
 
 def format_survey_table(rows, run_dir) -> str:
     lines = []
-    lines.append(f"{'spec':>5}  {'channel':<24} {'state':<13} "
+    lines.append(f"{'spec':>5}  {'channel':<32} {'state':<13} "
                  f"{'E_pbe(c2)':>18}  notes")
     for r in sorted(rows, key=lambda x: (x.spec, CHANNELS.index(x.channel))):
         notes = []
@@ -590,31 +588,42 @@ def _fmt_delta(x) -> str:
     return "" if not math.isfinite(x) else f"{x:+.6f}"
 
 
-def _pool_stats(rows):
+def _pool_stats(rows, weighted=False):
     """(mae_nn, mae_pbe, n_used_nn, n_nan_union) with
     eval_holdout.reaction_mae_kcalmol / _n_nan_union semantics on stored
     per-reaction rows: one term per reaction IDENTITY (permuted-name and
     duplicate-name twins collapse; the casefolded-name multiset of
     species_matching.reaction_identity_keys), finite values averaged
     within an identity; n_nan_union counts identities whose NN or PBE leg
-    has no finite row."""
+    has no finite row. With ``weighted`` each identity's term is scaled by
+    its rows' ``weight`` (the subset weight of a diet reaction), the
+    semantics of eval_holdout.weighted_reaction_mae_kcalmol; a row without
+    a weight refuses the recomputation."""
     import math as _math
     from xcquinox.pipeline.species_matching import reaction_identity_keys
 
     def _ident_mae(err_key):
-        groups, order = {}, []
+        groups, order, weights = {}, [], {}
         for i, r in enumerate(rows):
             key = reaction_identity_keys(r, {}) or ("__row__", i)
             if key not in groups:
                 order.append(key)
                 groups[key] = []
+                if weighted:
+                    if not _finite(r.get("weight")):
+                        raise PatchRefused(
+                            f"per-reaction row {r.get('name')!r} carries no "
+                            "weight; the weighted row of its pool cannot be "
+                            "recomputed from the stored rows.")
+                    weights[key] = float(r["weight"])
             v = r.get(err_key)
             groups[key].append(float(v) if _finite(v) else float("nan"))
         terms = []
         for key in order:
             finite = [v for v in groups[key] if _math.isfinite(v)]
             if finite:
-                terms.append(sum(finite) / len(finite))
+                mean = sum(finite) / len(finite)
+                terms.append(weights[key] * mean if weighted else mean)
         return ((sum(terms) / len(terms)) if terms else float("nan"),
                 len(terms))
 
@@ -652,17 +661,27 @@ def recompute_test_set_csv(old_text: str, pr_rows_patched) -> str:
     w.writeheader()
     for old in old_rows:
         set_name = old["set"]
+        weighted = False
         if set_name == "test_set_held_out_combined":
             subset = list(pr_rows_patched)
+        elif set_name.startswith("test_set_") and set_name.endswith("_wtmad2"):
+            pool = set_name[len("test_set_"):-len("_wtmad2")]
+            subset = [r for r in pr_rows_patched if r.get("pool") == pool]
+            weighted = True
+        elif set_name.startswith("test_set_") \
+                and set_name.endswith("_with_validation"):
+            pool = set_name[len("test_set_"):-len("_with_validation")]
+            subset = [r for r in pr_rows_patched if r.get("pool") == pool]
         elif set_name.startswith("test_set_"):
             pool = set_name[len("test_set_"):]
             subset = [r for r in pr_rows_patched if r.get("pool") == pool]
         else:
             raise PatchRefused(
                 f"unrecognized test_set.csv row {set_name!r}; the "
-                "recomputation only reproduces test_set_<pool> and "
+                "recomputation only reproduces test_set_<pool>, "
+                "test_set_<pool>_wtmad2, test_set_<pool>_with_validation and "
                 "test_set_held_out_combined rows.")
-        mae_nn, mae_pbe, n_used, n_nan = _pool_stats(subset)
+        mae_nn, mae_pbe, n_used, n_nan = _pool_stats(subset, weighted=weighted)
         delta = (mae_nn - mae_pbe
                  if math.isfinite(mae_nn) and math.isfinite(mae_pbe)
                  else float("nan"))
@@ -768,11 +787,24 @@ def _arch_for_cell(cfg, cell):
     return arch
 
 
+def channel_solver_config(sc, channel):
+    """``sc`` under the solver override of ``channel``
+    (``holdout_channels.CHANNEL_OVERRIDE`` applied through
+    ``eval_holdout.CHANNEL_OVERRIDES``, the table the eval task and the
+    retroactive driver apply), or ``sc`` itself for a trained-protocol
+    channel."""
+    override = CHANNEL_OVERRIDE[channel]
+    if override is None:
+        return sc
+    from xcquinox.pipeline.eval_holdout import CHANNEL_OVERRIDES
+    return CHANNEL_OVERRIDES[override](sc)
+
+
 def _solver_config_for_channel(cfg, cell, channel):
     """The channel's SolverConfig, rebuilt exactly as
-    cluster/spec_builder.build_training_specs does, with the cold-start
-    channel transformed by eval_holdout.coldstart_solver_config -- the
-    same single source of truth the eval task applied. The rebuilt
+    cluster/spec_builder.build_training_specs does, with the channel's
+    solver override applied by :func:`channel_solver_config` -- the same
+    single source of truth the eval task applied. The rebuilt
     ``describe()`` is gated against the channel's recorded
     eval_metadata.json before any recompute."""
     from xcquinox.pipeline.cluster.spec_builder import (_solver_config_from_named,
@@ -784,10 +816,7 @@ def _solver_config_for_channel(cfg, cell, channel):
         orientation_lock_strength=cfg.inputs.orientation_lock_strength,
         seed_source=resolve_seed_xc(cfg.inputs, cell["arch"]),
         seed_cache_dir=getattr(cfg.inputs, "seed_cache_dir", None))
-    if channel == "eval_holdout_coldstart":
-        from xcquinox.pipeline.eval_holdout import coldstart_solver_config
-        sc = coldstart_solver_config(sc)
-    return sc
+    return channel_solver_config(sc, channel)
 
 
 def _load_model_for_channel(cfg, cell, model_path):

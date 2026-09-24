@@ -1,10 +1,10 @@
 """Refinalization of completed held-out evals under the verbatim rule
-(refinalize_verbatim): rewrite-with-backup, idempotence, dry-run, skips."""
+(refinalize_holdout): rewrite-with-backup, idempotence, dry-run, skips."""
 import json
 
 import pytest
 
-from xcquinox.pipeline import refinalize_verbatim as rv
+from xcquinox.pipeline import refinalize_holdout as rv
 
 _POOL_SPECS = {
     "hcn": {"atom_composition": (("C", 1), ("H", 1), ("N", 1)), "charge": 0,
@@ -78,19 +78,23 @@ def _names(run):
     return sorted(r["name"] for r in json.loads(p.read_text()))
 
 
-def test_refinalize_rewrites_to_verbatim_rule_with_backups(tmp_path, capsys):
+def test_refinalize_rewrites_every_reaction_with_backups(tmp_path, capsys):
+    """The rewrite reports EVERY reaction of the pool, the trained twin and
+    the validation reaction included: nothing is excluded from a held-out set,
+    and the previous artifacts are backed up once.
+
+    Oracle: the pool the stub supplies, against the rewritten table.
+    """
     run = _mk_run(tmp_path)
     reports = rv.refinalize_run(run, channels=("eval_holdout",),
                                 _pool=(_POOL_SPECS, _POOL_RXNS))
     assert [r["status"] for r in reports] == ["rewritten"]
-    # verbatim rule: hcn twin (trained) and co2 (validation) leave; the
-    # species-sharing barrier and the hnc atomization stay.
-    assert _names(run) == ["bh76_hcn_to_hcnts", "w411_hnc_atomization"]
+    assert _names(run) == sorted(r["name"] for r in _POOL_RXNS)
     sd = run / "checkpoints" / "spec_0000" / "eval_holdout"
-    assert (sd / "per_reaction.pre_verbatim.json").is_file()
-    assert json.loads((sd / "per_reaction.pre_verbatim.json").read_text())[
+    assert (sd / "per_reaction.pre_refinalize.json").is_file()
+    assert json.loads((sd / "per_reaction.pre_refinalize.json").read_text())[
         0]["name"] == "w411_hnc_atomization"
-    assert (sd / "test_set.pre_verbatim.csv").read_text() == "old\n"
+    assert (sd / "test_set.pre_refinalize.csv").read_text() == "old\n"
     assert "rewritten" in capsys.readouterr().out
 
 
@@ -99,11 +103,11 @@ def test_refinalize_is_idempotent_and_preserves_backups(tmp_path):
     rv.refinalize_run(run, channels=("eval_holdout",),
                       _pool=(_POOL_SPECS, _POOL_RXNS))
     sd = run / "checkpoints" / "spec_0000" / "eval_holdout"
-    bak = (sd / "per_reaction.pre_verbatim.json").read_text()
+    bak = (sd / "per_reaction.pre_refinalize.json").read_text()
     reports = rv.refinalize_run(run, channels=("eval_holdout",),
                                 _pool=(_POOL_SPECS, _POOL_RXNS))
     assert [r["status"] for r in reports] == ["unchanged"]
-    assert (sd / "per_reaction.pre_verbatim.json").read_text() == bak
+    assert (sd / "per_reaction.pre_refinalize.json").read_text() == bak
 
 
 def test_refinalize_refuses_a_sliced_channel(tmp_path):
@@ -129,7 +133,38 @@ def test_refinalize_refuses_a_sliced_channel(tmp_path):
     assert "'n2ohts'" in msg
     # nothing rewritten, no backup taken
     assert (sd / "per_reaction.json").read_text() == before
-    assert not (sd / "per_reaction.pre_verbatim.json").exists()
+    assert not (sd / "per_reaction.pre_refinalize.json").exists()
     assert (sd / "test_set.csv").read_text() == "old\n"
+
+
+def test_refinalize_reads_the_pools_from_the_run_s_resolved_config(tmp_path,
+                                                                   monkeypatch):
+    """Refinalization re-selects each channel's test slice from the pool the run
+    evaluated. Reading the pair regardless would rebuild a wider run's tables from a
+    narrower pool and drop every reaction the run actually reported.
+
+    Oracle: the pool names the loader received, against the run's resolved config.
+    """
+    import yaml
+
+    run = _mk_run(tmp_path)
+    (run / "resolved_config.yaml").write_text(yaml.safe_dump(
+        {"inputs": {"held_out_pools": ["bh76", "w411", "diet150"]}}))
+
+    seen = {}
+
+    def _fake_load(names, basis=None, grid_level=None, refs_dir=None):
+        seen["pools"] = tuple(names)
+        return _POOL_SPECS, _POOL_RXNS
+
+    monkeypatch.setattr(rv, "_load_held_out_pools", _fake_load)
+    rv.refinalize_run(run, channels=("eval_holdout",))
+    assert seen["pools"] == ("bh76", "w411", "diet150")
+
+    bare = _mk_run(tmp_path / "bare")
+    rv.refinalize_run(bare, channels=("eval_holdout",))
+    assert seen["pools"] == ("bh76", "w411")
+
+
 
 

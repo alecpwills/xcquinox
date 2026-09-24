@@ -93,16 +93,19 @@
 # eval_holdout/ siblings so the default figures-only pull has the data.
 + /checkpoints/spec_*/eval_holdout_val_best/
 + /checkpoints/spec_*/eval_holdout_val_best/***
-# Cold-start trajectory-diagnostic channel (2026-08-14): a FOURTH eval pass on
-# the FINAL checkpoint with the shared cold-start override (minao seed, 25
-# cycles) -- the per-cycle scf_energy_residual_<i> columns + eval_metadata.json
-# provenance stamp live here. Same small CSV/JSON artifacts, no *.eqx.
+# Cold-start channel pair: the FINAL checkpoint and the validation-best one
+# under the shared cold-start override (minao seed, 25 cycles). The val-best
+# one is the REPORTING channel, the directory a campaign's numbers are read
+# from; both carry the per-cycle scf_energy_residual_<i> columns and the
+# eval_metadata.json provenance stamp. Same small CSV/JSON artifacts, no *.eqx.
 + /checkpoints/spec_*/eval_holdout_coldstart/
 + /checkpoints/spec_*/eval_holdout_coldstart/***
-# Converged-SCF channel (2026-09-07): a FIFTH pass on the FINAL checkpoint and
-# a SIXTH on the val-best one under a converged pyscfad SCF (PBE seed, DIIS,
-# 100 cycles at 1e-8) -- the density comparison on the same footing as the
-# converged PBE baseline. Same small CSV/JSON artifacts, no *.eqx.
++ /checkpoints/spec_*/eval_holdout_coldstart_val_best/
++ /checkpoints/spec_*/eval_holdout_coldstart_val_best/***
+# Converged-SCF channel pair: the FINAL checkpoint and the val-best one under
+# a converged pyscfad SCF (PBE seed, DIIS, 100 cycles at 1e-8) -- the density
+# comparison on the same footing as the converged PBE baseline. Same small
+# CSV/JSON artifacts, no *.eqx.
 + /checkpoints/spec_*/eval_holdout_converged/
 + /checkpoints/spec_*/eval_holdout_converged/***
 + /checkpoints/spec_*/eval_holdout_converged_val_best/

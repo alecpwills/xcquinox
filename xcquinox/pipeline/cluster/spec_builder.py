@@ -57,12 +57,15 @@ from xcquinox.pipeline.solver import SolverConfig, SolverMode, FeaturePolicy
 from xcquinox.pipeline import get_architecture
 
 
-def _load_full_held_out_pools(basis="def2-svp", grid_level=1, refs_dir=None):
-    """Seam wrapping ``full_benchmark_pools.load_full_held_out_pools`` (module-
-    level so the WS3 validation-attachment tests can stub the heavy pool load)."""
-    from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
-    return load_full_held_out_pools(basis=basis, grid_level=grid_level,
-                                    refs_dir=refs_dir)
+def _load_full_held_out_pools(names=("bh76", "w411"), basis="def2-svp",
+                              grid_level=1, refs_dir=None):
+    """Seam wrapping ``full_benchmark_pools.load_held_out_pools`` (module-level
+    so the WS3 validation-attachment tests can stub the heavy pool load).
+    ``names`` are the run's own held-out pools: the validation slice is drawn
+    from them, so the species it names live in them and nowhere else."""
+    from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
+    return load_held_out_pools(tuple(names), basis=basis,
+                               grid_level=grid_level, refs_dir=refs_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -241,23 +244,24 @@ def _coerce_enum(enum_cls, token):
 
 
 def resolve_seed_xc(inputs, arch_name: str) -> str:
-    """The per-cell SCF seed functional ("pbe" or "scan") for ``arch_name``.
+    """The per-cell SCF seed ("pbe", "scan" or "minao") for ``arch_name``.
 
-    ``inputs.seed_xc`` is authoritative: "pbe"/"scan" pass through verbatim
-    (the default "pbe" keeps every arch -- including a pending mgga arm
-    resubmitted after deployment -- on the pre-seeding protocol); "auto"
-    derives the rung baseline from the architecture registry
-    (rungs.seed_xc_for_arch: the meta-GGA family seeds SCAN, everything
-    else PBE). Shared by spec building and run validation so the two agree
-    by construction.
+    ``inputs.seed_xc`` is authoritative: "pbe"/"scan"/"minao" pass through
+    verbatim (the default "pbe" keeps every arch -- including a pending mgga
+    arm resubmitted after deployment -- on the pre-seeding protocol; "minao"
+    is the cold start, the superposition of atomic densities every SCF of
+    the cell starts from); "auto" derives the rung baseline from the
+    architecture registry (rungs.seed_xc_for_arch: the meta-GGA family seeds
+    SCAN, everything else PBE). Shared by spec building and run validation
+    so the two agree by construction.
     """
     mode = getattr(inputs, "seed_xc", "pbe") or "pbe"
     if mode == "auto":
         from xcquinox.pipeline.rungs import seed_xc_for_arch
         return seed_xc_for_arch(arch_name)
-    if mode not in ("pbe", "scan"):
+    if mode not in ("pbe", "scan", "minao"):
         raise ValueError(
-            f"inputs.seed_xc must be 'pbe'/'scan'/'auto', got {mode!r}")
+            f"inputs.seed_xc must be 'pbe'/'scan'/'minao'/'auto', got {mode!r}")
     return mode
 
 
@@ -379,13 +383,21 @@ def _attach_validation_slice(spec, cfg, run_dir):
     for r in val_rxns:
         wanted |= set(r.get("reactants", ())) | set(r.get("products", ()))
 
+    pools = tuple(getattr(cfg.inputs, "held_out_pools", ("bh76", "w411")))
     mols_by_name, _reactions = _load_full_held_out_pools(
-        basis=cfg.inputs.basis, grid_level=cfg.inputs.grid_level)
+        pools, basis=cfg.inputs.basis, grid_level=cfg.inputs.grid_level)
+    missing = sorted(n for n in wanted if n not in mols_by_name)
+    if missing:
+        raise ValueError(
+            f"the staged validation slice names {len(missing)} species the "
+            f"run's held-out pools {pools} do not carry ({', '.join(missing[:5])}"
+            f"{', ...' if len(missing) > 5 else ''}); dropping them would "
+            "validate on fewer reactions than the record states")
     val_mols = tuple(
         _val_mol_spec_from_held_out(
             mols_by_name[n], basis=cfg.inputs.basis,
             grid_level=cfg.inputs.grid_level, val_refs_dir=val_refs_dir)
-        for n in sorted(wanted) if n in mols_by_name
+        for n in sorted(wanted)
     )
     return dataclasses.replace(
         spec, validation_molecules=val_mols,
@@ -567,6 +579,22 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             for tp in chosen_points
             if tp.kind == "ip13"
         ]
+        # The published protocol's non-self-consistent points among the chosen
+        # ones, by name (the trajectory's flag on the point's metadata),
+        # recorded whether or not the switch is on.
+        nonsc_points = tuple(sorted(
+            tp.name for tp in chosen_points
+            if not bool(tp.metadata.get("sc", True))))
+        # Per such point, the species the published training runs one pass
+        # for (the species Atoms' own flags); a point whose species carry
+        # no flag marks its whole group.
+        nonsc_species = tuple(
+            (tp.name, tuple(sorted(
+                s.info["name"] for s in tp.species
+                if not bool(s.info.get("sc", True)))))
+            for tp in sorted(chosen_points, key=lambda tp: tp.name)
+            if tp.name in nonsc_points
+            and any(not bool(s.info.get("sc", True)) for s in tp.species))
 
         solver_cfg = _solver_config_from_named(
             cfg.solvers[cell.solver],
@@ -574,7 +602,8 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             auxbasis=cfg.inputs.auxbasis,
             orientation_lock_strength=cfg.inputs.orientation_lock_strength,
             # per-rung seeding: resolved per cell from the arch registry
-            # ("auto") or forced run-wide ("pbe"/"scan"); default "pbe"
+            # ("auto") or forced run-wide ("pbe"/"scan"/"minao"); default
+            # "pbe"
             seed_source=resolve_seed_xc(cfg.inputs, cell.arch),
             seed_cache_dir=getattr(cfg.inputs, "seed_cache_dir", None),
         )
@@ -659,6 +688,12 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             plateau_patience=hp.plateau_patience,
             plateau_factor=hp.plateau_factor,
             seed_mix_atomic=hp.seed_mix_atomic,
+            # the published protocol's non-self-consistent points: the names
+            # as data, the switch and the weight from the hyperparameters
+            nonsc_points=nonsc_points,
+            nonsc_species=nonsc_species,
+            respect_sc_flag=hp.respect_sc_flag,
+            nonsc_weight=hp.nonsc_weight,
         )
         # WS3: attach the held-out validation slice (no-op unless val_refs_dir +
         # validate_every>0 + a staged val_reactions.json under run_dir).

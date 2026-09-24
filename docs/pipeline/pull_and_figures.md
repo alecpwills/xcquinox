@@ -109,9 +109,12 @@ python -m xcquinox.pipeline.cluster pull latest --category <CATEGORY>
   To pull a specific run, replace `latest` with the run id, e.g.
   `pull run_20260622T111908Z --category dfs_step7/svp_grid2_v3/runs`.
 - **Profile (default is correct for figures):** the default `--profile summaries`
-  pulls all the JSON/npy the figures read -- `eval_holdout/**`,
-  `eval_holdout_best/**`, `eval_holdout_val_best/**`, `eval/per_molecule.json`, `losses.npy`,
-  `train_metadata.json`, `resolved_config.yaml` -- and, since 2026-08-30, the
+  pulls all the JSON/npy the figures read -- every held-out channel directory
+  (`eval_holdout/**`, `eval_holdout_best/**`, `eval_holdout_val_best/**`,
+  `eval_holdout_coldstart/**`, `eval_holdout_coldstart_val_best/**`,
+  `eval_holdout_converged/**`, `eval_holdout_converged_val_best/**`; the names are
+  `HOLDOUT_CHANNELS` in `xcquinox/pipeline/holdout_channels.py`), `eval/per_molecule.json`,
+  `losses.npy`, `train_metadata.json`, `resolved_config.yaml` -- and, since 2026-08-30, the
   weights the enhancement-factor figures forward-evaluate: `model.eqx` /
   `model_val_best.eqx` per spec with their `.class.json` records, and the
   pretrained `xnet.eqx` / `cnet.eqx` (plus the val-best pair under `xnet/` /
@@ -164,12 +167,29 @@ density units. Directories rendered before 2026-09-08 carry the older `ablation_
 `diagnostic_` stems and the `_dfs_units` suffix; the old-to-new table is `OUTPUT_NAMES` in
 `make_ablation_arch_figure.py`.
 
-Per basis (two parallel sets -- final-checkpoint and val-best):
-- `figures_dfs_step7_<alias>/`           -- final-step eval (`eval_holdout/`)
-- `figures_dfs_step7_<alias>_val_best/`  -- val-best eval (`eval_holdout_val_best/`, the held-out-validation-best checkpoint), only if that data was pulled
+Per basis, one set per held-out channel the pull carries (the list and its order are
+`FIGURE_CHANNELS` in `xcquinox/pipeline/holdout_channels.py`; a channel with no evaluated
+cell renders no directory, and a pull carrying no held-out channel at all is refused):
+- `figures_dfs_step7_<alias>_coldstart_val_best/` -- the REPORTING channel: the validation-best
+  checkpoint under the cold-start protocol (`eval_holdout_coldstart_val_best/`)
+- `figures_dfs_step7_<alias>_coldstart/`          -- the final checkpoint under the cold-start protocol
+- `figures_dfs_step7_<alias>/`                    -- final-step eval under the trained protocol (`eval_holdout/`)
+- `figures_dfs_step7_<alias>_val_best/`           -- val-best eval under the trained protocol (`eval_holdout_val_best/`)
+- `figures_dfs_step7_<alias>_converged/`, `figures_dfs_step7_<alias>_converged_val_best/` -- the
+  converged-SCF channels (the section below)
 
-Cross comparison (only when **>= 2** bases are given AND both have eval coverage):
-- `figures_dfs_step7_basis_comparison/`       (+ `_val_best`)
+Cross comparison (only when **>= 2** bases are given AND both carry the channel):
+- `figures_dfs_step7_basis_comparison<suffix>/` for the same suffixes
+
+The reporting channel. A campaign's numbers are read from `eval_holdout_coldstart_val_best/`
+(`REPORTING_CHANNEL`). A reader handed no channel -- `build_all` and the `--eval-subdir`
+default of `make_ablation_arch_figure.py` in single-run mode, `plot_scf_convergence.py`, the
+best-cell selection of `trained_fx_fc.py`, the `--eval-channel` default of
+`arm_vs_size_density.py` -- resolves it from the run's own directories (`resolve_channel`):
+the reporting channel where any spec carries it, else the trained protocol's channel of the
+same checkpoint (`eval_holdout_val_best/`, the v7 headline), else `eval_holdout/`. The
+channel read is printed, and a fallback names the absent reporting channel. The warm and
+converged channels stay as diagnostics.
 
 Outlier-free siblings of a per-basis dir (2026-09-07; the density and energy figure set of
 `build_density_energy_figures` rendered a second time from filtered inputs, the rule stated
@@ -665,7 +685,7 @@ On the cluster, from the repo root after `git pull`:
 ```bash
 cd /gpfs/projects/FernandezGroup/Alec/xcquinox
 git pull
-python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_rxn.yaml --partition long-40core --max-nodes 1 --train-time "48:00:00" --submit
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step7.dfs6311_grid3_v7g1_rxn.yaml --partition long-96core-shared --max-nodes 1 --train-time "48:00:00" --submit
 ```
 
 Then, before the pretrain array can start (it waits on datagen, but hold it
@@ -819,3 +839,81 @@ was removed from the repository and kept on disk under
 `tools/analysis/figures_archive/` (gitignored; reports under
 `figures_archive/reports/`). Rebuilding those PDFs requires restoring the
 archived paths; the archived PDFs are the frozen record.
+
+## Campaign 1 of the v8 program: the seed start as the one variable
+
+The three files `hpcjobs/configs/dfs_step8.v8_dfs_{allsc,parity,coldstart}.yaml`
+are one campaign: the four architectures (`deep_3x16`, `deep_attn_3x16`,
+`deep_geom_3x16`, `deep_geom_attn_3x16`) on the DFS full set at the `full_25`
+solver with the dpyscf-parity hyperparameters, pretrained by the published
+cloning protocol (`exchange_footing: paper`, the sampled-row objective on 800
+points per system, 20000 steps from 1e-3 to 1e-5, no clip, no energy term, no
+validation split) with `descriptor_coordinates: paper` and `ueg_gate: x2`.
+The files differ in the seed axis alone (pin
+`test_v8_arms_differ_from_arm_s_in_the_seed_keys_alone`):
+
+| arm | file | `inputs.seed_xc` | `seed_mix_atomic` | `respect_sc_flag` | `nonsc_weight` |
+|---|---|---|---|---|---|
+| S | `dfs_step8.v8_dfs_allsc.yaml` | `auto` | true | false | -- |
+| P | `dfs_step8.v8_dfs_parity.yaml` | `auto` | true | true | 0.5 |
+| A | `dfs_step8.v8_dfs_coldstart.yaml` | `minao` | false | false | -- |
+
+The wall is 96 h per cell with `inline_eval`, so every arm submits on
+`extended-96core` (the long-* queues cap at 48 h); a cell killed at the wall
+resubmits from its checkpoint, and the timeout escalation stays on the same
+queue at 168 h. The held-out evaluation is the pair BH76 + W4-11 under the
+cold-start channels; the reporting channel is `eval_holdout_coldstart_val_best`.
+The diet150 evaluation of these cells is a re-evaluation from the pull.
+
+Pretraining is shared. Arm S runs first and fits the four clones. On the
+cluster, from the repository root after `git pull`:
+
+```bash
+cd /gpfs/projects/FernandezGroup/Alec/xcquinox
+git pull
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_dfs_allsc.yaml --partition extended-96core --max-nodes 4 --submit
+```
+
+After its four certificates pass (`python -m xcquinox.pipeline.cluster status
+<S_RUN>` shows the pretrain stage complete;
+`ls <S_RUN>/pretrain/*/fidelity_certificate.json` lists four files), submit
+each of the other two arms, hold its datagen job and its pretrain array
+before either can start, copy the clones in, release both. The pretrain
+array waits on the datagen job, and for a copied arm the datagen finds the
+shared file current and exits within minutes, so both jobs are held at once
+and right after the submission:
+
+```bash
+R=/gpfs/scratch/awills/xcquinox_runs/dfs_step8
+S_RUN=$(ls -d $R/v8_dfs_allsc/runs/run_* | tail -1)
+for ARM in parity coldstart; do
+  python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_dfs_$ARM.yaml --partition extended-96core --max-nodes 4 --submit
+  NEW=$(ls -d $R/v8_dfs_$ARM/runs/run_* | tail -1)
+  HELD=$(python -c "import json; print(' '.join(str(j['array_job_id']) for j in json.load(open('$NEW/jobs.json')) if j['kind'] in ('datagen', 'pretrain')))")
+  scontrol hold $HELD
+  mkdir -p $NEW/pretrain
+  cp -a $S_RUN/pretrain/. $NEW/pretrain/
+  ls $NEW/pretrain/*/fidelity_certificate.json
+  scontrol release $HELD
+done
+```
+
+Each pretrain task of a copied arm logs `pretrain KEPT`; a task logging
+`pretraining from scratch` means the copy was not in place (the hold came
+after the array had started, which the pretrain log's timestamp shows) and
+that arm's clones are its own refits, to be recorded with the results.
+Monitoring, the wall-kill recovery and the pull:
+
+```bash
+python -m xcquinox.pipeline.cluster status <run_dir>
+python -m xcquinox.pipeline.cluster resubmit <run_dir> --submit
+python -m xcquinox.pipeline.cluster pull auto --category dfs_step8
+```
+
+The pull categories are `dfs_step8/v8_dfs_allsc/runs`,
+`dfs_step8/v8_dfs_parity/runs` and `dfs_step8/v8_dfs_coldstart/runs`. Every
+cell is one whole node, and `--max-nodes 4` caps each arm's array on its own,
+so arm S holds four nodes while its array runs and arms P and A together
+hold eight. The v7 `full_25` arms ran to their 96 h wall per cell; arm S's
+four cells and then the eight of P and A are two waves of 96 h, about ten
+days of wall time plus the 48 h pretraining, queue time excluded.

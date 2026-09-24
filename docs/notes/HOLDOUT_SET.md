@@ -15,29 +15,29 @@ name-by-name expansion of that line.
 |---|---|---|
 | Canonical pool, reaction entries | 216 (76 BH76 + 140 W4-11) | the full benchmark pool the harness builds |
 | Canonical pool, unique reaction names | 212 | 4 BH76 entries share a name with another entry (Sec. 2) |
-| TEST slice (what `per_reaction.json` carries) | 165 names (52 BH76 + 113 W4-11) | the reported metrics/figures run on this slice minus the four validation twins (identity exclusion) and minus each cell's VERBATIM supervised reactions (Sec. 2; about 162 surviving names at ss1, 147 at ss26). NN metrics reduce the SCORED subset of a cell's slice (reactions with finite NN energies; incomplete cells are starred on the figures and named in the note band); every PBE/SCAN comparator, pooled and per-cell, reduces the full slice regardless of NN convergence |
-| Validation slice (early-stop / val-best selection) | 47 names (20 BH76 + 27 W4-11; 49 entries: 22+27) | withheld from every reported TEST metric |
-| Test/validation overlap | 0 by name; 4 by physical identity | four BH76 barriers appear twice in the pool under permuted-reactant names, one copy per slice (`bh76_h_hf_to_hfhts`/`bh76_hf_h_to_hfhts` and the three analogous pairs); the figure layer drops the four test-side twins on read, since validation-best selection saw those barriers |
-| Pool species (molecules + atoms) | 214 | reactants/products of the 216 entries |
-| Species evaluated per spec (this run) | 213 | pool minus `c2` (Sec. 4) |
+| What `per_reaction.json` carries | every reaction of every set the run evaluates | nothing is excluded; each row carries its training overlap and its validation mark. NN metrics reduce the SCORED subset (reactions with finite NN energies; incomplete cells are starred on the figures and named in the note band); every PBE/SCAN comparator, pooled and per-cell, reduces the full set regardless of NN convergence |
+| Reported per-pool row | the set minus its validation slice | the reactions early stopping consumed are marked, not dropped, and `test_set_<pool>_with_validation` reports the whole set |
+| Validation slice (early-stop / val-best selection) | 47 names (20 BH76 + 27 W4-11; 49 entries: 22+27) | marked in every artifact, left out of the reported per-pool row |
+| Test/validation overlap | 0 by name; 4 by physical identity | four BH76 barriers appear twice in the pool under permuted-reactant names, one copy per slice (`bh76_h_hf_to_hfhts`/`bh76_hf_h_to_hfhts` and the three analogous pairs); the mark follows physical identity, so both copies carry it |
+| Pool species (molecules + atoms) | 231 (79 BH76 + 152 W4-11) | each set's own species under its own key; the two share fourteen system names at different geometries and each keeps its own |
+| Species evaluated per spec | 231 | every species of every set the run names, one SCF per species per set |
 | Density species (finite NN + PBE channels) | 198 | atoms are skipped by design (Sec. 4) |
-| Atomic species skipped for density | 15 | `O`, `al`, `b`, `be`, `c`, `cl`, `cl-`, `f`, `f-`, `h`, `n`, `o`, `p`, `s`, `si` |
+| Atomic species skipped for density | 18 | six of BH76 (`O`, `cl`, `cl-`, `f`, `f-`, `h`) and twelve of W4-11, each under its own set's key |
 
 ## 2. How the split works
 
-Hold-out is VERBATIM: a spec's test slice excludes exactly its supervised reactions --
-the reaction-form training points recorded in its `train_metadata.json`
-(`loss_kwargs["bh76_reactions"]`: the AE-as-reactions, whose `w411_*_atomization` pool
-twins leave under cross-vocabulary identity, and the trained BH76 reaction-energy points) -- plus
-the recorded validation slice (identity-level, so permuted-name twins leave with it). A
-reaction merely CONTAINING a trained molecule stays: it is a generalization target, not
-a training target. The figure layer reconstructs each spec's full slice from its
+Nothing is excluded from a held-out set. Every reaction is scored, whatever its species
+share with the training set, and the overlap is annotated per reaction (`in_sample_overlap`)
+and per molecule (`in_training_subset`); reading subsets apart is an analysis of the results,
+not a filter on them. The reactions the in-loop validation consumed are marked
+`in_validation_slice` and left out of the reported per-pool row alone, since they drove early
+stopping and validation-best selection; a `test_set_<pool>_with_validation` row reports the
+whole set beside it. The figure layer reconstructs each spec's reported slice from its
 per-species energies over the canonical pool (the training vocabulary is ASE Hill
 formulas -- `CHN`, `H3N`, `HO` -- while the pool uses GMTKN55-style names -- `hcn`,
 `nh3`, `oh`; identity matching is by element composition + charge + spin with geometric
 isomer classes, `xcquinox.pipeline.species_matching`). Per-cell reaction counts on the
-figures reflect exactly these exclusions, so they are near-uniform across subset sizes
-(about 162 at ss1, 147 at ss26).
+figures are therefore the same for every cell of a run.
 
 A slice row needs a finite COMPARATOR (PBE) leg only: reactions whose NN energy is NaN
 (the model's own SCF failures) stay in the slice with NaN NN columns, so reference
@@ -51,11 +51,11 @@ note band, and recorded as `n_reactions` vs `n_reactions_slice` in the ED CSVs. 
 
 The canonical pool is the union of two GMTKN55-style subsets (sources in Sec. 5): the BH76
 barrier heights and the W4-11 atomization energies, 216 reaction entries over
-214 species. A fixed validation slice of 47 reaction names is withheld for
-early stopping and validation-best checkpoint selection (`validation/val_reactions.json`,
-staged per run); the remaining 165 names form the TEST slice that
-`eval_holdout*/per_reaction.json` records and every energy figure/CSV consumes. The two
-slices are disjoint and together cover the pool exactly. Counting is by NAME everywhere
+231 species (79 of BH76 and 152 of W4-11, each set's own). A fixed slice of 47 reaction
+names is consumed by early stopping and validation-best checkpoint selection
+(`validation/val_reactions.json`, staged per run); it is marked in
+`eval_holdout*/per_reaction.json`, which records every reaction of the set, and the reported
+per-pool row averages the remaining 165 names. Counting is by NAME everywhere
 (the figures' dataset line says "name-dedup"): four BH76 entries share a name with a second
 entry -- forward/reverse barriers of the same transition state:
 
@@ -327,4 +327,55 @@ values above (kcal/mol).
 
 - `README_density_figures.md` -- what every figure panel/marker/footer band means; the
   dataset footer line on held-out figures carries the live counts from Sec. 1.
-- `RUNBOOK_pull_and_figures.md` -- how to pull runs and regenerate the figures.
+- `docs/pipeline/pull_and_figures.md` -- how to pull runs and regenerate the figures.
+
+## 7. Every set on its own definitions
+
+A held-out set is evaluated on its own names, geometries and references. The species key the
+evaluation computes an energy under is `<pool>@<system>`: the set it belongs to and its own
+name. No two sets share a key, so a molecule two sets carry is evaluated once per set, at
+that set's geometry, against that set's reference file, and a set's reactions resolve inside
+it and nowhere else. The BH76 and W4-11 sets share fourteen system names whose geometries
+differ; each keeps its own. The reference job writes one file per set and species,
+`<refs_dir>/<pool>@<system>.npz`.
+
+NOTHING is excluded from a held-out set, for any reason. A reaction whose species the
+training set also carries is a held-out reaction and is scored; the overlap is annotated on
+the reaction (`in_sample_overlap`) and on the molecule (`in_training_subset`), and reading
+subsets apart is an analysis of the results. The reactions the in-loop validation consumed
+are marked `in_validation_slice` and reported with the rest; the per-pool row of
+`test_set.csv` averages the complement, so the headline number carries no early-stopping
+selection, and a `test_set_<pool>_with_validation` row beside it averages the whole set.
+
+The Diet GMTKN55 set at 150 reactions is a held-out pool of its own
+(`xcquinox/pipeline/data/diet150_pool.json`, built by `xcquinox.pipeline.gmtkn55_sets` and
+regenerated by `tools/rebuild_full_benchmark_pools.py`). It is built from its own two lists
+alone: `data/dietgmtkn55-150/SubsetGMTKN55_150.yaml` names the 49 subsets, their weights and
+the retained reaction indices, and `AllElements-150.yaml` supplies every reaction's species
+with their stoichiometric counts, element sequences, positions, charges and unpaired electron
+counts, and the reference energy. The GMTKN55 checkout is not consulted for it, because the
+list's reference energies belong to the list's geometries. Every species of the set is one
+entry of that list: 150 reactions over 335 species.
+
+Each reaction carries its subset weight, and the pool's `test_set.csv` row
+`test_set_diet150_wtmad2` is the mean over its reactions of the weight times the absolute
+error: the WTMAD-2 estimate of the diet set as the set's own evaluation script defines it
+(`InterfaceG16.py` of the diet repository, github.com/gambort/DietGMTKN55, which sums
+weight times absolute error over the retained reactions and divides by their number; the
+sizes of the full subsets do not enter). The unweighted `test_set_diet150` row stands
+beside it, and the `test_set_held_out_combined` row stays the BH76 + W4-11 pair.
+
+A species of any set built from the GMTKN55 collection is named with its subset's tag and
+its system name, for every subset alike; a system name is unique inside its subset and
+nowhere else. A run names the sets it evaluates with `inputs.held_out_pools`.
+
+The overlap reports beside the pools (`diet150_overlap.json`, `bh76_overlap.json`,
+`w411_overlap.json`) list, per reaction and per species, the training sets that carry the
+species exactly (the same GMTKN55 subset and system) and by formula (the same Hill formula,
+charge and spin): the Slim05 and Slim16 sets and the DFS training set. They are reports for
+a reading of the results after the fact; no reaction is removed for an overlap.
+
+The density leg of the diet set needs a CCSD reference per species. The reference job takes
+`inputs.benchmark_refs_max_atoms`: a species with more atoms than the cap gets no reference
+and its density leg is reported absent, and `python -m xcquinox.pipeline.benchmark_refs
+--pool diet150 --max-atoms <n> --list-species` sizes the capped set before submission.

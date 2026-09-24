@@ -196,6 +196,45 @@ def test_render_thread_caps_present_every_template(tmp_path):
         assert "$$" not in text, kind
 
 
+def test_the_benchmark_refs_job_renders_the_pools_and_the_size_cap(tmp_path):
+    """The reference job covers the species of the pools the run evaluates, capped where
+    the run states a cap. A job that always rendered ``--pool all`` would leave a wider
+    run's species without references, and the evaluation reports those species' density
+    leg as absent rather than as missing.
+
+    Oracle: the rendered job script.
+    """
+    d = _base_config_dict()
+    d["inputs"]["benchmark_refs_dir"] = "/shared/bench_refs"
+    p = tmp_path / "grid_bench_default.json"
+    p.write_text(json.dumps(d))
+    text = render_sbatch("benchmark_refs", load_grid_config(str(p)),
+                         str(tmp_path / "run"))
+    assert "--pool bh76,w411" in text
+    assert "--max-atoms" not in text
+
+    d["inputs"]["held_out_pools"] = ["bh76", "w411", "diet150"]
+    d["inputs"]["benchmark_refs_max_atoms"] = 8
+    p2 = tmp_path / "grid_bench_wide.json"
+    p2.write_text(json.dumps(d))
+    text2 = render_sbatch("benchmark_refs", load_grid_config(str(p2)),
+                          str(tmp_path / "run"))
+    assert "--pool bh76,w411,diet150" in text2
+    assert "--max-atoms 8" in text2
+    assert "$$" not in text2
+
+    # the cap survives density fitting, which every production run states
+    d["inputs"]["density_fit"] = True
+    p3 = tmp_path / "grid_bench_wide_df.json"
+    p3.write_text(json.dumps(d))
+    text3 = render_sbatch("benchmark_refs", load_grid_config(str(p3)),
+                          str(tmp_path / "run"))
+    assert "--density-fit" in text3
+    assert "--max-atoms 8" in text3
+
+
+
+
 def test_render_optional_directives_emitted_and_omitted(tmp_path):
     cfg = _make_cfg(tmp_path)
     text = render_sbatch("preflight", cfg, str(tmp_path / "run"))

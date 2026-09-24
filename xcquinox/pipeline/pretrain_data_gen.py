@@ -100,6 +100,13 @@ PRETRAIN_ORIENTATION_LOCK_STRENGTH = _LOCK_STRENGTH
 #: energy targets and the stored enhancement factors share one denominator.
 _LDA_X_C = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
 
+#: The exchange footings a file can be built on: the historical total-density
+#: rows with libxc's targets (``total``), the per-channel rows of the exact
+#: spin scaling (``spin_channel``), and the published clone's targets on the
+#: total density for every system (``paper``; ``parents.paper_*``). Stated once
+#: here; the harness parser repeats the tuple and the suite pins the two equal.
+EXCHANGE_FOOTINGS = ("total", "spin_channel", "paper")
+
 #: One pretraining system: a geometry, a charge and a PySCF 2S spin. ``atom`` is
 #: a PySCF geometry string in Angstrom. Free atoms are spelled
 #: ``"<Sym> 0 0 0"`` so a pool atom and a ``pretrain.atoms`` entry for the same
@@ -332,25 +339,38 @@ def _dfs_pretrain_records(level):
     return dfs_pretrain_records(level)
 
 
+def _slim_pretrain_records(name):
+    """The published study's drawn Slim molecules, a named seam like
+    :func:`_dfs_pretrain_records`."""
+    from xcquinox.pipeline.gmtkn55_sets import slim_pretrain_records
+    return slim_pretrain_records(name)
+
+
 def resolve_pretrain_systems(*, atoms=None, dfs_set=False, pool_atoms=False,
-                             reference_xc="pbe"):
+                             reference_xc="pbe", slim_set=""):
     """The ordered, de-duplicated pretraining set.
 
-    Order is DFS inventory, then pool atoms, then the explicit ``atoms`` list,
-    with the first occurrence of a (geometry, charge, spin) winning. ``atoms`` of
-    ``None`` means the historical four-atom default when neither inventory is
-    requested and NOTHING when one is: the set Section 7 binds is stated exactly
-    ("the DFS pretraining set in its entirety, plus every atom of the BH76 /
-    W4-11 pools"), and He belongs to neither.
+    Order is DFS inventory, then pool atoms, then the drawn Slim molecules of
+    ``slim_set`` (``""`` adds none), then the explicit ``atoms`` list, with
+    the first occurrence of a (geometry, charge, spin) winning; a drawn
+    molecule that is a free atom of the pools is therefore recorded under the
+    pool atom's name. ``atoms`` of ``None`` means the historical four-atom
+    default when no inventory is requested and NOTHING when one is: the set
+    Section 7 binds is stated exactly ("the DFS pretraining set in its
+    entirety, plus every atom of the BH76 / W4-11 pools"), and He belongs to
+    neither.
     """
     if atoms is None:
-        atoms = () if (dfs_set or pool_atoms) else DEFAULT_PRETRAIN_ATOMS
+        atoms = (() if (dfs_set or pool_atoms or slim_set)
+                 else DEFAULT_PRETRAIN_ATOMS)
     ordered = []
     if dfs_set:
         ordered.extend(_dfs_pretrain_records(
             dfs_level_for_reference_xc(reference_xc)))
     if pool_atoms:
         ordered.extend(pool_atom_systems())
+    if slim_set:
+        ordered.extend(_slim_pretrain_records(slim_set))
     ordered.extend(atoms)
     out = []
     seen = set()
@@ -724,7 +744,11 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
     closed-shell system, whose total-density rows already are that footing.
     Correlation rows are untouched under either setting: correlation is
     spin-interpolated rather than spin-scaled and keeps the total density with
-    zeta.
+    zeta. ``"paper"`` poses every system's rows, open shells included, on the
+    total density with the published clone's targets and LDA columns
+    (``parents.paper_pbe_fx``, ``paper_pbe_fc``, ``paper_lda_x_eps``,
+    ``paper_pw92_eps_c``: arXiv:2605.10331's own expressions and constants);
+    its key set is the ``total`` footing's.
 
     ``density_fit`` is recorded in the manifest but no longer changes the parent
     SCF: the density is the precompute's, whose PBE / SCAN baseline is
@@ -742,10 +766,11 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
     if reference_xc not in ("pbe", "scan"):
         raise ValueError(
             f"reference_xc must be 'pbe' or 'scan'; got {reference_xc!r}.")
-    if exchange_footing not in ("total", "spin_channel"):
+    if exchange_footing not in EXCHANGE_FOOTINGS:
         raise ValueError(
-            "exchange_footing must be 'total' or 'spin_channel'; got "
-            f"{exchange_footing!r}."
+            "exchange_footing must be one of "
+            + ", ".join(repr(v) for v in EXCHANGE_FOOTINGS)
+            + f"; got {exchange_footing!r}."
         )
     system = normalize_system(system)
     from xcquinox.pipeline.data import precompute_fixed_density_data
@@ -846,6 +871,23 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
     # energy term contracts with the quadrature weights.
     e_lda_x = rho * ex_safe
     e_lda_c = rho * ec_safe
+    if exchange_footing == "paper":
+        # The published clone's targets on the total density for EVERY
+        # system, open shells included (parents.paper_*): the analytic PBE
+        # forms on that code's own constants in place of the libxc ratios
+        # above, with the LDA columns in the same convention, so that
+        # e_lda (1 + F) is that code's PBE energy density row by row.
+        from xcquinox.pipeline.parents import (paper_lda_x_eps, paper_pbe_fc,
+                                               paper_pbe_fx, paper_pw92_eps_c)
+        zeta_paper = ((rho_a - rho_b) / (rho + 1e-30) if is_uks
+                      else np.zeros_like(rho))
+        # The published forms are bounded on any positive density, F_x - 1
+        # in [0, kappa] and F_c - 1 in [-1, 0], so the +-5 clip of the libxc
+        # ratios has nothing to do here and is not applied.
+        fx = np.asarray(paper_pbe_fx(rho, sigma)) - 1.0
+        fc = np.asarray(paper_pbe_fc(rho, sigma, zeta_paper)) - 1.0
+        e_lda_x = rho * np.asarray(paper_lda_x_eps(rho))
+        e_lda_c = rho * np.asarray(paper_pw92_eps_c(rho, zeta_paper))
 
     # Meta-GGA (SCAN) pretrain targets + iso-orbital alpha column, computed
     # unconditionally so the shared pretrain data always supports meta_gga archs (a
@@ -1023,7 +1065,12 @@ def _system_energy_targets(cols, x_cols):
     <= 3.3e-11 Ha on N and H2O at def2-SVP level 1 -- six orders of magnitude
     under the certificate's tol_atom = 1.0 mHa. Summed by rung the targets
     reproduce the record's ``E_xc_pbe`` and, with ``E_non_xc``, its total SCF
-    energy to the same floors.
+    energy to the same floors. Under the ``paper`` footing the exchange
+    target of an open shell integrates the published total-density form,
+    which is not PBE's spin-scaled exchange energy (smaller in magnitude by up
+    to 2^(1/3) in the LDA limit at full polarization); a positive energy-term
+    weight is refused under that footing, and the table then serves the fit
+    diagnostics of the pretraining record alone.
 
     ``x_cols`` is the per-channel exchange block of
     :func:`spin_channel_exchange_rows`, or ``None`` when the exchange rows ARE
@@ -1435,7 +1482,7 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
                          mesh_fraction=MESH_WEIGHT_FRACTION,
                          orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
                          allow_irreproducible_degenerate=False,
-                         on_stale="regenerate"):
+                         on_stale="regenerate", slim_set=""):
     """Skip-if-current driver for staged pretrain data.
 
     Returns the canonical ``.npz`` path, (re)generating it ONLY when the file
@@ -1464,7 +1511,8 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
     eff_aux = _effective_auxbasis(basis, density_fit, auxbasis)
     systems = resolve_pretrain_systems(atoms=atoms, dfs_set=dfs_set,
                                        pool_atoms=pool_atoms,
-                                       reference_xc=reference_xc)
+                                       reference_xc=reference_xc,
+                                       slim_set=slim_set)
     _check_irreproducible_degenerate(systems, basis, grid_level,
                                      orientation_lock_strength,
                                      allow_irreproducible_degenerate)
@@ -1893,10 +1941,11 @@ def _check_generator_arguments(reference_xc, exchange_footing, mesh_fraction):
     if reference_xc not in ("pbe", "scan"):
         raise ValueError(
             f"reference_xc must be 'pbe' or 'scan'; got {reference_xc!r}.")
-    if exchange_footing not in ("total", "spin_channel"):
+    if exchange_footing not in EXCHANGE_FOOTINGS:
         raise ValueError(
-            "exchange_footing must be 'total' or 'spin_channel'; got "
-            f"{exchange_footing!r}."
+            "exchange_footing must be one of "
+            + ", ".join(repr(v) for v in EXCHANGE_FOOTINGS)
+            + f"; got {exchange_footing!r}."
         )
     mesh_fraction = float(mesh_fraction)
     if not (0.0 < mesh_fraction < 1.0):
@@ -2038,7 +2087,8 @@ def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
                                mesh_fraction=MESH_WEIGHT_FRACTION,
                                systems=None,
                                orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
-                               allow_irreproducible_degenerate=False):
+                               allow_irreproducible_degenerate=False,
+                               slim_set=""):
     """Generate the pretrain-data ``.npz`` in ``out_dir`` and return its path.
 
     ``polarized=True`` writes the zeta-carrying file; ``reference_xc="scan"``
@@ -2097,11 +2147,12 @@ def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
                if systems is not None
                else resolve_pretrain_systems(atoms=atoms, dfs_set=dfs_set,
                                              pool_atoms=pool_atoms,
-                                             reference_xc=reference_xc))
+                                             reference_xc=reference_xc,
+                                             slim_set=slim_set))
     if not systems:
         raise ValueError(
             "the pretraining set is empty: pass atoms=..., or turn on "
-            "dfs_set / pool_atoms."
+            "dfs_set / pool_atoms / slim_set."
         )
     # Before any SCF is paid for: a spatially degenerate free atom below
     # COARSE_DEGENERATE_MIN_GRID_LEVEL, or with the orientation lock off, is

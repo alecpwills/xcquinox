@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=xcq_converged
-# long-40core, NOT short-40core: the short queues cap at 4 h (see
+# long-96core-shared, NOT short-96core-shared: the short queues cap at 4 h (see
 # hpcjobs/SEAWULF_RUNBOOK.md) and a converged pass runs up to 100 DIIS
 # cycles for each of ~200 pool species on 25 completed cells, twice
 # (final and val-best checkpoints). Done-skip resumability covers anything
 # a wall-kill leaves; resubmit to finish.
-#SBATCH --partition=long-40core
+#SBATCH --partition=long-96core-shared
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

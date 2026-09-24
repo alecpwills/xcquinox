@@ -341,6 +341,53 @@ def _fake_held_out_pools():
     return mols, reactions
 
 
+def test_the_validation_slice_loads_the_configured_pools(tmp_path, monkeypatch):
+    """The in-loop validation slice is drawn from the pools the run evaluates, so a run
+    that holds out a wider set validates against that set rather than against the pair.
+    A configuration that states nothing gets the pair, and the reactions it stages are
+    the ones it staged before the knob existed.
+
+    Oracle: the seam's recorded arguments and the staged ``val_reactions.json``.
+    """
+    import dataclasses
+    import json as _json
+    import os
+    from pathlib import Path
+
+    from xcquinox.pipeline.cluster import inputs as inputs_mod
+
+    seen = []
+
+    def _capture(names=("bh76", "w411"), basis=None, grid_level=None,
+                 refs_dir=None):
+        seen.append((tuple(names), basis, grid_level))
+        return _fake_held_out_pools()
+
+    monkeypatch.setattr(inputs_mod, "_load_full_held_out_pools", _capture)
+
+    cfg = _make_cfg(tmp_path, basis="def2-tzvp", grid_level=2)
+    run_dir = str(tmp_path / "run_default")
+    os.makedirs(run_dir, exist_ok=True)
+    default_rxns = inputs_mod._stage_validation_slice(cfg, run_dir)
+    assert seen[-1] == (("bh76", "w411"), "def2-tzvp", 2)
+
+    wide = dataclasses.replace(
+        cfg, inputs=dataclasses.replace(cfg.inputs,
+                                        held_out_pools=("bh76", "w411", "diet150")))
+    run_dir_wide = str(tmp_path / "run_wide")
+    os.makedirs(run_dir_wide, exist_ok=True)
+    wide_rxns = inputs_mod._stage_validation_slice(wide, run_dir_wide)
+    assert seen[-1] == (("bh76", "w411", "diet150"), "def2-tzvp", 2)
+
+    # The slice of an existing configuration is unchanged by the threading.
+    assert [r["name"] for r in wide_rxns] == [r["name"] for r in default_rxns]
+    staged = _json.loads(
+        (Path(run_dir) / "validation" / "val_reactions.json").read_text())
+    assert [r["name"] for r in staged] == [r["name"] for r in default_rxns]
+
+
+
+
 # ---------------------------------------------------------------------------
 # Pretrain-data staging: every required file, at the run's own identity
 # ---------------------------------------------------------------------------

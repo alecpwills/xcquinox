@@ -1,27 +1,25 @@
-"""Refinalize completed held-out evals under the verbatim hold-out rule.
+"""Rewrite a completed held-out evaluation's tables from its stored energies.
 
 The per-species SCF energies a completed spec's eval wrote are correct and
-rule-independent; the 2026-08-13 hold-out redefinition changed only which
-reactions the reported test slice SELECTS (verbatim supervised reactions and
-the recorded validation slice leave; species overlap stays). Specs evaluated
-before the rule deployed therefore carry stale ``per_reaction.json`` /
-``test_set.csv`` files that this module rewrites in place -- seconds per
-spec, no SCF -- by re-running the finalize stage
-(``eval_holdout._finalize_holdout_outputs``) on the energies already stored
-in each channel's ``per_molecule.json``. Output is byte-equivalent to what a
-fresh post-deployment eval writes for the same checkpoint.
+independent of how the tables over them are assembled; a change in the pool
+definitions or in the aggregation therefore needs no SCF, only the finalize
+stage (``eval_holdout._finalize_holdout_outputs``) re-run over the energies
+already stored in each channel's ``per_molecule.json``. Output is
+byte-equivalent to what a fresh evaluation writes for the same checkpoint.
+Nothing is excluded here, as nothing is excluded anywhere: every reaction of
+every set is reported, with its training overlap annotated.
 
 Safety: the first rewrite of a channel backs up the previous artifacts as
-``per_reaction.pre_verbatim.json`` / ``test_set.pre_verbatim.csv`` (never
+``per_reaction.pre_refinalize.json`` / ``test_set.pre_refinalize.csv`` (never
 overwritten once present); ``per_molecule.json`` is passed through unchanged.
-Idempotent: a channel whose on-disk rows already equal the recomputed slice
-is reported ``unchanged`` and not rewritten, so the run report doubles as
-the ground-truth list of stale-rule specs. ``--dry-run`` computes every
-report without writing anything.
+Idempotent: a channel whose on-disk rows already equal the recomputed tables
+is reported ``unchanged`` and not rewritten, so the run report doubles as the
+ground-truth list of stale specs. ``--dry-run`` computes every report without
+writing anything.
 
 Usage::
 
-    python -m xcquinox.pipeline.refinalize_verbatim <run_dir> [<run_dir> ...] \
+    python -m xcquinox.pipeline.refinalize_holdout <run_dir> [<run_dir> ...] \
         [--channels eval_holdout eval_holdout_val_best] [--dry-run]
 """
 from __future__ import annotations
@@ -35,20 +33,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-CHANNELS = ("eval_holdout", "eval_holdout_best", "eval_holdout_val_best",
-            "eval_holdout_coldstart", "eval_holdout_converged",
-            "eval_holdout_converged_val_best")
+from xcquinox.pipeline.holdout_channels import HOLDOUT_CHANNELS
 
-
-class _MetadataSpec:
-    """Duck-typed training-spec view over a pulled ``train_metadata.json``,
-    exposing exactly what ``trained_reaction_exclusion`` consumes."""
-
-    def __init__(self, meta: Dict[str, Any]):
-        self._lk = dict(meta.get("loss_kwargs") or {})
-
-    def loss_kwargs_dict(self) -> Dict[str, Any]:
-        return self._lk
+#: every held-out channel the eval stage writes, each re-finalized in place
+CHANNELS = HOLDOUT_CHANNELS
 
 
 def _load_json(path: Path) -> Optional[Any]:
@@ -113,28 +101,28 @@ def reactions_for_run(run_dir: Path,
                       pool_specs: Dict[str, Any],
                       pool_rxns: Sequence[Dict[str, Any]]
                       ) -> List[Dict[str, Any]]:
-    """The run's reportable reaction list: the canonical pool minus the
-    recorded validation slice, excluded by canonical identity (permuted-name
-    twins leave with it). A missing ``validation/val_reactions.json`` means
-    no exclusion -- mirroring a run that never validated. This is the
-    file-presence form of the eval driver's spec-attribute gate."""
+    """The run's reaction list: the whole pool, each reaction marked
+    ``in_validation_slice`` where the recorded validation slice carries it, by
+    canonical identity (permuted-name twins are marked with it). Nothing is
+    removed; the mark is what the reported per-pool row averages the
+    complement of. A missing ``validation/val_reactions.json`` marks nothing,
+    mirroring a run that never validated. This is the file-presence form of
+    the eval driver's spec-attribute gate."""
     from xcquinox.pipeline.species_matching import (canonical_species_keys,
                                                 reaction_identity_keys)
     entries = _load_json(Path(run_dir) / "validation"
                          / "val_reactions.json") or []
     if not entries:
-        return list(pool_rxns)
+        return [{**r, "in_validation_slice": False} for r in pool_rxns]
     key_map = canonical_species_keys(pool_specs)
     val_ids: set = set()
     for e in entries:
         val_ids.update(reaction_identity_keys(e, key_map))
-    kept = []
+    out = []
     for r in pool_rxns:
         ids = set(reaction_identity_keys(r, key_map))
-        if ids and ids & val_ids:
-            continue
-        kept.append(r)
-    return kept
+        out.append({**r, "in_validation_slice": bool(ids and ids & val_ids)})
+    return out
 
 
 def refinalize_spec(spec_dir: Path,
@@ -146,8 +134,7 @@ def refinalize_spec(spec_dir: Path,
     ``{spec, channel, status, n_old, n_new}`` with status ``rewritten``,
     ``unchanged``, ``would-rewrite`` (dry-run), or ``skipped-<reason>``."""
     from xcquinox.pipeline.eval_holdout import (_finalize_holdout_outputs,
-                                            assert_channel_not_sliced,
-                                            trained_reaction_exclusion)
+                                            assert_channel_not_sliced)
     spec_dir = Path(spec_dir)
     # Every channel is checked before the first read and long before the
     # in-place rewrite: this stage re-selects a test slice from the FULL
@@ -162,12 +149,9 @@ def refinalize_spec(spec_dir: Path,
         if any((spec_dir / ch / "per_molecule.json").is_file()
                for ch in channels):
             print(f"[refinalize] WARNING: {spec_dir.name} has no readable "
-                  "train_metadata.json -- no verbatim exclusion can be "
-                  "built for it (validation exclusion still applies)",
-                  flush=True)
+                  "train_metadata.json -- its rows carry no training-overlap "
+                  "annotation", flush=True)
         meta = {}
-    excl, key_map = trained_reaction_exclusion(_MetadataSpec(meta),
-                                               pool_specs)
     training_names = _annotation_names(meta, pool_specs)
     reports: List[Dict[str, Any]] = []
     for ch in channels:
@@ -193,8 +177,7 @@ def refinalize_spec(spec_dir: Path,
             _finalize_holdout_outputs(
                 reactions, e_nn, e_pbe, mol_records=list(pm),
                 training_names=training_names,
-                n_species=len(pm), out_dir=Path(td), strict=True,
-                excluded_identities=excl, species_key_map=key_map)
+                n_species=len(pm), out_dir=Path(td))
             new_rows = _load_json(Path(td) / "per_reaction.json") or []
             rep["n_new"] = len(new_rows)
             new_csv = (Path(td) / "test_set.csv").read_text()
@@ -213,8 +196,8 @@ def refinalize_spec(spec_dir: Path,
                 reports.append(rep)
                 continue
             for src, bak in (("per_reaction.json",
-                              "per_reaction.pre_verbatim.json"),
-                             ("test_set.csv", "test_set.pre_verbatim.csv")):
+                              "per_reaction.pre_refinalize.json"),
+                             ("test_set.csv", "test_set.pre_refinalize.csv")):
                 s, b = out_dir / src, out_dir / bak
                 if s.is_file() and not b.is_file():
                     shutil.copy2(s, b)
@@ -229,6 +212,30 @@ def refinalize_spec(spec_dir: Path,
         rep["status"] = "rewritten"
         reports.append(rep)
     return reports
+
+
+def run_held_out_pools(run_dir: Path) -> Tuple[str, ...]:
+    """The held-out pools a run evaluated, from ``inputs.held_out_pools`` of
+    its ``resolved_config.yaml``; the benchmark pair for a run written before
+    the selection existed or without the file."""
+    path = Path(run_dir) / "resolved_config.yaml"
+    if path.is_file():
+        import yaml
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            raw = {}
+        pools = (raw.get("inputs") or {}).get("held_out_pools")
+        if isinstance(pools, (list, tuple)) and pools:
+            return tuple(str(p) for p in pools)
+    return ("bh76", "w411")
+
+
+def _load_held_out_pools(names, basis="def2-svp", grid_level=1, refs_dir=None):
+    """Seam over ``full_benchmark_pools.load_held_out_pools``."""
+    from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
+    return load_held_out_pools(tuple(names), basis=basis,
+                               grid_level=grid_level, refs_dir=refs_dir)
 
 
 def refinalize_run(run_dir: Path, *,
@@ -254,9 +261,7 @@ def refinalize_run(run_dir: Path, *,
     if _pool is not None:
         pool_specs, pool_rxns = _pool
     else:
-        from xcquinox.pipeline.full_benchmark_pools import (
-            load_full_held_out_pools)
-        pool_specs, pool_rxns = load_full_held_out_pools()
+        pool_specs, pool_rxns = _load_held_out_pools(run_held_out_pools(run_dir))
     reactions = reactions_for_run(run_dir, pool_specs, list(pool_rxns))
     reports: List[Dict[str, Any]] = []
     for sd in sorted((run_dir / "checkpoints").glob("spec_*")):
@@ -270,7 +275,7 @@ def refinalize_run(run_dir: Path, *,
               f"{r['status']} ({r['n_old']} -> {r['n_new']} rows)")
     print(f"[refinalize] {run_dir}: {n_re} channel(s) "
           f"{'needing rewrite' if dry_run else 'rewritten'}, "
-          f"{n_un} already verbatim-rule", flush=True)
+          f"{n_un} already current", flush=True)
     return reports
 
 

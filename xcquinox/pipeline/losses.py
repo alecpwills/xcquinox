@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import equinox as eqx
 
 from xcquinox.pipeline.oneshot import (
+    ONESHOT_AT_REFERENCE_KEY,
     fixed_density_total_energy,
     total_energy_for_solver,
     energy_trajectory_for_solver,
@@ -321,6 +322,9 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
     n_skipped = 0
     n_total = 0
     for i in iter_idx:
+        if mol_data[i].get(ONESHOT_AT_REFERENCE_KEY, False):
+            # a non-self-consistent entry carries no per-molecule loss
+            continue
         n_total += 1
         dm_ref = mol_data[i]["dm_target"]
         if dm_ref is None:
@@ -381,6 +385,9 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
     n_skipped = 0
     n_total = 0
     for i in iter_idx:
+        if mol_data[i].get(ONESHOT_AT_REFERENCE_KEY, False):
+            # a non-self-consistent entry carries no per-molecule loss
+            continue
         n_total += 1
         rho_ref = mol_data[i]["rho_ref_grid"]
         if rho_ref is None:
@@ -421,6 +428,9 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
     n_skipped = 0
     n_total = 0
     for i in iter_idx:
+        if mol_data[i].get(ONESHOT_AT_REFERENCE_KEY, False):
+            # a non-self-consistent entry carries no per-molecule loss
+            continue
         n_total += 1
         vxc_ref = mol_data[i]["vxc_ref"]
         if vxc_ref is None:

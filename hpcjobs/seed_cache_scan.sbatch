@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=xcq_seedcache
-#SBATCH --partition=short-40core
+#SBATCH --partition=short-96core-shared
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

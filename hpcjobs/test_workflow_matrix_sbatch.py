@@ -148,12 +148,20 @@ def test_house_shell_idiom():
 
 
 def test_single_node_one_task_with_a_thread_cap_from_slurm():
+    """One task on one node, holding the whole node, with the thread cap read
+    from the allocation rather than restated. The count is the milan node's 96
+    cores, what 40 was on the 40-core node the script was written for, and the
+    default the script falls back to outside SLURM follows it, so a run started
+    by hand caps the pools where the allocation would.
+
+    Oracle: the directives of the script itself.
+    """
     t = _sbatch_text()
     assert "#SBATCH --nodes=1" in t
     assert "#SBATCH --ntasks=1" in t
-    assert "#SBATCH --cpus-per-task=40" in t
+    assert "#SBATCH --cpus-per-task=96" in t
     assert "#SBATCH --exclusive" in t
-    assert 'THREADS="${SLURM_CPUS_PER_TASK:-40}"' in t
+    assert 'THREADS="${SLURM_CPUS_PER_TASK:-96}"' in t
     for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         assert f'export {var}="$THREADS"' in t
 

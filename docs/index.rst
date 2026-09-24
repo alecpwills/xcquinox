@@ -35,6 +35,7 @@ certificate and a density channel supervised against coupled-cluster references.
 
    architecture/pipeline_training_flow
    pipeline/pull_and_figures
+   pipeline/pretrain_parity
    api
 
 .. toctree::

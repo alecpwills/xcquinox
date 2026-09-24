@@ -60,8 +60,11 @@ _RHO_FLOOR = 1e-10
 #: are different functions of different row quantities, so the V3 cases are
 #: stated once per rung; one plain, one attention and one descriptor-carrying
 #: network stand for the GGA rung, one plain and one rung-3.5 network for the
-#: meta-GGA rung (the anchor is a property of the rung, not of the width).
-_GGA_ARCHS = ("deep_3x16", "deep_attn_3x16", "deep_cusp_3x16")
+#: meta-GGA rung (the anchor is a property of the rung, not of the width); the
+#: v8 geometric pair carries the same cusp block on both networks, with and
+#: without attention, and is anchored to PBE with the rest of the GGA rung.
+_GGA_ARCHS = ("deep_3x16", "deep_attn_3x16", "deep_cusp_3x16",
+              "deep_geom_3x16", "deep_geom_attn_3x16")
 _MGGA_ARCHS = ("deep_mgga_3x16", "deep_rung35_mgga_3x16")
 
 #: The descriptors any registered architecture can ask for, the meta-GGA
@@ -614,6 +617,44 @@ def test_certificate_passes_at_initialization_for_an_anchored_architecture(
         oracle_set=_tiny_oracle_set())
     assert control["verdict"] == "FAIL"
     assert control["summary"]["max_atom_mHa"] > 1.0
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("arch_name", ("deep_geom_3x16", "deep_geom_attn_3x16"))
+def test_certificate_passes_at_initialization_for_the_geometric_pair(
+        arch_name, tmp_path):
+    """V4 on the geometric pair: the cusp columns do not move the anchor.
+
+    The pair feeds the cusp descriptor's two columns to BOTH networks, the
+    attention twin through an attention block after the first layer, and it is
+    the energy path that is certified here rather than a packed row: the
+    certificate runs the production SCF energy of the untrained anchored
+    checkpoint against PBE on the H atom and H2. At ``gated = 0`` the model IS
+    its parent whatever its inputs are, so a descriptor column reaching the
+    output -- or an attention block that is not neutral at initialization --
+    shows up as a certificate that no longer PASSes.
+
+    Bounds: the 1e-2 mHa and 1e-2 kcal/mol of
+    :func:`test_certificate_passes_at_initialization_for_an_anchored_architecture`,
+    whose docstring states where the residual comes from (the fully-polarized
+    limit of the H atom, not the anchor). The unanchored control is made
+    there, on the same certificate and oracle set, and is not repeated.
+    """
+    from xcquinox.pipeline.cluster import fidelity as fid
+
+    run_dir = str(tmp_path / "run")
+    arch = _anchored_arch(arch_name)
+    _write_untrained_pretrain_checkpoint(run_dir, arch, arch_name, seed=0)
+    payload = fid.fidelity_certificate(
+        _anchored_cfg(arch=(arch_name,)), run_dir, arch_name,
+        oracle_set=_tiny_oracle_set())
+
+    assert payload["verdict"] == "PASS", payload["summary"]
+    assert payload["parent"] == "pbe"
+    assert payload["summary"]["failure_reasons"] == []
+    assert payload["summary"]["max_atom_mHa"] < 1e-2, payload["summary"]
+    assert payload["summary"]["max_dAE_kcalmol"] < 1e-2, payload["summary"]
+    assert fid.certificate_status(run_dir, arch_name)[0] == "PASS"
 
 
 @pytest.mark.slow

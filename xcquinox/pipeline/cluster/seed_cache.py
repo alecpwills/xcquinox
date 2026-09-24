@@ -52,11 +52,19 @@ def _run_scf_with_cache(entry, atoms, **kw):
     return run_scf_with_cache(entry, atoms, **kw)
 
 
+def _load_held_out_pools(names, basis="def2-svp", grid_level=1, refs_dir=None):
+    """Seam over ``full_benchmark_pools.load_held_out_pools``."""
+    from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
+    return load_held_out_pools(tuple(names), basis=basis,
+                               grid_level=grid_level, refs_dir=refs_dir)[0]
+
+
 def _held_out_pool_specs(cfg):
-    from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
-    pool_specs, _ = load_full_held_out_pools(
-        basis=cfg.inputs.basis, grid_level=int(cfg.inputs.grid_level))
-    return pool_specs
+    """The species of the pools the configuration evaluates (the benchmark
+    pair for a configuration that names none)."""
+    pools = tuple(getattr(cfg.inputs, "held_out_pools", ("bh76", "w411")))
+    return _load_held_out_pools(pools, basis=cfg.inputs.basis,
+                                grid_level=int(cfg.inputs.grid_level))
 
 
 def _link_pool_intermediates(cfg, scan_pool_dir: str, cache_dir: str) -> int:

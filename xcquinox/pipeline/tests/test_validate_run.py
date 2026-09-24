@@ -209,3 +209,45 @@ def test_checkpoint_digest_mismatch_is_a_failure(tmp_path, patched_cfg):
     assert not any("cnet.eqx" in f for f in failures)
 
 
+
+
+def test_gate_mismatch_is_detected(tmp_path, patched_cfg):
+    """A pretraining record that states no uniform-gas gate is the gate every
+    model before the field carried, and a run configured for the other gate
+    must not accept it; a record stating the run's gate passes.
+
+    Oracle: the validator's failures on a synthetic run carrying the record,
+    under a model block of each gate.
+    """
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    d = os.path.join(run, "pretrain", "deep_3x16")
+    with open(os.path.join(d, "pretrain_metadata.json"), "w") as f:
+        json.dump({"use_polarized_correlation": True, "parent_anchor": False,
+                   "descriptor_coordinates": "legacy"}, f)
+    patched_cfg.model = SimpleNamespace(parent_anchor=False,
+                                        descriptor_coordinates="legacy",
+                                        ueg_gate="x2")
+    failures, _w, _n = vr.validate_run(run)
+    assert any("pretrain/deep_3x16: ueg_gate=" in f for f in failures), failures
+
+    patched_cfg.model = SimpleNamespace(parent_anchor=False,
+                                        descriptor_coordinates="legacy",
+                                        ueg_gate="tanh2")
+    failures, _w, _n = vr.validate_run(run)
+    assert not any("ueg_gate=" in f for f in failures), failures
+
+    # A record that STATES the other gate is refused by the same run, and one
+    # stating the run's gate passes: the validator reads the record's own
+    # field, not only its absence.
+    with open(os.path.join(d, "pretrain_metadata.json"), "w") as f:
+        json.dump({"use_polarized_correlation": True, "parent_anchor": False,
+                   "descriptor_coordinates": "legacy", "ueg_gate": "x2"}, f)
+    failures, _w, _n = vr.validate_run(run)
+    assert any("pretrain/deep_3x16: ueg_gate='x2'" in f for f in failures), failures
+
+    with open(os.path.join(d, "pretrain_metadata.json"), "w") as f:
+        json.dump({"use_polarized_correlation": True, "parent_anchor": False,
+                   "descriptor_coordinates": "legacy", "ueg_gate": "tanh2"}, f)
+    failures, _w, _n = vr.validate_run(run)
+    assert not any("ueg_gate=" in f for f in failures), failures

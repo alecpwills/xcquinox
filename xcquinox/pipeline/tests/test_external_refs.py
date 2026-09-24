@@ -626,3 +626,40 @@ def test_require_ccsd_converged_refuses_unconverged():
 
     with pytest.raises(RuntimeError, match="did not converge"):
         _require_ccsd_converged(_NoAttr(), "h2o")
+
+
+def test_ccsd_cache_hit_returns_the_written_key_set(tmp_path):
+    """A served cache carries what the computation carried, the convergence
+    stamp included: a caller cannot tell from the payload whether the density
+    was computed in this process or read from disk, so a provenance check that
+    reads the stamp behaves the same either way.
+
+    Oracle: the two returns of the same call on H2, the second served (the
+    cache file is not rewritten, so the branch under test is the hit branch).
+    """
+    from xcquinox.pipeline.external_refs import (
+        SpeciesEntry, resolve_geometry,
+        run_scf_with_cache, run_ccsd_with_cache,
+    )
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    scf = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    cold = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
+                               cache_dir=tmp_path,
+                               basis="def2-svp", grid_level=1)
+    caches = sorted((tmp_path / "_intermediates").glob("*_ccsd.npz"))
+    assert len(caches) == 1, caches
+    mtime = caches[0].stat().st_mtime
+
+    served = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
+                                 cache_dir=tmp_path,
+                                 basis="def2-svp", grid_level=1)
+    assert caches[0].stat().st_mtime == mtime, (
+        "the cache was rewritten, so the second call did not take the hit "
+        "branch this test is about")
+
+    assert set(served.keys()) == set(cold.keys()), (
+        f"served {sorted(served)} against computed {sorted(cold)}")
+    assert cold["ccsd_converged"] is True
+    assert served["ccsd_converged"] is True

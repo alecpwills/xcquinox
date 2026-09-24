@@ -62,6 +62,101 @@ def test_ip13_point_carries_neutral_and_cation_only():
     assert [s.info["name"] for s in c.species] == ["C", "C+"]
 
 
+# ASE Hill formulas of the nine AE molecules the published reference
+# trajectory marks non-self-consistent (NO2, NH, O3, N2O, CH3, CH2, H2O, NH3
+# and O2, the last of which this pool does not hold), written here
+# independently of the constant under test so the constant is compared
+# against the trajectory's list and not against itself.
+_PUBLISHED_NONSC_AE_HILLS = ("NO2", "HN", "O3", "N2O", "CH3", "CH2",
+                             "H2O", "H3N", "O2")
+
+
+def test_the_pool_records_the_published_self_consistency_split():
+    """The per-entry self-consistency flag of the published protocol travels as
+    data on the pool Atoms, on the reaction and IP dicts, and on the points.
+
+    Oracle: the published reference trajectory, whose nine AE entries NO2, NH,
+    O3, N2O, CH3, CH2, H2O, NH3 and O2 and whose every reaction species carry
+    ``sc=False``, while the remaining AE molecules, the atom references and the
+    IP entries carry no flag and are therefore self-consistent. O2 is not one
+    of this pool's entries, so the stamping is compared over the constant's
+    members the pool holds. The flag is a Python bool, so identity comparison
+    is used throughout.
+
+    Asserted: ``DFS_NONSC_AE_HILLS`` equals that list of Hill formulas;
+    ``build_dfs_pool`` stamps ``info['sc']`` on every AE Atoms (False on
+    exactly the eight the pool holds), ``'sc': False`` on every reaction dict,
+    ``'sc': True`` on every IP dict and ``info['sc'] True`` on every atom
+    reference; ``build_dfs_pool_points`` records ``metadata['sc']`` on every
+    point (the compound's flag for an AE point, False for a reaction, True for
+    an IP pair) and stamps ``info['sc']`` on every species Atoms, the reactants
+    and products of a reaction carrying False and an AE point's atom anchors
+    carrying True, in the reaction form of the AE points as well.
+    """
+    from xcquinox.pipeline.dfs_pool import DFS_NONSC_AE_HILLS, build_dfs_pool
+    from xcquinox.pipeline.training_points import build_dfs_pool_points
+
+    assert DFS_NONSC_AE_HILLS == _PUBLISHED_NONSC_AE_HILLS
+
+    pool = build_dfs_pool()
+    ae_by_hill = {a.info["dfs_hill"]: a for a in pool["ae_molecules"]}
+    # the published entries outside this pool: O2 and nothing else
+    assert set(DFS_NONSC_AE_HILLS) - set(ae_by_hill) == {"O2"}
+    nonsc = set(DFS_NONSC_AE_HILLS) & set(ae_by_hill)
+    assert len(nonsc) == 8
+    assert {h for h, a in ae_by_hill.items() if a.info["sc"] is False} == nonsc
+    assert all(a.info["sc"] is True
+               for h, a in ae_by_hill.items() if h not in nonsc)
+    for rxn in pool["bh76_reactions"]:
+        assert rxn["sc"] is False, rxn["name"]
+    for pair in pool["ip13_pairs"]:
+        assert pair["sc"] is True, pair["name"]
+    for atom in pool["atom_refs"]:
+        assert atom.info["sc"] is True, atom.info["name"]
+
+    points = build_dfs_pool_points()
+    by_name_sc = {p.name: p for p in points}
+    assert nonsc <= set(by_name_sc), sorted(nonsc - set(by_name_sc))
+    for p in points:
+        assert "sc" in p.metadata, p.name
+        # Every species carries the key, whatever its value: an unstamped
+        # species would read as self-consistent by default downstream.
+        for s in p.species:
+            assert "sc" in s.info, (p.name, s.info["name"])
+    for p in (q for q in points if q.kind == "ae"):
+        expected = p.name not in nonsc
+        assert p.metadata["sc"] is expected, p.name
+        compound = next(s for s in p.species if s.info["name"] == p.name)
+        assert compound.info["sc"] is expected, p.name
+        # An AE point's H / Li anchors are atom references, which the
+        # trajectory leaves self-consistent.
+        for anchor in (s for s in p.species if s.info["name"] != p.name):
+            assert anchor.info["sc"] is True, (p.name, anchor.info["name"])
+    for p in (q for q in points if q.kind == "bh76"):
+        assert p.metadata["sc"] is False, p.name
+        reacting = set(p.metadata["reactants"]) | set(p.metadata["products"])
+        for s in (s for s in p.species if s.info["name"] in reacting):
+            assert s.info["sc"] is False, (p.name, s.info["name"])
+    for p in (q for q in points if q.kind == "ip13"):
+        assert p.metadata["sc"] is True, p.name
+        for s in p.species:
+            assert s.info["sc"] is True, (p.name, s.info["name"])
+
+    # The reaction-form AE points (ae_as_reactions) carry the compound's flag
+    # as the fixed-anchor form does: a run in that mode keeps the split. The
+    # compound Atoms carries it too; the atoms it atomizes into stay
+    # self-consistent, as the trajectory's atom entries are.
+    rxn_form = {p.name: p for p in build_dfs_pool_points(ae_as_reactions=True)}
+    for hill in ae_by_hill:
+        p = rxn_form[hill]
+        expected = hill not in nonsc
+        assert p.metadata["sc"] is expected, hill
+        compound = next(s for s in p.species if s.info["name"] == hill)
+        assert compound.info["sc"] is expected, hill
+        for atom in (s for s in p.species if s.info["name"] != hill):
+            assert atom.info["sc"] is True, (hill, atom.info["name"])
+
+
 def test_species_union_dedupes_by_name_charge_spin():
     """When two chosen points share an atom (e.g. AE compound's H anchor
     + BH76 reaction's H reactant), spec.molecules has it once."""

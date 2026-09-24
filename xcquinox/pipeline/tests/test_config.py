@@ -128,7 +128,7 @@ def test_architecture_config_field_validation(field, value, exc):
 # differ from deep_mgga_3x16 in shape alone.
 def test_architectures_registry_key_set():
     from xcquinox.pipeline.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 34
+    assert len(ARCHITECTURES) == 36
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -160,6 +160,9 @@ def test_architectures_registry_key_set():
         # capacity question of its plateau against the atom certificate.
         # Probe-only until measured: excluded from the v6 campaign.
         "deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32",
+        # The v8 geometric pair: the cusp descriptor's two columns on the 3x16
+        # GGA network, with and without attention.
+        "deep_geom_3x16", "deep_geom_attn_3x16",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
 
@@ -172,11 +175,197 @@ def test_architectures_registry_key_set():
 # not -- turns this red instead of being read as capacity.
 
 
+def test_the_geometric_pair_is_the_cusp_twin_with_and_without_attention():
+    """The two geometric entries are deep_cusp_3x16 under another name, the
+    attention twin adding only the attention block.
+
+    Oracle: the registry entry compared field by field against
+    ``dataclasses.replace`` of deep_cusp_3x16, so a keyword the entry forgot
+    -- or one added to ArchitectureConfig later whose default the pair takes
+    and deep_cusp_3x16 does not -- fails here instead of being read as the
+    geometric architecture. The three flags and the descriptor list are stated
+    again on their own so the failure names which of them moved.
+    """
+    import dataclasses
+    from xcquinox.pipeline.config import get_architecture
+
+    cusp = get_architecture("deep_cusp_3x16")
+    plain = get_architecture("deep_geom_3x16")
+    attn = get_architecture("deep_geom_attn_3x16")
+
+    want_plain = dataclasses.replace(cusp, name="deep_geom_3x16")
+    want_attn = dataclasses.replace(cusp, name="deep_geom_attn_3x16",
+                                    attention=True, num_heads=4)
+    for got, want in ((plain, want_plain), (attn, want_attn)):
+        differing = {f.name: (getattr(got, f.name), getattr(want, f.name))
+                     for f in dataclasses.fields(got)
+                     if getattr(got, f.name) != getattr(want, f.name)}
+        assert not differing, (got.name, differing)
+        assert got == want, got.name
+
+    for cfg in (plain, attn):
+        assert cfg.depth == 3 and cfg.nodes == 16, cfg.name
+        assert cfg.zero_init_final_layer is True, cfg.name
+        assert cfg.descriptor_log_transform is True, cfg.name
+        assert cfg.dm_entropy_intensive is True, cfg.name
+        assert [d.name for d in cfg.descriptors] == ["cusp"], cfg.name
+    assert plain.attention is False
+    assert attn.attention is True and attn.num_heads == 4
+
+
 # §13.2 item (13)
 def test_get_architecture_raises_for_unknown():
     from xcquinox.pipeline.config import get_architecture
     with pytest.raises(KeyError):
         get_architecture("nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# The non-self-consistent point capability: the scheme it needs and the weight
+# it accepts (the spec is built with ``_seed_spec`` below)
+# ---------------------------------------------------------------------------
+
+def test_the_sc_switch_needs_the_per_molecule_scheme_and_a_finite_weight(
+        tmp_path):
+    """``TrainingSpec.validate`` refuses the self-consistency switch off the
+    per-molecule scheme and refuses a negative or non-finite weight.
+
+    The switch is consulted only where the loop builds one group at a time and
+    weights that group's channels; under the full-batch scheme nothing reads it,
+    so a spec carrying it there states a protocol it does not execute. The
+    weight multiplies an energy channel, so a negative value flips the sign of
+    the term it scales and a NaN propagates through the whole update.
+
+    Oracle: the pair of specs differing in ``update_scheme`` alone, and the pair
+    differing in ``nonsc_weight`` alone -- the per-molecule form with a finite
+    weight validates, the other member raises with the offending field named.
+    The defaults are asserted too, since the capability is off unless a run asks
+    for it.
+    """
+    default = _seed_spec(tmp_path, seed_source="pbe")
+    assert default.respect_sc_flag is False
+    assert default.nonsc_weight == 1.0
+    assert default.nonsc_points == ()
+    default.validate()
+
+    # The protocol arm: the switch on, a fractional weight, and the names of
+    # the chosen non-self-consistent points recorded beside them.
+    _seed_spec(tmp_path, seed_source="pbe", respect_sc_flag=True,
+               nonsc_weight=0.5,
+               nonsc_points=("OH+N2_to_H+N2O",)).validate()
+
+    # The full-batch scheme has no per-group weighting to apply the flag to.
+    # The seed mixture is dropped here so its own per-molecule rule cannot be
+    # the one that fires.
+    spec = _seed_spec(tmp_path, seed_source="pbe", seed_mix_atomic=False,
+                      update_scheme="batched", respect_sc_flag=True)
+    with pytest.raises(ValueError) as excinfo:
+        spec.validate()
+    message = str(excinfo.value)
+    assert "respect_sc_flag" in message, message
+    assert "update_scheme" in message, message
+    # Control: the same spec without the switch is the historical full-batch
+    # arm and stays legal, so the rule names the pair and not the scheme alone.
+    _seed_spec(tmp_path, seed_source="pbe", seed_mix_atomic=False,
+               update_scheme="batched").validate()
+
+    for bad in (-1.0, float("nan")):
+        spec = _seed_spec(tmp_path, seed_source="pbe", respect_sc_flag=True,
+                          nonsc_weight=bad)
+        with pytest.raises(ValueError) as excinfo:
+            spec.validate()
+        assert "nonsc_weight" in str(excinfo.value), (bad, str(excinfo.value))
+
+
+# ---------------------------------------------------------------------------
+# The seed mixture against the cold start: the pair the mixture cannot express
+# ---------------------------------------------------------------------------
+
+def _seed_spec(tmp_path, *, seed_source, in_loss_kwargs=True, **extra):
+    """An H / O / H2O spec whose only free variable is where the SCF starts.
+
+    The solver config is placed either in ``loss_kwargs`` or in the
+    ``solver_config`` field, the pair the training loop reads as
+    ``loss_kwargs_dict.get("solver_config") or solver_config``; both routes
+    must reach the same rule.
+    """
+    from xcquinox.pipeline.config import (
+        MoleculeSpec, TrainingSpec, get_architecture)
+    from xcquinox.pipeline.solver import SolverConfig, SolverMode
+
+    mols = (
+        MoleculeSpec.from_dict(
+            name="H", atom="H 0 0 0", basis="sto-3g", charge=0, spin=1,
+            atom_composition={"H": 1},
+        ),
+        MoleculeSpec.from_dict(
+            name="O", atom="O 0 0 0", basis="sto-3g", charge=0, spin=2,
+            atom_composition={"O": 1},
+        ),
+        MoleculeSpec.from_dict(
+            name="H2O", atom="O 0 0 0; H 0 0 0.96; H 0.93 0 -0.24",
+            basis="sto-3g", charge=0, spin=0,
+            atom_composition={"H": 2, "O": 1},
+        ),
+    )
+    sc = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
+                      seed_source=seed_source)
+    kwargs = dict(
+        arch=get_architecture("deep_combined"),
+        molecules=mols,
+        targets=(("H", 0.0), ("H2O", 232.0), ("O", 0.0)),
+        atom_energies=(("H", -0.5), ("O", -75.0)),
+        loss_name="A_atomization",
+        loss_kwargs=(("solver_config", sc),) if in_loss_kwargs else (),
+        solver_config=None if in_loss_kwargs else sc,
+        n_steps=10,
+        lr_start=1e-3,
+        lr_end=1e-5,
+        lr_decay_start=0.0,
+        grad_clip=1.0,
+        pretrain_checkpoint=None,
+        checkpoint_dir=str(tmp_path / "ckpt"),
+        seed=0,
+        update_scheme="per_molecule",
+        seed_mix_atomic=True,
+    )
+    kwargs.update(extra)
+    return TrainingSpec(**kwargs)
+
+
+def test_seed_mixture_is_refused_on_a_cold_start_seed(tmp_path):
+    """``seed_mix_atomic`` with a ``minao`` SCF seed is refused by
+    ``TrainingSpec.validate``, by both routes the loop reads the solver config.
+
+    The mixture forms ``(1 - beta) D_seed + beta D_minao``. Where the seed IS
+    the atomic guess the two endpoints coincide and the combination is the cold
+    start itself with a coefficient that changes nothing: an arm that reads as
+    a third protocol while executing the second. The oracle is the pair of
+    specs differing in ``seed_source`` alone -- the ``pbe`` form validates, the
+    ``minao`` form raises with both field names in the message. A third spec
+    keeps the cold-start seed and drops the mixture, which separates a rule
+    that refuses the seed by itself from one that refuses the pair.
+    """
+    import dataclasses
+
+    # Control: the mixture over a converged parent density is the protocol,
+    # and validates both before and after the rule lands.
+    _seed_spec(tmp_path, seed_source="pbe").validate()
+
+    for in_loss_kwargs in (True, False):
+        spec = _seed_spec(tmp_path, seed_source="minao",
+                          in_loss_kwargs=in_loss_kwargs)
+        with pytest.raises(ValueError) as excinfo:
+            spec.validate()
+        message = str(excinfo.value)
+        assert "seed_mix_atomic" in message, message
+        assert "seed_source" in message, message
+
+    # Control: the cold start WITHOUT the mixture is a legal arm (it is the
+    # protocol of the cold-start held-out channel), so the rule must name the
+    # pair and not the seed by itself.
+    dataclasses.replace(_seed_spec(tmp_path, seed_source="minao"),
+                        seed_mix_atomic=False).validate()
 
 
 # §13.2 item (14)
@@ -356,7 +545,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.pipeline.config import ARCHITECTURES
     from xcquinox.pipeline.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 34  # +8 (2026-06-20) +3 rung-3.5 (2026-06-28) +3 meta-GGA (2026-07-02) +2 mgga stacks (2026-08-10) +3 mgga width/depth completions (2026-09-11)
+    assert len(ARCHITECTURES) == 36
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)

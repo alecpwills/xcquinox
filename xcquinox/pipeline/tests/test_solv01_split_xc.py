@@ -407,7 +407,7 @@ _TOL_UKS = 5e-7
 # (rank-preserving rotations), the directions the Roothaan step moves on, so
 # no channel's indicator leaves the physical domain. Oracle O2 runs the probe
 # on all four open-shell atoms of the pools; ``test_spin_scaling_oracles``
-# parametrizes it over 34 architectures x {H, Li, N, O} and the case below is
+# parametrizes it over every registered architecture x {H, Li, N, O} and the case below is
 # the O atom of that set. Residuals at _FD_EPS with the three-block potential
 # and the rotation path, measured through THIS module's
 # ``_assert_uks_fd_consistency`` over the full 124-cell grid, def2-svp, grid
@@ -816,7 +816,8 @@ def test_descriptor_free_archs_keep_the_analytic_path():
     """The routing predicate must send only DM-dependent architectures down the
     gradient path, so the sound architectures stay byte-identical."""
     from xcquinox.pipeline.oneshot import has_dm_dependent_descriptor
-    expected_free = {"deep_3x16", "deep_attn_3x16", "deep_cusp_3x16"}
+    expected_free = {"deep_3x16", "deep_attn_3x16", "deep_cusp_3x16",
+                     "deep_geom_3x16", "deep_geom_attn_3x16"}
     for name in expected_free:
         assert not has_dm_dependent_descriptor(_live_model(name)), (
             f"{name} must keep the analytic V_xc path")

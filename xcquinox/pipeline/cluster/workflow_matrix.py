@@ -451,16 +451,18 @@ def oracle_function_name_conflicts(node_ids, archs=None) -> list:
 # Stage table
 # ---------------------------------------------------------------------------
 
-#: Six species of the BH76 + W4-11 held-out pool closing three reactions -- one
-#: BH76 barrier (h + n2o -> n2ohts) and two W4-11 atomizations (h2, oh) -- over
-#: both spin types (RKS h2 / n2o, UKS h / o / oh / n2ohts). The full pool is 216
-#: reactions over 214 species and hours of SCF per grid cell,
-#: and it is not narrowable from the
+#: Seven species of the BH76 + W4-11 held-out pool closing three reactions --
+#: one BH76 barrier (h + n2o -> n2ohts) and two W4-11 atomizations (h2, oh) --
+#: over both spin types (RKS h2 / n2o, UKS h / o / oh / n2ohts). Each name
+#: carries the set it belongs to, as every held-out species key does, so the
+#: hydrogen atom appears once per set. The full pool is 216 reactions over 231
+#: species and hours of SCF per grid cell, and it is not narrowable from the
 #: grid config. The W4-11 leg is atomization energies, so every one of its
-#: reactions carries single-atom legs: a slice of six MOLECULES with no atoms
+#: reactions carries single-atom legs: a slice of molecules with no atoms
 #: closes no atomization at all and would leave that half of the reaction math
 #: untested, which is why the atoms are in it.
-HELDOUT_SPECIES_SLICE = "h,h2,o,oh,n2o,n2ohts"
+HELDOUT_SPECIES_SLICE = ("bh76@h,bh76@n2o,bh76@n2ohts,"
+                         "w411@h,w411@h2,w411@o,w411@oh")
 
 #: Reactions :data:`HELDOUT_SPECIES_SLICE` closes: ``bh76_h_n2o_to_n2ohts``,
 #: ``w411_h2_atomization`` and ``w411_oh_atomization``.
@@ -1089,12 +1091,12 @@ def _oracle_failure_note(rc, module_path, selector):
     return None
 
 
-def _o3_branch_line(log_path):
+def _o3_report_line(log_path):
     """The last ``[O3] ...`` line of an oracle log, or None.
 
-    The closed-shell oracle writes one such line per architecture naming the
-    branch it took (bitwise on the platform the fixtures were recorded on, a
-    1e-11 relative comparison with the measured discrepancy elsewhere)."""
+    The closed-shell oracle writes one such line per architecture, naming the
+    largest movement it measured against the archived records, which it holds
+    to 1e-11 relative per key."""
     try:
         lines = Path(log_path).read_text().splitlines()
     except OSError:
@@ -1114,12 +1116,12 @@ def _run_oracles(arch, log_path, *, runner, env, timeout_s, cwd):
     record = _run_stage("oracles", argv, log_path, runner=runner, env=env,
                         timeout_s=timeout_s, cwd=cwd)
     summary = _summary_line(log_path)
-    branch = _o3_branch_line(log_path)
-    if branch is not None:
-        # The closed-shell oracle prints which comparison it ran -- bitwise
-        # on the recording platform, a documented tolerance elsewhere -- so
-        # the per-architecture row carries it beside the pytest summary.
-        summary = f"{summary} -- {branch}"
+    report = _o3_report_line(log_path)
+    if report is not None:
+        # The closed-shell oracle prints the movement its comparison measured
+        # against the archived records, so the per-architecture row carries it
+        # beside the pytest summary.
+        summary = f"{summary} -- {report}"
     if record["rc"] != 0:
         note = _oracle_failure_note(
             record["rc"], _oracle_module_path(cwd), selector)

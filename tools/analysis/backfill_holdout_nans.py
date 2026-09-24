@@ -23,13 +23,13 @@ The density columns are NEVER touched: the benchmark CCSD reference
 densities are not staged locally, so a recomputed row would null them.
 
 Repair doctrine (mirrors ``cluster.coldstart_retro`` /
-``refinalize_verbatim``): idempotent (done = no non-finite ``E_total_nn``
+``refinalize_holdout``): idempotent (done = no non-finite ``E_total_nn``
 left), once-only ``per_molecule.pre_backfill.json`` backup, atomic
 replace, a ``backfill_meta.json`` stamp per channel, and every computed
 payload banked in ``backfill_ledger.json`` so a cluster pull that
 overwrites the patched files can be re-applied instantly without
 recomputation. Derived files (``per_reaction.json`` / ``test_set.csv``)
-are regenerated afterwards by ``xcquinox.pipeline.refinalize_verbatim``
+are regenerated afterwards by ``xcquinox.pipeline.refinalize_holdout``
 (``--refinalize``, default on when anything was patched).
 
 Usage (from the repo root):
@@ -56,11 +56,17 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-CHANNEL_MODELS = {
-    "eval_holdout": "model.eqx",
-    "eval_holdout_best": "model_best.eqx",
-    "eval_holdout_val_best": "model_val_best.eqx",
-}
+from xcquinox.pipeline.holdout_channels import (CHANNEL_MODEL,
+                                                CHANNEL_OVERRIDE,
+                                                HOLDOUT_CHANNELS)
+
+#: The channels the backfill repairs, and the checkpoint each evaluates: the
+#: trained-protocol channels (no solver override), since a species is
+#: recomputed under the spec's own solver. The cold-start and converged pairs
+#: are re-run by ``cluster.channel_retro`` under their overrides.
+CHANNEL_MODELS = {channel: CHANNEL_MODEL[channel]
+                  for channel in HOLDOUT_CHANNELS
+                  if CHANNEL_OVERRIDE[channel] is None}
 
 BACKUP_NAME = "per_molecule.pre_backfill.json"
 LEDGER_NAME = "backfill_ledger.json"
@@ -674,8 +680,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if any_patched and not args.no_refinalize and not args.dry_run \
             and not args.measure_only:
         print("[backfill] regenerating per_reaction/test_set via "
-              "refinalize_verbatim ...", flush=True)
-        from xcquinox.pipeline.refinalize_verbatim import refinalize_run
+              "refinalize_holdout ...", flush=True)
+        from xcquinox.pipeline.refinalize_holdout import refinalize_run
         refinalize_run(run_dir, channels=tuple(args.channels))
     return rc
 

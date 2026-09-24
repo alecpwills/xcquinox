@@ -63,6 +63,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
+# The held-out channel vocabulary: the directories a figure set is scored
+# from, their labels and the reporting-channel rule every reader follows.
+from xcquinox.pipeline.holdout_channels import (  # noqa: E402
+    CHANNEL_LABEL, FIGURE_CHANNELS, REPORTING_CHANNEL, VAL_BEST_CHANNELS,
+    figure_suffix, resolve_channel)
+
 # ---------------------------------------------------------------------------
 # Reuse the sibling module's collectors + style (load by path; this directory
 # is not an importable package).
@@ -297,7 +303,6 @@ def _check_yscale(yscale: str) -> None:
 # Data ingest
 # ---------------------------------------------------------------------------
 
-_POOL_SPECS_CACHE: Optional[Dict[str, Any]] = None
 _POOL_CACHE: Optional[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
 
 
@@ -314,49 +319,6 @@ def _canonical_pool() -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     return _POOL_CACHE
 
 
-def _pool_specs_for_aliasing() -> Dict[str, Any]:
-    """Benchmark-pool species specs for composition-level alias matching --
-    the figure-layer twin of the eval-side
-    ``held_out_filter_names_with_aliases`` expansion. Lazy + cached (one pool
-    load per process); monkeypatchable test seam."""
-    global _POOL_SPECS_CACHE
-    if _POOL_SPECS_CACHE is None:
-        from xcquinox.pipeline.full_benchmark_pools import (
-            load_full_held_out_pools)
-        _POOL_SPECS_CACHE = load_full_held_out_pools()[0]
-    return _POOL_SPECS_CACHE
-
-
-def _spec_alias_names(spec_dir: Path) -> set:
-    """Casefolded pool names physically identical to this spec's trained
-    molecules under a DIFFERENT name (Hill ``CHN`` vs pool ``hcn``) --
-    exactly the set the cluster-side name-level strict filter could not see.
-    Name-visible trained species were already dropped there, so only these
-    aliases need removing here. Empty set when metadata is absent."""
-    tm = spec_dir / "train_metadata.json"
-    if not tm.is_file():
-        return set()
-    try:
-        with tm.open() as f:
-            mols = json.load(f).get("molecules") or []
-    except (json.JSONDecodeError, OSError):
-        return set()
-    from xcquinox.pipeline.species_matching import (is_atomic,
-                                                parse_formula_name,
-                                                trained_pool_aliases)
-    mol_level = []
-    for n in mols:
-        parsed = parse_formula_name(str(n))
-        if parsed is not None and is_atomic(parsed[0]):
-            continue  # atoms are universal anchors, never held-out species
-        mol_level.append(str(n))
-    if not mol_level:
-        return set()
-    aliases = trained_pool_aliases(mol_level, _pool_specs_for_aliasing(),
-                                   verbose=False)
-    return {str(a).casefold() for a in aliases}
-
-
 def _reaction_identity(r: Dict[str, Any]) -> Optional[Tuple]:
     """Order-invariant physical identity of a reaction row: the sorted
     casefolded reactant and product name tuples. ``None`` when either side is
@@ -369,14 +331,23 @@ def _reaction_identity(r: Dict[str, Any]) -> Optional[Tuple]:
             tuple(sorted(str(x).casefold() for x in prod)))
 
 
+def _val_best_channel_present(run_dir: Path) -> Optional[str]:
+    """The first channel scored from the validation-best checkpoint that any
+    spec of the run carries, under whatever evaluation protocol
+    (``holdout_channels.VAL_BEST_CHANNELS``), or ``None``."""
+    for _idx, sd in ccp._spec_dirs(run_dir):
+        for channel in VAL_BEST_CHANNELS:
+            if (sd / channel).is_dir():
+                return channel
+    return None
+
+
 def _run_used_validation(run_dir: Path) -> bool:
     """True when the run demonstrably trained with a validation slice: any
-    spec carries a validation-best held-out channel. Pre-validation runs
-    (no such channel anywhere) return False and render unchanged."""
-    for _idx, sd in ccp._spec_dirs(run_dir):
-        if (sd / "eval_holdout_val_best").is_dir():
-            return True
-    return False
+    spec carries a channel scored from the validation-best checkpoint, the
+    trained-protocol one or a cold-start or converged twin. Pre-validation
+    runs (no such channel anywhere) return False and render unchanged."""
+    return _val_best_channel_present(run_dir) is not None
 
 
 def _val_reaction_identities(run_dir: Path) -> set:
@@ -416,11 +387,12 @@ def _val_reaction_identities(run_dir: Path) -> set:
             ident = _reaction_identity(e)
             if ident is not None:
                 out.add(ident)
-    if n_read == 0 and _run_used_validation(run_dir):
+    found = _val_best_channel_present(run_dir) if n_read == 0 else None
+    if found is not None:
         raise RuntimeError(
             f"{run_dir}: the run trained with a validation slice "
-            f"(eval_holdout_val_best/ present) but no readable "
-            f"validation/val_reactions.json was found -- rendering would "
+            f"(the validation-best channel {found}/ is present) but no "
+            f"readable validation/val_reactions.json was found -- rendering would "
             f"silently use a different slice. Re-pull the run with the "
             f"summaries profile (it carries /validation/), e.g. "
             f"`python -m xcquinox.pipeline.cluster pull <run> --profile "
@@ -465,13 +437,12 @@ def collect_holdout_reaction_rows(run_dir: Path,
     ``eval_subdir`` selects the checkpoint variant: ``eval_holdout`` (final-step
     weights, default) or ``eval_holdout_val_best`` (held-out validation-best weights).
 
-    Two strict-holdout repairs applied on read (each printed when it fires):
-    rows whose reaction contains a pool species physically identical to one of
-    that spec's trained molecules under a different name (``_spec_alias_names``
-    -- the cluster-side name filter is blind to the Hill-vs-pool naming split)
-    are dropped, and rows whose reaction is a permuted-name twin of a
-    validation-slice reaction (``_val_reaction_identities`` -- validation-best
-    selection saw that barrier) are dropped.
+    Nothing is dropped for overlapping the training set: a reaction that
+    touches a trained molecule is a held-out reaction and is reported, its
+    overlap recorded on the row. Rows whose reaction is a permuted-name twin
+    of a validation-slice reaction (``_val_reaction_identities`` --
+    validation-best selection saw that barrier) are left out, matching the
+    per-pool row the evaluation writes.
 
     Rows require a finite comparator (PBE) leg only: reactions whose NN leg
     is NaN are kept with NaN NN columns on BOTH ingest paths (the cluster
@@ -481,9 +452,9 @@ def collect_holdout_reaction_rows(run_dir: Path,
     filters."""
     cells = ccp._read_manifest_cells(run_dir)
     rows: List[Dict[str, Any]] = []
-    # -- verbatim-holdout reconstruction (specs whose per_molecule carries the
+    # -- slice reconstruction (specs whose per_molecule carries the
     #    per-species energies) --------------------------------------------
-    recon_stats = {"specs": 0, "verbatim": 0, "val": 0, "nan_pbe": 0,
+    recon_stats = {"specs": 0, "val": 0, "nan_pbe": 0,
                    "nan_nn": 0}
     legacy_specs: List[Tuple[int, Path]] = []
     for idx, spec_dir in ccp._spec_dirs(run_dir):
@@ -495,10 +466,9 @@ def collect_holdout_reaction_rows(run_dir: Path,
         else:
             rows.extend(got)
     if recon_stats["specs"]:
-        print(f"  (verbatim holdout: reconstructed {recon_stats['specs']} "
-              f"specs' test slices from per-species energies; excluded "
-              f"{recon_stats['verbatim']} verbatim-supervised and "
-              f"{recon_stats['val']} validation rows; "
+        print(f"  (reconstructed {recon_stats['specs']} "
+              f"specs' reported slices from per-species energies; left out "
+              f"{recon_stats['val']} validation rows and nothing else; "
               f"{recon_stats['nan_pbe']} comparator-NaN-dropped; "
               f"{recon_stats['nan_nn']} NN-NaN rows kept "
               f"(comparator leg only))")
@@ -508,11 +478,8 @@ def collect_holdout_reaction_rows(run_dir: Path,
     #    per_molecule.json predates the energy columns), with the
     #    species-alias and validation-twin repairs ------------------------
     val_ids = _val_reaction_identities(run_dir)
-    n_alias = 0
-    alias_hits: set = set()
     n_twin = 0
     twin_hits: set = set()
-    n_specs_alias = 0
     for idx, spec_dir in legacy_specs:
         rj_path = spec_dir / eval_subdir / "per_reaction.json"
         if not rj_path.is_file():
@@ -523,17 +490,7 @@ def collect_holdout_reaction_rows(run_dir: Path,
         except (json.JSONDecodeError, OSError):
             continue
         cell = cells.get(idx, {})
-        aliases_cf = _spec_alias_names(spec_dir)
-        spec_had_alias_drop = False
         for r in payload:
-            species_cf = [str(x).casefold()
-                          for x in ((r.get("reactants") or [])
-                                    + (r.get("products") or []))]
-            if aliases_cf and any(s in aliases_cf for s in species_cf):
-                n_alias += 1
-                spec_had_alias_drop = True
-                alias_hits.update(s for s in species_cf if s in aliases_cf)
-                continue
             if val_ids:
                 ident = _reaction_identity(r)
                 if ident is not None and ident in val_ids:
@@ -556,26 +513,11 @@ def collect_holdout_reaction_rows(run_dir: Path,
                 "reactants": r.get("reactants"),
                 "products": r.get("products"),
             })
-        if spec_had_alias_drop:
-            n_specs_alias += 1
-    if n_alias:
-        print(f"  (strict-holdout repair: dropped {n_alias} reaction rows "
-              f"across {n_specs_alias} specs containing trained species "
-              f"under pool names {sorted(alias_hits)})")
     if n_twin:
         print(f"  (validation-twin repair: dropped {n_twin} test rows whose "
               f"reaction is a permuted-name twin of a validation reaction: "
               f"{sorted(twin_hits)})")
     return rows
-
-
-class _MetadataSpec:
-    """Duck-typed training-spec view over a pulled ``train_metadata.json``,
-    exposing exactly what ``trained_reaction_exclusion`` consumes."""
-    def __init__(self, meta: Dict[str, Any]):
-        self._lk = dict(meta.get("loss_kwargs") or {})
-    def loss_kwargs_dict(self) -> Dict[str, Any]:
-        return self._lk
 
 
 def _val_reaction_entries(run_dir: Path) -> List[Dict[str, Any]]:
@@ -614,15 +556,15 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
                            eval_subdir: str,
                            stats: Dict[str, int]
                            ) -> Optional[List[Dict[str, Any]]]:
-    """One spec's VERBATIM-HOLDOUT test slice, reconstructed from its
+    """One spec's reported held-out slice, reconstructed from its
     per-species energies (``E_total_nn`` / ``E_pbe`` in
     ``<eval_subdir>/per_molecule.json``) over the canonical pool with the
     cluster's own reaction math (``eval_holdout.per_reaction_errors``).
 
-    Exclusions -- by canonical reaction identity -- are exactly the spec's
-    verbatim supervised reactions (``trained_reaction_exclusion`` over the
-    training record's reaction points) and the recorded validation slice;
-    a reaction merely containing a trained molecule STAYS. Rows require a
+    Nothing is excluded for training overlap: a reaction that touches a
+    trained molecule is a held-out reaction and is scored. The recorded
+    validation slice is left out, as it is in the reported per-pool row the
+    evaluation writes, because it drove early stopping. Rows require a
     finite COMPARATOR (PBE) leg only: reactions the NN failed to score are
     kept with NaN NN columns, so comparator reductions cover the cell's
     full test slice regardless of NN convergence (the cluster-written
@@ -643,24 +585,13 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
              if _is_num(r.get("E_pbe"))}
     if not e_nn or not e_pbe:
         return None
-    from xcquinox.pipeline.eval_holdout import (per_reaction_errors,
-                                            trained_reaction_exclusion)
+    from xcquinox.pipeline.eval_holdout import per_reaction_errors
     from xcquinox.pipeline.species_matching import reaction_identity_keys
     pool_specs, pool_rxns = _canonical_pool()
-    tm_path = spec_dir / "train_metadata.json"
-    meta: Dict[str, Any] = {}
-    if tm_path.is_file():
-        try:
-            with tm_path.open() as f:
-                meta = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            meta = {}
-    excl, key_map = trained_reaction_exclusion(_MetadataSpec(meta),
-                                               pool_specs)
-    # A pool-name key map always exists (pool-name keys are identical under
+    key_map = None
+    # A pool-name key map always exists; pool-name keys are identical under
     # any trained-name extension, so identities computed with either map
-    # coincide on pool reactions); the trained map is preferred when the
-    # spec records reaction points, since the exclusion set was built on it.
+    # coincide on pool reactions.
     global _POOL_KEY_MAP_CACHE
     if _POOL_KEY_MAP_CACHE is None or _POOL_KEY_MAP_CACHE[0] is not pool_specs:
         from xcquinox.pipeline.species_matching import canonical_species_keys
@@ -684,9 +615,6 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
             stats["nan_pbe"] += 1     # comparator leg undefined: not in slice
             continue
         ids = set(reaction_identity_keys(rxn, id_map))
-        if excl and ids & excl:
-            stats["verbatim"] += 1
-            continue
         if val_ids and ids & val_ids:
             stats["val"] += 1
             continue
@@ -3774,11 +3702,13 @@ def plot_parity_grid_by_subset(rows: List[Dict[str, Any]], out_path: Path,
 
 
 def build_parity_variants(run_dir: Path, outdir: Path,
-                          eval_subdir: str = "eval_holdout",
+                          eval_subdir: Optional[str] = None,
                           archs=None) -> List[Path]:
     """Render all five parity-layout candidates into ``outdir`` for comparison.
     ``archs`` restricts them to the named architectures, as in
-    :func:`build_all`."""
+    :func:`build_all`; a ``None`` ``eval_subdir`` resolves the run's reporting
+    channel as :func:`build_all` does."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     archs = _validate_archs(archs)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -4383,14 +4313,13 @@ def collect_holdout_density_rows(run_dir: Path,
     joined with the manifest arch/subset_size. Rows are kept when EITHER
     channel is finite, so a PBE-only re-eval still produces the baseline.
 
-    Two repairs applied on read (printed when they fire): rows for species
-    that are pool twins of the spec's trained molecules under a different
-    name are dropped (``_spec_alias_names`` -- the held-out density mean must
-    not average supervised species), and rows for species whose model-free
-    PBE reference disagrees across specs
-    (``_inconsistent_pbe_density_species``, the c2 reference-drift class) are
-    dropped entirely -- from the anchors AND the per-cell means -- so no
-    anchor can drift with pull coverage.
+    Every species of the set is kept, the ones the training set also carries
+    included; their rows state it through ``from_training_subset`` and the
+    count is printed. Rows for species whose model-free PBE reference
+    disagrees across specs (``_inconsistent_pbe_density_species``, the c2
+    reference-drift class) are dropped entirely -- from the anchors AND the
+    per-cell means -- so no anchor can drift with pull coverage; that is a
+    reference-validity exclusion, not a training-overlap one.
 
     ``exclude_cf`` (casefolded species names, :func:`_mol_cf`) drops the
     named species after the repairs -- both case spellings of a pool twin go
@@ -4399,8 +4328,6 @@ def collect_holdout_density_rows(run_dir: Path,
     the T1 or convergence lists here and render into their own directory."""
     cells = ccp._read_manifest_cells(run_dir)
     raw: List[Dict[str, Any]] = []
-    n_alias = 0
-    alias_hits: set = set()
     n_supervised = 0
     supervised_hits: set = set()
     for idx, spec_dir in ccp._spec_dirs(run_dir):
@@ -4414,23 +4341,18 @@ def collect_holdout_density_rows(run_dir: Path,
         except (json.JSONDecodeError, OSError):
             continue
         cell = cells.get(idx, {})
-        aliases_cf = _spec_alias_names(spec_dir)
         for r in payload:
             if not (_is_num(r.get("density_rmse"))
                     or _is_num(r.get("density_rmse_pbe"))):
                 continue
             mol = r.get("molecule")
-            # Supervised species (the eval's own alias-aware flag) are
-            # training-fit measurements, not held-out ones: a spec_0021-class
-            # cell carried 28 such rows inside its "held-out" density mean.
+            # Every species of the set is kept, the ones the training set also
+            # carries included: the row states its own membership through
+            # ``from_training_subset``, and separating them is a reading of the
+            # results rather than a filter on them.
             if r.get("from_training_subset"):
                 n_supervised += 1
                 supervised_hits.add(str(mol))
-                continue
-            if aliases_cf and str(mol).casefold() in aliases_cf:
-                n_alias += 1
-                alias_hits.add(str(mol))
-                continue
             raw.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
@@ -4466,12 +4388,9 @@ def collect_holdout_density_rows(run_dir: Path,
                 print(f"  (converged channel {eval_subdir}: {len(unconv)} "
                       f"unconverged species in spec_{idx:04d}: {unconv})")
     if n_supervised:
-        print(f"  (strict-holdout repair: dropped {n_supervised} density rows "
-              f"flagged from_training_subset "
-              f"({len(supervised_hits)} species))")
-    if n_alias:
-        print(f"  (strict-holdout repair: dropped {n_alias} density rows for "
-              f"trained species under pool names {sorted(alias_hits)})")
+        print(f"  ({n_supervised} density rows are species the training set "
+              f"also carries ({len(supervised_hits)} species); they are kept "
+              "and flagged from_training_subset, not removed)")
     bad = _inconsistent_pbe_density_species(raw)
     if bad:
         clauses = _pbe_density_outlier_clauses(raw, bad)
@@ -8616,18 +8535,16 @@ def _disambiguated_run_labels(run_dirs: List[Path]) -> List[str]:
 
 
 def _ckpt_label(eval_subdir: str) -> str:
-    """Human tag for which checkpoint a figure set was scored from: final-step
-    weights (``eval_holdout``), the held-out-validation-best weights
-    (``eval_holdout_val_best``), or the legacy training-loss-best weights
-    (``eval_holdout_best``, no longer plotted)."""
-    return {
-        "eval_holdout": "final-step",
-        "eval_holdout_val_best": "val-best",
-        "eval_holdout_best": "train-best",
-        "eval_holdout_coldstart": "cold-start",
-        "eval_holdout_converged": "converged",
-        "eval_holdout_converged_val_best": "converged-val-best",
-    }.get(eval_subdir, "final-step")
+    """The tag a figure set carries for the channel it was scored from: the
+    checkpoint and the evaluation protocol, from
+    ``holdout_channels.CHANNEL_LABEL``. A name outside the vocabulary is
+    refused rather than tagged as the final step."""
+    try:
+        return CHANNEL_LABEL[eval_subdir]
+    except KeyError:
+        raise ValueError(
+            f"unknown held-out channel {eval_subdir!r}; a figure set is "
+            f"scored from one of {tuple(CHANNEL_LABEL)}") from None
 
 
 _BASIS_COLORS = ("#4477aa", "#cc6677", "#228833", "#ccbb44")
@@ -8809,13 +8726,16 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
 
 
 def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path,
-                                   eval_subdir: str = "eval_holdout",
+                                   eval_subdir: Optional[str] = None,
                                    archs: Optional[Sequence[str]] = None
                                    ) -> List[Path]:
     """Render the cross-basis comparison for the given run dirs (each labeled by
     its basis+DF from resolved_config.yaml). ``archs`` narrows the comparison to
     the named architectures and switches the filenames to a ``_focus`` stem, so
-    the full-union trio is never overwritten by a focused render."""
+    the full-union trio is never overwritten by a focused render. A ``None``
+    ``eval_subdir`` resolves the first run's reporting channel as
+    :func:`build_all` does."""
+    eval_subdir = _resolved_channel(run_dirs, eval_subdir)
     if archs is not None and not archs:
         raise ValueError(
             "archs must be non-empty when given (an empty filter would "
@@ -8849,10 +8769,13 @@ def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path,
 
 
 def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
-                             eval_subdir: str = "eval_holdout") -> List[Path]:
+                             eval_subdir: Optional[str] = None) -> List[Path]:
     """Render the CUMULATIVE (multi-basis) training-loss trajectories -- every
     trained cell from every run, basis by linestyle -- plus the failure-mechanism
-    diagnostic that classifies and explains each failing cell."""
+    diagnostic that classifies and explains each failing cell. A ``None``
+    ``eval_subdir`` resolves the first run's reporting channel as
+    :func:`build_all` does."""
+    eval_subdir = _resolved_channel(run_dirs, eval_subdir)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     labels = _disambiguated_run_labels(run_dirs)
@@ -8874,14 +8797,16 @@ def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
 
 
 def build_density_energy_figures(run_dir: Path, outdir: Path,
-                                 eval_subdir: str = "eval_holdout",
+                                 eval_subdir: Optional[str] = None,
                                  archs=None, *,
                                  exclude_cf: FrozenSet[str] = frozenset(),
                                  variant_note: str = "") -> List[Path]:
     """:func:`_build_density_energy_figures_inner` under a key-line scope: a
     standalone call footers the run's own architectures, a call inside
     :func:`build_all` keeps the key line build_all set, and nothing leaks
-    out."""
+    out. A ``None`` ``eval_subdir`` resolves the run's reporting channel as
+    :func:`build_all` does."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     archs_line = (_KEY_LINE_ARCHS if _KEY_LINE_ARCHS is not None
                   else _key_line_archs_of_runs([run_dir], _validate_archs(archs)))
     with _key_line_scope(archs_line):
@@ -9660,7 +9585,7 @@ def _build_density_energy_figures_inner(
 
 
 def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
-                                 eval_subdir: str = "eval_holdout",
+                                 eval_subdir: Optional[str] = None,
                                  archs=None) -> List[Path]:
     """The outlier-free siblings of a figure directory, each a second run of
     :func:`build_density_energy_figures` with filtered inputs:
@@ -9680,7 +9605,10 @@ def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
     A list is intersected with the species actually present in the held-out
     rows; an empty intersection renders nothing and says so. The architecture
     restriction is the standard directory's, so the two directories describe
-    the same cells. Nothing is compared between directories."""
+    the same cells. Nothing is compared between directories. A ``None``
+    ``eval_subdir`` resolves the run's reporting channel as :func:`build_all`
+    does."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     written: List[Path] = []
     present_rows = collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir)
     present_rows = filter_rows_by_arch(present_rows, _validate_archs(archs))
@@ -9733,7 +9661,7 @@ def _build_outlier_free_variants(run_dir: Path, fdir: Path, *,
 
 def build_per_run_diagnostics(run_dir: Path, outdir: Path,
                               basis_label: Optional[str] = None,
-                              eval_subdir: str = "eval_holdout",
+                              eval_subdir: Optional[str] = None,
                               archs=None) -> List[Path]:
     """Per-run diagnostics kept in each basis's own ``figures_<alias>/`` dir: the
     size-consistency (additivity) diagnostic over the capacity ladder at the
@@ -9741,7 +9669,10 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
     -- is worst), and the single-run training-loss trajectories. Wired into
     :func:`build_bh76w411_suite` so a fresh pull refreshes them too (they were
     previously generated by hand and went stale). ``archs`` restricts both to
-    the named architectures, as in :func:`build_all`."""
+    the named architectures, as in :func:`build_all`; a ``None``
+    ``eval_subdir`` resolves the run's reporting channel as :func:`build_all`
+    does."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     archs = _validate_archs(archs)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -9804,10 +9735,38 @@ def _resolve_run_dir(run_dir: Optional[str]) -> Path:
     return rd
 
 
+def _resolved_channel(run_dirs, eval_subdir: Optional[str]) -> str:
+    """``eval_subdir`` when given; otherwise the reporting channel resolved
+    from the run (``holdout_channels.resolve_channel``; from the first run of
+    a sequence), printed with the absent reporting channel named on a
+    fallback. Every set-level builder handed no channel resolves through this
+    one function, so two builders writing into one directory read the same
+    channel."""
+    if eval_subdir is not None:
+        return eval_subdir
+    runs = ([run_dirs] if isinstance(run_dirs, (str, Path))
+            else list(run_dirs))
+    if not runs:
+        return REPORTING_CHANNEL
+    channel = resolve_channel(runs[0])
+    note = ("" if channel == REPORTING_CHANNEL else
+            f" (the reporting channel {REPORTING_CHANNEL} is absent under "
+            f"{Path(runs[0]).name})")
+    print(f"  held-out channel: {channel}{note}")
+    return channel
+
+
 def build_all(run_dir: Path, outdir: Path,
-              eval_subdir: str = "eval_holdout",
+              eval_subdir: Optional[str] = None,
               archs=None) -> List[Path]:
     """Collect once, render every figure. Returns the written PNG paths.
+
+    ``eval_subdir`` names the held-out channel the set is scored from.
+    ``None`` resolves the run's reporting channel
+    (``holdout_channels.resolve_channel``): the cold-start validation-best
+    channel where the run carries it, else the trained protocol's
+    validation-best channel, else the warm final-step one. The channel read
+    is printed, and a fallback names the absent reporting channel.
 
     ``archs`` (an ordered iterable of :data:`ARCH_ORDER` names, or ``None``)
     restricts the whole set to those architectures. The restriction is applied
@@ -9817,6 +9776,7 @@ def build_all(run_dir: Path, outdir: Path,
     withdrawn when no rendered architecture is parented by it
     (:func:`scan_comparator_applies`). ``archs=None`` is the unrestricted
     pipeline, byte for byte."""
+    eval_subdir = _resolved_channel(run_dir, eval_subdir)
     with _key_line_scope(None):
         return _build_all_inner(run_dir, outdir, eval_subdir=eval_subdir,
                                 archs=archs)
@@ -10016,14 +9976,17 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     prefixed with the domain (``figures_dfs_step7_svp/``) so the bh76w411 sets
     are never overwritten.
 
-    Emits TWO parallel figure sets per the checkpoint variant the cluster now
-    evaluates: the final-step set from ``eval_holdout/`` (into ``figures_<alias>/``
-    + ``figures_basis_comparison/``) and the val-best set from
-    ``eval_holdout_val_best/`` (into ``figures_<alias>_val_best/`` +
-    ``figures_basis_comparison_val_best/``) -- scored from the held-out
-    validation-best weights, which (unlike the min-training-loss checkpoint) do not
-    select the most-overfit step. The val-best set is produced for every basis whose
-    ``eval_holdout_val_best/`` data was pulled.
+    Emits one figure set per held-out channel of
+    ``holdout_channels.FIGURE_CHANNELS`` that a basis carries, the reporting
+    channel first: ``figures_<alias>_coldstart_val_best/`` (the validation-best
+    checkpoint under the cold-start protocol, the channel a campaign's numbers
+    are read from), ``figures_<alias>_coldstart/``, ``figures_<alias>/`` (the
+    final step under the trained protocol), ``figures_<alias>_val_best/``,
+    ``figures_<alias>_converged/`` and ``figures_<alias>_converged_val_best/``,
+    each with its ``figures_basis_comparison<suffix>/`` set when two or more
+    bases carry the channel. Every set is gated on cell coverage, so an absent
+    channel renders no directory, and a pull that carries no held-out channel
+    at all is refused rather than rendered empty.
 
     Prints a per-run coverage report and FAILS LOUD if a run carries an arch
     outside ``ARCH_ORDER`` (which the per-arch plots would drop); incomplete runs
@@ -10039,22 +10002,17 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     prefix = "" if domain == "bh76w411_repr" else f"{domain}_"
     runs = _newest_run_per_basis(results_root, bases, domain=domain)
     written: List[Path] = []
-    # the converged-SCF views (2026-09-07) join the loop and are gated like the
-    # val-best view: a run with no converged cells renders no such directory
-    for eval_subdir, suffix in (("eval_holdout", ""),
-                                ("eval_holdout_val_best", "_val_best"),
-                                ("eval_holdout_converged", "_converged"),
-                                ("eval_holdout_converged_val_best",
-                                 "_converged_val_best")):
-        # every view but the final-step one is gated on having cells (val-best
-        # and the two converged views alike)
-        is_secondary = eval_subdir != "eval_holdout"
+    n_sets = 0
+    # one set per channel of the vocabulary's figure list, every set gated on
+    # having cells: a basis renders exactly the channels it carries
+    for eval_subdir in FIGURE_CHANNELS:
+        suffix = figure_suffix(eval_subdir)
         ordered_runs: List[Path] = []
         for basis in bases:
             run = runs[basis]
             cov = figure_cell_coverage(run, eval_subdir=eval_subdir,
                                        archs=archs)
-            if is_secondary and cov["n_cells"] == 0:
+            if cov["n_cells"] == 0:
                 continue  # no eval of this channel pulled for this basis yet
             ordered_runs.append(run)
             print(f"[{basis} | {eval_subdir}] {cov['run']}: {cov['n_cells']} "
@@ -10102,10 +10060,10 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
             written += build_per_run_diagnostics(run, fdir, run_basis_label(run),
                                                  eval_subdir=eval_subdir,
                                                  archs=archs)
+            n_sets += 1
         if not ordered_runs:
-            if is_secondary:
-                print(f"   (no {eval_subdir}/ data found -- skipping the "
-                      f"{suffix.strip('_').replace('_', '-')} figure set)")
+            print(f"   (no {eval_subdir}/ data found -- skipping the "
+                  f"{_ckpt_label(eval_subdir)} figure set)")
             continue
         if len(ordered_runs) < 2:
             print(f"   (only one basis with {eval_subdir}/ coverage -- "
@@ -10122,6 +10080,13 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                                                       archs=comparison_archs)
         written += build_diagnostic_figures(ordered_runs, cmp_dir,
                                             eval_subdir=eval_subdir)
+    if n_sets == 0:
+        raise ValueError(
+            f"no held-out channel with an evaluated cell under "
+            f"{[str(r) for r in runs.values()]}: none of {FIGURE_CHANNELS} "
+            "carries a per_reaction.json for a rendered architecture, so the "
+            "pull holds no held-out evaluation to draw (re-pull the run with "
+            "the summaries profile, or widen --archs)")
     return written
 
 
@@ -10165,6 +10130,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "writes a basis_comparison_focus* trio restricted to "
                         "these archs (readable column count when the full "
                         "union of arch x subset cells is wide)")
+    p.add_argument("--eval-subdir", default=None,
+                   help="held-out channel of the single-run mode (default: "
+                        "the run's reporting channel, "
+                        f"{REPORTING_CHANNEL} where the run carries it, else "
+                        "the trained protocol's val-best channel, else "
+                        "eval_holdout)")
     args = p.parse_args(argv)
     archs = (tuple(a.strip() for a in args.archs.split(",") if a.strip())
              if args.archs else None)
@@ -10187,7 +10158,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     run_dir = _resolve_run_dir(args.run_dir)
     outdir = Path(args.outdir).expanduser().resolve()
     print(f"run_dir: {run_dir}")
-    written = build_all(run_dir, outdir, archs=archs)
+    written = build_all(run_dir, outdir, eval_subdir=args.eval_subdir,
+                        archs=archs)
     for pth in written:
         print(f"  wrote {pth}")
     return 0

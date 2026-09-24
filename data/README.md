@@ -9,6 +9,7 @@ tree beside the code. The package data the loaders read is under `xcquinox/data/
 | `dietgmtkn55-150/` | the Diet GMTKN55 subset at 150 systems: the subset list `SubsetGMTKN55_150.yaml`, the element list `AllElements-150.yaml` and the ASE trajectory `diet150.traj` | the header of the subset list records the selection run (1499 systems and 213 methods in, 150 out) |
 | `dietgmtkn55-50/` | the 50-system subset: the element list `AllElements_050.yaml` and the ASE trajectory `diet50.traj` | no subset list and no record of its selection run are kept; the trajectory is the definition |
 | `gmtkn55/` | the GMTKN55 benchmark checkout the BH76 and W4-11 pools were parsed from; ignored except `PROVENANCE.md`, which records the upstream, the pinned commit and how to fetch it | `gmtkn55/PROVENANCE.md` |
+| `slim/` | the composition files of the Slim05, Slim16 and Slim20 sets of GMTKN55 as the published cloning study lists them, from which the `slim05` and `slim16` pool caches and the study's pretraining draw are built | `slim/PROVENANCE.md` |
 
 Nothing under `data/` is read by the package at run time; the pools the package reads are the
 JSON caches under `xcquinox/pipeline/data/`, rebuilt from `gmtkn55/` by

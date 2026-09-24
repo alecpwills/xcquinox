@@ -346,6 +346,12 @@ longer fires on a fresh pull.
 
 ## 17. Cluster-side strict-holdout repair deployment + re-eval (found 2026-08-13)
 
+**SUPERSEDED.** The exclusion this item deployed no longer exists: nothing is
+removed from a held-out set for any reason, and the training overlap is
+annotated per reaction and per molecule instead. The entry stands as the record
+of the repair; its script is now `hpcjobs/refinalize_holdout.sbatch`, which
+rewrites the tables from stored energies and excludes nothing.
+
 **RESOLVED 2026-08-15.** Deployment (user rsync 2026-08-13) + refinalize job
 2120119 (COMPLETED 0:0, 21 + 57 channels rewritten with one-time backups,
 verified on the artifacts) + the closing parity probe on the repulled v4gga
@@ -388,9 +394,9 @@ completed BEFORE the deployment carry species-strict artifacts. MARKED SET
 (parity probe, 2026-08-13): v4gga spec_0000..0017 and v4mgga spec_0000..0006
 (all 50 pulled spec-channels report stale-rule, 0 value mismatches) plus the
 cluster-only v4gga spec_0018 (completed between the last pull and the
-deployment). Remedy: `sbatch hpcjobs/refinalize_verbatim_holdout.sbatch`
+deployment). Remedy: `sbatch hpcjobs/refinalize_holdout.sbatch`
 (no SCF; rewrites per_reaction.json/test_set.csv from the existing
-per-species energies with one-time *.pre_verbatim.* backups; idempotent, so
+per-species energies with one-time *.pre_refinalize.* backups; idempotent, so
 running it over whole run dirs is safe and its report is the ground-truth
 stale list). Safe alongside the running arrays (touches only completed
 specs' dirs) or at drain. Afterwards: re-pull and run
@@ -446,8 +452,12 @@ converged-eval replica.
 KNOWN: CRITERION_REGISTRY has only the energy-delta criterion; a DM-RMS
 criterion and a real early-exit (lax.while_loop or forward-only break)
 would land with it.
-TRIGGER: if the cold-start diagnostic proves informative enough to
-promote into a headline comparison.
+TRIGGER: met in part -- the cold-start channel pair (the final and the
+validation-best checkpoints) is the reporting channel of the v8
+campaigns, under the decision that every held-out species is evaluated
+by the forced 25-cycle cold start and a failure is reported. The DIIS
+replica stays open as a separate comparison; the reporting protocol is
+not changed by it.
 
 ## 21. dm_target collocation experiment for the vxc channel
 
@@ -830,3 +840,40 @@ harness does (`cluster/fidelity.py`), and the end-to-end notebook tests then cov
 
 ---
 
+
+---
+
+## 35. The training-side references carry no PBE twin, so their in-sample PBE density baseline is absent
+
+**WHAT:** the model-free PBE-against-CCSD density baseline reads the reference calculation's own
+PBE density (`rho_pbe_grid`, written beside `rho_ref_grid` by `xcquinox.pipeline.benchmark_refs`)
+and never the locally recomputed density of the run's own SCF, a second PBE twin from another
+calculation (the two measured 0.39 percent apart on c2). The OEP references the training side
+reads (`inputs.external_refs_dir`, written by `external_refs.run_oep_cascade`) carry no such twin,
+so every in-sample record built from them reports `density_rmse_pbe`, `density_l1_pbe` and
+`density_eps_l1_pbe` as absent; the held-out channels, whose references come from the benchmark
+writer, keep the baseline. Every reader of the three columns tolerates the absence (the in-sample
+mean becomes nan, the tables and figures skip the column).
+
+**Remedy:** the OEP writer stores `rho_pbe_grid` from the reference SCF payload on the reference
+grid, as the benchmark writer does, and a backfill on the `t1_backfill` pattern adds the key to
+the existing references from their cached SCF payloads without a new SCF.
+
+**Why deferred:** a change to the reference file format on the training side, with its own tests
+and review; the v8 campaigns report the held-out baseline.
+
+---
+
+## 36. The slide deck manifest's registry excerpts no longer anchor
+
+**WHAT:** `tools/analysis/slide_code_notes.py` excerpts source lines for the v7 deck by line
+range with an anchor string. Four of its five `xcquinox/pipeline/config.py` rows (p9.2 to p9.5)
+fail their anchor at the current tree (`excerpt_lines` reports the source shifted above the
+range), and the registration of the geometric pair moves the `deep_cusp_mgga_3x16` anchor
+further down. The default mode prints pointer lines and exits 0, and no test module covers the
+tool, so the drift is silent.
+
+**Remedy:** the manifest rows locate their excerpts by anchor string alone (a search, not a line
+range), and a test asserts that every row's anchor is found exactly once in its file.
+
+**Why deferred:** the deck is a v7 artifact; the tool's rewrite carries its own tests and review.

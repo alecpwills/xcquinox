@@ -102,13 +102,19 @@ def test_sym_break_diag_splits_exact_degeneracy():
 def test_eigh_gradient_degrades_at_exact_degeneracy():
     """Documents the pathology: unshifted degenerate eigh has no usable grad.
 
-    Depending on how the LAPACK eigenvalues round, the 1/(dlambda) factors
-    are inf/NaN (bit-equal pair) or ~1e16 round-off garbage (ULP-split
-    pair); both are unusable and both count as the failure mode.
+    The reverse-mode rule of ``eigh`` divides by every eigenvalue gap. At
+    exact degeneracy the gap of the lowest pair is round-off (bit-equal or
+    ULP-split), so the factor ``1 / gap`` is infinite or exceeds 1e12
+    whatever basis LAPACK returns inside the degenerate subspace. That basis,
+    and with it the value of one eigenvector element's derivative, is the
+    library's own choice and differs between machines, so the gap is what
+    this test asserts; the shift's guard is the next test.
     """
-    g = _grad_of_degenerate_eigvec_element(None)
-    finite = bool(jnp.all(jnp.isfinite(g)))
-    assert (not finite) or float(jnp.max(jnp.abs(g))) > 1e10
+    w = jnp.linalg.eigvalsh(_degenerate_fock())
+    gap = float(w[1] - w[0])
+    assert gap >= 0.0, gap                  # eigvalsh returns ascending order
+    factor = float("inf") if gap == 0.0 else 1.0 / gap
+    assert factor > 1e12, (gap, factor)
 
 
 def test_sym_break_diag_restores_bounded_gradient():

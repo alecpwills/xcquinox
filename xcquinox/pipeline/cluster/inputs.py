@@ -67,12 +67,14 @@ _build_species_union = _external_refs.build_species_union
 _ensure_pretrain_data = _pretrain_data_gen.ensure_pretrain_data
 
 
-def _load_full_held_out_pools(basis="def2-svp", grid_level=1, refs_dir=None):
-    """Seam wrapping ``full_benchmark_pools.load_full_held_out_pools`` (module-
-    level so the WS3 val-slice staging tests can stub the heavy pool load)."""
-    from xcquinox.pipeline.full_benchmark_pools import load_full_held_out_pools
-    return load_full_held_out_pools(basis=basis, grid_level=grid_level,
-                                    refs_dir=refs_dir)
+def _load_full_held_out_pools(names=("bh76", "w411"), basis="def2-svp",
+                              grid_level=1, refs_dir=None):
+    """Seam wrapping ``full_benchmark_pools.load_held_out_pools`` over the
+    named pools (module-level so the val-slice staging tests can stub the
+    heavy pool load)."""
+    from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
+    return load_held_out_pools(tuple(names), basis=basis,
+                               grid_level=grid_level, refs_dir=refs_dir)
 
 
 def _get_domain_profile(name):
@@ -293,8 +295,9 @@ def _stage_validation_slice(cfg: GridConfig, run_dir: str):
     from xcquinox.pipeline.eval_holdout import split_held_out
 
     val_frac = float(getattr(cfg.hyperparams, "val_frac", 0.2))
+    pools = tuple(getattr(cfg.inputs, "held_out_pools", ("bh76", "w411")))
     _mols_by_name, reactions = _load_full_held_out_pools(
-        basis=cfg.inputs.basis, grid_level=cfg.inputs.grid_level)
+        pools, basis=cfg.inputs.basis, grid_level=cfg.inputs.grid_level)
     val_rxns, _test_rxns = split_held_out(reactions, val_frac=val_frac)
 
     val_dir = os.path.join(run_dir, "validation")

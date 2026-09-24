@@ -375,11 +375,16 @@ def collect_local_test_set_rows(run_dir: Path) -> List[Dict[str, Any]]:
         with csv_path.open() as f:
             reader = csv.DictReader(f)
             for r in reader:
-                # The CSV's "set" column is one of "test_set_bh76",
-                # "test_set_w411", "test_set_held_out_combined" -- strip the
-                # leading "test_set_" so the downstream consumer just sees
-                # the pool token.
+                # The CSV's "set" column is "test_set_<pool>" per pool or
+                # "test_set_held_out_combined" -- strip the leading
+                # "test_set_" so the downstream consumer just sees the pool
+                # token. A pool's weighted row ("test_set_<pool>_wtmad2") and
+                # its whole-set row ("test_set_<pool>_with_validation") are
+                # second statistics of the same pool, not pools, and the
+                # per-pool panels read the reported rows alone.
                 set_label = (r.get("set") or "")
+                if set_label.endswith(("_wtmad2", "_with_validation")):
+                    continue
                 pool = (set_label[len("test_set_"):]
                         if set_label.startswith("test_set_") else set_label)
 

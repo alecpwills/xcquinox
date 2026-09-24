@@ -22,9 +22,73 @@ import xcquinox.pipeline.pretrain_data_gen as pdg
 _TINY = (("He", 0), ("H", 1))
 _FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
                         "pretrain_data_default_reference.npz")
+#: The per-element relative tolerance the recorded fixture is held to, in ulp.
+#: The columns jax and libxc compute carry the rounding residue of the
+#: machine's own BLAS and instruction order, so the recording is reproduced to
+#: a few ulp of each element rather than bit for bit. Measured: one element of
+#: ``Fc_scan_mesh`` moved by one ulp on a hosted runner. Four covers a
+#: rounding-order difference of a few operations on any element, whatever its
+#: magnitude, and sits many orders below the relative change a protocol edit
+#: makes to a column.
+_ULP_TOLERANCE = 4
+
+#: The stems the generator stores as an enhancement factor minus one, as its
+#: module docstring states them (``Fx = F_x^PBE - 1``). The subtraction keeps
+#: the difference to the last bits of the FACTOR, so such a column's absolute
+#: resolution is the factor's and not its own: a hosted runner moved five
+#: elements of ``Fx_scan_mesh`` of magnitude 9.05e-03 to 8.10e-02 by a half,
+#: one and two ulp of one, which the per-element relative band reads as up to
+#: 4.91e-14. These columns therefore carry an absolute band beside it, at
+#: ``_FACTOR_ULP`` ulp of the factor's own largest magnitude, and every other
+#: column keeps the relative band alone -- the recorded columns run from
+#: ``zeta_mesh``, identically zero, and ``dm_all`` at 4.93e-32 up to
+#: ``sigma_mesh`` at 2.10e+09, so a band scaled to one would admit any change
+#: at all to the smallest of them. Scaling by the factor rather than by one
+#: is what the columns differ in: on the recorded file the band works out at
+#: 2.765 ulp of one on ``Fc_scan_all``, whose factors never exceed 0.346, and
+#: at 14.432 on ``Fx_all``, whose reach 1.804.
+_FACTOR_STEMS = ("Fx", "Fc", "Fx_scan", "Fc_scan")
+_FACTOR_ULP = 8
+
+
+def _factor_band(key, ref):
+    """The absolute band one recorded column is held to beside the relative
+    one: zero unless the generator stores the column as ``F - 1``, where it is
+    ``_FACTOR_ULP`` ulp of ``max|1 + ref|``, the largest factor the column's
+    subtraction was taken from."""
+    if key.rsplit("_", 1)[0] not in _FACTOR_STEMS:
+        return 0.0
+    ref = np.asarray(ref)
+    if not ref.size or not np.issubdtype(ref.dtype, np.floating):
+        return 0.0
+    eps = float(np.finfo(ref.dtype).eps)
+    return _FACTOR_ULP * eps * float(np.max(np.abs(1.0 + ref)))
+
+
+def _assert_columns_match(got, ref):
+    """Hold every recorded key: dtype and shape exactly, floating values
+    within ``_ULP_TOLERANCE`` ulp of each element (a relative tolerance)
+    beside :func:`_factor_band`, which is zero for every column but those
+    stored as an enhancement factor minus one, and integer values exactly.
+    Returns the keys that moved with their largest absolute difference, for
+    the report."""
+    moved = []
+    for key in sorted(ref):
+        assert got[key].dtype == ref[key].dtype, key
+        assert got[key].shape == ref[key].shape, key
+        if not np.issubdtype(ref[key].dtype, np.floating):
+            np.testing.assert_array_equal(got[key], ref[key], err_msg=key)
+            continue
+        rtol = _ULP_TOLERANCE * float(np.finfo(ref[key].dtype).eps)
+        np.testing.assert_allclose(got[key], ref[key], rtol=rtol,
+                                   atol=_factor_band(key, ref[key]),
+                                   err_msg=key)
+        if not np.array_equal(got[key], ref[key]):
+            moved.append((key, float(np.max(np.abs(got[key] - ref[key])))))
+    return moved
 
 #: The new keys the default configuration gains. Everything else the default
-#: file carries is pinned bit-for-bit against the recorded fixture.
+#: file carries is held to the tolerance above against the recorded fixture.
 _NEW_DEFAULT_KEYS = sorted([
     "e_c_parent_scan_sys", "e_c_parent_sys", "e_lda_c_all", "e_lda_x_all",
     "e_x_parent_scan_sys", "e_x_parent_sys", "mesh_weight_fraction",
@@ -79,52 +143,195 @@ def _install_fake(monkeypatch, factory):
 # ---------------------------------------------------------------------------
 
 def test_default_output_matches_the_recorded_reference(tmp_path):
-    """Every column the generator writes at the default configuration is
-    bit-identical to the recorded fixture, so a YAML already in flight trains
-    on the same numbers. New keys may appear; old ones may not move. (The
-    .npz CONTAINER is a zip whose headers carry write timestamps, so the pin
-    is on array contents, not on the file's bytes.) The recording predates
-    the orientation lock; both atoms carry one s function, on which the
-    traceless-quadrupole bias vanishes identically, so the locked default
-    reproduces it.
-
-    The fixture was re-recorded when the iso-orbital indicator's lower bound
-    became a smooth positive part (``metagga.compute_alpha``, width 1e-5;
-    docs/open_items.md entry 27). Against the previous recording exactly two
-    keys moved: ``metagga_all`` on 1200 of 1200 rows, from the hard clip's
-    0.0 (largest raw residue 1.4e-10) to the smoothing's floor 5.0e-6 (both
-    atoms are one orbital in this basis), and ``metagga_mesh`` on 560 of 560
-    rows by at most 5.0e-6 (the alpha = 0 nodes by the floor, the others by
-    ``width^2 / (4 alpha)`` <= 2.5e-10); every other key -- rho, sigma, the
-    PBE and SCAN targets, cusp, dm, rung35, rung35ms, weights, zeta, on the
-    atomic rows and on the mesh -- is bit-identical.
-
-    The fixture was re-recorded once more on the pyscf 2.14.0 / jax 0.10.2
-    stack (2026-09-21), with the reference SCF's density cutoff pinned at
-    1e-7 (``pyscf_determinism.REFERENCE_SMALL_RHO_CUTOFF``) so the grid is
-    the one the previous recording used. Against the jax 0.7.0 recording
-    five keys moved, every one a column jax computes and none that pyscf
-    computes: ``metagga_all`` on 156 of 1200 rows by at most 1.0e-11 (XLA
-    0.10 contracts the kinetic-energy density's einsum in another order,
-    one ulp of tau on 116 of the 576 He points, which the same contraction
-    in numpy does not show; both atoms are one orbital, so tau - tau_W is a
-    rounding residue that the smooth floor maps to 5.0e-6 and the ulp to
-    1e-11 there), through the indicator ``Fx_scan_all`` on 32 rows by at
-    most 4.5e-13 and ``Fc_scan_all`` on 48 rows by at most 1.2e-15 (libxc's
-    own values are bit-identical between the two releases on fixed inputs)
-    and ``e_c_parent_scan_sys`` of the H atom by 1.3e-19, and ``cusp_all``
-    on 1010 of 2400 entries by at most 1.1e-16, one ulp of a value below
-    one (the column is jax's exponential and hyperbolic tangent of the same
-    geometry); rho, sigma, the weights, the PBE targets, dm, rung35,
-    rung35ms, zeta and the mesh are bit-identical."""
+    """Every column the generator writes at the default configuration is held
+    against the recorded fixture, within ``_ULP_TOLERANCE`` ulp of each
+    element, where the columns jax and libxc compute carry the rounding
+    residue of the machine's own BLAS and instruction order (a hosted runner
+    moved one element of ``Fc_scan_mesh`` by one ulp). New keys may appear;
+    recorded ones may not move beyond that, so a YAML already in flight trains
+    on the same numbers. The .npz container is a zip whose headers carry write
+    timestamps, so the pin is on array contents, not on the file's bytes. Both
+    atoms carry one s function, on which the traceless-quadrupole bias of the
+    orientation lock vanishes identically, so the locked default reproduces
+    the recording, which is at the pinned reference density cutoff
+    (``pyscf_determinism.REFERENCE_SMALL_RHO_CUTOFF``)."""
     ref = dict(np.load(_FIXTURE))
     _path, got = _gen(tmp_path)
     missing = sorted(set(ref) - set(got))
     assert not missing, f"the default output lost {missing}"
-    for key in sorted(ref):
-        assert got[key].dtype == ref[key].dtype, key
-        assert got[key].shape == ref[key].shape, key
-        np.testing.assert_array_equal(got[key], ref[key], err_msg=key)
+    _assert_columns_match(got, ref)
+
+
+def test_the_default_output_pin_is_a_few_ulp_per_element():
+    """A one-ulp movement of an element passes the pin, a hundred-ulp movement
+    fails it, and the same absolute movement on a small element of the same
+    column fails it, since the tolerance is per element and not per column; an
+    integer column is exact; and the refusal names the offending key and no
+    other.
+
+    The large element is a power of two, so one ulp of it is exactly
+    ``eps`` times its value and the movement is representable."""
+    big = 2.0 ** 31
+    ref = {"alpha": np.array([1.0, big]), "count": np.array([1, 2])}
+    one_ulp = float(np.finfo(np.float64).eps) * big
+    moved_one = {"alpha": ref["alpha"] + np.array([0.0, one_ulp]),
+                 "count": ref["count"].copy()}
+    moved_far = {"alpha": ref["alpha"] + np.array([0.0, 100.0 * one_ulp]),
+                 "count": ref["count"].copy()}
+    moved_small = {"alpha": ref["alpha"] + np.array([one_ulp, 0.0]),
+                   "count": ref["count"].copy()}
+
+    def _refused(got):
+        with pytest.raises(AssertionError) as exc:
+            _assert_columns_match(got, ref)
+        return str(exc.value)
+
+    moved = _assert_columns_match(moved_one, ref)
+    assert moved == [("alpha", one_ulp)]
+    assert "alpha" in _refused(moved_far)
+    assert "alpha" in _refused(moved_small)
+    message = _refused({"alpha": ref["alpha"], "count": ref["count"] + 1})
+    assert "count" in message and "alpha" not in message
+
+
+#: The five ``Fx_scan_mesh`` elements a hosted runner computed differently from
+#: the recording (GitHub Actions run 35918397461, both interpreters): index ->
+#: the value the runner produced, the recorded column carrying the other side
+#: of each pair. The movements are 1.1102e-16 (three of them), 2.2204e-16 and
+#: 4.4409e-16 -- a half, one and two ulp of ONE, the column being stored as
+#: ``F - 1`` and recovered by a subtraction -- on elements of magnitude
+#: 9.0534e-03 to 8.1003e-02; the worst is a relative 4.9052e-14, 55x the
+#: four-ulp relative band 8.8818e-16.
+_RUNNER_FX_SCAN_MESH = {
+    166: -0.04015583959777602,
+    176: -0.03271906057807161,
+    177: -0.08100326601677632,
+    197: -0.0299856934434638,
+    206: 0.009053440597357687,
+}
+
+
+def test_the_factor_band_is_attached_to_the_factor_columns_alone():
+    """The absolute band is nonzero for the columns the generator stores as
+    ``F - 1`` and for no other column it can write.
+
+    Oracle: the recorded fixture's own float keys and, since the recording is
+    on the total-density footing, the generator's whole key universe
+    (``pretrain_data_gen._KNOWN_KEYS``) beside it, so the two exchange-block
+    factor columns of the ``spin_channel`` footing are classified as well. The
+    stems the band keys on are held to the generator's own declarations, every
+    stem tuple it writes a column from: the only enhancement-factor stems among
+    them are the four the band names, so a factor column added to the schema
+    without a band fails here wherever its stem is declared.
+
+    The scale is the factor's own largest magnitude, ``max|1 + ref|``, which a
+    band independent of the column and a band scaled by the column's own range
+    both fail to be; a column whose factors span 0.09 to 0.5 separates the
+    three, and the band it receives is asserted exactly.
+    """
+    declared = (set(pdg._ALL_CORE) | set(pdg._X_CORE) | set(pdg._MESH_CORE)
+                | set(pdg._ALL_PROTOCOL) | set(pdg._DESCRIPTOR_STEMS)
+                | set(pdg._SYSTEM_TABLE) | set(pdg._SCALARS))
+    assert set(_FACTOR_STEMS) == {s for s in declared if s.startswith("F")}
+
+    eps = float(np.finfo(np.float64).eps)
+    spanning = np.array([-0.91, -0.5])
+    factor_scale = float(np.max(np.abs(1.0 + spanning)))
+    column_scale = 1.0 + float(np.max(np.abs(spanning)))
+    assert factor_scale == 0.5
+    assert len({factor_scale, column_scale, 1.0}) == 3
+    band = _factor_band("Fc_all", spanning)
+    assert band == _FACTOR_ULP * eps * 0.5
+    assert band != _FACTOR_ULP * eps * column_scale
+    assert band != _FACTOR_ULP * eps
+    # A column with no elements has no factor to scale by, and is reported as
+    # unbanded rather than raising.
+    assert _factor_band("Fx_all", np.array([])) == 0.0
+
+    ref = dict(np.load(_FIXTURE))
+    banded = {k for k, v in ref.items()
+              if np.issubdtype(v.dtype, np.floating)
+              and _factor_band(k, v) != 0.0}
+    assert banded == {"Fc_all", "Fc_scan_all", "Fc_scan_mesh", "Fx_all",
+                      "Fx_scan_all", "Fx_scan_mesh"}
+
+    probe = np.array([0.25, -0.5, 0.75])
+    universe = {k for k in pdg._KNOWN_KEYS if _factor_band(k, probe) != 0.0}
+    assert universe == banded | {"Fx_x", "Fx_scan_x"}
+
+
+def test_the_factor_band_admits_the_runner_movement_and_no_more():
+    """The movement a hosted runner recorded on ``Fx_scan_mesh`` passes and a
+    hundred times it does not.
+
+    Oracle: the recorded column with the runner's five elements substituted,
+    which is the failure itself -- refused by the relative tolerance alone,
+    admitted by it beside the band -- and the same column displaced by a
+    hundred times the worst of those movements, which is refused. The
+    comparison helper is exercised on the recorded column directly, so no SCF
+    is run.
+    """
+    eps = float(np.finfo(np.float64).eps)
+    recorded = np.array(dict(np.load(_FIXTURE))["Fx_scan_mesh"])
+    ref = {"Fx_scan_mesh": recorded}
+    got = {"Fx_scan_mesh": recorded.copy()}
+    for index, value in _RUNNER_FX_SCAN_MESH.items():
+        assert got["Fx_scan_mesh"][index] != value, index
+        got["Fx_scan_mesh"][index] = value
+    assert int(np.sum(got["Fx_scan_mesh"] != recorded)) == 5
+    worst = float(np.max(np.abs(got["Fx_scan_mesh"] - recorded)))
+    assert worst == 2.0 * eps
+    assert worst / abs(float(recorded[206])) > _ULP_TOLERANCE * eps
+
+    with pytest.raises(AssertionError, match="Fx_scan_mesh"):
+        np.testing.assert_allclose(got["Fx_scan_mesh"], recorded,
+                                   rtol=_ULP_TOLERANCE * eps, atol=0.0,
+                                   err_msg="Fx_scan_mesh")
+
+    assert _assert_columns_match(got, ref) == [("Fx_scan_mesh", worst)]
+
+    far = {"Fx_scan_mesh": recorded + 100.0 * worst}
+    with pytest.raises(AssertionError, match="Fx_scan_mesh"):
+        _assert_columns_match(far, ref)
+
+    # The band's own floor and ceiling on this column, neither of which the two
+    # comparisons above reach: it carries a margin of at least four over the
+    # movement recorded, so a band merely equal to that movement is refused,
+    # and stays under the displacement above, which the relative tolerance
+    # would otherwise be left to refuse alone.
+    band = _factor_band("Fx_scan_mesh", recorded)
+    assert band >= 4.0 * worst, band / worst
+    assert band < 100.0 * worst, band / worst
+
+
+def test_no_column_the_band_would_swallow_carries_one():
+    """No column whose whole range sits below a band scaled to one carries
+    such a band.
+
+    Oracle: the recorded fixture's float columns. ``zeta_mesh`` is identically
+    zero and ``dm_all`` reaches 4.9304e-32, against ``sigma_mesh`` at
+    2.0992e+09, so a blanket absolute floor of a few ulp of one would admit any
+    change at all to the first two. Both are refused: every element of
+    ``dm_all`` doubled, and ``zeta_mesh`` displaced by eight ulp of one.
+    """
+    eps = float(np.finfo(np.float64).eps)
+    ref = dict(np.load(_FIXTURE))
+    scale = {k: float(np.max(np.abs(v))) for k, v in ref.items()
+             if np.issubdtype(v.dtype, np.floating)}
+    assert min(scale, key=scale.get) == "zeta_mesh"
+    assert scale["zeta_mesh"] == 0.0
+    nonzero = {k: s for k, s in scale.items() if s > 0.0}
+    assert min(nonzero, key=nonzero.get) == "dm_all"
+    assert max(scale, key=scale.get) == "sigma_mesh"
+    # Doubling the smallest nonzero column moves it by under one ulp of one.
+    assert 2.0 * nonzero["dm_all"] < eps
+
+    with pytest.raises(AssertionError, match="dm_all"):
+        _assert_columns_match({"dm_all": 2.0 * ref["dm_all"]},
+                              {"dm_all": ref["dm_all"]})
+    with pytest.raises(AssertionError, match="zeta_mesh"):
+        _assert_columns_match({"zeta_mesh": ref["zeta_mesh"] + 8.0 * eps},
+                              {"zeta_mesh": ref["zeta_mesh"]})
 
 
 def _legacy_view(ref):
