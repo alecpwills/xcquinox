@@ -10,8 +10,11 @@ rules that do not need the real data are exercised against synthetic trees under
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +30,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 #: The composition files the Slim pools are built from.
 _COMPOSITION_NAMES = ("Slim100M_05_composition.txt", "Slim100M_16_composition.txt",
                       "Slim100M_20_composition.txt")
+
+#: The composition file of each Slim set, by the name the builders take.
+_SLIM_COMPOSITION_FILES = {f"slim{n}": f"Slim100M_{n}_composition.txt"
+                           for n in ("05", "16", "20")}
 
 #: The nine subsets the paper de-duplicates by system name rather than by formula.
 _CONFORMER_SUBSETS = ("IDISP", "ICONF", "ACONF", "Amino20x4", "PCONF21", "MCONF",
@@ -55,6 +62,93 @@ def _missing_compositions() -> list[str]:
     """The composition files absent from ``data/slim/``."""
     base = _REPO_ROOT / "data" / "slim"
     return [n for n in _COMPOSITION_NAMES if not (base / n).is_file()]
+
+
+def _missing_slim_subsets(name, base=None) -> list[str]:
+    """The subsets a Slim set's composition file names whose ``.res`` is absent
+    from the checkout, in the file's order and without repeats. The composition
+    is read here rather than through the module under test, as the two guards
+    above are; a set whose composition file is itself absent reports nothing,
+    since :func:`_missing_compositions` is the guard that covers it. ``base``
+    is the directory holding the composition files, the tracked one by
+    default, so the reading itself can be exercised on a synthetic file. A name
+    that is not a Slim set is refused rather than reported complete, since an
+    empty list reads as "every subset is present"."""
+    return _missing_subsets(_named_slim_subsets(name, base=base))
+
+
+def _named_slim_subsets(name, base=None) -> tuple:
+    """The checkout directories a Slim set's composition file names, in the
+    file's order and without repeats."""
+    if name not in _SLIM_COMPOSITION_FILES:
+        raise ValueError(f"not a Slim set: {name!r}")
+    base = Path(base) if base is not None else _REPO_ROOT / "data" / "slim"
+    path = base / _SLIM_COMPOSITION_FILES[name]
+    if not path.is_file():
+        return ()
+    named = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        subset = line.split()[0]
+        # BH76RC has no directory of its own: its reactions are written over
+        # the BH76 species, in that directory's .resRC.
+        named.append("BH76" if subset == "BH76RC" else subset)
+    return tuple(dict.fromkeys(named))
+
+
+def _skip_without_slim_sources(*names) -> None:
+    """Skip when a Slim set cannot be built here: the composition files are
+    tracked but the GMTKN55 checkout is not (``.gitignore`` keeps all of it but
+    the provenance file), so a fresh clone has the one and not the other."""
+    absent = _missing_compositions()
+    if absent:
+        pytest.skip(f"the composition files are not on disk: {absent}")
+    named = {s for n in names for s in _named_slim_subsets(n)}
+    missing = sorted({s for n in names for s in _missing_slim_subsets(n)})
+    if missing:
+        pytest.skip(f"the GMTKN55 checkout is short {len(missing)} of the "
+                    f"{len(named)} subsets {', '.join(names)} name: "
+                    f"{missing[:5]}")
+
+
+#: The entry points of the module under test that read the checkout for a Slim
+#: set: a test naming one of them builds a Slim pool and needs the guard.
+_SLIM_BUILDER_CALLS = ("build_slim_pool_dict", "slim_pretrain_records",
+                       "build_overlap_reports")
+
+#: The guard's name as a test's syntax tree spells it.
+_SLIM_GUARD = "_skip_without_slim_sources"
+
+#: The Slim set names the builders take.
+_SLIM_SET_NAMES = frozenset(_SLIM_COMPOSITION_FILES)
+
+
+def _slim_builder_tests() -> list:
+    """``(function, argument tuples)`` for every test of this module that builds
+    a Slim pool, found by the builders each one names rather than listed here,
+    so a test added later is covered without being added to a list. A
+    parameterized test carries one argument tuple per case, read from its own
+    mark; a test the sweep cannot call is refused rather than passed over."""
+    out = []
+    for name, fn in sorted(vars(sys.modules[__name__]).items()):
+        if not name.startswith("test_") or not callable(fn):
+            continue
+        source = inspect.getsource(fn)
+        if not any(call in source for call in _SLIM_BUILDER_CALLS):
+            continue
+        argnames, argsets = (), [()]
+        for mark in getattr(fn, "pytestmark", []):
+            if mark.name != "parametrize":
+                continue
+            argnames = tuple(a.strip() for a in mark.args[0].split(","))
+            argsets = [v if isinstance(v, tuple) else (v,) for v in mark.args[1]]
+        takes = tuple(inspect.signature(fn).parameters)
+        assert takes == argnames, (
+            f"{name} takes {takes}, which the sweep cannot supply")
+        out.append((fn, argsets))
+    return out
 
 
 def _tracked_pool(path) -> dict:
@@ -335,9 +429,7 @@ def test_the_slim_pools_have_the_counts_of_the_checkout(name):
 
     Oracle: the composition file walked over the checkout's ``.res`` and ``struc.xyz``.
     """
-    missing = _missing_compositions()
-    if missing:
-        pytest.skip(f"the composition files are not on disk: {missing}")
+    _skip_without_slim_sources(name)
     gs = _sets()
     pool = gs.build_slim_pool_dict(name)
     want = _SLIM_COUNTS[name]
@@ -357,9 +449,7 @@ def test_the_slim05_draw_names_the_paper_s_twenty_five_molecules():
 
     Oracle: the molecule list built from the checkout, indexed by the legacy draw.
     """
-    missing = _missing_compositions()
-    if missing:
-        pytest.skip(f"the composition files are not on disk: {missing}")
+    _skip_without_slim_sources("slim05")
     gs = _sets()
     pool = gs.build_slim_pool_dict("slim05")
     draw = pool["pretrain_draw"]
@@ -382,9 +472,7 @@ def test_every_slim_species_name_carries_one_geometry():
 
     Oracle: the species records of both Slim pools, compared by name.
     """
-    missing = _missing_compositions()
-    if missing:
-        pytest.skip(f"the composition files are not on disk: {missing}")
+    _skip_without_slim_sources("slim05", "slim16")
     gs = _sets()
     for name in ("slim05", "slim16"):
         pool = gs.build_slim_pool_dict(name)
@@ -404,9 +492,7 @@ def test_an_open_shell_species_of_the_pools_is_not_recorded_closed_shell():
     Oracle: every species record of the three pools, against the electron count of its
     own geometry.
     """
-    missing = _missing_compositions()
-    if missing:
-        pytest.skip(f"the composition files are not on disk: {missing}")
+    _skip_without_slim_sources("slim05", "slim16")
     numbers = {"H": 1, "He": 2, "Li": 3, "Be": 4, "B": 5, "C": 6, "N": 7, "O": 8,
                "F": 9, "Ne": 10, "Na": 11, "Mg": 12, "Al": 13, "Si": 14, "P": 15,
                "S": 16, "Cl": 17, "Ar": 18, "K": 19, "Ca": 20, "Se": 34, "Br": 35,
@@ -592,9 +678,7 @@ def test_slim_pretrain_records_are_the_drawn_molecules():
 
     Oracle: the drawn molecules of the built Slim05 pool.
     """
-    missing = _missing_compositions()
-    if missing:
-        pytest.skip(f"the composition files are not on disk: {missing}")
+    _skip_without_slim_sources("slim05")
     gs = _sets()
     records = gs.slim_pretrain_records("slim05")
     assert len(records) == 25
@@ -619,9 +703,7 @@ def test_the_drawn_molecules_record_the_paper_s_spin_rule_beside_the_checkout_s(
     Oracle: the rule of the published script (``handle_mols.xyz_to_mol_wspin`` and its
     atom table), recomputed here over every drawn molecule's elements and charge.
     """
-    missing = _missing_compositions()
-    if missing:
-        pytest.skip(f"the composition files are not on disk: {missing}")
+    _skip_without_slim_sources("slim05")
     from ase.data import atomic_numbers
     study_atom_spins = {
         "Al": 1, "B": 1, "Li": 1, "Na": 1, "Si": 2, "Be": 0, "C": 2, "Cl": 1,
@@ -841,9 +923,9 @@ def test_the_tracked_caches_regenerate_byte_for_byte():
 
     Oracle: the tracked JSON files under ``xcquinox/pipeline/data/``.
     """
-    missing = _missing_compositions() + _missing_subsets(("BH76", "W4-11"))
-    if missing:
-        pytest.skip(f"the sources are not on this machine: {missing}")
+    # Both Slim pools are regenerated below and the overlap reports need every
+    # subset either set names, BH76 and W4-11 among them.
+    _skip_without_slim_sources("slim05", "slim16")
     from xcquinox.pipeline.full_benchmark_pools import (build_bh76_pool_dict,
                                                         build_w411_pool_dict)
     gs = _sets()
@@ -873,3 +955,157 @@ def test_the_tracked_caches_regenerate_byte_for_byte():
                 name, sd["name"])
             assert sd["name"].startswith(gs.subset_tag(sd["subset"]) + "_"), (
                 name, sd["name"])
+
+
+# ---------------------------------------------------------------------------
+# 12. What a checkout-free clone can run
+# ---------------------------------------------------------------------------
+
+def test_the_slim_subset_guard_names_the_absent_subsets(tmp_path, monkeypatch):
+    """The guard over a Slim set's own subsets reads that set's composition file
+    and reports which of the subsets it names have no reaction file under the
+    checkout, under either of its two layouts.
+
+    Oracle: an empty checkout directory, against the composition file on disk.
+    """
+    absent = _missing_compositions()
+    if absent:
+        pytest.skip(f"the composition files are not on disk: {absent}")
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(tmp_path))
+    missing = _missing_slim_subsets("slim05")
+    assert missing, "an empty checkout has none of the set's subsets"
+    assert "BH76" in missing and "W4-11" in missing
+    assert "#" not in "".join(missing)
+    assert len(missing) == len(set(missing))
+
+    flat = tmp_path / "BH76"
+    flat.mkdir()
+    (flat / ".res").write_text("$tmer h/$f x -1 $w 1.0\n", encoding="utf-8")
+    assert "BH76" not in _missing_slim_subsets("slim05")
+    nested = tmp_path / "gmtkn55" / "W4-11"
+    nested.mkdir(parents=True)
+    (nested / ".res").write_text("$tmer h/$f x -1 $w 1.0\n", encoding="utf-8")
+    assert "W4-11" not in _missing_slim_subsets("slim05")
+
+    monkeypatch.delenv("XCQUINOX_GMTKN55_DIR")
+    # Against the checkout as it stands, whatever state that is: the subsets
+    # reported absent are exactly those of the set's own composition file that
+    # are absent, read here line by line rather than through the guard.
+    independent = []
+    for raw in (_REPO_ROOT / "data" / "slim"
+                / "Slim100M_05_composition.txt").read_text(
+                    encoding="utf-8").splitlines():
+        head = raw.split()[:1]
+        if not head or head[0].startswith("#"):
+            continue
+        subset = "BH76" if head[0] == "BH76RC" else head[0]
+        if subset not in independent:
+            independent.append(subset)
+    assert _named_slim_subsets("slim05") == tuple(independent)
+    assert _missing_slim_subsets("slim05") == _missing_subsets(independent)
+
+
+def test_the_slim_subset_guard_refuses_a_name_that_is_not_a_slim_set():
+    """A name with no composition file is refused rather than reported
+    complete: an empty list reads as "every subset is present", which would
+    turn a misspelled set name into a silent pass.
+
+    Oracle: the three Slim names of the composition table, against two others.
+    """
+    assert set(_SLIM_COMPOSITION_FILES) == {"slim05", "slim16", "slim20"}
+    for name in ("diet150", "slim5", "", "slim"):
+        with pytest.raises(ValueError):
+            _missing_slim_subsets(name)
+
+
+def test_the_slim_subset_guard_reads_the_composition_grammar(tmp_path,
+                                                              monkeypatch):
+    """The guard takes a composition file's subset names off the head of each
+    line: a blank line and a line opened by a hash are not subsets, and BH76RC
+    is asked for under BH76, the directory whose reaction file carries it. It
+    is deliberately more permissive than the set's own parser, which refuses a
+    file naming a subset twice, so that a composition the builders reject is
+    still skipped rather than failed; a repeated subset is reported once.
+
+    Oracle: a synthetic composition file, since no tracked one carries a
+    comment or a repeat, with the parser run on the same text.
+    """
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(tmp_path / "clone"))
+    text = ("# a note about the set\n"
+            "\n"
+            "AHB21 1 2\n"
+            "BH76RC 2 30\n"
+            "AHB21 4\n"
+            "   \n"
+            "#BH76 1\n")
+    base = tmp_path / "slim"
+    base.mkdir()
+    (base / "Slim100M_05_composition.txt").write_text(text, encoding="utf-8")
+    assert _named_slim_subsets("slim05", base=base) == ("AHB21", "BH76")
+    assert _missing_slim_subsets("slim05", base=base) == ["AHB21", "BH76"]
+    assert _missing_slim_subsets("slim16", base=base) == []
+    with pytest.raises(ValueError):
+        _sets().parse_composition(text)
+
+
+def test_every_slim_builder_skips_without_the_checkout(tmp_path, monkeypatch):
+    """Every test that builds a Slim pool skips when the GMTKN55 checkout is
+    absent, rather than failing. The checkout is not in the repository
+    (``.gitignore`` keeps all of it but the provenance file) while the
+    composition files are, so a clone without it -- which is what CI runs --
+    would otherwise fail these on a missing reaction file.
+
+    Oracle: the test functions themselves, called against an empty checkout.
+    """
+    from _pytest.outcomes import Skipped
+    absent = _missing_compositions()
+    if absent:
+        pytest.skip(f"the composition files are not on disk: {absent}")
+    cases = _slim_builder_tests()
+    runs = sum(len(argsets) for _fn, argsets in cases)
+    assert runs >= 8, f"only {runs} builder runs over {len(cases)} tests"
+    monkeypatch.setenv("XCQUINOX_GMTKN55_DIR", str(tmp_path))
+    for fn, argsets in cases:
+        for args in argsets:
+            with pytest.raises(Skipped):
+                fn(*args)
+
+
+def test_every_slim_builder_guards_the_sets_it_builds():
+    """A builder's skip names every Slim set the builder goes on to read. A
+    guard narrowed to one of the two sets a test builds is invisible against a
+    checkout that is wholly absent and fails against one that is merely
+    incomplete, so the sets are compared rather than the skipping.
+
+    Oracle: each test's own syntax tree -- the set names it passes to the
+    guard, against the set names it passes to anything else.
+    """
+    cases = _slim_builder_tests()
+    runs = sum(len(argsets) for _fn, argsets in cases)
+    assert runs >= 8, f"only {runs} builder runs over {len(cases)} tests"
+    for fn, argsets in cases:
+        body = ast.parse(inspect.getsource(fn)).body[0].body
+        nodes = [n for stmt in body for n in ast.walk(stmt)]
+        guarded, named, parametrized = set(), set(), False
+        for call in [n for n in nodes if isinstance(n, ast.Call)]:
+            if getattr(call.func, "id", None) != _SLIM_GUARD:
+                continue
+            for arg in call.args:
+                if isinstance(arg, ast.Constant):
+                    guarded.add(arg.value)
+                else:
+                    parametrized = True
+        for node in nodes:
+            if isinstance(node, ast.Constant) and node.value in _SLIM_SET_NAMES:
+                named.add(node.value)
+        built = named - guarded
+        assert guarded or parametrized, f"{fn.__name__} guards on nothing"
+        if parametrized:
+            # The guard is passed the case parameter, so the set it names is
+            # the case: every case value must be a Slim set.
+            values = {v for argset in argsets for v in argset}
+            assert values and values <= _SLIM_SET_NAMES, (fn.__name__, values)
+            guarded |= values
+        assert built <= guarded, (
+            f"{fn.__name__} builds {sorted(built)} but guards on "
+            f"{sorted(guarded)}")
