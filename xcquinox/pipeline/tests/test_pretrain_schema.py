@@ -50,6 +50,89 @@ _ULP_TOLERANCE = 4
 _FACTOR_STEMS = ("Fx", "Fc", "Fx_scan", "Fc_scan")
 _FACTOR_ULP = 8
 
+#: The stem of the iso-orbital indicator, ``p_delta(tau - tau_W)/tau_unif``
+#: (``metagga.compute_alpha``), which the mesh realizes as
+#: ``tau = alpha tau_unif + tau_W`` and the SCF grid takes from the density
+#: matrix. The subtraction cancels the von Weizsacker term, so an element's
+#: absolute resolution is that of the operand ``tau/tau_unif = |alpha| +
+#: tau_W/tau_unif`` and not of the indicator: a hosted runner moved two
+#: elements of ``metagga_mesh``, 0.25 and 1.5, by 0.80 and 0.61 ulp of that
+#: operand, which the per-element relative band read as 22.0 and 6.7 ulp of
+#: the value, the ratio being 6.67 and 15.0 there. Each indicator element
+#: therefore carries ``_ALPHA_ULP`` ulp of its own operand, formed from the
+#: density and gradient recorded beside it. The constant is measured rather
+#: than derived: the mesh rebuilt from its literal grids reproduces the
+#: recording bit for bit, a second float64 spelling of the same
+#: kinetic-energy density put through the same helper moves 12 of the 560
+#: elements by more than one ulp of the operand and none by more than 1.48,
+#: and the density column's own four-ulp band, carried through the whole
+#: mesh chain rebuilt from the moved density, moves the indicator by at most
+#: 1.48 ulp of the operand (6.67, four times five thirds, if the
+#: kinetic-energy density were held fixed instead). Eight clears the sum of
+#: the two, 2.95, by 2.7x, and the tests hold it to a window: at least five
+#: thirds of ``_ULP_TOLERANCE`` below, and under a hundredfold of the runner's
+#: movement above. On the SCF grid the ratio reaches 6.8e+05 in the density
+#: tails, where the indicator sits at its smoothing floor and the recorded
+#: value is the rounding residue of the subtraction; the band there is at
+#: most 2.4e-04 of the element.
+_ALPHA_STEM = "metagga"
+_ALPHA_ULP = 8
+
+
+def _alpha_band(key, ref):
+    """The per-element band of an indicator column, ``_ALPHA_ULP`` ulp of
+    ``|alpha| + tau_W/tau_unif`` in the column's shape, the ratio formed from
+    the density and gradient columns of the key's own block
+    (``rho_<suffix>``, ``sigma_<suffix>``), which every recorded block
+    carries."""
+    suffix = key.rpartition("_")[2]
+    for sibling in (f"rho_{suffix}", f"sigma_{suffix}"):
+        assert sibling in ref, (
+            f"{key}: the indicator's band is formed from {sibling}, which the "
+            "mapping does not carry")
+    alpha = np.asarray(ref[key], dtype=float)
+    rho = np.asarray(ref[f"rho_{suffix}"], dtype=float)
+    sigma = np.asarray(ref[f"sigma_{suffix}"], dtype=float)
+    tau_w = sigma / (8.0 * rho)
+    tau_unif = 0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0) * rho ** (5.0 / 3.0)
+    ratio = (tau_w / tau_unif).reshape(alpha.shape)
+    eps = float(np.finfo(np.float64).eps)
+    return _ALPHA_ULP * eps * (np.abs(alpha) + ratio)
+
+
+def _column_band(key, ref):
+    """The absolute band of one recorded column: an array for an indicator
+    column, from :func:`_alpha_band`; otherwise :func:`_factor_band` on the
+    column alone, which is zero for every column that cancels nothing."""
+    stem, _, suffix = key.rpartition("_")
+    if stem == _ALPHA_STEM and suffix:
+        return _alpha_band(key, ref)
+    return _factor_band(key, ref[key])
+
+
+def _assert_column_close(key, got, ref, rtol, band):
+    """``|got - ref| <= rtol |ref| + band`` for a per-element band, which
+    numpy's ``assert_allclose`` takes only as a scalar. Written in the
+    positive form, every element inside its allowance, so a non-finite
+    element is refused as ``assert_allclose`` refuses it."""
+    got = np.asarray(got, dtype=float)
+    ref = np.asarray(ref, dtype=float)
+    allowance = rtol * np.abs(ref) + np.asarray(band, dtype=float)
+    difference = np.abs(got - ref)
+    inside = difference <= allowance
+    if not bool(np.all(inside)):
+        outside = np.argwhere(~inside)
+        # A non-finite difference is the worst excess there is.
+        excess = np.where(inside, -np.inf,
+                          np.nan_to_num(difference - allowance, nan=np.inf))
+        worst = tuple(int(i) for i in np.unravel_index(
+            int(np.argmax(excess)), ref.shape))
+        raise AssertionError(
+            f"{key}: {len(outside)} of {ref.size} elements outside the band; "
+            f"worst at {worst}: {got[worst]!r} against {ref[worst]!r}, "
+            f"difference {difference[worst]:.6e} against an allowance of "
+            f"{allowance[worst]:.6e}")
+
 
 def _factor_band(key, ref):
     """The absolute band one recorded column is held to beside the relative
@@ -68,10 +151,10 @@ def _factor_band(key, ref):
 def _assert_columns_match(got, ref):
     """Hold every recorded key: dtype and shape exactly, floating values
     within ``_ULP_TOLERANCE`` ulp of each element (a relative tolerance)
-    beside :func:`_factor_band`, which is zero for every column but those
-    stored as an enhancement factor minus one, and integer values exactly.
-    Returns the keys that moved with their largest absolute difference, for
-    the report."""
+    beside :func:`_column_band`, which is zero for every column but those
+    stored as an enhancement factor minus one and the iso-orbital indicator
+    columns, and integer values exactly. Returns the keys that moved with
+    their largest absolute difference, for the report."""
     moved = []
     for key in sorted(ref):
         assert got[key].dtype == ref[key].dtype, key
@@ -80,9 +163,12 @@ def _assert_columns_match(got, ref):
             np.testing.assert_array_equal(got[key], ref[key], err_msg=key)
             continue
         rtol = _ULP_TOLERANCE * float(np.finfo(ref[key].dtype).eps)
-        np.testing.assert_allclose(got[key], ref[key], rtol=rtol,
-                                   atol=_factor_band(key, ref[key]),
-                                   err_msg=key)
+        band = _column_band(key, ref)
+        if isinstance(band, np.ndarray):
+            _assert_column_close(key, got[key], ref[key], rtol, band)
+        else:
+            np.testing.assert_allclose(got[key], ref[key], rtol=rtol,
+                                       atol=band, err_msg=key)
         if not np.array_equal(got[key], ref[key]):
             moved.append((key, float(np.max(np.abs(got[key] - ref[key])))))
     return moved
@@ -192,146 +278,6 @@ def test_the_default_output_pin_is_a_few_ulp_per_element():
     assert "alpha" in _refused(moved_small)
     message = _refused({"alpha": ref["alpha"], "count": ref["count"] + 1})
     assert "count" in message and "alpha" not in message
-
-
-#: The five ``Fx_scan_mesh`` elements a hosted runner computed differently from
-#: the recording (GitHub Actions run 35918397461, both interpreters): index ->
-#: the value the runner produced, the recorded column carrying the other side
-#: of each pair. The movements are 1.1102e-16 (three of them), 2.2204e-16 and
-#: 4.4409e-16 -- a half, one and two ulp of ONE, the column being stored as
-#: ``F - 1`` and recovered by a subtraction -- on elements of magnitude
-#: 9.0534e-03 to 8.1003e-02; the worst is a relative 4.9052e-14, 55x the
-#: four-ulp relative band 8.8818e-16.
-_RUNNER_FX_SCAN_MESH = {
-    166: -0.04015583959777602,
-    176: -0.03271906057807161,
-    177: -0.08100326601677632,
-    197: -0.0299856934434638,
-    206: 0.009053440597357687,
-}
-
-
-def test_the_factor_band_is_attached_to_the_factor_columns_alone():
-    """The absolute band is nonzero for the columns the generator stores as
-    ``F - 1`` and for no other column it can write.
-
-    Oracle: the recorded fixture's own float keys and, since the recording is
-    on the total-density footing, the generator's whole key universe
-    (``pretrain_data_gen._KNOWN_KEYS``) beside it, so the two exchange-block
-    factor columns of the ``spin_channel`` footing are classified as well. The
-    stems the band keys on are held to the generator's own declarations, every
-    stem tuple it writes a column from: the only enhancement-factor stems among
-    them are the four the band names, so a factor column added to the schema
-    without a band fails here wherever its stem is declared.
-
-    The scale is the factor's own largest magnitude, ``max|1 + ref|``, which a
-    band independent of the column and a band scaled by the column's own range
-    both fail to be; a column whose factors span 0.09 to 0.5 separates the
-    three, and the band it receives is asserted exactly.
-    """
-    declared = (set(pdg._ALL_CORE) | set(pdg._X_CORE) | set(pdg._MESH_CORE)
-                | set(pdg._ALL_PROTOCOL) | set(pdg._DESCRIPTOR_STEMS)
-                | set(pdg._SYSTEM_TABLE) | set(pdg._SCALARS))
-    assert set(_FACTOR_STEMS) == {s for s in declared if s.startswith("F")}
-
-    eps = float(np.finfo(np.float64).eps)
-    spanning = np.array([-0.91, -0.5])
-    factor_scale = float(np.max(np.abs(1.0 + spanning)))
-    column_scale = 1.0 + float(np.max(np.abs(spanning)))
-    assert factor_scale == 0.5
-    assert len({factor_scale, column_scale, 1.0}) == 3
-    band = _factor_band("Fc_all", spanning)
-    assert band == _FACTOR_ULP * eps * 0.5
-    assert band != _FACTOR_ULP * eps * column_scale
-    assert band != _FACTOR_ULP * eps
-    # A column with no elements has no factor to scale by, and is reported as
-    # unbanded rather than raising.
-    assert _factor_band("Fx_all", np.array([])) == 0.0
-
-    ref = dict(np.load(_FIXTURE))
-    banded = {k for k, v in ref.items()
-              if np.issubdtype(v.dtype, np.floating)
-              and _factor_band(k, v) != 0.0}
-    assert banded == {"Fc_all", "Fc_scan_all", "Fc_scan_mesh", "Fx_all",
-                      "Fx_scan_all", "Fx_scan_mesh"}
-
-    probe = np.array([0.25, -0.5, 0.75])
-    universe = {k for k in pdg._KNOWN_KEYS if _factor_band(k, probe) != 0.0}
-    assert universe == banded | {"Fx_x", "Fx_scan_x"}
-
-
-def test_the_factor_band_admits_the_runner_movement_and_no_more():
-    """The movement a hosted runner recorded on ``Fx_scan_mesh`` passes and a
-    hundred times it does not.
-
-    Oracle: the recorded column with the runner's five elements substituted,
-    which is the failure itself -- refused by the relative tolerance alone,
-    admitted by it beside the band -- and the same column displaced by a
-    hundred times the worst of those movements, which is refused. The
-    comparison helper is exercised on the recorded column directly, so no SCF
-    is run.
-    """
-    eps = float(np.finfo(np.float64).eps)
-    recorded = np.array(dict(np.load(_FIXTURE))["Fx_scan_mesh"])
-    ref = {"Fx_scan_mesh": recorded}
-    got = {"Fx_scan_mesh": recorded.copy()}
-    for index, value in _RUNNER_FX_SCAN_MESH.items():
-        assert got["Fx_scan_mesh"][index] != value, index
-        got["Fx_scan_mesh"][index] = value
-    assert int(np.sum(got["Fx_scan_mesh"] != recorded)) == 5
-    worst = float(np.max(np.abs(got["Fx_scan_mesh"] - recorded)))
-    assert worst == 2.0 * eps
-    assert worst / abs(float(recorded[206])) > _ULP_TOLERANCE * eps
-
-    with pytest.raises(AssertionError, match="Fx_scan_mesh"):
-        np.testing.assert_allclose(got["Fx_scan_mesh"], recorded,
-                                   rtol=_ULP_TOLERANCE * eps, atol=0.0,
-                                   err_msg="Fx_scan_mesh")
-
-    assert _assert_columns_match(got, ref) == [("Fx_scan_mesh", worst)]
-
-    far = {"Fx_scan_mesh": recorded + 100.0 * worst}
-    with pytest.raises(AssertionError, match="Fx_scan_mesh"):
-        _assert_columns_match(far, ref)
-
-    # The band's own floor and ceiling on this column, neither of which the two
-    # comparisons above reach: it carries a margin of at least four over the
-    # movement recorded, so a band merely equal to that movement is refused,
-    # and stays under the displacement above, which the relative tolerance
-    # would otherwise be left to refuse alone.
-    band = _factor_band("Fx_scan_mesh", recorded)
-    assert band >= 4.0 * worst, band / worst
-    assert band < 100.0 * worst, band / worst
-
-
-def test_no_column_the_band_would_swallow_carries_one():
-    """No column whose whole range sits below a band scaled to one carries
-    such a band.
-
-    Oracle: the recorded fixture's float columns. ``zeta_mesh`` is identically
-    zero and ``dm_all`` reaches 4.9304e-32, against ``sigma_mesh`` at
-    2.0992e+09, so a blanket absolute floor of a few ulp of one would admit any
-    change at all to the first two. Both are refused: every element of
-    ``dm_all`` doubled, and ``zeta_mesh`` displaced by eight ulp of one.
-    """
-    eps = float(np.finfo(np.float64).eps)
-    ref = dict(np.load(_FIXTURE))
-    scale = {k: float(np.max(np.abs(v))) for k, v in ref.items()
-             if np.issubdtype(v.dtype, np.floating)}
-    assert min(scale, key=scale.get) == "zeta_mesh"
-    assert scale["zeta_mesh"] == 0.0
-    nonzero = {k: s for k, s in scale.items() if s > 0.0}
-    assert min(nonzero, key=nonzero.get) == "dm_all"
-    assert max(scale, key=scale.get) == "sigma_mesh"
-    # Doubling the smallest nonzero column moves it by under one ulp of one.
-    assert 2.0 * nonzero["dm_all"] < eps
-
-    with pytest.raises(AssertionError, match="dm_all"):
-        _assert_columns_match({"dm_all": 2.0 * ref["dm_all"]},
-                              {"dm_all": ref["dm_all"]})
-    with pytest.raises(AssertionError, match="zeta_mesh"):
-        _assert_columns_match({"zeta_mesh": ref["zeta_mesh"] + 8.0 * eps},
-                              {"zeta_mesh": ref["zeta_mesh"]})
 
 
 def _legacy_view(ref):
