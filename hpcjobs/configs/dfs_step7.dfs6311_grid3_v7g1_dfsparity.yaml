@@ -23,7 +23,7 @@
 #      cycles was wrong by execution and is corrected there.
 #   2. solvers.full_25.freeze_on_convergence: false -- every cycle runs, as
 #      dpyscf's loop does; the manual solver no longer freezes the state once
-#      |dE| < conv_tol (docs/open_items.md 13, closed for this arm). conv_tol is
+#      |dE| < conv_tol. conv_tol is
 #      untouched and still reports convergence.
 #   3. solvers.full_25.mixer_kwargs.step_offset: 1 -- the first effective mix
 #      is alpha = 0.6, then 0.39, 0.327, the schedule dpyscf's loop executes
@@ -43,7 +43,7 @@
 #      is inert under it; grad_clip 1.0 is RETAINED (dpyscf clips nothing;
 #      the DFS-pool radicals produced non-finite gradients without it).
 #   6. hyperparams.channel_weights: {loss_vxc: 0.0, loss_BH76: 0.01,
-#      loss_IP13: 0.01} -- no OEP-potential term (docs/open_items.md 10; dpyscf has
+#      loss_IP13: 0.01} -- no OEP-potential term (dpyscf has
 #      none) and the DFS weight lambda_RE x 0.01 on the barrier and IP groups
 #      (SI II); the atomization and density channels keep the defaults.
 #   7. inputs.output_root: this arm's own run root (dfs6311_grid3_v7g1_dfsparity).
@@ -56,7 +56,7 @@
 # the barrier, IP and nonlinear-molecule groups stay self-consistent (DFS
 # evaluates them non-self-consistently on the SCAN density); the density loss
 # normalizes by the total N_e^2, not per spin channel; no V_xc noise (SI IV);
-# no H/Li atomic-density terms (docs/open_items.md 14); CCSD references with
+# no H/Li atomic-density terms; CCSD references with
 # density fitting, not CCSD(T); the validation criterion carries no density
 # term; the GGA form with the PBE parent and its six documented input-form
 # deviations; the gradient clip above. Each stays a recorded residual

@@ -622,7 +622,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         # point, where the hard clip of the indicator made autodiff return a
         # rounding-selected side, and a real dropped term along the iteration)
         # was retired when the clip became a smooth positive part
-        # (metagga.compute_alpha; docs/open_items.md entry 27). The response of a
+        # (metagga.compute_alpha). The response of a
         # one-orbital block annihilates that block's occupied orbital exactly
         # -- the raw indicator is stationary along every rank-preserving
         # rotation -- so the fixed point never depended on it, and it is now a

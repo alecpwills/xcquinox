@@ -292,8 +292,7 @@ class DMStatisticsDescriptor(Descriptor):
     distant fragment B is added. :class:`DMRung35Descriptor` and
     :class:`DMRung35MultishellDescriptor` are the leak-free members of this
     family -- genuine per-grid-point contractions of the same density matrix.
-    Making the global form defensible requires an architecture change and is
-    recorded in ``docs/open_items.md``.
+    Making the global form defensible requires an architecture change.
     """
     n_features: int = eqx.field(default=2, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)
@@ -385,8 +384,7 @@ class DMRung35MultishellDescriptor(Descriptor):
     (radial) part of that construction. With one m per shell the invariant
     ``sqrt(sum_m c_{nlm}^2)`` collapses to the occupancy itself. Angular
     channels require solid-harmonic fakemols and are NOT implemented, so this
-    should not be described as "the DFS descriptor" -- see
-    ``docs/open_items.md``.
+    should not be described as "the DFS descriptor".
 
     ``n_features`` is ``2 * len(alphas)`` (two spin channels per width) and the
     column order is ALPHA-MAJOR then spin. Setting ``alphas`` to a single width

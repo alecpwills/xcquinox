@@ -114,7 +114,7 @@ class SolverNamed:
     scf_loss_weight_power: float = 2.0
     # 2026-09-08: the SCF convergence freeze switch (SolverConfig
     # .freeze_on_convergence). True keeps every existing solver byte-identical;
-    # false runs every cycle, as dpyscf's loop does (docs/open_items.md 13).
+    # false runs every cycle, as dpyscf's loop does.
     freeze_on_convergence: bool = True
     # 2026-07-02: orientation lock. Coefficient on the traceless
     # anisotropic-quadrupole h_core bias (orientation_lock.py) that makes a

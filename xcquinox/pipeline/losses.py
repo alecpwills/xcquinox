@@ -572,8 +572,7 @@ def _rxn_residual_term(
     adaptively, but the production per-molecule scheme (the cluster
     default) ignores the balancer and applies the fixed density-dominant
     weights {AE 1, BH76 1, IP13 1, vxc 1, rho 20}
-    (train._DEFAULT_CHANNEL_WEIGHTS) -- the Letter's 1/20 structure. See
-    docs/notes/LOSS_PRIMER.md.
+    (train._DEFAULT_CHANNEL_WEIGHTS) -- the Letter's 1/20 structure.
     """
     if step_w2 is None:
         e_rxn = jnp.sum(coeffs * e_nn)
@@ -1102,7 +1101,7 @@ class L5GradnormVxcStep7(AlecLoss):
     density-dominant channel weights {AE 1, BH76 1, IP13 1, vxc 1, rho 20}
     (train._DEFAULT_CHANNEL_WEIGHTS), i.e. the Letter's lambda_RE=1 /
     lambda_n=20 structure; the vxc_weight/density_weight pre-scales below
-    are forced to 1.0 there. See docs/notes/LOSS_PRIMER.md.
+    are forced to 1.0 there.
 
     Constructor arguments
     ---------------------

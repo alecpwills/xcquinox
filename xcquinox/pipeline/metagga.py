@@ -84,8 +84,8 @@ _RHO_GRAD_CUTOFF: float = 1e-6
 #       1.6e-7 (def2-svp) and 3.7e-8 (production). The width exceeds the worst
 #       on-domain residue everywhere, but by 2.7x to 7.7x across that spread,
 #       NOT by the decade a single draw suggests; the binding constraint on the
-#       width is not this margin anyway but the tail response of
-#       docs/open_items.md entry 30, which is 4e-3 -- 400 widths -- on the shell
+#       width is not this margin anyway but the tail response, which is
+#       4e-3 -- 400 widths -- on the shell
 #       it peaks on, at any width. Below the mask the residue reaches 5.5e-2
 #       (Li, production, rho ~ 1e-12); no width could dominate the deep tail,
 #       and none needs to: those points carry no integrand mass and the energy
@@ -211,8 +211,7 @@ def compute_alpha(rho, sigma, tau) -> jnp.ndarray:
         those points with a usable step is not a derivative estimate. The
         response annihilates the occupied orbital of a one-orbital channel
         exactly (alpha_raw is stationary along every rank-preserving
-        rotation), so the SCF fixed point is unaffected; see
-        docs/open_items.md entry 27 (closure) and entry 30.
+        rotation), so the SCF fixed point is unaffected.
 
         Anchor of the width, all measured: (a) the rounding residue of the raw
         indicator on a one-orbital channel is at most 6.6e-10 on every grid
