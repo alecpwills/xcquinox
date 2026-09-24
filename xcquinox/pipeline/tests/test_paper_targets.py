@@ -52,9 +52,26 @@ _BETA = 0.06672455060314922
 #: a subtraction, so where the factor sits close to one (small ``s``: F_x - 1
 #: of order 1e-5) or close to zero (large ``t``: F_c of order 1e-4) the
 #: relative difference of two values that agree to the last bit of one
-#: exceeds any relative tolerance; eight ulp of one is the resolution the sum
-#: carries, measured at 1.5 ulp on the generated files.
+#: exceeds any relative tolerance. Eight ulp of one sits just above the
+#: residue measured and near the bottom of the window the separation from the
+#: libxc amplitude sets leaves open, that separation binding at 287 ulp: over
+#: the 300 oracle rows the two implementations of the factors disagree by 1.0
+#: ulp of one (F_x) and 1.5 ulp (F_c), and over 1600000 log-uniform draws
+#: inside the protocol's density box, rho in [1e-4, 10], by at most 5.0 ulp
+#: with no row past the band. The residue belongs to that box rather than to
+#: the formulas: drawn with rho and sigma independent down to rho 1e-6 the
+#: worst reaches 10.5 ulp and 16 rows in 200000 pass the band, and down to
+#: 1e-12, 412.5 ulp. The generated file the second comparison below reads
+#: runs five decades under the box floor -- 248 of its 1200 rows, down to rho
+#: 1.5267e-09 -- and stays inside the band, a physical grid correlating sigma
+#: with rho where an independent draw does not; that file's own worst is
+#: asserted there rather than assumed here.
 _ONE_ULP_BAND = 8.0 * float(np.finfo(np.float64).eps)
+
+#: The worst disagreement measured inside the protocol's density box, in ulp
+#: of one, reproduced at two seeds. The band is held above it, so a band large
+#: enough only for the row a hosted runner refused is refused in turn.
+_BOX_RESIDUE_ULP = 5.0
 
 
 def _eps_c(rho, zeta, amplitudes=_A):
@@ -89,8 +106,11 @@ def _published_fx(rho, grad):
     return 1 + _KAPPA - _KAPPA / (1 + _MU * s ** 2 / _KAPPA)
 
 
-def _published_fc(rho, zeta, grad):
-    """``__Fc_PBE_wospin``: PBE's ``H`` over the published PW92 ``eps_c``."""
+def _published_fc(rho, zeta, grad, amplitudes=_A):
+    """``__Fc_PBE_wospin``: PBE's ``H`` over the published PW92 ``eps_c``, at a
+    chosen amplitude set (the published one by default, as :func:`_eps_c`),
+    so the separation from either libxc set can be evaluated on the factor and
+    not on the correlation energy alone."""
     rho = np.asarray(rho, dtype=np.float64)
     zeta = np.asarray(zeta, dtype=np.float64)
     grad = np.asarray(grad, dtype=np.float64)
@@ -100,7 +120,7 @@ def _published_fc(rho, zeta, grad):
     k_s = np.sqrt((4 * k_f) / np.pi)
     t = np.abs(grad) / (2 * k_s * scaling_pol * rho)
     gamma = (1 - np.log(2)) / (np.pi ** 2)
-    e_heg_c = _eps_c(rho, zeta)
+    e_heg_c = _eps_c(rho, zeta, amplitudes)
     a = (_BETA / gamma) / (np.exp(-e_heg_c / (gamma * scaling_pol_3)) - 1)
     h = gamma * np.log(1 + (_BETA / gamma) * t ** 2
                        * ((1 + a * t ** 2) / (1 + a * t ** 2 + a ** 2 * t ** 4)))
@@ -157,10 +177,128 @@ def test_the_paper_targets_equal_the_published_formulas():
         _eps_c(rho, zeta), rtol=1e-12, atol=0.0)
     np.testing.assert_allclose(
         np.asarray(parents.paper_pbe_fx(rho, sigma)),
-        _published_fx(rho, grad), rtol=1e-12, atol=0.0)
+        _published_fx(rho, grad), rtol=1e-12, atol=_ONE_ULP_BAND)
     np.testing.assert_allclose(
         np.asarray(parents.paper_pbe_fc(rho, sigma, zeta)),
-        _published_fc(rho, zeta, grad), rtol=1e-12, atol=0.0)
+        _published_fc(rho, zeta, grad), rtol=1e-12, atol=_ONE_ULP_BAND)
+
+
+def test_the_band_admits_one_ulp_of_unity_where_the_factor_cancels(monkeypatch):
+    """One ulp of one displaces the correlation factor's smallest row past any
+    relative tolerance, and the comparison site carries the band that admits
+    it.
+
+    Both factors are formed as ``1 + x`` and recovered by a subtraction, so
+    their absolute resolution is one's and not their own: over the oracle rows
+    the published ``F_c`` falls to 1.5332e-07, where one ulp of one is a
+    relative 1.4482e-09, three orders outside the 1e-12 the site pins (a hosted
+    runner refused the row at 1.3014e-05 on a movement of exactly one ulp of
+    one). The displacement is therefore checked to be admitted beside
+    ``_ONE_ULP_BAND`` and refused without it, and the band is read back off the
+    site itself -- the four comparisons identified by the oracle array each is
+    handed, not by their order -- so a band that never reaches the comparison
+    fails here.
+    """
+    eps = float(np.finfo(np.float64).eps)
+    rho, sigma, zeta = _oracle_rows()
+    grad = np.sqrt(sigma)
+    published = {"lda_x": _published_lda_x_eps(rho),
+                 "eps_c": _eps_c(rho, zeta),
+                 "fx": _published_fx(rho, grad),
+                 "fc": _published_fc(rho, zeta, grad)}
+
+    row = int(np.argmin(np.abs(published["fc"])))
+    displaced = published["fc"].copy()
+    displaced[row] += eps
+    moved = float(displaced[row] - published["fc"][row])
+    relative = moved / abs(float(published["fc"][row]))
+    print(f"the correlation factor falls to {published['fc'][row]:.4e}, where "
+          f"a movement of {moved:.4e} is a relative {relative:.4e}")
+    assert 0.0 < moved <= _ONE_ULP_BAND
+    assert relative > 1e-12
+    np.testing.assert_allclose(displaced, published["fc"], rtol=1e-12,
+                               atol=_ONE_ULP_BAND)
+    with pytest.raises(AssertionError):
+        np.testing.assert_allclose(displaced, published["fc"], rtol=1e-12,
+                                   atol=0.0)
+
+    seen = []
+    unpatched = np.testing.assert_allclose
+
+    def _record(actual, desired, **kw):
+        seen.append((np.asarray(desired), kw.get("rtol"), kw.get("atol")))
+        return unpatched(actual, desired, **kw)
+
+    monkeypatch.setattr(np.testing, "assert_allclose", _record)
+    try:
+        test_the_paper_targets_equal_the_published_formulas()
+    finally:
+        monkeypatch.undo()
+    pinned = {}
+    for desired, rtol, atol in seen:
+        for name, oracle in published.items():
+            if (desired.shape == oracle.shape
+                    and np.array_equal(desired, oracle)):
+                pinned[name] = (rtol, atol)
+    assert set(pinned) == set(published), sorted(pinned)
+    # The two factors cancel toward zero and carry the band; the two energy
+    # densities, whose magnitude never falls below 2.9975e-02 here, do not.
+    assert pinned["fx"] == (1e-12, _ONE_ULP_BAND)
+    assert pinned["fc"] == (1e-12, _ONE_ULP_BAND)
+    assert pinned["lda_x"] == (1e-12, 0.0)
+    assert pinned["eps_c"] == (1e-12, 0.0)
+    # A floor on the band itself, a band sized to the refused row alone
+    # carrying no margin: it covers the worst disagreement these rows show
+    # here, and the worst the protocol's whole density box shows. The ceiling,
+    # the smallest row the amplitude sets separate, is asserted in the test
+    # below.
+    here = max(
+        float(np.max(np.abs(np.asarray(parents.paper_pbe_fx(rho, sigma))
+                            - published["fx"]))),
+        float(np.max(np.abs(np.asarray(parents.paper_pbe_fc(rho, sigma, zeta))
+                            - published["fc"]))))
+    assert here < _ONE_ULP_BAND, here / eps
+    assert _ONE_ULP_BAND >= _BOX_RESIDUE_ULP * eps
+
+
+def test_the_band_still_separates_the_published_amplitudes_from_libxc():
+    """With the band in place the published PW92 amplitudes are still neither
+    libxc set.
+
+    Oracle: ``_eps_c`` and ``_published_fc`` re-evaluated at ``_A_PW_MOD`` and
+    at ``_A_PW`` on the same rows and held against the library at the site's
+    tolerance, band included. Measured over the 300 rows: 1.0502e-05 and
+    4.9861e-06 relative on the correlation energy, 1.9031e-05 and 1.3239e-05
+    on the correlation factor, each the LARGEST over the 300 rows rather than
+    a statement about every row, and the smallest of the four 50x the 1e-07
+    floor asserted here. The binding assertion is the absolute one: the band
+    must stay under the smallest single row either set separates, which is
+    where the ceiling on it comes from.
+    """
+    rho, sigma, zeta = _oracle_rows()
+    grad = np.sqrt(sigma)
+    library = {"eps_c": np.asarray(parents.paper_pw92_eps_c(rho, zeta)),
+               "F_c": np.asarray(parents.paper_pbe_fc(rho, sigma, zeta))}
+    for name, amplitudes in (("LDA_C_PW_MOD", _A_PW_MOD), ("LDA_C_PW", _A_PW)):
+        libxc = {"eps_c": _eps_c(rho, zeta, amplitudes),
+                 "F_c": _published_fc(rho, zeta, grad,
+                                      amplitudes=amplitudes)}
+        for quantity, reference in libxc.items():
+            got = library[quantity]
+            with pytest.raises(AssertionError):
+                np.testing.assert_allclose(got, reference, rtol=1e-12,
+                                           atol=_ONE_ULP_BAND)
+            separation = float(np.max(np.abs(got / reference - 1.0)))
+            moves = np.abs(got - reference)
+            smallest = float(np.min(moves[moves > 0.0]))
+            print(f"{name} {quantity}: relative separation {separation:.4e}, "
+                  f"absolute {float(np.max(moves)):.4e}, smallest nonzero row "
+                  f"{smallest:.4e}")
+            assert separation >= 1e-7, (name, quantity, separation)
+            # The ceiling on the band: it must stay below the smallest row the
+            # amplitude sets separate, so that no single row's discrimination
+            # is lost rather than only the set as a whole surviving.
+            assert smallest > _ONE_ULP_BAND, (name, quantity, smallest)
 
 
 def test_the_value_sets_are_stated_once():
@@ -247,6 +385,19 @@ def test_a_paper_file_carries_the_published_targets_for_every_system(tmp_path):
                                rtol=1e-12, atol=0.0)
     np.testing.assert_allclose(cols["e_lda_c_all"],
                                rho * _eps_c(rho, zeta), rtol=1e-12, atol=0.0)
+
+    # This file's rows run five decades below the density box the band was
+    # measured over, so its own worst disagreement is recorded against the
+    # band here rather than taken on trust from that measurement.
+    eps = float(np.finfo(np.float64).eps)
+    assert float(rho.min()) < 1e-4
+    below = int((rho < 1e-4).sum())
+    assert below > 0
+    worst = max(
+        float(np.max(np.abs(cols["Fx_all"] + 1.0 - _published_fx(rho, grad)))),
+        float(np.max(np.abs(cols["Fc_all"] + 1.0
+                            - _published_fc(rho, zeta, grad)))))
+    assert worst < _ONE_ULP_BAND, (worst / eps, below, float(rho.min()))
 
     # The open shell is present and carries the same form as the closed one.
     h_rows = cols["system_all"] == _system_index(path, "H")
