@@ -414,9 +414,9 @@ def paper_wtmad2(rows: Sequence[Dict[str, Any]]
     reference functional rather than the benchmark values.
 
     Per subset i of the set's own reactions: N_i reactions, MAD_i the mean
-    of |de_ref - de_nn| and m_i the mean of |de_ref|; the subset contributes
-    N_i MAD_i / m_i, and the total is (sum_i N_i m_i / N) / N times the sum
-    of the contributions, N = sum_i N_i. ``rows`` carry ``subset``,
+    of ``abs(de_ref - de_nn)`` and m_i the mean of ``abs(de_ref)``; the subset
+    contributes N_i MAD_i / m_i, and the total is (sum_i N_i m_i / N) / N
+    times the sum of the contributions, N = sum_i N_i. ``rows`` carry ``subset``,
     ``de_nn`` and ``de_ref`` in one unit and the total is in that unit. A
     row with a non-finite energy is left out (the paper's converged-only
     filter is the caller's). Returns ``(total, per_subset)``, the table
