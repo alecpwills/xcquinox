@@ -58,6 +58,9 @@ def _rebuild_mol_from_mol_data(mol_data: dict):
     mol.basis = md["basis"]
     mol.charge = md["charge"]
     mol.spin = md["spin"]
+    ecp = md.get("ecp")
+    if ecp:
+        mol.ecp = ecp
     mol.verbose = 0
     mol.build()
     return mol

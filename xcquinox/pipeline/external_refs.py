@@ -27,6 +27,7 @@ import dataclasses
 import itertools
 from dataclasses import dataclass
 
+from xcquinox.pipeline.config import mole_ecp
 from xcquinox.pipeline.orientation_lock import orientation_lock_bias
 from xcquinox.pipeline.pyscf_determinism import pin_reference_scf
 
@@ -445,6 +446,32 @@ def resolve_geometry(spec: SpeciesEntry):
     )
 
 
+def _require_electron_count(dm, mol, cache_path) -> None:
+    """Refuse a cached density that does not integrate to the electron count
+    of the molecule being built, measured against the molecule's own overlap.
+
+    The cache name carries the basis, the grid, the DF tag, the lock and the
+    functional, and none of them sees a core potential: the overlap of a
+    valence basis is the same with and without it, so the seed loader's
+    overlap fingerprint does not see it either. A record written for the
+    all-electron molecule of a def2 species before its potential was
+    assigned would otherwise be served to the valence molecule under the
+    same name. A record whose overlap was altered is the fingerprint's case,
+    which is why the live overlap is used here.
+    """
+    import numpy as np
+
+    dm = np.asarray(dm)
+    total = dm.sum(axis=0) if dm.ndim == 3 else dm
+    n = float(np.einsum("ij,ji->", total, mol.intor_symmetric("int1e_ovlp")))
+    if abs(n - mol.nelectron) > 1e-6:
+        raise ValueError(
+            f"{cache_path}: the cached density integrates to {n:.6f} "
+            f"electrons and the molecule has {mol.nelectron}; the record was "
+            "written for another molecule at this name (a def2 species built "
+            "before its core potential was assigned) and must be regenerated")
+
+
 def run_scf_with_cache(
     spec: SpeciesEntry,
     atoms,
@@ -456,6 +483,7 @@ def run_scf_with_cache(
     auxbasis: str | None = None,
     orientation_lock_strength: float = 0.0,
     xc: str = "pbe",
+    density_fit_empty_channel: bool = False,
 ) -> dict:
     """Stage 1: KS-SCF with on-disk cache (np.savez_compressed).
 
@@ -464,6 +492,11 @@ def run_scf_with_cache(
     the cache filename (see :func:`_intermediate_cache_name`) so a SCAN cache
     never collides with the PBE cache, and ``xc="pbe"`` reproduces the pre-xc
     cache name + numerics byte-for-byte.
+
+    ``density_fit_empty_channel`` keeps density fitting for a species with an
+    empty spin channel (the H atom), which is otherwise built with full
+    integrals so the record matches the CCSD stage that follows it; the PBE-DF
+    table of an evaluation, with no CCSD behind it, sets it.
 
     Returns dict with keys: dm, mo_coeff, mo_occ, mo_energy, S, e_tot (the SCF
     total energy in Hartree), spin_unrestricted, n_ao, n_grid, grid_coords,
@@ -498,9 +531,16 @@ def run_scf_with_cache(
         spec.name, grid_level=grid_level, basis=basis, density_fit=density_fit,
         kind="scf", orientation_lock_strength=orientation_lock_strength, xc=xc)
 
+    coords = atoms.get_positions()
+    syms = atoms.get_chemical_symbols()
+    atom_lines = [(s, tuple(coords[i])) for i, s in enumerate(syms)]
+    mol = gto.M(atom=atom_lines, basis=basis, charge=spec.charge,
+                spin=spec.spin, unit="angstrom", verbose=0,
+                ecp=mole_ecp(basis, atom_lines))
+
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
-            return {
+            payload = {
                 "dm": np.asarray(z["dm"]),
                 "mo_coeff": np.asarray(z["mo_coeff"]),
                 "mo_occ": np.asarray(z["mo_occ"]),
@@ -531,12 +571,8 @@ def run_scf_with_cache(
                     float(z["reference_small_rho_cutoff"])
                     if "reference_small_rho_cutoff" in z.files else None),
             }
-
-    coords = atoms.get_positions()
-    syms = atoms.get_chemical_symbols()
-    atom_lines = [(s, tuple(coords[i])) for i, s in enumerate(syms)]
-    mol = gto.M(atom=atom_lines, basis=basis, charge=spec.charge,
-                spin=spec.spin, unit="angstrom", verbose=0)
+        _require_electron_count(payload["dm"], mol, cache_path)
+        return payload
 
     is_uks = spec.spin > 0
     mf = dft.UKS(mol) if is_uks else dft.RKS(mol)
@@ -546,8 +582,10 @@ def run_scf_with_cache(
     # densities are indistinguishable for such 1-electron channels, and this dm
     # is only the CCSD HF initial guess + a PBE baseline. The cache key still
     # uses the REQUESTED density_fit flag (matching the ccsd cache), so an
-    # existing DF-tagged cache is reused unchanged.
-    use_df = density_fit and min(mol.nelec) > 0
+    # existing DF-tagged cache is reused unchanged. A caller with no CCSD
+    # stage behind it (the PBE-DF table of an evaluation, whose network SCF
+    # applies DF to every species) keeps DF through density_fit_empty_channel.
+    use_df = density_fit and (min(mol.nelec) > 0 or density_fit_empty_channel)
     if use_df:
         from xcquinox.pipeline.df_jk import default_auxbasis
         mf = mf.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
@@ -762,6 +800,17 @@ def run_ccsd_with_cache(
         spec.name, grid_level=grid_level, basis=basis, density_fit=density_fit,
         kind="ccsd", orientation_lock_strength=orientation_lock_strength)
 
+    # Build mol for AO evaluation; grid coords/weights are taken directly
+    # from the SCF payload so the CCSD grid is identical to the SCF grid
+    # (PySCF prunes the grid during kernel(), so rebuilding from scratch
+    # yields a different number of points).
+    coords = atoms.get_positions()
+    syms = atoms.get_chemical_symbols()
+    atom_lines = [(s, tuple(coords[i])) for i, s in enumerate(syms)]
+    mol = gto.M(atom=atom_lines, basis=basis, charge=spec.charge,
+                spin=spec.spin, unit="angstrom", verbose=0,
+                ecp=mole_ecp(basis, atom_lines))
+
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
             has_t1 = "t1_diagnostic" in z.files
@@ -770,7 +819,7 @@ def run_ccsd_with_cache(
                 # The served payload carries the key set the computation
                 # returns; a file written before a key existed serves None
                 # for it rather than omitting it.
-                return {
+                payload = {
                     "dm_ao": np.asarray(z["dm_ao"]),
                     "rho_ref_grid": np.asarray(z["rho_ref_grid"]),
                     "grid_weights": np.asarray(z["grid_weights"]),
@@ -780,18 +829,11 @@ def run_ccsd_with_cache(
                     "t1_diagnostic": (float(z["t1_diagnostic"]) if has_t1
                                       else None),
                 }
+                _require_electron_count(payload["dm_ao"], mol, cache_path)
+                return payload
         # require_t1 and a cache from before the diagnostic: recompute below
         # and rewrite the cache with the key added
 
-    # Build mol for AO evaluation; grid coords/weights are taken directly
-    # from the SCF payload so the CCSD grid is identical to the SCF grid
-    # (PySCF prunes the grid during kernel(), so rebuilding from scratch
-    # yields a different number of points).
-    coords = atoms.get_positions()
-    syms = atoms.get_chemical_symbols()
-    atom_lines = [(s, tuple(coords[i])) for i, s in enumerate(syms)]
-    mol = gto.M(atom=atom_lines, basis=basis, charge=spec.charge,
-                spin=spec.spin, unit="angstrom", verbose=0)
     is_uks = bool(scf_payload["spin_unrestricted"])
 
     # pyscf's DF-UCCSD _make_df_eris_outcore builds the OOVV HDF5 dataset with a

@@ -8,7 +8,7 @@ from typing import TypedDict
 import numpy as np
 import jax.numpy as jnp
 
-from xcquinox.pipeline.config import MoleculeSpec
+from xcquinox.pipeline.config import MoleculeSpec, mole_ecp
 from xcquinox.pipeline.descriptors import Descriptor
 from xcquinox.pipeline.orientation_lock import orientation_lock_bias
 from xcquinox.pipeline.pyscf_determinism import pin_reference_scf
@@ -1113,11 +1113,16 @@ def precompute_fixed_density_data(
             "no point-wise consumer of this record can evaluate it.")
 
     # Build pyscf molecule
+    # The core potentials the basis is defined on (mole_ecp): assigned here,
+    # to the cached pyscfad Mole below, and recorded in mol_metadata so the
+    # backend rebuilds the same molecule.
+    ecp = mole_ecp(mol_spec.basis, mol_spec.atom)
     mol = gto.M(
         atom=mol_spec.atom,
         basis=mol_spec.basis,
         charge=mol_spec.charge,
         spin=mol_spec.spin,
+        ecp=ecp,
         verbose=0,
     )
 
@@ -1534,6 +1539,8 @@ def precompute_fixed_density_data(
         mol_ad.basis = mol_spec.basis
         mol_ad.charge = mol_spec.charge
         mol_ad.spin = mol_spec.spin
+        if ecp:
+            mol_ad.ecp = ecp
         mol_ad.verbose = 0
         mol_ad.build()
         pyscfad_mol = mol_ad
@@ -1617,6 +1624,7 @@ def precompute_fixed_density_data(
             "charge": mol_spec.charge,
             "spin": mol_spec.spin,
             "grid_level": mol_spec.grid_level,
+            "ecp": ecp,
             "auxbasis": auxbasis,
             # Precomputed orientation-lock bias (numpy, AO basis) so the pyscfad
             # backend can add it to its internally-built get_hcore without

@@ -754,6 +754,7 @@ def _ase_atoms_to_pyscf_mol(at: Atoms, *, basis: str, charge: int = 0, spin: int
     """Build a PySCF gto.M from an ASE Atoms object. Mirrors the inline
     builder in xcquinox/pipeline/data.py:precompute_fixed_density_data line 237."""
     from pyscf import gto
+    from xcquinox.pipeline.config import mole_ecp
 
     coords = at.get_positions()
     atom_lines = [
@@ -765,6 +766,7 @@ def _ase_atoms_to_pyscf_mol(at: Atoms, *, basis: str, charge: int = 0, spin: int
         charge=int(at.info.get("charge", charge)),
         spin=int(at.info.get("spin", spin)),
         unit="angstrom",
+        ecp=mole_ecp(basis, atom_lines),
         verbose=0,
     )
 
@@ -838,8 +840,10 @@ def _extract_one_molspec_worker(args):
     (no MoleculeSpec object) so it is picklable for a ``spawn`` pool."""
     atom, charge, spin, basis, grid_level, cache_path = args
     from pyscf import gto
+    from xcquinox.pipeline.config import mole_ecp
 
-    mol = gto.M(atom=atom, basis=basis, charge=charge, spin=spin, verbose=0)
+    mol = gto.M(atom=atom, basis=basis, charge=charge, spin=spin,
+                ecp=mole_ecp(basis, atom), verbose=0)
     d = _descriptor_triple_from_mol(mol, grid_level=grid_level)
     _write_descriptor_cache(cache_path, d)
     return d

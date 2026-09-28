@@ -121,9 +121,10 @@ def _n_electrons(ms) -> float:
     """Electron count from pyscf's own bookkeeping -- charge-correct by
     construction, so the quadrature check needs no atomic-number table."""
     from pyscf import gto
+    from xcquinox.pipeline.config import mole_ecp
 
     mol = gto.M(atom=ms.atom, basis=ms.basis, charge=int(ms.charge),
-                spin=int(ms.spin), verbose=0)
+                spin=int(ms.spin), ecp=mole_ecp(ms.basis, ms.atom), verbose=0)
     return float(mol.nelectron)
 
 

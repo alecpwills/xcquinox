@@ -773,6 +773,7 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
             + f"; got {exchange_footing!r}."
         )
     system = normalize_system(system)
+    from xcquinox.pipeline.config import mole_ecp
     from xcquinox.pipeline.data import precompute_fixed_density_data
 
     mol_spec = _mol_spec_for(system, basis, grid_level)
@@ -786,7 +787,8 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
         orientation_lock_strength=float(orientation_lock_strength))
 
     mol = gto.M(atom=system.atom, basis=basis, charge=int(system.charge),
-                spin=int(system.spin), verbose=0)
+                spin=int(system.spin), ecp=mole_ecp(basis, system.atom),
+                verbose=0)
     # A mean field for its integration grid and its libxc handle ONLY: the
     # kernel is never run here. The record's grid is the one the SCF settled
     # on, and pyscf does not integrate on the bare Becke-Lebedev grid: at its
