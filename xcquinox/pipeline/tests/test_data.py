@@ -3,6 +3,10 @@
 Implements THE SPEC §13.2 test_data.py items (1)-(13).
 """
 import numpy as np
+import re
+import subprocess
+from pathlib import Path
+
 import pytest
 import jax.numpy as jnp
 from unittest.mock import patch
@@ -1040,3 +1044,87 @@ def test_c2_pbe_reference_lands_on_the_ground_scf_branch():
 # ---------------------------------------------------------------------------
 
 
+
+
+# The def2 core potentials. pyscf assigns none on its own: a def2 basis of a
+# post-krypton element is a valence set whose core the matching def2 ECP
+# replaces, and without the potential iodine at def2-TZVP builds with 53
+# electrons in a 25-electron basis.
+_HI_ATOM = "I 0 0 0; H 0 0 1.61"
+
+
+def test_mole_ecp_assigns_the_def2_core_potentials():
+    from xcquinox.pipeline.config import mole_ecp
+    assert mole_ecp("def2-TZVP", _HI_ATOM) == {"I": "def2-TZVP"}
+    assert mole_ecp("def2-TZVP", [("I", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 1.61))]) == {
+        "I": "def2-TZVP"}
+    assert mole_ecp("def2-TZVP", h2o_molecule().atom) is None
+    assert mole_ecp("6-311++G(3df,2pd)", "C 0 0 0; H 0 0 1.1") is None
+    assert mole_ecp("sto-3g", "I 0 0 0") is None
+    assert mole_ecp("def2-TZVP", ["Te 0 0 0", "H 0 0 1.7"]) == {"Te": "def2-TZVP"}
+    assert mole_ecp("def2-TZVP", "") is None
+    assert mole_ecp("def2-TZVP", "X-I 0 0 0; H 0 0 1.6") is None
+    with pytest.raises(ValueError, match="core potential"):
+        mole_ecp("def2-TZVP", "Ce 0 0 0")
+
+
+def test_the_reference_scf_runs_on_the_valence_electrons_of_a_def2_ecp_species():
+    from xcquinox.pipeline.solver_pyscfad import _rebuild_mol_from_mol_data
+    spec = MoleculeSpec(name="HI", atom=_HI_ATOM, basis="def2-TZVP", charge=0, spin=0,
+                        atom_composition=(("H", 1), ("I", 1)))
+    data = precompute_fixed_density_data(spec)
+    assert data["mol_metadata"]["ecp"] == {"I": "def2-TZVP"}
+    n_electrons = float(jnp.einsum("ij,ji->", data["dm_pbe"], data["s_matrix"]))
+    assert n_electrons == pytest.approx(26.0, abs=1e-6)
+    assert data["_pyscfad_mol"].nelectron == 26
+    assert _rebuild_mol_from_mol_data(data).nelectron == 26
+
+
+_BUILDER_CALL = re.compile(r"\bgto\.(?:M|Mole)\(")
+_BUILDER_ATTR = re.compile(r"\bMole\(\)")
+
+
+def _builders_without_ecp(text):
+    """The line numbers of the molecule builders in ``text`` that assign no
+    core potential: a ``gto.M(`` / ``gto.Mole(`` call whose argument list
+    carries no ``ecp=``, and a bare ``Mole()`` construction not followed by
+    an ``.ecp = `` assignment within the next twelve lines."""
+    offenders = []
+    for match in _BUILDER_CALL.finditer(text):
+        start = match.end()
+        depth, i = 1, start
+        while i < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        arguments = text[start:i - 1]
+        if arguments.strip() and "ecp=" not in arguments:
+            offenders.append(text.count("\n", 0, match.start()) + 1)
+    lines = text.splitlines()
+    for match in _BUILDER_ATTR.finditer(text):
+        line = text.count("\n", 0, match.start())
+        if not any(".ecp = " in later for later in lines[line + 1:line + 13]):
+            offenders.append(line + 1)
+    return sorted(offenders)
+
+
+def test_every_molecule_builder_assigns_the_core_potentials():
+    """No molecule is built anywhere in the package or its tools without the
+    core potentials of its basis. The rule fires on a fixture first, then
+    reads every tracked source file outside the tests."""
+    assert _builders_without_ecp("mol = gto.M(atom=a, basis=b, verbose=0)\n") == [1]
+    assert _builders_without_ecp(
+        "mol = gto.M(atom=a, basis=b,\n            ecp=mole_ecp(b, a))\n") == []
+    assert _builders_without_ecp("m = pg.Mole()\nm.atom = a\n") == [1]
+    assert _builders_without_ecp(
+        "m = pg.Mole()\nm.atom = a\nif ecp:\n    m.ecp = ecp\n") == []
+    root = Path(__file__).resolve().parents[3]
+    tracked = subprocess.run(["git", "ls-files", "-z", "xcquinox", "tools"], cwd=root,
+                             capture_output=True, check=True).stdout.decode("utf-8")
+    offenders = {}
+    for rel in tracked.split("\0"):
+        if not rel.endswith(".py") or "/tests/" in rel:
+            continue
+        lines = _builders_without_ecp((root / rel).read_text(encoding="utf-8"))
+        if lines:
+            offenders[rel] = lines
+    assert offenders == {}, f"molecule builders without a core potential: {offenders}"

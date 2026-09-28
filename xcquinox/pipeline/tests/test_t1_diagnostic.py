@@ -44,7 +44,10 @@ class _FakeCC:
         return _library_t1_diagnostic(self.t1 if t1 is None else t1)
 
     def make_rdm1(self, ao_repr=True):
-        return np.eye(2) * 0.5
+        # a density of the right electron count: the cache hit checks the
+        # served density against the molecule (two electrons for H2, with
+        # unit-normalized functions the identity integrates to two)
+        return np.eye(2)
 
 
 def test_uccsd_t1_diagnostic_matches_the_hand_value():

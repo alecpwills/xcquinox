@@ -663,3 +663,33 @@ def test_ccsd_cache_hit_returns_the_written_key_set(tmp_path):
         f"served {sorted(served)} against computed {sorted(cold)}")
     assert cold["ccsd_converged"] is True
     assert served["ccsd_converged"] is True
+
+
+def test_a_cached_reference_density_of_another_electron_count_is_refused(tmp_path):
+    """The cache name carries no core potential and the overlap of a valence
+    basis is the same with and without one, so a record written for the
+    all-electron molecule of a def2 species before its potential was assigned
+    would be served to the valence molecule; the electron count of the cached
+    density is what refuses it, for the SCF record and the CCSD record."""
+    import numpy as np
+    from xcquinox.pipeline.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache, run_ccsd_with_cache,
+    )
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    identity = dict(cache_dir=tmp_path, basis="def2-svp", grid_level=1)
+    scf = run_scf_with_cache(spec, atoms, **identity)
+    run_ccsd_with_cache(spec, atoms, scf_payload=scf, **identity)
+    tampered = 0
+    for path in (tmp_path / "_intermediates").glob("*.npz"):
+        with np.load(path, allow_pickle=False) as z:
+            payload = {key: np.asarray(z[key]) for key in z.files}
+        key = "dm" if "dm" in payload else "dm_ao"
+        payload[key] = 2.0 * payload[key]
+        np.savez_compressed(path, **payload)
+        tampered += 1
+    assert tampered == 2
+    with pytest.raises(ValueError, match="integrates to"):
+        run_scf_with_cache(spec, atoms, **identity)
+    with pytest.raises(ValueError, match="integrates to"):
+        run_ccsd_with_cache(spec, atoms, scf_payload=scf, **identity)

@@ -82,7 +82,9 @@ def ase_atoms_to_mol(atoms, basis='6-311++G(3df,2pd)', charge=0, spin=None):
     mol_input = [[ispec, ipos] for ispec, ipos in zip(spec, pos)]
     c = atoms.info.get('charge', charge)
     s = atoms.info.get('spin', spin)
-    mol = gto.Mole(atom=mol_input, basis=basis, spin=s, charge=c)
+    from xcquinox.pipeline.config import mole_ecp
+    mol = gto.Mole(atom=mol_input, basis=basis, spin=s, charge=c,
+                   ecp=mole_ecp(basis, mol_input) or {})
 
     return name, mol
 

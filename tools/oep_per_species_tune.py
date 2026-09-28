@@ -460,11 +460,13 @@ def _run_harness(args, grid, species_parsed, wall_caps_min) -> int:
             n_iter = len(density_error_history)
             if oep_result is not None and oep_result.dm_final is not None:
                 from pyscf import gto
+                from xcquinox.pipeline.config import mole_ecp
                 _coords = atoms.get_positions()
                 _syms = atoms.get_chemical_symbols()
                 _atom_lines = [(s, tuple(_coords[i])) for i, s in enumerate(_syms)]
                 mol = gto.M(atom=_atom_lines, basis="def2-svp",
-                            charge=charge, spin=spin, verbose=0)
+                            charge=charge, spin=spin, verbose=0,
+                            ecp=mole_ecp("def2-svp", _atom_lines))
                 obs = _compute_dm_observables(mol, oep_result.dm_final,
                                               is_atomic=is_atomic)
                 target_obs = _compute_dm_observables(mol, cc["dm_ao"],

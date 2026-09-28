@@ -61,7 +61,7 @@ from ase.io import read as ase_read  # noqa: E402
 from pyscf import gto, dft  # noqa: E402
 
 import xcquinox.pipeline as pipeline  # noqa: E402
-from xcquinox.pipeline.config import ArchitectureConfig  # noqa: E402
+from xcquinox.pipeline.config import ArchitectureConfig, mole_ecp  # noqa: E402
 from xcquinox.pipeline.models import AlecGGAModel  # noqa: E402
 from xcquinox.pipeline.networks import (  # noqa: E402
     create_network_pair, AlecGGA_XNet, AlecGGA_CNet,
@@ -302,7 +302,8 @@ def generate_pretrain_data(data_dir, polarized=True):
     unpolarized arch."""
     rho_l, sig_l, fx_l, fc_l, zeta_l, w_l = [], [], [], [], [], []
     for symbol, spin in PRETRAIN_ATOMS:
-        mol = gto.M(atom=f"{symbol} 0 0 0", basis=BASIS, charge=0, spin=spin, verbose=0)
+        mol = gto.M(atom=f"{symbol} 0 0 0", basis=BASIS, charge=0, spin=spin,
+                    verbose=0, ecp=mole_ecp(BASIS, f"{symbol} 0 0 0"))
         mf = dft.UKS(mol) if spin else dft.RKS(mol)
         mf.xc = "pbe"
         mf.grids.level = GRID_LEVEL
