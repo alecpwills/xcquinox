@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=xcq_slim16_eval
-#SBATCH --partition=long-96core-shared
-#SBATCH --time=40:00:00
+#SBATCH --partition=extended-40core
+#SBATCH --time=96:00:00
 #SBATCH --array=0-9
 #SBATCH --nodes=1
 #SBATCH --exclusive
 #SBATCH --mem=0
-#SBATCH --cpus-per-task=96
+#SBATCH --cpus-per-task=40
 #SBATCH --output=/gpfs/scratch/awills/slim16_eval_%j.out
 #SBATCH --mail-user=alec.wills@stonybrook.edu
 #SBATCH --mail-type=BEGIN,END,FAIL,TIME_LIMIT
