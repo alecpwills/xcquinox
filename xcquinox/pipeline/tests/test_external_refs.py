@@ -693,3 +693,23 @@ def test_a_cached_reference_density_of_another_electron_count_is_refused(tmp_pat
         run_scf_with_cache(spec, atoms, **identity)
     with pytest.raises(ValueError, match="integrates to"):
         run_ccsd_with_cache(spec, atoms, scf_payload=scf, **identity)
+
+
+def test_density_fitting_can_be_kept_for_an_empty_spin_channel(tmp_path):
+    """A species with an empty spin channel (the H atom) is built with full
+    integrals under ``density_fit=True`` so the record matches the CCSD stage
+    behind it; a caller with no CCSD stage keeps density fitting with
+    ``density_fit_empty_channel``. The record's own stamp says which."""
+    from xcquinox.pipeline.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache,
+    )
+    spec = SpeciesEntry("H", 0, 1, "dfs_atom")
+    atoms = resolve_geometry(spec)
+    default = run_scf_with_cache(spec, atoms, cache_dir=tmp_path / "chain",
+                                 basis="def2-svp", grid_level=1, density_fit=True)
+    kept = run_scf_with_cache(spec, atoms, cache_dir=tmp_path / "table",
+                              basis="def2-svp", grid_level=1, density_fit=True,
+                              density_fit_empty_channel=True)
+    assert default["reference_eri_path"] == "incore"
+    assert str(kept["reference_eri_path"]).startswith("df")
+    assert kept["e_tot"] != default["e_tot"]

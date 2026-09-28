@@ -483,6 +483,7 @@ def run_scf_with_cache(
     auxbasis: str | None = None,
     orientation_lock_strength: float = 0.0,
     xc: str = "pbe",
+    density_fit_empty_channel: bool = False,
 ) -> dict:
     """Stage 1: KS-SCF with on-disk cache (np.savez_compressed).
 
@@ -491,6 +492,11 @@ def run_scf_with_cache(
     the cache filename (see :func:`_intermediate_cache_name`) so a SCAN cache
     never collides with the PBE cache, and ``xc="pbe"`` reproduces the pre-xc
     cache name + numerics byte-for-byte.
+
+    ``density_fit_empty_channel`` keeps density fitting for a species with an
+    empty spin channel (the H atom), which is otherwise built with full
+    integrals so the record matches the CCSD stage that follows it; the PBE-DF
+    table of an evaluation, with no CCSD behind it, sets it.
 
     Returns dict with keys: dm, mo_coeff, mo_occ, mo_energy, S, e_tot (the SCF
     total energy in Hartree), spin_unrestricted, n_ao, n_grid, grid_coords,
@@ -576,8 +582,10 @@ def run_scf_with_cache(
     # densities are indistinguishable for such 1-electron channels, and this dm
     # is only the CCSD HF initial guess + a PBE baseline. The cache key still
     # uses the REQUESTED density_fit flag (matching the ccsd cache), so an
-    # existing DF-tagged cache is reused unchanged.
-    use_df = density_fit and min(mol.nelec) > 0
+    # existing DF-tagged cache is reused unchanged. A caller with no CCSD
+    # stage behind it (the PBE-DF table of an evaluation, whose network SCF
+    # applies DF to every species) keeps DF through density_fit_empty_channel.
+    use_df = density_fit and (min(mol.nelec) > 0 or density_fit_empty_channel)
     if use_df:
         from xcquinox.pipeline.df_jk import default_auxbasis
         mf = mf.density_fit(auxbasis=auxbasis or default_auxbasis(basis))

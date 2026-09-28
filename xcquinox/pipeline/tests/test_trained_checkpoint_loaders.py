@@ -214,6 +214,7 @@ ALLOWED = {
     "tools/analysis/multimode_constraint_eval.py": "pretrain_reader",
     "hpcjobs/dfs6311_nan_verify.py": "pretrain_reader",
     "hpcjobs/dfs6311_pretrained_holdout.py": "pretrain_reader",
+    "hpcjobs/slim16_eval.py": "pretrain_reader",
     "hpcjobs/probe_pretrain_energy_weight.py": "pretrain_reader",
     "xcquinox/net.py": "legacy_package",
     "xcquinox/xc.py": "legacy_package",

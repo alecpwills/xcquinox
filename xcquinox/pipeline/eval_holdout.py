@@ -407,6 +407,51 @@ def weighted_reaction_mae_kcalmol(
     return float(sum(scaled) / len(scaled)), len(scaled), n_dropped_nan
 
 
+def paper_wtmad2(rows: Sequence[Dict[str, Any]]
+                 ) -> Tuple[float, Dict[str, Dict[str, float]]]:
+    """The WTMAD-2 of the cloning paper (arXiv:2605.10331, its
+    ``evaluation_functions.py``) over the reactions of a Slim set, against a
+    reference functional rather than the benchmark values.
+
+    Per subset i of the set's own reactions: N_i reactions, MAD_i the mean
+    of |de_ref - de_nn| and m_i the mean of |de_ref|; the subset contributes
+    N_i MAD_i / m_i, and the total is (sum_i N_i m_i / N) / N times the sum
+    of the contributions, N = sum_i N_i. ``rows`` carry ``subset``,
+    ``de_nn`` and ``de_ref`` in one unit and the total is in that unit. A
+    row with a non-finite energy is left out (the paper's converged-only
+    filter is the caller's). Returns ``(total, per_subset)``, the table
+    keyed by subset with ``N_i``, ``MAD_i``, ``mean_abs_ref_i`` and
+    ``contribution``; an empty input, or a subset whose references average
+    to zero, has no value and gives NaN.
+    """
+    by_subset: Dict[str, List[Tuple[float, float]]] = {}
+    for row in rows:
+        de_nn = row.get("de_nn")
+        de_ref = row.get("de_ref")
+        if not all(isinstance(v, (int, float)) and math.isfinite(v)
+                   for v in (de_nn, de_ref)):
+            continue
+        by_subset.setdefault(str(row["subset"]), []).append((de_ref, de_nn))
+    per_subset: Dict[str, Dict[str, float]] = {}
+    for subset, pairs in by_subset.items():
+        n_i = len(pairs)
+        mad_i = sum(abs(ref - nn) for ref, nn in pairs) / n_i
+        mean_abs_ref_i = sum(abs(ref) for ref, _nn in pairs) / n_i
+        contribution = (n_i * mad_i / mean_abs_ref_i if mean_abs_ref_i > 0
+                        else float("nan"))
+        per_subset[subset] = {"N_i": n_i, "MAD_i": mad_i,
+                              "mean_abs_ref_i": mean_abs_ref_i,
+                              "contribution": contribution}
+    n_total = sum(t["N_i"] for t in per_subset.values())
+    if not n_total:
+        return float("nan"), per_subset
+    mean_abs_ref = sum(t["N_i"] * t["mean_abs_ref_i"]
+                       for t in per_subset.values()) / n_total
+    total = (mean_abs_ref / n_total) * sum(t["contribution"]
+                                           for t in per_subset.values())
+    return float(total), per_subset
+
+
 #: The pools the combined test-set row averages over: the benchmark pair. A
 #: GMTKN55 set repeats reactions of the pair by physical identity, so the pair
 #: row is the same quantity whatever else the run evaluates; when the pair is
