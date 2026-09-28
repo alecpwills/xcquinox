@@ -209,14 +209,15 @@ def test_scripts_parse():
 # The partition every job is submitted to
 # ---------------------------------------------------------------------------
 #
-# The 40-core nodes are gone; the milan nodes carry 96 cores and are what the
-# queues named below allocate. A job script naming a retired queue is rejected
-# at submission, which is a wasted turnaround rather than a wasted allocation,
-# but it is found here instead.
+# The 28-core queues are retired; the queues in service are the milan 96-core
+# ones and the 40-core ones (the Slim05 pretraining arm ran on extended-40core
+# on 2026-09-28, jobs 2218199 and 2218200). A job script naming a retired
+# queue is rejected at submission, which is a wasted turnaround rather than a
+# wasted allocation, but it is found here instead.
 
-#: The core count in the name of every milan queue. Stated identically in
-#: ``test_build_parity_env.py`` for the environment build.
-MILAN_TOKEN = "96core"
+#: The core counts in the names of the queues in service. The environment build
+#: (``test_build_parity_env.py``) states the milan token alone.
+QUEUE_TOKENS = ("96core", "40core")
 
 #: A partition DIRECTIVE, as opposed to a commented example invocation in a
 #: header: the directive starts the line, the example does not.
@@ -229,9 +230,10 @@ def _partitions(script: str) -> list[str]:
             if m is not None]
 
 
-def test_every_standalone_job_script_runs_on_a_milan_partition():
+def test_every_standalone_job_script_runs_on_a_queue_in_service():
     """Every tracked job script, the environment build included, requests a
-    milan queue. The set is read from the directory, so a new script is held
+    queue in service, a milan 96-core or a 40-core one. The set is read from
+    the directory, so a new script is held
     to the rule without a registration here.
 
     Oracle: the ``#SBATCH --partition`` directives of the scripts themselves.
@@ -245,6 +247,6 @@ def test_every_standalone_job_script_runs_on_a_milan_partition():
             f"{script}: no '#SBATCH --partition' directive, so the rule below "
             "would hold vacuously for it")
         offenders += [f"{script}: {name}" for name in partitions
-                      if MILAN_TOKEN not in name]
+                      if not any(token in name for token in QUEUE_TOKENS)]
     assert offenders == [], (
-        f"queues that are not milan ({MILAN_TOKEN}): {offenders}")
+        f"queues not in service ({', '.join(QUEUE_TOKENS)}): {offenders}")

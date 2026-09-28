@@ -1,6 +1,6 @@
 """The documentation site carries what the repository knows, and says nothing that is false.
 
-Five rules:
+Six rules:
 
 * every entry of the site's table of contents resolves to a tracked page;
 * every tracked page under ``docs/`` is reachable from that table of contents, so a document
@@ -8,13 +8,19 @@ Five rules:
 * the citation file is readable and names the work;
 * the README names what the repository holds, and every repository-relative link in it
   resolves;
-* the documentation requirements pin nothing the packaging file contradicts.
+* the documentation requirements pin nothing the packaging file contradicts;
+* every docstring the site renders through autodoc carries no substitution reference, the
+  reStructuredText reading of a span between vertical bars, which fails the published
+  build (it builds with warnings as errors) while the test environment has no Sphinx to
+  say so.
 
 The rules read the files; the build itself (``sphinx-build -W``) runs in the environment the
 packaging file's documentation extra describes, and its result is recorded with the change.
 """
 from __future__ import annotations
 
+import importlib
+import inspect
 import pathlib
 import re
 import subprocess
@@ -228,3 +234,94 @@ def test_the_published_build_installs_the_package_with_its_documentation_extra()
                for entry in installs), installs
     assert not (_DOCS / "requirements.txt").exists(), (
         "a second dependency list for the site is back")
+
+
+#: A substitution reference as docutils reads one: a span between vertical bars
+#: with no whitespace inside the bars at either end.
+_SUBSTITUTION = re.compile(r"\|[^|\s](?:[^|\n]*[^|\s])?\|")
+_INLINE_LITERAL = re.compile(r"``.*?``", re.S)
+_INTERPRETED_TEXT = re.compile(r":[\w:.-]+:`[^`]*`|`[^`]*`")
+_DIRECTIVE = re.compile(r"^\s*\.\. \w+::")
+_AUTODOC = re.compile(r"^\.\. (automodule|autoclass|autofunction):: (\S+)", re.M)
+
+
+def substitution_spans(docstring: str) -> list[str]:
+    """The substitution references docutils would look up in ``docstring``: the
+    spans between vertical bars outside inline literals, interpreted text (a
+    role such as ``:math:`` or a bare backtick span) and directive blocks (a
+    ``.. math::`` line with the indented lines under it)."""
+    text = _INLINE_LITERAL.sub("", docstring)
+    text = _INTERPRETED_TEXT.sub("", text)
+    spans: list[str] = []
+    block_indent = None
+    for line in text.splitlines():
+        indent = len(line) - len(line.lstrip())
+        if _DIRECTIVE.match(line):
+            block_indent = indent
+            continue
+        if block_indent is not None:
+            if not line.strip() or indent > block_indent:
+                continue
+            block_indent = None
+        spans.extend(match.group(0) for match in _SUBSTITUTION.finditer(line))
+    return spans
+
+
+def documented_objects() -> dict[str, object]:
+    """``{dotted name: object}`` for everything the site's autodoc directives
+    render: a module's public functions and classes defined in it, a class and
+    its own public methods, a function."""
+    out: dict[str, object] = {}
+
+    def _add_class(name: str, cls) -> None:
+        out[name] = cls
+        for attr, member in inspect.getmembers(cls):
+            if attr.startswith("_") or not (inspect.isfunction(member)
+                                             or inspect.ismethod(member)):
+                continue
+            if getattr(member, "__qualname__", "").startswith(cls.__name__ + "."):
+                out[f"{name}.{attr}"] = member
+
+    for path in _tracked("docs"):
+        if not path.endswith(".rst"):
+            continue
+        for kind, target in _AUTODOC.findall((_ROOT / path).read_text(encoding="utf-8")):
+            if kind == "automodule":
+                module = importlib.import_module(target)
+                for attr, member in inspect.getmembers(module):
+                    if attr.startswith("_") or getattr(member, "__module__", None) != target:
+                        continue
+                    if inspect.isclass(member):
+                        _add_class(f"{target}.{attr}", member)
+                    elif inspect.isfunction(member):
+                        out[f"{target}.{attr}"] = member
+            else:
+                module_name, _, attr = target.rpartition(".")
+                member = getattr(importlib.import_module(module_name), attr)
+                if kind == "autoclass":
+                    _add_class(target, member)
+                else:
+                    out[target] = member
+    return out
+
+
+def test_the_substitution_rule_fires_on_fixtures():
+    """The rule fires on a bare span and stays silent inside a literal, a role,
+    a backtick span, a math directive's block and a table row."""
+    assert substitution_spans("the mean of |de_ref - de_nn| over the set") == [
+        "|de_ref - de_nn|"]
+    assert substitution_spans("one |a| and |b|") == ["|a|", "|b|"]
+    assert substitution_spans("``|x|`` and :math:`|y|` and `|z|`") == []
+    assert substitution_spans(".. math:: s = |w|\n\n   \\frac{|v|}{r}\nafter |q|") == [
+        "|q|"]
+    assert substitution_spans("| a | b |\n| c | d |") == []
+
+
+def test_no_rendered_docstring_carries_a_substitution_reference():
+    """Every docstring the site renders parses without a substitution reference;
+    the published build fails on one, and the test environment has no Sphinx."""
+    objects = documented_objects()
+    assert len(objects) > 100, f"the site renders {len(objects)} objects"
+    offenders = {name: spans for name, obj in objects.items()
+                 if (spans := substitution_spans(inspect.getdoc(obj) or ""))}
+    assert offenders == {}, f"substitution references in rendered docstrings: {offenders}"
