@@ -21,6 +21,7 @@ CAPPED_SCRIPTS = (
     "probe_mgga_levers.sbatch",
     "dfs6311_scan_pool.sbatch",
     "dfs6311_pretrained_holdout.sbatch",
+    "slim16_eval.sbatch",
     "nonempirical_pool.sbatch",
 )
 

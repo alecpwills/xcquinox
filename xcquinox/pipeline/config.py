@@ -860,6 +860,56 @@ class MoleculeSpec:
         return dict(self.atom_composition)
 
 
+def mole_ecp(basis, atom):
+    """The core potentials a molecule is built with: ``{symbol: basis}`` for
+    every element whose ``basis`` is defined on an effective core potential,
+    None when there is none to assign.
+
+    pyscf assigns no potential on its own. A def2 basis of a post-krypton
+    element is a valence set whose core the matching def2 potential replaces,
+    and without it the molecule builds with every core electron in a basis
+    that has no functions for them (iodine at def2-TZVP: 53 electrons in a
+    25-electron set). The elements of ``atom`` (any form ``pyscf.gto.M``
+    accepts, read by ``pyscf.gto.format_atom``; labels stripped, ghost and
+    dummy atoms skipped) are looked up one by one with
+    ``pyscf.gto.basis.load_ecp``: an element the family carries no potential
+    for is skipped, a family with no potential data at all (the lookup
+    raises) gives None, a per-element basis dict gives None, and a molecule
+    of light elements gives None, so every identity without such an element
+    builds byte-identical molecules. A def2 element beyond krypton for which
+    pyscf's library carries no potential (the lanthanides cerium to lutetium)
+    is refused: the family defines it on one, and an all-electron build in
+    its valence basis is the defect above.
+    """
+    if not isinstance(basis, str) or not atom:
+        return None
+    from pyscf import gto
+    from pyscf.gto import basis as gto_basis
+    from pyscf.gto import mole
+
+    symbols = []
+    for raw, _coords in gto.format_atom(atom):
+        symbol = mole._std_symbol(raw)
+        if symbol in symbols or mole.is_ghost_atom(symbol):
+            continue
+        symbols.append(symbol)
+    def2 = basis.lower().replace("-", "").startswith("def2")
+    ecp = {}
+    for symbol in symbols:
+        try:
+            found = gto_basis.load_ecp(basis, symbol)
+        except Exception:  # noqa: BLE001 -- a family with no potential data
+            return None
+        if found:
+            ecp[symbol] = basis
+        elif def2 and mole.charge(symbol) > 36:
+            raise ValueError(
+                f"{basis} defines {symbol} on a core potential that pyscf's "
+                "basis library does not carry; the species cannot be built "
+                "at this basis")
+    return ecp or None
+
+
 # ---------------------------------------------------------------------------
 # Spec describe helpers
 # ---------------------------------------------------------------------------

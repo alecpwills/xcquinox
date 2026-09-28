@@ -214,6 +214,7 @@ def _materialize_fake_run(root: Path) -> Path:
     (run / "resolved_config.yaml").write_text("sweep: {}\n")
     (run / "jobs.json").write_text("[]\n")
     (run / "attempts.json").write_text("{}\n")
+    (run / "pbe_df.json").write_text('{"species": {}}\n')
     # Per-spec checkpoints
     spec = run / "checkpoints" / "spec_0000"
     (spec / "eval").mkdir(parents=True)
@@ -393,6 +394,7 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "resolved_config.yaml",
         "jobs.json",
         "attempts.json",
+        "pbe_df.json",
         "checkpoints/spec_0000/eval_df.csv",
         "checkpoints/spec_0000/failure.json",
         "checkpoints/spec_0000/losses.npy",

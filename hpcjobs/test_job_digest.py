@@ -22,6 +22,7 @@ HELPER = os.path.join(HERE, "job_digest.sh")
 SBATCHES = [
     os.path.join(HERE, "dfs6311_nan_verify.sbatch"),
     os.path.join(HERE, "dfs6311_pretrained_holdout.sbatch"),
+    os.path.join(HERE, "slim16_eval.sbatch"),
     os.path.join(HERE, "dfs6311_scan_pool.sbatch"),
 ]
 

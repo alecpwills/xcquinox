@@ -8,7 +8,7 @@ from typing import TypedDict
 import numpy as np
 import jax.numpy as jnp
 
-from xcquinox.pipeline.config import MoleculeSpec
+from xcquinox.pipeline.config import MoleculeSpec, mole_ecp
 from xcquinox.pipeline.descriptors import Descriptor
 from xcquinox.pipeline.orientation_lock import orientation_lock_bias
 from xcquinox.pipeline.pyscf_determinism import pin_reference_scf
@@ -581,6 +581,10 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     minimum-energy point's recorded orbital pair, the lower converged
     solution is kept, and an excess that still stands is refused rather
     than recorded.
+
+    A second-order run from the best point that stays unconverged at its cap
+    is retried once from the trajectory's lowest-energy orbitals, the branch
+    rerun's start; the measurement behind the retry is beside it in the code.
     """
     mf.max_cycle = _REFERENCE_SCF_MAX_CYCLE
     mf.conv_tol = _REFERENCE_SCF_CONV_TOL
@@ -703,27 +707,58 @@ def _converge_reference_scf(mf, label="the reference SCF"):
             "orbitals, no occupied-virtual pairs), which pyscf's SOSCF "
             "cannot represent.",
             cycles=cycles)
-    try:
-        so = mf.newton()
-        so.max_cycle = _REFERENCE_SCF_NEWTON_MAX_CYCLE
-        so.conv_tol = _REFERENCE_SCF_CONV_TOL
-        macro = []
-        # newton_ah.kernel calls back with its locals after every
-        # macro-iteration and once more after the loop; the last imacro is
-        # the count minus one.
-        so.callback = lambda envs: macro.append(int(envs["imacro"]))
-        # The trajectory-best density; the DIIS end point only if the
-        # recorder never fired (defensive -- the kernel invokes the
-        # callback on every cycle it runs).
-        so.kernel(dm0=best["dm"] if best["dm"] is not None
-                  else mf.make_rdm1())
-    except Exception as exc:
-        raise ReferenceSCFNotConverged(
-            f"{label}: the second-order stage raised "
-            f"{type(exc).__name__}: {exc} after the DIIS stage "
-            f"(cycles={cycles}, max_cycle={_REFERENCE_SCF_MAX_CYCLE}).",
-            cycles=cycles) from exc
-    newton_cycles = (macro[-1] + 1) if macro else 0
+    def _second_order(start, started_from, done, context=""):
+        """One second-order run from ``start`` (a density or an orbital pair)
+        at the stage's cap and criterion; ``(solver, macro-iterations)``.
+        ``done`` is the count of macro-iterations already run, for the
+        refusal's cycle count, and ``context`` opens its message.
+        newton_ah.kernel calls back with its locals
+        after every macro-iteration and once more after the loop; the last
+        imacro is the count minus one."""
+        try:
+            so = mf.newton()
+            so.max_cycle = _REFERENCE_SCF_NEWTON_MAX_CYCLE
+            so.conv_tol = _REFERENCE_SCF_CONV_TOL
+            macro = []
+            so.callback = lambda envs: macro.append(int(envs["imacro"]))
+            so.kernel(**start)
+        except Exception as exc:
+            raise ReferenceSCFNotConverged(
+                f"{label}: {context}the second-order stage from {started_from} "
+                f"raised {type(exc).__name__}: {exc} (converged=False, "
+                f"cycles={cycles + done}: {cycles} DIIS cycles at "
+                f"max_cycle={_REFERENCE_SCF_MAX_CYCLE} and {done} second-order "
+                "macro-iterations before it).",
+                cycles=cycles + done) from exc
+        return so, ((macro[-1] + 1) if macro else 0)
+
+    lowest = (dict(mo_coeff=low["mo"], mo_occ=low["occ"])
+              if low["mo"] is not None else None)
+    # The trajectory-best density; the DIIS end point only if the recorder
+    # never fired (defensive -- the kernel invokes the callback on every
+    # cycle it runs).
+    so, newton_cycles = _second_order(
+        dict(dm0=best["dm"] if best["dm"] is not None else mf.make_rdm1()),
+        "the best-gradient density", 0)
+    # A run that stays unconverged at the cap is retried once from the
+    # trajectory's lowest-energy orbitals, the start of the branch rerun
+    # below. Measured on C2 at the held-out identity under four threads
+    # (2026-09-28, twelve draws over two processes): the DIIS trajectory is
+    # chaotic, twelve end points, while the lowest-energy point recurs (cycle
+    # 12 in nine draws, 24 or 27 in three, its energy within 2.2e-6 Ha over
+    # all twelve), and the solver converged from its orbitals in 6 of 6 draws
+    # where it was tried, in 2 macro-iterations, to the ground branch; one
+    # draw of the hosted runner ran the cap unconverged from the best-gradient
+    # density, a failure not reproduced in 42 local draws (thirty more over
+    # two, three and eight threads: six converged onto the higher branch, the
+    # case of the rerun below, none stayed unconverged), so the retry rests
+    # on that start converging in every draw tried.
+    from_lowest = False
+    if not bool(so.converged) and lowest is not None:
+        so, retry_cycles = _second_order(lowest, "the lowest-energy orbitals",
+                                         newton_cycles)
+        newton_cycles += retry_cycles
+        from_lowest = True
     # Branch acceptance (the C2 case in the docstring): every trajectory
     # energy is the energy of an aufbau determinant, a variational upper
     # bound of its own basin's minimum, so a converged rescue ABOVE the
@@ -733,27 +768,28 @@ def _converge_reference_scf(mf, label="the reference SCF"):
     # exact determinant, immune to the aufbau re-occupation) and keep the
     # lower converged solution; an excess that still stands is refused --
     # a record on the higher branch would be silently wrong by the
-    # inter-branch gap (50.10 kcal/mol on C2).
-    if (bool(so.converged) and low["mo"] is not None
+    # inter-branch gap (50.10 kcal/mol on C2). A run that started from
+    # those orbitals and still sits above the point is refused directly.
+    if (bool(so.converged) and lowest is not None
             and float(so.e_tot) > low["e"] + _REFERENCE_SCF_BRANCH_TOL):
         excess = float(so.e_tot) - low["e"]
-        try:
-            so2 = mf.newton()
-            so2.max_cycle = _REFERENCE_SCF_NEWTON_MAX_CYCLE
-            so2.conv_tol = _REFERENCE_SCF_CONV_TOL
-            macro2 = []
-            so2.callback = lambda envs: macro2.append(int(envs["imacro"]))
-            so2.kernel(mo_coeff=low["mo"], mo_occ=low["occ"])
-        except Exception as exc:
+        if from_lowest:
             raise ReferenceSCFNotConverged(
-                f"{label}: the second-order stage converged onto a "
-                f"stationary point {excess:.3e} Ha above the DIIS "
-                f"trajectory's minimum-energy point "
-                f"(E={float(so.e_tot):.10f} against {low['e']:.10f}), and "
-                f"the rerun from that point's orbitals raised "
-                f"{type(exc).__name__}: {exc}.",
-                cycles=cycles + newton_cycles) from exc
-        newton_cycles += (macro2[-1] + 1) if macro2 else 0
+                f"{label}: the second-order stage from the lowest-energy "
+                f"orbitals converged onto a stationary point {excess:.3e} Ha "
+                f"above the DIIS trajectory's minimum-energy point "
+                f"(E={float(so.e_tot):.10f} against {low['e']:.10f}, "
+                f"tolerance {_REFERENCE_SCF_BRANCH_TOL:g}); a record on the "
+                "higher SCF branch would be silently wrong by the "
+                "inter-branch gap.",
+                cycles=cycles + newton_cycles)
+        so2, rerun_cycles = _second_order(
+            lowest, "the lowest-energy orbitals", newton_cycles,
+            context=(f"the second-order stage converged onto a stationary "
+                     f"point {excess:.3e} Ha above the DIIS trajectory's "
+                     f"minimum-energy point (E={float(so.e_tot):.10f} against "
+                     f"{low['e']:.10f}), and "))
+        newton_cycles += rerun_cycles
         if bool(so2.converged) and float(so2.e_tot) < float(so.e_tot):
             so = so2
         if float(so.e_tot) > low["e"] + _REFERENCE_SCF_BRANCH_TOL:
@@ -1113,11 +1149,16 @@ def precompute_fixed_density_data(
             "no point-wise consumer of this record can evaluate it.")
 
     # Build pyscf molecule
+    # The core potentials the basis is defined on (mole_ecp): assigned here,
+    # to the cached pyscfad Mole below, and recorded in mol_metadata so the
+    # backend rebuilds the same molecule.
+    ecp = mole_ecp(mol_spec.basis, mol_spec.atom)
     mol = gto.M(
         atom=mol_spec.atom,
         basis=mol_spec.basis,
         charge=mol_spec.charge,
         spin=mol_spec.spin,
+        ecp=ecp,
         verbose=0,
     )
 
@@ -1534,6 +1575,8 @@ def precompute_fixed_density_data(
         mol_ad.basis = mol_spec.basis
         mol_ad.charge = mol_spec.charge
         mol_ad.spin = mol_spec.spin
+        if ecp:
+            mol_ad.ecp = ecp
         mol_ad.verbose = 0
         mol_ad.build()
         pyscfad_mol = mol_ad
@@ -1617,6 +1660,7 @@ def precompute_fixed_density_data(
             "charge": mol_spec.charge,
             "spin": mol_spec.spin,
             "grid_level": mol_spec.grid_level,
+            "ecp": ecp,
             "auxbasis": auxbasis,
             # Precomputed orientation-lock bias (numpy, AO basis) so the pyscfad
             # backend can add it to its internally-built get_hcore without

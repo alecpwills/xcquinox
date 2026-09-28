@@ -1061,10 +1061,12 @@ def _parent_exc_numint(mol_spec, parent: str, dm) -> float:
     """
     import numpy as np
     from pyscf import dft, gto
+    from xcquinox.pipeline.config import mole_ecp
     from pyscf.dft import numint
     xc = _parent_xc_code(parent)
     mol = gto.M(atom=mol_spec.atom, basis=mol_spec.basis,
-                charge=mol_spec.charge, spin=mol_spec.spin, verbose=0)
+                charge=mol_spec.charge, spin=mol_spec.spin,
+                ecp=mole_ecp(mol_spec.basis, mol_spec.atom), verbose=0)
     grids = dft.Grids(mol)
     if mol_spec.grid_level is not None:
         grids.level = int(mol_spec.grid_level)

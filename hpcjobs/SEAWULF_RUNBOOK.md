@@ -629,6 +629,7 @@ it, and every one of them is listed here.
 | `dfs6311_nan_isolate.py`, `dfs6311_nan_isolate.sbatch` | exact-state replay and decomposition of the training NaN on the BH76 reaction | -- |
 | `dfs6311_nan_verify.py`, `dfs6311_nan_verify.sbatch` | production-scale verification of the corrected V_xc on the meta-GGA path | `test_job_digest.py` |
 | `dfs6311_pretrained_holdout.py`, `dfs6311_pretrained_holdout.sbatch` | held-out evaluation of a pretrained network before task training | `test_job_digest.py`, `test_thread_caps.py` |
+| `slim16_eval.py`, `slim16_eval.sbatch`, `ledgers/slim16_eval_networks.json` | the Slim16 evaluation of the campaign clones and the v7 networks through the converged channel at the cloning paper's identity, one array task per network, with the PBE-DF table of the set; `prepare` on the login node prints the run directory and the `sbatch` line, `pull auto --category dfs_step8` brings the run and `tools/analysis/slim16_table.py <local run dir>` builds the table | `test_job_digest.py`, `test_thread_caps.py` |
 | `dfs6311_scan_pool.sbatch` | the SCAN reference energies and densities over the held-out pool that the figures' SCAN comparator reads (`precompute_scan_pool.py`) | `test_job_digest.py`, `test_thread_caps.py` |
 | `dfs6311_smoke_vma.sbatch` | the instrumented compile-smoke probe of the heaviest cell | -- |
 | `job_digest.sh` | the digest-on-exit helper the standalone jobs source | `test_job_digest.py` |
@@ -651,7 +652,8 @@ campaigns), `dfs_step7.dfs6311_grid3_v3.yaml` (the grid-3 lineage root) and the 
 `dfs_step7.dfs6311_grid3_v7g1_c25.yaml` and `dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml`
 (the 25-cycle and the dpyscf-parity arms), and the three files of campaign 1 of the v8
 program, `dfs_step8.v8_dfs_allsc.yaml`, `dfs_step8.v8_dfs_parity.yaml` and
-`dfs_step8.v8_dfs_coldstart.yaml` (the arms S, P and A of the seed-start campaign; the
+`dfs_step8.v8_dfs_coldstart.yaml` (the arms S, P and A of the seed-start campaign) and
+`dfs_step8.v8_slim05_allsc.yaml` (the Slim05 pretraining arm at the published density identity; the
 submission commands are in `docs/getting_started.md`).
 `xcquinox/pipeline/tests/test_cluster_grid_config.py` holds this set equal to the files on
 disk, the personal `*.local.yaml` copies excepted.

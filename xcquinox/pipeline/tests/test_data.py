@@ -3,6 +3,10 @@
 Implements THE SPEC §13.2 test_data.py items (1)-(13).
 """
 import numpy as np
+import re
+import subprocess
+from pathlib import Path
+
 import pytest
 import jax.numpy as jnp
 from unittest.mock import patch
@@ -815,9 +819,11 @@ def test_non_converged_reference_scf_is_refused_not_recorded(monkeypatch):
     runs a deliberately short reference SCF (the pretrain-systems tests build
     their short-SCF records outside it), so the refusal is unconditional and
     nothing is memoized. Both stages are driven to their caps here: one DIIS
-    cycle, then one second-order macro-iteration (H2O / SCAN needs six DIIS
-    cycles, or four second-order macro-iterations from the one-cycle
-    density, measured), so the total cycle count the refusal reports is 2."""
+    cycle, then one second-order macro-iteration from each of the stage's two
+    starts, the best-gradient density and the lowest-energy orbitals (H2O /
+    SCAN needs six DIIS cycles, or four second-order macro-iterations from
+    the one-cycle density, measured), so the total cycle count the refusal
+    reports is 3."""
     import xcquinox.pipeline.data as data_mod
     from xcquinox.pipeline.data import (_PRECOMPUTE_CACHE,
                                     ReferenceSCFNotConverged,
@@ -830,10 +836,10 @@ def test_non_converged_reference_scf_is_refused_not_recorded(monkeypatch):
         precompute_fixed_density_data(_h2o_spec(), reference_xc="scan")
     assert isinstance(info.value, RuntimeError)
     msg = str(info.value)
-    for needle in ("'H2O_refxc'", "scan", "cycles=2", "converged=False",
+    for needle in ("'H2O_refxc'", "scan", "cycles=3", "converged=False",
                    "max_cycle=1"):
         assert needle in msg, needle
-    assert info.value.cycles == 2
+    assert info.value.cycles == 3
     assert len(_PRECOMPUTE_CACHE) == 0
 
 
@@ -1040,3 +1046,232 @@ def test_c2_pbe_reference_lands_on_the_ground_scf_branch():
 # ---------------------------------------------------------------------------
 
 
+
+
+# The def2 core potentials. pyscf assigns none on its own: a def2 basis of a
+# post-krypton element is a valence set whose core the matching def2 ECP
+# replaces, and without the potential iodine at def2-TZVP builds with 53
+# electrons in a 25-electron basis.
+_HI_ATOM = "I 0 0 0; H 0 0 1.61"
+
+
+def test_mole_ecp_assigns_the_def2_core_potentials():
+    from xcquinox.pipeline.config import mole_ecp
+    assert mole_ecp("def2-TZVP", _HI_ATOM) == {"I": "def2-TZVP"}
+    assert mole_ecp("def2-TZVP", [("I", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 1.61))]) == {
+        "I": "def2-TZVP"}
+    assert mole_ecp("def2-TZVP", h2o_molecule().atom) is None
+    assert mole_ecp("6-311++G(3df,2pd)", "C 0 0 0; H 0 0 1.1") is None
+    assert mole_ecp("sto-3g", "I 0 0 0") is None
+    assert mole_ecp("def2-TZVP", ["Te 0 0 0", "H 0 0 1.7"]) == {"Te": "def2-TZVP"}
+    assert mole_ecp("def2-TZVP", "") is None
+    assert mole_ecp("def2-TZVP", "X-I 0 0 0; H 0 0 1.6") is None
+    with pytest.raises(ValueError, match="core potential"):
+        mole_ecp("def2-TZVP", "Ce 0 0 0")
+
+
+def test_the_reference_scf_runs_on_the_valence_electrons_of_a_def2_ecp_species():
+    from xcquinox.pipeline.solver_pyscfad import _rebuild_mol_from_mol_data
+    spec = MoleculeSpec(name="HI", atom=_HI_ATOM, basis="def2-TZVP", charge=0, spin=0,
+                        atom_composition=(("H", 1), ("I", 1)))
+    data = precompute_fixed_density_data(spec)
+    assert data["mol_metadata"]["ecp"] == {"I": "def2-TZVP"}
+    n_electrons = float(jnp.einsum("ij,ji->", data["dm_pbe"], data["s_matrix"]))
+    assert n_electrons == pytest.approx(26.0, abs=1e-6)
+    assert data["_pyscfad_mol"].nelectron == 26
+    assert _rebuild_mol_from_mol_data(data).nelectron == 26
+
+
+_BUILDER_CALL = re.compile(r"\bgto\.(?:M|Mole)\(")
+_BUILDER_ATTR = re.compile(r"\bMole\(\)")
+
+
+def _builders_without_ecp(text):
+    """The line numbers of the molecule builders in ``text`` that assign no
+    core potential: a ``gto.M(`` / ``gto.Mole(`` call whose argument list
+    carries no ``ecp=``, and a bare ``Mole()`` construction not followed by
+    an ``.ecp = `` assignment within the next twelve lines."""
+    offenders = []
+    for match in _BUILDER_CALL.finditer(text):
+        start = match.end()
+        depth, i = 1, start
+        while i < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        arguments = text[start:i - 1]
+        if arguments.strip() and "ecp=" not in arguments:
+            offenders.append(text.count("\n", 0, match.start()) + 1)
+    lines = text.splitlines()
+    for match in _BUILDER_ATTR.finditer(text):
+        line = text.count("\n", 0, match.start())
+        if not any(".ecp = " in later for later in lines[line + 1:line + 13]):
+            offenders.append(line + 1)
+    return sorted(offenders)
+
+
+def test_every_molecule_builder_assigns_the_core_potentials():
+    """No molecule is built anywhere in the package or its tools without the
+    core potentials of its basis. The rule fires on a fixture first, then
+    reads every tracked source file outside the tests."""
+    assert _builders_without_ecp("mol = gto.M(atom=a, basis=b, verbose=0)\n") == [1]
+    assert _builders_without_ecp(
+        "mol = gto.M(atom=a, basis=b,\n            ecp=mole_ecp(b, a))\n") == []
+    assert _builders_without_ecp("m = pg.Mole()\nm.atom = a\n") == [1]
+    assert _builders_without_ecp(
+        "m = pg.Mole()\nm.atom = a\nif ecp:\n    m.ecp = ecp\n") == []
+    root = Path(__file__).resolve().parents[3]
+    tracked = subprocess.run(["git", "ls-files", "-z", "xcquinox", "tools"], cwd=root,
+                             capture_output=True, check=True).stdout.decode("utf-8")
+    offenders = {}
+    for rel in tracked.split("\0"):
+        if not rel.endswith(".py") or "/tests/" in rel:
+            continue
+        lines = _builders_without_ecp((root / rel).read_text(encoding="utf-8"))
+        if lines:
+            offenders[rel] = lines
+    assert offenders == {}, f"molecule builders without a core potential: {offenders}"
+
+
+# The second stage of the reference SCF through doubles: the DIIS stage
+# scripted unconverged over three cycles (the lowest energy at cycle 1, the
+# best gradient at cycle 2), the second-order solver failing, converging or
+# raising by the kind of start it is given.
+class _FakeSOSCF:
+    def __init__(self, mf, orbital_start_converges=True,
+                 orbital_start_energy=-75.8167407121, orbital_start_raises=False,
+                 density_start=None):
+        self.mf = mf
+        self.orbital_start_converges = orbital_start_converges
+        self.orbital_start_energy = orbital_start_energy
+        self.orbital_start_raises = orbital_start_raises
+        # ``None``: the density start runs its cap unconverged; a float: it
+        # converges to that energy
+        self.density_start = density_start
+        self.max_cycle = 0
+        self.conv_tol = 0.0
+        self.callback = None
+        self.converged = False
+        self.e_tot = float("nan")
+        self.start = None
+
+    def kernel(self, dm0=None, mo_coeff=None, mo_occ=None):
+        self.start = {"dm0": dm0, "mo_coeff": mo_coeff, "mo_occ": mo_occ}
+        if mo_coeff is not None:
+            if self.orbital_start_raises:
+                raise RuntimeError("the orbital start raised")
+            converged, e_tot = self.orbital_start_converges, self.orbital_start_energy
+        else:
+            converged = self.density_start is not None
+            e_tot = self.density_start if converged else -75.75
+        n_macro = 2 if converged else self.max_cycle
+        for i in range(n_macro):
+            self.callback({"imacro": i})
+        self.converged, self.e_tot = converged, e_tot
+        return e_tot
+
+
+class _FakeMF:
+    def __init__(self, trajectory=((-75.70, 5e-3), (-75.8167368, 4e-3), (-75.80, 2.5e-3)),
+                 **solver):
+        self.trajectory = tuple(trajectory)
+        self.solver = solver
+        self.max_cycle = 0
+        self.conv_tol = 0.0
+        self.callback = None
+        self.converged = False
+        self.cycles = 0
+        self.e_tot = float("nan")
+        self.mo_occ = np.array([2.0, 0.0])
+        self.solvers = []
+
+    def make_rdm1(self, mo_coeff=None, mo_occ=None):
+        return np.array(mo_coeff) if mo_coeff is not None else np.eye(2)
+
+    def kernel(self):
+        for cycle, (e_tot, gorb) in enumerate(self.trajectory):
+            self.callback({"cycle": cycle, "e_tot": e_tot, "norm_gorb": gorb,
+                           "mf": self, "mo_coeff": np.eye(2) * (cycle + 1),
+                           "mo_occ": self.mo_occ})
+        self.converged, self.cycles = False, len(self.trajectory)
+        self.e_tot = self.trajectory[-1][0] if self.trajectory else float("nan")
+        return self.e_tot
+
+    def newton(self):
+        so = _FakeSOSCF(self, **self.solver)
+        self.solvers.append(so)
+        return so
+
+
+def test_the_second_order_stage_retries_from_the_lowest_energy_orbitals():
+    """A second-order run from the best-gradient density that does not
+    converge within its cap is retried from the trajectory's lowest-energy
+    orbitals (measured on C2 at four threads: the solver converges from them
+    in 2 macro-iterations to the ground branch in every draw tried, while a
+    draw of the hosted runner from the best-gradient density ran its cap
+    unconverged); when both starts fail the second solver is returned
+    unconverged for the caller to refuse; a run that converges onto the
+    higher branch still gets the rerun from those orbitals, as before; a
+    trajectory that never fired the recorder has no second start."""
+    cap = data_mod._REFERENCE_SCF_NEWTON_MAX_CYCLE
+    lowest = np.eye(2) * 2  # the orbitals of cycle 1, the lowest energy
+
+    mf = _FakeMF()
+    out, cycles, solver = data_mod._converge_reference_scf(mf)
+    assert out is mf.solvers[-1] and len(mf.solvers) == 2
+    assert out.converged is True and out.e_tot == pytest.approx(-75.8167407121)
+    assert mf.solvers[0].start["dm0"] is not None
+    assert np.array_equal(mf.solvers[1].start["mo_coeff"], lowest)
+    assert solver == "diis+newton" and cycles == 3 + cap + 2
+
+    mf = _FakeMF(orbital_start_converges=False)
+    out, cycles, solver = data_mod._converge_reference_scf(mf)
+    assert out is mf.solvers[-1] and len(mf.solvers) == 2
+    assert out.converged is False
+    assert solver == "diis+newton" and cycles == 3 + cap + cap
+
+    mf = _FakeMF(density_start=-75.7368945256)  # the higher branch
+    out, cycles, solver = data_mod._converge_reference_scf(mf)
+    assert len(mf.solvers) == 2 and out is mf.solvers[-1]
+    assert out.converged is True and out.e_tot == pytest.approx(-75.8167407121)
+    assert np.array_equal(mf.solvers[1].start["mo_coeff"], lowest)
+    assert cycles == 3 + 2 + 2
+
+    mf = _FakeMF(trajectory=())  # the recorder never fired: no second start
+    out, cycles, solver = data_mod._converge_reference_scf(mf)
+    assert len(mf.solvers) == 1 and out is mf.solvers[0]
+    assert out.converged is False and cycles == 0 + cap
+
+
+def test_the_second_order_stage_refuses_a_retry_above_the_trajectory_minimum():
+    """The retry from the lowest-energy orbitals is held to the branch
+    acceptance like any run, and refused directly when it converges above
+    the trajectory's minimum-energy point: a rerun from the same orbitals
+    would repeat it. A retry or a rerun that raises is refused with a cycle
+    count the message and the exception agree on, the rerun's message still
+    naming the higher stationary point the first run converged onto."""
+    from xcquinox.pipeline.data import ReferenceSCFNotConverged
+    cap = data_mod._REFERENCE_SCF_NEWTON_MAX_CYCLE
+
+    mf = _FakeMF(orbital_start_energy=-75.75)  # above the minimum by 0.067 Ha
+    with pytest.raises(ReferenceSCFNotConverged) as info:
+        data_mod._converge_reference_scf(mf)
+    assert len(mf.solvers) == 2
+    assert info.value.cycles == 3 + cap + 2
+    assert "lowest-energy orbitals" in str(info.value)
+    assert "above the DIIS trajectory's minimum-energy point" in str(info.value)
+
+    mf = _FakeMF(orbital_start_raises=True)  # the retry raises
+    with pytest.raises(ReferenceSCFNotConverged) as info:
+        data_mod._converge_reference_scf(mf)
+    assert len(mf.solvers) == 2
+    assert info.value.cycles == 3 + cap
+    assert f"cycles={info.value.cycles}" in str(info.value)
+
+    mf = _FakeMF(density_start=-75.7368945256, orbital_start_raises=True)
+    with pytest.raises(ReferenceSCFNotConverged) as info:  # the rerun raises
+        data_mod._converge_reference_scf(mf)
+    assert len(mf.solvers) == 2
+    assert info.value.cycles == 3 + 2
+    assert f"cycles={info.value.cycles}" in str(info.value)
+    assert "converged onto a stationary point" in str(info.value)
+    assert "-75.7368945256" in str(info.value)

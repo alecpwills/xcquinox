@@ -232,11 +232,13 @@ def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
     own default (level 3) applies.
     """
     from pyscf import dft, gto
+    from xcquinox.pipeline.config import mole_ecp
     mol = gto.M(
         atom=mol_spec.atom,
         basis=basis or mol_spec.basis,
         charge=mol_spec.charge,
         spin=mol_spec.spin,
+        ecp=mole_ecp(basis or mol_spec.basis, mol_spec.atom),
         verbose=0,
     )
     if mol_spec.spin != 0:

@@ -31,6 +31,10 @@
 + /resolved_config.yaml
 + /jobs.json
 + /attempts.json
+# The PBE-DF table of a Slim16 evaluation run (hpcjobs/slim16_eval.py pbe-df):
+# the reference energies on the run's own density-fitting footing, read by
+# tools/analysis/slim16_table.py beside the channel outputs.
++ /pbe_df.json
 # The run-level representative-subset ledger: names every cell's selected
 # training points; the figures and the exclusion layer both key on it.
 + /subset_ledger.json

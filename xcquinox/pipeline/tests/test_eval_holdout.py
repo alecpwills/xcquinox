@@ -698,3 +698,37 @@ def test_the_validation_slice_is_marked_and_reported_beside_the_set(tmp_path):
     assert int(rows["test_set_bh76_with_validation"]["n_reactions"]) == 3
     records = json.loads((tmp_path / DEFAULT_PER_REACTION_NAME).read_text())
     assert [r["name"] for r in records] == ["bh76_a", "bh76_b", "bh76_v"]
+
+
+def test_paper_wtmad2_reproduces_the_hand_value():
+    """The cloning paper's WTMAD-2 over a Slim set's own reactions: per subset
+    N_i reactions, MAD_i against the reference functional, m_i the mean
+    absolute reference reaction energy; total = (sum N_i m_i / N) / N * sum
+    N_i MAD_i / m_i. Two subsets by hand: A = {(10, 11), (-20, -18)} and
+    B = {(4, 4.5)} as (de_ref, de_nn) give MAD_A = 1.5, m_A = 15, MAD_B = 0.5,
+    m_B = 4, N = 3, mean_abs_ref = 34/3, contributions 0.2 and 0.125, so the
+    total is (34/3)/3 * 0.325. One subset alone reduces to its MAD; a row
+    with a non-finite energy is left out; nothing gives NaN."""
+    from xcquinox.pipeline.eval_holdout import paper_wtmad2
+    rows = [
+        {"subset": "A", "de_ref": 10.0, "de_nn": 11.0},
+        {"subset": "A", "de_ref": -20.0, "de_nn": -18.0},
+        {"subset": "B", "de_ref": 4.0, "de_nn": 4.5},
+    ]
+    total, per_subset = paper_wtmad2(rows)
+    assert total == pytest.approx((34.0 / 3.0) / 3.0 * 0.325)
+    assert per_subset["A"] == pytest.approx(
+        {"N_i": 2, "MAD_i": 1.5, "mean_abs_ref_i": 15.0, "contribution": 0.2})
+    assert per_subset["B"] == pytest.approx(
+        {"N_i": 1, "MAD_i": 0.5, "mean_abs_ref_i": 4.0, "contribution": 0.125})
+    one, _ = paper_wtmad2(rows[:2])
+    assert one == pytest.approx(1.5)
+    dropped, table = paper_wtmad2(rows + [{"subset": "B", "de_ref": 1.0,
+                                           "de_nn": float("nan")}])
+    assert dropped == pytest.approx(total)
+    assert table["B"]["N_i"] == 1
+    absent, _ = paper_wtmad2(rows + [{"subset": "A", "de_ref": 2.0, "de_nn": None}])
+    assert absent == pytest.approx(total)
+    import math
+    empty, empty_table = paper_wtmad2([])
+    assert math.isnan(empty) and empty_table == {}

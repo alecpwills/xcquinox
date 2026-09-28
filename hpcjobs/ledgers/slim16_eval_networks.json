@@ -1,0 +1,22 @@
+[
+  {"label": "S_deep_3x16", "kind": "pretrain", "arch": "deep_3x16",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z"},
+  {"label": "S_deep_attn_3x16", "kind": "pretrain", "arch": "deep_attn_3x16",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z"},
+  {"label": "S_deep_geom_3x16", "kind": "pretrain", "arch": "deep_geom_3x16",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z"},
+  {"label": "S_deep_geom_attn_3x16", "kind": "pretrain", "arch": "deep_geom_attn_3x16",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z"},
+  {"label": "slim05_deep_3x16", "kind": "pretrain", "arch": "deep_3x16",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_slim05_allsc/runs/run_20260928T011848Z"},
+  {"label": "slim05_deep_attn_3x16", "kind": "pretrain", "arch": "deep_attn_3x16",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_slim05_allsc/runs/run_20260928T011848Z"},
+  {"label": "slim05_deep_geom_3x16", "kind": "pretrain", "arch": "deep_geom_3x16",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_slim05_allsc/runs/run_20260928T011848Z"},
+  {"label": "slim05_deep_geom_attn_3x16", "kind": "pretrain", "arch": "deep_geom_attn_3x16",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_slim05_allsc/runs/run_20260928T011848Z"},
+  {"label": "v7_3x16_ss7", "kind": "trained", "spec": 6, "checkpoint": "model_val_best.eqx",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v7g1_size/runs/run_20260902T145245Z"},
+  {"label": "v7_3x16_attn_ss5", "kind": "trained", "spec": 15, "checkpoint": "model_val_best.eqx",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v7g1_size/runs/run_20260902T145245Z"}
+]

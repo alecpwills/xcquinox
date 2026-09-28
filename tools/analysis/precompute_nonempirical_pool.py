@@ -143,11 +143,13 @@ def _density_on_grid(scf: Dict, ms, *, basis: str) -> "object":
     ``unit="angstrom"`` used by ``run_scf_with_cache``."""
     import numpy as np
     from pyscf import gto
+    from xcquinox.pipeline.config import mole_ecp
     from pyscf.dft import numint
     dm = np.asarray(scf["dm"])
     dm_tot = dm[0] + dm[1] if dm.ndim == 3 else dm
     mol = gto.M(atom=ms.atom, basis=basis,
-                charge=int(ms.charge), spin=int(ms.spin), verbose=0)
+                charge=int(ms.charge), spin=int(ms.spin), verbose=0,
+                ecp=mole_ecp(basis, ms.atom))
     ao = numint.eval_ao(mol, np.asarray(scf["grid_coords"]), deriv=0)
     return np.einsum("ij,gj,gi->g", dm_tot, ao, ao)
 
