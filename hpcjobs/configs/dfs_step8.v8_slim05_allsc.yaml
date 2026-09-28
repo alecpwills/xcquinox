@@ -1,0 +1,172 @@
+# =============================================================================
+# dfs_step8.v8_slim05_allsc.yaml -- THE SLIM05 PRETRAINING ARM OF THE v8 PROGRAM:
+#    arm S's settings; the pretraining set and the density identity of the
+#    published cloning protocol.
+#
+# Identical to dfs_step8.v8_dfs_allsc.yaml except:
+#   inputs.basis def2-TZVP, inputs.grid_level 4, inputs.density_fit false --
+#     the density settings of the published cloning code (RKS or UKS by spin,
+#     PBE, pyscf grid level 4, conv_tol 1e-9, no density fitting);
+#   pretrain.slim_set slim05, dfs_set false, pool_atoms false, no atoms block --
+#     the pretraining set is the study's seed-42 draw of 25 Slim05 molecules
+#     (xcquinox/pipeline/data/slim05_pool.json, pretrain_molecules) and
+#     nothing else. Two of the 25 are one hydrogen atom (BH76 h and SIE4x4 h);
+#     the study samples each entry on its own, 1600 hydrogen rows of 20000,
+#     while the resolver keeps one system per geometry, charge and spin, so
+#     this file pretrains on 24 systems and 19200 rows with hydrogen at 800.
+#     Accepted as the one sampling difference (2026-09-27).
+#   the output root, the pretraining data root and the four identity-named
+#     directories are this arm's own, at this identity; a shared data root
+#     would make the currency check regenerate the campaign-1 file.
+#
+# The pretraining is this arm's own, not a copy of arm S's clones. The
+# fidelity certificate is unchanged and enforced: a Slim05 clone's verdict
+# against the DFS atoms and atomization energies is read beside arm S's four.
+#
+# The training identity's references do not exist at def2-TZVP and grid 4 and
+# the Slim optimization is a later item, so the preflight, train and reference
+# jobs are cancelled at submission and datagen and pretrain run alone.
+# =============================================================================
+
+sweep:
+  arch:
+    - deep_3x16
+    - deep_attn_3x16
+    - deep_geom_3x16
+    - deep_geom_attn_3x16
+  loss: [L5_gradnorm_vxc_step7]
+  metric: [jsd]
+  subset_size: [26]
+  solver: [full_25]
+
+solvers:
+  full_25:
+    mode: FULL
+    max_cycles: 25
+    feature_policy: REASSEMBLE
+    scf_grad_checkpoint: true
+    mixer_name: decaying_linear
+    mixer_kwargs: {base: 0.3, floor: 0.3, step_offset: 1}
+    scf_loss_use_tail: true
+    scf_loss_tail: 10
+    scf_loss_weight_power: 2.0
+    freeze_on_convergence: false
+
+hyperparams:
+  n_steps: 100
+  lr_start: 1.0e-4
+  lr_end: 1.0e-7
+  lr_decay_start: 0.5
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  density_per_electron: true
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  seed: 42
+  weight_decay: 1.0e-6
+  val_frac: 0.2
+  validate_every: 10
+  patience: 5
+  early_stop_min_delta: 0.1
+  checkpoint_every: 10
+  pad_group_to_common_shape: true
+  update_scheme: per_molecule
+  optimizer: adam_plateau
+  plateau_patience: 10
+  plateau_factor: 0.1
+  # the seed axis of the arm
+  seed_mix_atomic: true
+  respect_sc_flag: false
+  nonsc_weight: 1.0
+  channel_weights: {loss_vxc: 0.0, loss_BH76: 0.01, loss_IP13: 0.01}
+
+inputs:
+  basis: def2-TZVP
+  grid_level: 4
+  density_fit: false
+  orientation_lock_strength: 3.0e-5
+  # the seed axis of the arm: the rung's parent density (PBE for every
+  # architecture here), mixed with the atomic guess per update
+  seed_xc: auto
+  seed_cache_dir: /gpfs/scratch/awills/seed_cache_scan_def2tzvp_g4
+  subset_ledger_path: /gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/alpha_on/subset_index_log.json
+  external_refs_dir: /gpfs/scratch/awills/external_refs_dfs_def2tzvp_g4
+  benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_def2tzvp_g4
+  val_refs_dir: /gpfs/scratch/awills/external_refs_val_def2tzvp_g4
+  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_slim05_allsc
+
+pretrain:
+  # this arm's own root, at the paper's density identity
+  data_dir: /gpfs/scratch/awills/pretrain_data_slim05_def2tzvp_g4_v8
+  # the published cloning schedule and objective
+  n_steps: 20000
+  lr_start: 1.0e-3
+  lr_end: 1.0e-5
+  lr_decay_start: 0.5
+  lr_decay_end: 0.9
+  grad_clip: 0
+  seed: 42
+  loss_weighting: rho_w_sampled
+  points_per_system: 800
+  sampling_seed: 42
+  dfs_set: false
+  pool_atoms: false
+  slim_set: slim05
+  parent_density: auto
+  exchange_footing: paper
+  mesh_fraction: 0.3
+  energy_term_weight: 0.0
+  validation_fraction: 0.0
+  validation_seed: 0
+  validate_every: 50
+  patience: 0
+
+cluster:
+  partition: ""
+  time: "96:00:00"
+  cpus_per_task: 24
+  array_throttle: 4
+  eval_array_throttle: 4
+  max_concurrent_tasks: 8
+  max_array_size: 1000
+  device: cpu
+  oom_retry_partition: extended-96core
+  timeout_retry_partition: extended-96core
+  timeout_retry_time: "168:00:00"
+  conda_env: /gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j0102
+  conda_profile: /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+  mail_user: alec.wills@stonybrook.edu
+  mail_type: BEGIN,END,FAIL
+  account: ""
+  preflight_time: "12:00:00"
+  preflight_compile_smoke: true
+  preflight_coldstart_census: true
+  eval_time: "12:00:00"
+  pretrain_time: "48:00:00"
+  pretrain_throttle: 4
+  datagen_time: "04:00:00"
+  benchmark_refs_time: "24:00:00"
+
+domain_profile: dfs_step7
+on_precompute_failure: abort
+bh76_mode: barrier_height
+ae_as_reactions: true
+use_polarized_correlation: true
+inline_eval: true
+eval_coldstart: true
+defer_eval: false
+
+model:
+  parent_anchor: false
+  descriptor_coordinates: paper
+  ueg_gate: x2
+
+fidelity:
+  tol_AE: 1.0
+  tol_atom: 1.0
+  tol_AE_aggregate: mae
+  tol_AE_max_backstop: 2.0
+  override_reason: null
+  enforce: true
