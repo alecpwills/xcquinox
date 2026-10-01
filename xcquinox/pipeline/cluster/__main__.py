@@ -63,7 +63,7 @@ from xcquinox.pipeline.cluster.grid_config import (
 )
 from xcquinox.pipeline.cluster.domain import get_domain_profile
 from xcquinox.pipeline.cluster.inputs import prepare_inputs
-from xcquinox.pipeline.cluster.submit import submit_jobs
+from xcquinox.pipeline.cluster.submit import _repo_root, submit_jobs
 from xcquinox.pipeline.cluster.materialize import write_manifest
 from xcquinox.pipeline.holdout_channels import REPORTING_CHANNEL
 from xcquinox.pipeline.cluster.fidelity import (CERTIFICATE_FILENAME,
@@ -749,6 +749,25 @@ def _parse_job_id(proc) -> str:
     return proc.stdout.strip().split(";")[0].split()[0]
 
 
+def _resolve_grid_path(path: str) -> str:
+    """Resolve the grid-config argument against the checkout when needed.
+
+    The runbook spells configs relative to the checkout
+    (``hpcjobs/configs/...``); a submit from any other directory resolves that
+    spelling against the checkout, not the caller's CWD. A path that exists as
+    given (absolute or CWD-relative) is returned untouched, and a path found
+    nowhere is returned as given so the loader's error names it.
+    """
+    if os.path.isabs(path) or os.path.exists(path):
+        return path
+    checkout_path = os.path.join(_repo_root(), path)
+    if os.path.exists(checkout_path):
+        _log(f"submit: grid path {path!r} resolved against the checkout: "
+             f"{checkout_path}")
+        return checkout_path
+    return path
+
+
 # ===========================================================================
 # Subcommand: prepare
 # ===========================================================================
@@ -765,15 +784,16 @@ def cmd_prepare(args) -> int:
     the precompute entirely so ``prepare`` can validate the ledger cheaply on a
     login node.
     """
+    grid = _resolve_grid_path(args.grid)
     try:
-        require_explicit_bh76_mode(args.grid)
+        require_explicit_bh76_mode(grid)
     except ValueError as exc:
         _log(f"ERROR: {exc}")
         return 1
     try:
-        cfg = load_grid_config(args.grid)
+        cfg = load_grid_config(grid)
     except Exception as exc:
-        _log(f"prepare: cannot parse {args.grid} ({exc!r}); fix the file.")
+        _log(f"prepare: cannot parse {grid} ({exc!r}); fix the file.")
         return 1
     # Same semantic validation `submit` runs. `prepare` accepts any grid
     # config, a run's already-written resolved_config.yaml included, so the
@@ -796,7 +816,7 @@ def cmd_prepare(args) -> int:
         return 2
 
     mode = "validate-only" if args.no_recompute_refs else "with refs precompute"
-    _log(f"prepare: staging inputs ({mode}) from {args.grid}")
+    _log(f"prepare: staging inputs ({mode}) from {grid}")
     staged = prepare_inputs(cfg, recompute_refs=recompute_refs)
     n_entries = len(staged.subset_ledger)
     _log(
@@ -1019,15 +1039,16 @@ def cmd_submit(args) -> int:
     ``submit_jobs`` (dry-run unless ``--submit``) which renders + submits the
     5-stage datagen -> pretrain -> preflight -> train -> eval graph.
     """
+    grid = _resolve_grid_path(args.grid)
     try:
-        require_explicit_bh76_mode(args.grid)
+        require_explicit_bh76_mode(grid)
     except ValueError as exc:
         _log(f"ERROR: {exc}")
         return 1
     try:
-        cfg = load_grid_config(args.grid)
+        cfg = load_grid_config(grid)
     except Exception as exc:
-        _log(f"submit: cannot parse {args.grid} ({exc!r}); fix the file.")
+        _log(f"submit: cannot parse {grid} ({exc!r}); fix the file.")
         return 1
     cfg = _apply_partition_overrides(cfg, args)
     cfg = _apply_max_nodes_overrides(cfg, args)
@@ -1039,7 +1060,15 @@ def cmd_submit(args) -> int:
     domain = get_domain_profile(cfg.domain_profile)
     validate_grid_semantics(cfg, domain)
 
-    root = args.run_root or cfg.inputs.output_root
+    if args.run_root and not os.path.isabs(args.run_root):
+        # A relative --run-root resolves against the checkout, not the
+        # caller's CWD, so the runbook's `--run-root hpcjobs` spelling lands
+        # under the checkout from any directory.
+        root = os.path.join(_repo_root(), args.run_root)
+        _log(f"submit: relative run root {args.run_root!r} resolved against "
+             f"the checkout: {root}")
+    else:
+        root = args.run_root or cfg.inputs.output_root
     run_dir = _make_run_dir(root)
     os.makedirs(os.path.join(run_dir, "scripts"), exist_ok=True)
     os.makedirs(os.path.join(run_dir, "logs"), exist_ok=True)

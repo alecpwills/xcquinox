@@ -416,6 +416,28 @@ def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Submit from any directory: the node stages run at the checkout
+# ---------------------------------------------------------------------------
+
+def test_submit_anywhere_rendered_scripts_cd_to_the_checkout(
+        tmp_path, monkeypatch):
+    """Every rendered script pins its working directory to the checkout, so
+    the node stages never inherit the submit-time CWD (sbatch's default
+    working directory is the submission directory)."""
+    from xcquinox.pipeline.cluster import submit as submit_mod
+    checkout = tmp_path / "fake_checkout"
+    (checkout / "hpcjobs").mkdir(parents=True)
+    (checkout / "pyproject.toml").write_text("# fake checkout\n", encoding="utf-8")
+    monkeypatch.setattr(submit_mod, "_repo_root", lambda: str(checkout))
+    cfg = _make_cfg(tmp_path)
+    for kind, kw in (("datagen", {}), ("pretrain", {"array_max": 0}),
+                     ("preflight", {}), ("train", {"array_max": 39}),
+                     ("eval", {"array_max": 39})):
+        text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
+        assert f'cd "{checkout}"' in text, kind
+
+
+# ---------------------------------------------------------------------------
 # Train worker is exec'd so it receives the SLURM B:TERM grace signal
 # ---------------------------------------------------------------------------
 

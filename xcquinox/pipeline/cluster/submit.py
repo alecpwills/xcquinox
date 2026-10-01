@@ -96,6 +96,28 @@ def _load_template_text(filename: str) -> str:
     return res.read_text(encoding="utf-8")
 
 
+def _repo_root() -> str:
+    """The checkout root, anchored to this package's own location.
+
+    ``submit.py`` sits at ``<repo>/xcquinox/pipeline/cluster/submit.py``, so
+    three parents up from its directory is the checkout on every host that
+    installs the package editable from the checkout (the workstation and the
+    cluster env, build_parity_env.sbatch: ``pip install -e "$REPO"``). The
+    anchor is asserted against the repo layout (a ``hpcjobs/`` directory and a
+    ``pyproject.toml`` beside it); a wrong anchor is a loud error, never a
+    silent CWD fallback. NOT cached at import, so tests can monkeypatch it.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    if not (os.path.isdir(os.path.join(root, "hpcjobs"))
+            and os.path.isfile(os.path.join(root, "pyproject.toml"))):
+        raise RuntimeError(
+            f"_repo_root: {root!r} (derived from {__file__}) does not carry "
+            "the repo layout (hpcjobs/ + pyproject.toml); refusing to resolve "
+            "paths against it")
+    return root
+
+
 def _optional_sbatch_line(directive: str, value: str) -> str:
     """Render an optional ``#SBATCH`` directive line, or '' if value is blank.
 
@@ -269,6 +291,7 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         "CPUS_PER_TASK": cpus,
         "PYSCF_POOL_THREADS_MAX": PYSCF_POOL_THREADS_MAX,
         "RUN_DIR": run_dir,
+        "REPO_ROOT": _repo_root(),
         "CONDA_ACTIVATION": _conda_activation_block(
             cl.conda_profile, cl.conda_env
         ),
