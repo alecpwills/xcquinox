@@ -48,7 +48,8 @@ matplotlib.use("Agg")  # headless-safe; must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
 
 # the certificate directory is the STORED registry key; the axis and the CSV
-# show the derived name (medium -> deep_3x16, deep_3x16 -> deep0_3x16)
+# show the derived name (medium -> medium_3x16, deep -> deep_4x32; a key that
+# states its size, deep_3x16, is its own shown name)
 from xcquinox.pipeline.arch_names import display_name  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

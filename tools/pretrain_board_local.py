@@ -171,13 +171,17 @@ def board_architectures(include_meta_gga=False):
 
 def board_arch(name, *, anchor, coordinates="dfs"):
     """The registry entry as the board runs it: polarized correlation, the DFS
-    coordinates, and the anchor on or off."""
+    coordinates, and the anchor on or off. The unanchored control starts at
+    F = 1 exactly: ``zero_init_final_layer`` is set here, since no registry
+    entry sets it, because ``UNANCHORED_REFERENCE`` was recorded from that
+    start and the anchored row is held to its parent from the same point."""
     import dataclasses
     import xcquinox.pipeline as pipeline
     from xcquinox.pipeline.config import anchored
     arch = dataclasses.replace(pipeline.get_architecture(name),
                                use_polarized_correlation=True,
-                               descriptor_coordinates=coordinates)
+                               descriptor_coordinates=coordinates,
+                               zero_init_final_layer=True)
     return anchored(arch) if anchor else arch
 
 

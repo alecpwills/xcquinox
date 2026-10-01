@@ -37,12 +37,17 @@ from xcquinox.pipeline.descriptors import assemble_descriptor_features
 
 
 def _build_model(zero_init_final_layer: bool = True):
-    arch = pipeline.get_architecture("deep")
-    if not zero_init_final_layer:
-        import dataclasses
-        # A zero-init warm-start cnet returns Fc==1 with ZERO input-gradients;
-        # tests of the model's sigma/feature response need a non-trivial init.
-        arch = dataclasses.replace(arch, zero_init_final_layer=False)
+    """The ``deep`` entry with the final layer zeroed unless asked otherwise.
+
+    The flag is set here rather than read off the registry entry: a zero-init
+    warm-start cnet returns Fc == 1 with ZERO input-gradients, which is the
+    model the closed-shell reduction and the spin-symmetry tests below are
+    written against, while the tests of the model's sigma and feature response
+    need a non-trivial init and ask for one.
+    """
+    import dataclasses
+    arch = dataclasses.replace(pipeline.get_architecture("deep"),
+                               zero_init_final_layer=zero_init_final_layer)
     xnet, cnet = pipeline.create_network_pair(arch, seed=0)
     return pipeline.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
 

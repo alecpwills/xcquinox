@@ -110,7 +110,7 @@ from xcquinox.pipeline.holdout_channels import resolve_channel  # noqa: E402
 
 def _footer_with_key(footer: str, shown_names) -> str:
     """``footer`` with the expanded key of every shown name drawn appended on
-    its own line, so the names (deep_3x16 / deep0_3x16 ...) read without the
+    its own line, so the names (deep_3x16 / medium_3x16 ...) read without the
     map. The renderer's own addition: a caller's footer never carries it."""
     keys = key_line(shown_names)
     return f"{footer}\n{keys}" if keys else footer

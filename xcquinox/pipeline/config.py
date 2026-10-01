@@ -136,8 +136,11 @@ class ArchitectureConfig:
     descriptor_log_transform: bool = False
     # zero_init_final_layer: True zeros the final MLP layer's weight + bias at
     # construction so Fx = Fc = 1 exactly at init (the LDA/PW92 limit -- F=1
-    # multiplies lda_x + PW92, NOT PBE). False keeps
-    # Glorot init (gives Fx mean ~+2.65e-4 off 1).
+    # multiplies lda_x + PW92, NOT PBE). False keeps the default
+    # initialization (gives Fx mean ~+2.65e-4 off 1). No registry entry sets
+    # it: the published clone starts from the default initialization and so
+    # does every network here; only ``anchored()`` turns it on, as the parent
+    # anchor requires.
     zero_init_final_layer: bool = False
     # meta_gga: DFS-faithful meta-GGA (PRB 104 L161109 Eq. 12-13). True switches the
     # X/C UEG gate to (x2 + tanh^2(x3)) (x3 = ln((alpha+1)/2)) and the exchange
@@ -503,9 +506,8 @@ UEG_GATES = ("tanh2", "x2")
 
 def anchored(arch: ArchitectureConfig) -> ArchitectureConfig:
     """``arch`` with the parent anchor on: ``parent_anchor=True`` and, as the
-    anchor requires, ``zero_init_final_layer=True`` (the four registry
-    entries that carry False -- shallow, shallow_attn, medium, medium_attn --
-    are overridden). Every other field is
+    anchor requires, ``zero_init_final_layer=True`` (no registry entry sets
+    it; every one is overridden here). Every other field is
     the architecture's own; the parent itself is resolved by rung when the
     networks are created (``networks.create_network_pair``)."""
     return replace(arch, parent_anchor=True, zero_init_final_layer=True)
@@ -542,99 +544,83 @@ ARCHITECTURES = {
     "shallow_attn":        ArchitectureConfig(name="shallow_attn", depth=2, nodes=8,  attention=True, num_heads=2),
     "medium":              ArchitectureConfig(name="medium",       depth=3, nodes=16),
     "medium_attn":         ArchitectureConfig(name="medium_attn",  depth=3, nodes=16, attention=True, num_heads=4),
-    # Each deep_* entry enables physics-correction flags
-    # (dm_entropy_intensive, descriptor_log_transform, zero_init_final_layer).
-    # Built via ArchitectureConfig.from_spec with True defaults; old pickled
-    # specs without these fields unpickle to False for compatibility.
+    # Each deep_* entry enables the physics-correction flags
+    # dm_entropy_intensive and descriptor_log_transform. Built via
+    # ArchitectureConfig.from_spec; old pickled specs without these fields
+    # unpickle to False for compatibility. No entry zeroes its final layer.
     "deep":                ArchitectureConfig.from_spec("deep",               4, 32,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_attn":           ArchitectureConfig.from_spec("deep_attn",          4, 32,
                               attention=True, num_heads=4,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_cusp":           ArchitectureConfig.from_spec("deep_cusp",          4, 32,
                               descriptors=["cusp"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_cusp_attn":      ArchitectureConfig.from_spec("deep_cusp_attn",     4, 32,
                               attention=True, num_heads=4,
                               descriptors=["cusp"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_dm":             ArchitectureConfig.from_spec("deep_dm",            4, 32,
                               descriptors=["dm_statistics"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_dm_attn":        ArchitectureConfig.from_spec("deep_dm_attn",       4, 32,
                               attention=True, num_heads=4,
                               descriptors=["dm_statistics"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_combined":       ArchitectureConfig.from_spec("deep_combined",      4, 32,
                               descriptors=["dm_statistics", "cusp"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_combined_attn":  ArchitectureConfig.from_spec("deep_combined_attn", 4, 32,
                               attention=True, num_heads=4,
                               descriptors=["dm_statistics", "cusp"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     # Notransform variants: no DM/Cusp descriptors and descriptor_log_transform
     # =False. Baseline comparison without Dick XCDiff features.
     # dm_entropy_intensive is a no-op here (no DM descriptor) but kept True for
-    # consistency; zero_init_final_layer stays True (good init hygiene).
+    # consistency.
     "deep_notransform":       ArchitectureConfig.from_spec("deep_notransform",      4, 32,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=False,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=False),
     "deep_notransform_attn":  ArchitectureConfig.from_spec("deep_notransform_attn", 4, 32,
                               attention=True, num_heads=4,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=False,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=False),
     # 2026-06-20: depth-3/width-16 twins of the 8 dfs_step7 sweep archs. The
     # 2026-06-20 review found our 4x32 nets (~3.3k params) overfit
     # the tiny 26-point DFS pool; DFS used 3 hidden layers x 16 nodes (~0.6k).
     # Each twin mirrors its 4x32 sibling's flags EXACTLY, changing only capacity.
     "deep_3x16":                ArchitectureConfig.from_spec("deep_3x16",               3, 16,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_attn_3x16":           ArchitectureConfig.from_spec("deep_attn_3x16",          3, 16,
                               attention=True, num_heads=4,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_cusp_3x16":           ArchitectureConfig.from_spec("deep_cusp_3x16",          3, 16,
                               descriptors=["cusp"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_dm_3x16":             ArchitectureConfig.from_spec("deep_dm_3x16",            3, 16,
                               descriptors=["dm_statistics"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_combined_3x16":       ArchitectureConfig.from_spec("deep_combined_3x16",      3, 16,
                               descriptors=["dm_statistics", "cusp"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_combined_attn_3x16":  ArchitectureConfig.from_spec("deep_combined_attn_3x16", 3, 16,
                               attention=True, num_heads=4,
                               descriptors=["dm_statistics", "cusp"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     # The v8 geometric pair: the cusp descriptor's two columns (the nuclear-cusp
     # proximity and the compressed nuclear charge) on the 3x16 network, without
     # and with attention. deep_geom_3x16 is deep_cusp_3x16 under the campaign's
@@ -642,14 +628,12 @@ ARCHITECTURES = {
     "deep_geom_3x16":           ArchitectureConfig.from_spec("deep_geom_3x16",          3, 16,
                               descriptors=["cusp"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_geom_attn_3x16":      ArchitectureConfig.from_spec("deep_geom_attn_3x16",     3, 16,
                               attention=True, num_heads=4,
                               descriptors=["cusp"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     # Rung-3.5 localized-DM archs (ADDITIVE). The leaky deep_dm/deep_combined
     # entries above are KEPT so a pending in-flight array task still resolves
     # them. deep_rung35_3x16 (cusp + localized rung-3.5 DM occupancy) replaces
@@ -659,27 +643,23 @@ ARCHITECTURES = {
     "deep_rung35_3x16":         ArchitectureConfig.from_spec("deep_rung35_3x16",        3, 16,
                               descriptors=["cusp", "rung35"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_rung35_attn_3x16":    ArchitectureConfig.from_spec("deep_rung35_attn_3x16",   3, 16,
                               attention=True, num_heads=4,
                               descriptors=["cusp", "rung35"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     # Multi-width rung-3.5 (2026-08-06). ADDITIVE: the single-width entries
     # above are untouched, so an in-flight array task still resolves them. The
     # radial generalization of the localized DM projection; 3 widths x 2 spins
     # = 6 features.
     "deep_rung35ms_3x16":       ArchitectureConfig.from_spec("deep_rung35ms_3x16",     3, 16,
                               descriptors=["cusp", "rung35_multishell"],
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_rung35only_3x16":     ArchitectureConfig.from_spec("deep_rung35only_3x16",    3, 16,
                               descriptors=["rung35"],
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     # DFS-faithful meta-GGA archs (ADDITIVE). meta_gga=True switches the X/C UEG
     # gate to DFS's (x2 + tanh^2(x3)) prefactor (x3 = ln((alpha+1)/2)) and the
     # exchange Lieb-Oxford ceiling to 1.174; the "metagga" descriptor supplies the
@@ -691,8 +671,7 @@ ARCHITECTURES = {
     "deep_mgga_3x16":           ArchitectureConfig.from_spec("deep_mgga_3x16",          3, 16,
                               descriptors=["metagga"], meta_gga=True,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     # Width and depth completions of the pure DFS meta-GGA (2026-09-11). The
     # learned 3x16 clone of SCAN plateaus short of the atom certificate; these
     # three, the same in every field but depth and nodes, ask whether that miss
@@ -701,29 +680,24 @@ ARCHITECTURES = {
     "deep_mgga_3x32":           ArchitectureConfig.from_spec("deep_mgga_3x32",          3, 32,
                               descriptors=["metagga"], meta_gga=True,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_mgga_4x16":           ArchitectureConfig.from_spec("deep_mgga_4x16",          4, 16,
                               descriptors=["metagga"], meta_gga=True,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_mgga_4x32":           ArchitectureConfig.from_spec("deep_mgga_4x32",          4, 32,
                               descriptors=["metagga"], meta_gga=True,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_mgga_attn_3x16":      ArchitectureConfig.from_spec("deep_mgga_attn_3x16",     3, 16,
                               attention=True, num_heads=4,
                               descriptors=["metagga"], meta_gga=True,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_rung35_mgga_3x16":    ArchitectureConfig.from_spec("deep_rung35_mgga_3x16",   3, 16,
                               descriptors=["cusp", "rung35", "metagga"], meta_gga=True,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     # The mgga stacking completions (2026-08-10, the third sweep arm):
     # cusp+metagga isolates "does cusp help the meta-GGA rung" (the
     # deep_cusp vs deep chain, lifted to rung 3); cusp+multishell+metagga is
@@ -734,23 +708,19 @@ ARCHITECTURES = {
     "deep_cusp_mgga_3x16":      ArchitectureConfig.from_spec("deep_cusp_mgga_3x16",     3, 16,
                               descriptors=["cusp", "metagga"], meta_gga=True,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_rung35ms_mgga_3x16":  ArchitectureConfig.from_spec("deep_rung35ms_mgga_3x16", 3, 16,
                               descriptors=["cusp", "rung35_multishell", "metagga"],
                               meta_gga=True,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=True,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=True),
     "deep_notransform_3x16":       ArchitectureConfig.from_spec("deep_notransform_3x16",      3, 16,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=False,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=False),
     "deep_notransform_attn_3x16":  ArchitectureConfig.from_spec("deep_notransform_attn_3x16", 3, 16,
                               attention=True, num_heads=4,
                               dm_entropy_intensive=True,
-                              descriptor_log_transform=False,
-                              zero_init_final_layer=True),
+                              descriptor_log_transform=False),
 }
 # NOTE: spin-polarization-aware correlation is NOT a separate entry in
 # this registry (which mirrors the notebook's arch variants). Build one
@@ -762,9 +732,9 @@ ARCHITECTURES = {
 
 def get_architecture(name: str) -> ArchitectureConfig:
     """The registry entry ``name``, or the entry a shown name
-    (``xcquinox.pipeline.arch_names``) is an alias of: ``deep0_3x16`` resolves to
-    ``deep_3x16``, ``deep_2x8`` to ``shallow``. A stored key is never shadowed
-    (``deep_3x16`` stays the zero-init entry); an unknown name raises KeyError."""
+    (``xcquinox.pipeline.arch_names``) is an alias of: ``deep_4x32`` resolves to
+    ``deep``, ``medium_3x16`` to ``medium``. A stored key is never shadowed
+    (``deep_3x16`` is its own shown name); an unknown name raises KeyError."""
     try:
         return ARCHITECTURES[name]
     except KeyError:

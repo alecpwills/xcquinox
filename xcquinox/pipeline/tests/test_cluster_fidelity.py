@@ -466,13 +466,24 @@ def _tiny_oracle_set(basis="sto-3g", grid_level=1):
     )
 
 
-def _stub_checkpoint(run_dir, arch_name="deep_3x16", seed=42):
-    """Write a real xnet.eqx + cnet.eqx pair for ``arch_name``."""
+def _stub_checkpoint(run_dir, arch_name="deep_3x16", seed=42, *,
+                     zero_init=False):
+    """Write a real xnet.eqx + cnet.eqx pair for ``arch_name``.
+
+    The default writes the pair as ``create_network_pair`` initialises it, which
+    is the state a skeleton built from the registry entry holds, so a test that
+    compares the loaded leaves against a freshly seeded pair sees the same
+    values. ``zero_init=True`` zeroes the final MLP layer of both networks,
+    putting the pair at F_x = F_c = 1 exactly; it is asked for by the tests
+    whose premise is that limit.
+    """
+    import dataclasses
     import equinox as eqx
     from xcquinox.pipeline.config import get_architecture
     from xcquinox.pipeline.networks import create_network_pair
     from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
-    arch = get_architecture(arch_name)
+    arch = dataclasses.replace(get_architecture(arch_name),
+                               zero_init_final_layer=zero_init)
     xnet, cnet = create_network_pair(arch, seed=seed)
     d = pretrain_checkpoint_dir(run_dir, arch_name)
     os.makedirs(d, exist_ok=True)
@@ -574,7 +585,7 @@ def test_certificate_records_the_checkpoint_digests(tmp_path):
 def test_certificate_real_physics_on_h_and_h2_at_sto3g(tmp_path):
     """The whole energy path, for real, on two tiny systems.
 
-    ``deep_3x16`` is built with ``zero_init_final_layer=True``, so a freshly
+    The stub zeroes the final layer of both networks for this test, so the
     seeded network has Fx = Fc = 1 exactly and its E_xc is the LDA exchange
     plus PW92 correlation. Against PBE on the same frozen PBE density that is
     a large, definite offset, so this pins the sign, the magnitude, the
@@ -585,7 +596,7 @@ def test_certificate_real_physics_on_h_and_h2_at_sto3g(tmp_path):
     from pyscf.dft import numint
 
     run_dir = str(tmp_path / "run")
-    _stub_checkpoint(run_dir, "deep_3x16", seed=0)
+    _stub_checkpoint(run_dir, "deep_3x16", seed=0, zero_init=True)
     cfg = _cfg(pretrain_seed=0)
     systems = _tiny_oracle_set()
 

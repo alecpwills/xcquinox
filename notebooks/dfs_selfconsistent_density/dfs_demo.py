@@ -120,10 +120,11 @@ DFS_HYPERPARAMS: dict = {
 DFS_N_EPOCHS: dict = {"full_3": 150, "full_25": 100}
 
 #: Production pretraining step count (dfs_step7 recipe). Pretraining fits the
-#: enhancement factors to PBE per atom; the archs zero-init to LDA (F=1 over
-#: lda_x + PW92), so this is the LDA->PBE warm-start the DFS recipe uses. The
-#: pretrain ATOMS are derived from the training systems via pretrain_atoms_for()
-#: so they always exist at the training basis.
+#: enhancement factors to PBE per atom, starting from the default
+#: initialization of the networks (no registry architecture zeroes its final
+#: layer); this is the warm start to PBE the DFS recipe uses. The pretrain
+#: ATOMS are derived from the training systems via pretrain_atoms_for() so
+#: they always exist at the training basis.
 DFS_PRETRAIN_STEPS: int = 2500
 
 #: The DFS domain profile (Chakravorty atom anchors, ("H","Li") regularizer set).
@@ -417,8 +418,9 @@ def pretrain_to_pbe(arch, *, data_dir, checkpoint_dir, basis, grid_level, atoms,
                     n_steps=DFS_PRETRAIN_STEPS, progress_callback=None, force=False):
     """Pretrain ``arch``'s enhancement factors to PBE; return the checkpoint dir.
 
-    The archs zero-initialize to LDA (F_x = F_c = 1 multiply lda_x + PW92, the
-    uniform-gas limit); the DFS recipe warm-starts them to PBE first. This
+    The networks start from their default initialization (no registry
+    architecture zeroes its final layer); the DFS recipe warm-starts them to
+    PBE first. This
     generates the shared per-atom PBE Fx/Fc target data (``ensure_pretrain_data``,
     idempotent/cached across archs) then runs the pretrain regression
     (``run_pretrain``), writing ``xnet.eqx``/``cnet.eqx`` under ``checkpoint_dir``

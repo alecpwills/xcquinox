@@ -25,14 +25,12 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 # The shown names: every registry key is displayed under the name derived from
-# what the network is (xcquinox.pipeline.arch_names: ``medium`` -> ``deep_3x16``,
-# ``deep_3x16`` -> ``deep0_3x16``, ``shallow`` -> ``deep_2x8``, ...). ARCH_ORDER
-# and ARCH_COLOR below are keyed by the SHOWN name; the style functions accept
-# a shown name, or a stored key that is not also a shown name, which they map
-# through ``display_name``. The places that hold a stored key (a manifest cell,
-# a pretrain directory) convert before anything is drawn; a stored key that is
-# ALSO a shown name (``deep_3x16``) is read in the shown sense here, so those
-# places must convert explicitly.
+# the key and its size (xcquinox.pipeline.arch_names: ``medium`` -> ``medium_3x16``,
+# ``deep`` -> ``deep_4x32``, ``shallow`` -> ``shallow_2x8``; a key that states its
+# size, ``deep_3x16``, is its own shown name). ARCH_ORDER and ARCH_COLOR below
+# are keyed by the SHOWN name; the style functions accept either spelling and
+# map a stored key through ``display_name``. The places that hold a stored key
+# (a manifest cell, a pretrain directory) convert before anything is drawn.
 from xcquinox.pipeline.arch_names import (  # noqa: E402
     DISPLAY_NAME, STORED_KEY, display_name, expanded_key, key_line, split_tag,
     stored_key)
@@ -49,10 +47,9 @@ _STORED_ORDER: Tuple[str, ...] = (
     "deep_notransform", "deep_notransform_attn",
     # v6 G1 ladder archs (registered base names, no width-twin suffix).
     # shallow/shallow_attn are the reduced size (depth 2 x 8 nodes);
-    # medium/medium_attn are the PRODUCTION 3x16 size. Three registry fields
+    # medium/medium_attn are the PRODUCTION 3x16 size. Two registry fields
     # separate them from deep_3x16/deep_attn_3x16 (descriptor_log_transform,
-    # zero_init_final_layer, dm_entropy_intensive) and all three are INERT
-    # under the v6 model block (parent_anchor forces zero-init; dfs
+    # dm_entropy_intensive) and both are INERT under the v6 model block (dfs
     # coordinates bypass the log transform; no descriptors), so on v6 axes
     # the pairs test reproducibility at the registry names, not an ablation.
     # Attention twin after its base.
@@ -70,10 +67,10 @@ _STORED_ORDER: Tuple[str, ...] = (
 )
 
 # --------------------------------------------------------------------------- #
-# The display order, along the axes the names state: the Glorot ladder (2x8,
-# 3x16, each with its attention twin), the 3x16 zero-init family (plain,
-# attention, cusp, dm, combined, notransform, rung-3.5, meta-GGA), the 4x32
-# legacy family last. Written in stored keys and mapped to the shown names.
+# The display order, along the axes the names state: the legacy ladder (2x8,
+# 3x16, each with its attention twin), the 3x16 family (plain, attention,
+# cusp, dm, combined, notransform, rung-3.5, meta-GGA), the 4x32 family last.
+# Written in stored keys and mapped to the shown names.
 # --------------------------------------------------------------------------- #
 _DISPLAY_ORDER: Tuple[str, ...] = (
     "shallow", "shallow_attn", "medium", "medium_attn",
@@ -183,9 +180,9 @@ RUNG_BAND: Dict[str, str] = {
 
 def as_shown(arch: str) -> str:
     """``arch`` as a shown name: a stored-only key is mapped through
-    ``display_name``, a shown name (a stored key that is also one included) is
-    kept, a protocol tag `` [tag]`` is carried along. The shown sense wins for
-    the two names that are both."""
+    ``display_name``, a self-named key (a stored key that is its own shown
+    name, ``deep_3x16``) is kept as it is, and a protocol tag `` [tag]`` is
+    carried along."""
     base, tag = split_tag(arch)
     shown = base if base in STORED_KEY else display_name(base)
     return f"{shown} [{tag}]" if tag else shown

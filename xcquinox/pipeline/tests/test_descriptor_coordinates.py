@@ -217,9 +217,9 @@ def _arch(name, coordinates, anchor=False, zero_init=False):
     whole reason these cases have content: a zero-initialized final layer makes
     the MLP output exactly 0.0, so the forward is ``F = 1`` (or the parent,
     when anchored) whatever the MLP was fed and the coordinates could not be
-    observed from outside at all. Every registered ``deep_*`` entry carries the
-    flag on, so a case built at the registry's own value would pass against any
-    coordinate map whatsoever.
+    observed from outside at all. No registry entry carries the flag (it is
+    set only by the parent anchor), and each case states its own ``zero_init=``
+    so its premise never rides on whatever the registry happens to carry.
     """
     arch = dataclasses.replace(pipeline.get_architecture(name),
                                use_polarized_correlation=True,

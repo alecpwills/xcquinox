@@ -1,26 +1,24 @@
-"""Shown names for the registry architectures, derived from what each network is.
+"""Shown names for the registry architectures, derived from the key and the size.
 
 The registry keys are storage identifiers: run directories, ``train_metadata.json``, the
 cluster configurations and every pulled result are filed under them, so they do not
-change. The name a figure, a table or a document shows is derived here from the
-configuration by one rule, so that two keys that build the same network (``medium`` and
-``deep_3x16`` are both depth 3, width 16, the same inputs) are told apart by the one
-setting that differs, and the name says which setting that is:
+change. The name a figure, a table or a document shows is derived here from the key and
+its configuration by one rule:
 
-* family ``deep``: the default, Glorot initialization of every layer;
-* family ``deep0``: the last layer's weight and bias zeroed at construction
-  (``zero_init_final_layer``), so the untrained network is the LDA and pre-training
-  starts from it;
+* the key's family word (``deep``, ``medium`` or ``shallow``), as the key states it;
 * then the descriptor and attention tokens of the stored key (``attn``, ``cusp``, ``dm``,
   ``combined``, ``notransform``, ``rung35``, ``mgga``, ...) as they are;
 * then the size, ``_<depth>x<nodes>``, which is where the depth is stated.
 
-So ``medium`` is shown as ``deep_3x16``, ``deep_3x16`` as ``deep0_3x16``, ``medium_attn``
-as ``deep_attn_3x16``, ``deep_cusp_mgga_3x16`` as ``deep0_cusp_mgga_3x16``, ``shallow`` as
-``deep_2x8``. Two shown names coincide with stored keys of other configurations
-(``deep_3x16``, ``deep_attn_3x16``); every function here resolves a name in the SHOWN
-sense, and the places that hold a stored key (a manifest cell, a pretrain directory) call
-:func:`display_name` before the name reaches anything that draws or prints.
+So ``deep_3x16`` is shown as itself, ``deep`` as ``deep_4x32``, ``deep_cusp_attn`` as
+``deep_cusp_attn_4x32``, ``medium`` as ``medium_3x16`` and ``shallow_attn`` as
+``shallow_attn_2x8``. A key whose name already carries its size is its own shown name; the
+keys without a size suffix are reached through the aliases (:data:`ALIASES`). The
+initialization is no part of the name: no registry entry zeroes its final layer, and the
+parent anchor, which does, is a run protocol marked by a tag. Files written before this
+rule (the v7 documents and their CSVs) carry the earlier names, ``deep_3x16`` for
+``medium`` and ``deep0_*`` for the entries that were then zero-initialized; their
+``arch_stored`` column is the key.
 
 The expanded key (:func:`expanded_key`) spells the settings out, for legends and captions,
 and :func:`key_line` joins them for a figure footer. A protocol tag ``[tag]`` appended to a
@@ -53,8 +51,17 @@ _TAG_TEXT = {
     "anchored": "anchored on the parent (last layer zeroed at run time)",
 }
 
-_ZEROED_TEXT = "last layer zeroed (pre-training starts at the LDA)"
-_GLOROT_TEXT = "Glorot initialization"
+
+def _family_word(stored: str) -> str:
+    """The leading family word of a stored key (``deep_cusp_3x16`` -> ``deep``,
+    ``medium`` -> ``medium``). A key outside the three families is refused: the
+    rule would have nothing to name it by."""
+    for word in _FAMILY_WORDS:
+        if stored == word or stored.startswith(word + "_"):
+            return word
+    raise ValueError(
+        f"arch_names: the stored key {stored!r} starts with none of the family "
+        f"words {_FAMILY_WORDS}, so no shown name can be derived for it")
 
 
 def _tokens(stored: str) -> str:
@@ -71,9 +78,12 @@ def _tokens(stored: str) -> str:
 
 
 def derive_display_name(stored: str, cfg) -> str:
-    """The shown name of the registry key ``stored`` with configuration ``cfg``."""
+    """The shown name of the registry key ``stored`` with configuration ``cfg``:
+    the key's family word, its tokens and ``_<depth>x<nodes>``. The
+    initialization is read from nothing: no registry entry zeroes its final
+    layer, and a configuration that does derives the same name."""
     depth, nodes = int(cfg.depth), int(cfg.nodes)
-    family = "deep0" if bool(getattr(cfg, "zero_init_final_layer", False)) else "deep"
+    family = _family_word(stored)
     tokens = _tokens(stored)
     return f"{family}_{tokens}_{depth}x{nodes}" if tokens else f"{family}_{depth}x{nodes}"
 
@@ -123,8 +133,8 @@ def display_name(stored: str, protocol: str | None = None) -> str:
 
 def stored_key(name: str) -> str:
     """The registry key of a shown name (a `` [tag]`` suffix is dropped); a name that is
-    not a shown name is returned as is. A name that is both a shown name and a stored key
-    resolves in the shown sense."""
+    not a shown name is returned as is. A key that states its size is its own shown name
+    and resolves to itself."""
     base, _tag = _split_tag(name)
     return STORED_KEY.get(base, base)
 
@@ -132,9 +142,9 @@ def stored_key(name: str) -> str:
 def expanded_key(name: str) -> str:
     """The settings the shown name stands for, spelled out; ``""`` for an unknown name.
 
-    The size, the initialization, the attention heads, the descriptors and the rung are
-    the architecture's own and are stated; the descriptor coordinates and the flags
-    that are inert under them are run settings and are not."""
+    The size, the attention heads, the descriptors and the rung are the architecture's
+    own and are stated; the descriptor coordinates and the flags that are inert under
+    them are run settings and are not."""
     base, tag = _split_tag(name)
     key = STORED_KEY.get(base)
     if key is None:
@@ -144,8 +154,6 @@ def expanded_key(name: str) -> str:
             return ""
     cfg = _registry()[key]
     parts = [f"{int(cfg.depth)} x {int(cfg.nodes)}"]
-    parts.append(_ZEROED_TEXT if getattr(cfg, "zero_init_final_layer", False)
-                 else _GLOROT_TEXT)
     if getattr(cfg, "attention", False):
         parts.append(f"{int(cfg.num_heads)} attention heads")
     for d in getattr(cfg, "descriptors", ()) or ():

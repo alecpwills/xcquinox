@@ -359,8 +359,9 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
     reference it was PRETRAINED to (PBE for the GGA archs, SCAN for the
     meta-GGA ones), plus an alpha sweep for the meta-GGA family."""
     reps = representative_specs(run_dir)
-    # stored keys in ARCH_ORDER's (shown-name) order; a stored key that is
-    # also a shown name (deep_3x16) is mapped explicitly, never by inspection
+    # stored keys in ARCH_ORDER's (shown-name) order; every key is mapped
+    # explicitly through display_name (a self-named key maps to itself),
+    # never by inspection
     shown_of = {a: sib.display_name(a) for a in reps}
     archs = [a for s in ARCH_ORDER for a in reps if shown_of[a] == s]
     s_grid = np.linspace(1e-3, s_max, n_points)

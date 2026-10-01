@@ -34,7 +34,8 @@ replicates Dick & Fernandez-Serra, Phys. Rev. B 104, L161109 (2021):
 - `full_3` (3-cycle) and `full_25` (25-cycle) FULL differentiable SCF; decaying mixer
   `alpha = 0.3^step + 0.3`; tail-weighted energy loss;
 - adamw with linear learning-rate decay;
-- networks pretrained to PBE before density training (they zero-initialize to LDA).
+- networks pretrained to PBE before density training (they start near LDA, from the default
+  initialization of their final layer).
 
 Architectures: two GGA-ladder networks (`deep_3x16`, `deep_rung35_3x16`) and two meta-GGA networks
 (`deep_mgga_3x16`, `deep_rung35_mgga_3x16`, which pretrain to SCAN). Change `ARCH_NAMES` in the setup
@@ -100,7 +101,7 @@ except Exception:
 _SOLVER_HATCH = {"full_3": "", "full_25": "//"}  # distinguish SCF-cycle count
 
 def _shown(arch):
-    "The shown name of a registry key (arch_names: deep_3x16 -> deep0_3x16), mapped explicitly."
+    "The shown name of a registry key (arch_names: deep -> deep_4x32, medium -> medium_3x16), mapped explicitly."
     return arch_style.display_name(arch) if arch_style is not None else arch
 
 def _nn_color(key):
@@ -250,8 +251,9 @@ print(f"integral rho_ref[{ex.name}] = {float((_z['rho_ref_grid'] * _z['grid_weig
 md(r"""
 ## 3. Pretrain to PBE
 
-The networks zero-initialize to LDA (`F_x = F_c = 1` multiply `lda_x` + PW92, the uniform-gas limit).
-The DFS recipe fits `F` to PBE first (`Fx = F_x^PBE/F_x^LDA - 1`). This runs one PBE fit per
+The networks start from the default initialization of their final layer, so an untrained `F`
+sits near 1 (`F_x = F_c = 1` exactly multiplies `lda_x` + PW92, the uniform-gas limit). The DFS
+recipe fits `F` to PBE first (`Fx = F_x^PBE/F_x^LDA - 1`). This runs one PBE fit per
 architecture and writes `xnet.eqx`/`cnet.eqx` used as the training warm-start.
 """)
 
@@ -271,7 +273,7 @@ if DO_PRETRAIN:
         pretrained[arch_name] = ck
         print("  wrote", ck, flush=True)
 else:
-    print("pretraining off; networks start from the LDA init")
+    print("pretraining off; networks start from the default init")
 """)
 
 # ---------------------------------------------------------------------------

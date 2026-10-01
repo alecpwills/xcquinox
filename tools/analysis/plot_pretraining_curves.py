@@ -62,8 +62,8 @@ _RUNG_LS = {"GGA": "-", "meta-GGA": "--", "rung-3.5": ":", "rung-3.5+meta-GGA": 
 
 def _shown(arch: str) -> str:
     """The shown name of a pre-training DIRECTORY (a stored key), mapped
-    explicitly: a stored key that is also a shown name (``deep_3x16``) cannot
-    be told apart by inspection."""
+    explicitly through ``display_name`` (a self-named key maps to itself):
+    the stored and shown spellings cannot be told apart by inspection."""
     return arch_style.display_name(arch) if arch_style is not None else arch
 
 
