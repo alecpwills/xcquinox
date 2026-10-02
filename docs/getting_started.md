@@ -63,6 +63,32 @@ Without `--submit` the command is a dry run: the run directory and the rendered 
 written and nothing is submitted. `--partition` is required. `--max-nodes` caps the nodes an
 array stage holds at once.
 
+## Submitting one stage group
+
+`--stages` submits the whole graph (`all`, the default) or one closed group of it:
+
+```bash
+# A pretraining suite: datagen -> pretrain array, nothing downstream.
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_slim05_allsc.yaml \
+    --stages pretrain --partition extended-40core --submit
+
+# The optimization suite that seeds from a completed pretraining run:
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_dfs_parity.yaml \
+    --stages optimize --donor-run /gpfs/scratch/awills/xcquinox_runs/.../run_<stamp> \
+    --partition extended-96core --max-nodes 4 --submit
+```
+
+`--stages pretrain` renders and queues only datagen and the pretrain array; no preflight,
+train or eval script, command line or job record exists in the run dir. `--stages optimize`
+submits only preflight -> train -> eval (plus the benchmark-refs job when configured):
+preflight carries no dependency, because the pretraining it seeds from is already complete.
+It requires every swept architecture to be donor-backed -- `--donor-run DIR` builds that
+donor map (`<DIR>/pretrain/<arch>` per arch, into `pretrain.donor_checkpoints`, replacing
+the configuration's map) and refuses before creating the run dir unless every arch dir
+carries its `fidelity_certificate.json`. A refused `--stages` selection likewise leaves
+nothing on disk. `resubmit-preflight` recovers a run with the same stage group its job
+records show, so a pretraining suite never grows a train array in recovery.
+
 ## Following a run
 
 ```bash
