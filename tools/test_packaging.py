@@ -27,7 +27,10 @@ The rules, read from the files a user and a runner see:
 * the test configuration lives with the packaging metadata and nowhere else, so that one
   file states the test paths and the markers;
 * the workflow runs on the branch the work happens on, installs the package with its
-  declared dependencies rather than over a hand-written environment, and runs the tests.
+  declared dependencies rather than over a hand-written environment, and runs the tests;
+* the coverage upload can neither fail the build nor run a codecov-action pin below
+  v5 or not a release tag, so that a crash in the reporter's own process (v4.0.1's
+  gpg verification, run 37033864579) red-builds no suite the tests have passed on.
 
 The imports are read with the parser rather than by importing the package: a rule that
 needed the quantum-chemistry stack on the path to say what the package needs would be
@@ -200,6 +203,36 @@ def workflow_offences(workflow: dict) -> list[str]:
     return out
 
 
+#: the tag a coverage upload step must pin: a numbered release, read for its major
+_CODECOV_TAG = re.compile(r"^v(?P<major>\d+)\.\d+")
+
+
+def coverage_upload_offences(workflow: dict) -> list[str]:
+    """What a codecov upload step does not do for itself: it can fail the build, and
+    its pin of the action is below v5 or not a release tag.
+
+    The upload reports on a run the workflow has already tested and nothing gates on
+    its check, so a crash in the action's own process -- v4.0.1's gpg verification of
+    the downloaded uploader, run 37033864579 -- red-builds a green suite for nothing;
+    only the step's ``continue-on-error`` guards that class, since the crash is not an
+    uploader exit code any input could soften. The flag is read as YAML parses it:
+    a key present with ``false`` still leaves the step gating. A ref that is not a
+    ``v<major>.<minor>`` tag with major >= 5 is either the line that crashed or a
+    moving one, and the repository pins every action exactly."""
+    out = []
+    for job in workflow.get("jobs", {}).values():
+        for step in job.get("steps", []):
+            uses = step.get("uses") or ""
+            if not uses.startswith("codecov/codecov-action@"):
+                continue
+            if step.get("continue-on-error") is not True:
+                out.append("the coverage upload can fail the build")
+            tag = _CODECOV_TAG.match(uses[len("codecov/codecov-action@"):])
+            if tag is None or int(tag.group("major")) < 5:
+                out.append("the codecov-action pin is below v5 or not a release tag")
+    return out
+
+
 def test_the_rules_fire_on_fixtures():
     """Each rule fires on a configuration that breaks it and passes one that does not."""
     assert declared_dependencies({"project": {"dependencies": [
@@ -236,6 +269,32 @@ def test_the_rules_fire_on_fixtures():
                                         {"run": "sudo sysctl -w vm.max_map_count=262144"}]}}}
     assert workflow_offences(late) == [
         "the tests run before the mapping ceiling is raised"]
+
+    assert coverage_upload_offences(good) == []
+    unguarded = {"jobs": {"test": {"steps": [
+        {"uses": "codecov/codecov-action@v4.0.1",
+         "with": {"token": "t", "slug": "alecpwills/xcquinox"}}]}}}
+    assert coverage_upload_offences(unguarded) == [
+        "the coverage upload can fail the build",
+        "the codecov-action pin is below v5 or not a release tag"]
+    guarded = {"jobs": {"test": {"steps": [
+        {"uses": "codecov/codecov-action@v7.1.1", "continue-on-error": True}]}}}
+    assert coverage_upload_offences(guarded) == []
+    disarmed = {"jobs": {"test": {"steps": [
+        {"uses": "codecov/codecov-action@v7.1.1", "continue-on-error": False}]}}}
+    assert coverage_upload_offences(disarmed) == ["the coverage upload can fail the build"]
+    outdated = {"jobs": {"test": {"steps": [
+        {"uses": "codecov/codecov-action@v4.6.0", "continue-on-error": True}]}}}
+    assert coverage_upload_offences(outdated) == [
+        "the codecov-action pin is below v5 or not a release tag"]
+    quoted = {"jobs": {"test": {"steps": [
+        {"uses": "codecov/codecov-action@v7.1.1",
+         "continue-on-error": "false"}]}}}
+    assert coverage_upload_offences(quoted) == ["the coverage upload can fail the build"]
+    movable = {"jobs": {"test": {"steps": [
+        {"uses": "codecov/codecov-action@v7", "continue-on-error": True}]}}}
+    assert coverage_upload_offences(movable) == [
+        "the codecov-action pin is below v5 or not a release tag"]
 
     assert parity_pins("jax==0.10.2\n# a comment\nPyYAML==6.0.3  # note\nnumpy>=2.5\n\n") == {
         "jax": "0.10.2", "pyyaml": "6.0.3"}
@@ -805,6 +864,18 @@ def test_the_workflow_runs_on_the_working_branch_and_installs_what_is_declared()
     with open(_WORKFLOW, encoding="utf-8") as fh:
         workflow = yaml.safe_load(fh)
     assert workflow_offences(workflow) == []
+
+
+def test_the_coverage_upload_cannot_fail_the_build():
+    """The coverage upload carries ``continue-on-error: true`` and a pin of the action at
+    or above v5: it runs after the tests and nothing gates on its check, and the v4.0.1
+    upload of run 37033864579 crashed in the action's own gpg wrapper (an EPIPE no
+    ``fail_ci_if_error`` input could soften) and red-built a suite that had passed on
+    both matrix jobs."""
+    yaml = pytest.importorskip("yaml")
+    with open(_WORKFLOW, encoding="utf-8") as fh:
+        workflow = yaml.safe_load(fh)
+    assert coverage_upload_offences(workflow) == []
 
 
 def test_the_test_extra_carries_the_notebook_kernel():
