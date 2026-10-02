@@ -281,6 +281,20 @@ def test_parent_is_pbe_for_gga_rung_and_scan_for_meta_gga():
     assert fid.resolve_parent("deep_mgga_3x16") == "scan"
 
 
+def test_distinct_archs_excludes_a_donor_backed_arch():
+    """The CLI's ``<arch_idx>`` space is the pretrain STAGE's list: a donor
+    arch has no run-local certificate to compute and no array task to compute
+    it, so an index mapped here must never land on one. A donor-less config
+    keeps the full de-duplicated sweep (duplicates collapse to one slot)."""
+    assert fid._distinct_archs(_cfg()) == ["deep_3x16"]
+    assert fid._distinct_archs(
+        _cfg(arch=("deep_3x16", "deep_mgga_3x16", "deep_3x16"))) == [
+            "deep_3x16", "deep_mgga_3x16"]
+    cfg = _cfg(arch=("deep_3x16", "deep_mgga_3x16"))
+    cfg.pretrain.donor_checkpoints = {"deep_3x16": "/donor/deep_3x16"}
+    assert fid._distinct_archs(cfg) == ["deep_mgga_3x16"]
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

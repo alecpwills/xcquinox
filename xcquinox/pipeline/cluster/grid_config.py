@@ -504,6 +504,17 @@ class PretrainConfig:
     # are not carried.
     points_per_system: int = 800
     sampling_seed: int = 0
+    # Optimization warm-starts from SPECIFIED pretrained networks:
+    # canonical arch name -> ABSOLUTE donor checkpoint directory (an earlier
+    # run's ``pretrain/<arch>/``, carrying xnet.eqx/cnet.eqx and its own
+    # certificate). An arch with a donor never pretrains in this run -- the
+    # pretrain array, the datagen requirements and every certificate read
+    # skip it, and each of its train specs warm-starts from the donor
+    # (``pretrain_checkpoint_for``). A key outside the sweep's archs and a
+    # relative value are refused at validation; existence is advisory, as for
+    # data_dir, because a /gpfs donor is not visible on the workstation and a
+    # missing donor is already loud at the fidelity gate.
+    donor_checkpoints: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -1411,6 +1422,32 @@ def _build_pretrain_from(raw: dict, *, source=None) -> PretrainConfig:
     return cfg
 
 
+def _parse_donor_checkpoints(raw):
+    """The donor mapping as written, shape-checked and key-sorted.
+
+    Only the SHAPE is checked here (a mapping of strings to strings); the
+    key's membership in the sweep and the value's absoluteness are semantic
+    checks :func:`validate_grid_semantics` makes, where every other
+    cross-field rule of the config lives.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "grid config key 'pretrain.donor_checkpoints' must be a mapping "
+            "of architecture name -> absolute donor checkpoint directory, "
+            f"got {type(raw).__name__}")
+    out = {}
+    for arch, path in raw.items():
+        if not isinstance(arch, str) or not isinstance(path, str):
+            raise ValueError(
+                "grid config key 'pretrain.donor_checkpoints' must map "
+                "architecture names to absolute donor checkpoint directory "
+                f"strings; got {arch!r} -> {path!r}")
+        out[arch] = path
+    return dict(sorted(out.items()))
+
+
 def _build_pretrain(d: dict) -> PretrainConfig:
     ctx = "pretrain"
     _reject_unknown_keys(d, PretrainConfig, ctx,
@@ -1481,6 +1518,8 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         sampling_seed=_config_number(d, "sampling_seed", 0, whole=True,
                                      minimum=0, maximum=_MAX_SEED),
         slim_set=_pretrain_choice(d, "slim_set", "", _SLIM_SETS),
+        donor_checkpoints=_parse_donor_checkpoints(
+            d.get("donor_checkpoints")),
     )
     # The decay window is [lr_decay_start, lr_decay_end]; an end before the
     # start is not a schedule and is refused at load rather than at the node.
@@ -2140,6 +2179,34 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                 f"sweep arch {a!r} is the shown name of the registry key "
                 f"{stored_key(a)!r}; configuration files name the registry key")
 
+    # --- donor warm-starts ---------------------------------------------------
+    # A donor key outside the sweep's canonical arch set is a typo: the arch
+    # would silently pretrain run-locally while the file reads as though it
+    # warm-started, which is the exact failure this check exists to catch.
+    donors = getattr(cfg.pretrain, "donor_checkpoints", None) or {}
+    swept = set(_canon_axis(cfg.sweep.arch))
+    for arch, path in donors.items():
+        if arch not in swept:
+            raise ValueError(
+                f"pretrain.donor_checkpoints names arch {arch!r}, which the "
+                f"sweep does not carry; the sweep is {sorted(swept)}. A key "
+                "outside the sweep warm-starts nothing and pretrains nothing")
+        if not os.path.isabs(path):
+            raise ValueError(
+                f"pretrain.donor_checkpoints[{arch!r}] must be an absolute "
+                f"donor checkpoint directory, got {path!r}; like "
+                "pretrain.data_dir it names a shared-filesystem path the "
+                "node stages read")
+        # Existence is advisory (a /gpfs donor is not visible on the
+        # workstation); a missing donor is already loud at the fidelity gate.
+        if not os.path.isdir(path):
+            warnings.warn(
+                f"pretrain.donor_checkpoints[{arch!r}] {path!r} not found on "
+                "the login node, this is advisory; the fidelity gate is "
+                "authoritative for the donor's certificate",
+                stacklevel=2,
+            )
+
     # --- the model block --------------------------------------------------
     # The parent anchor is a property of the model class the run builds, so
     # it is checked against every architecture the run resolves, at submit:
@@ -2666,3 +2733,62 @@ def pretrain_checkpoint_dir(run_dir: str, arch: str) -> str:
     all derive the path through THIS function so they cannot drift.
     """
     return os.path.join(os.path.abspath(run_dir), "pretrain", arch)
+
+
+def pretrain_stage_archs(cfg) -> list:
+    """The canonical archs the pretrain STAGE still runs for.
+
+    The sweep's deduplicated, sorted arch axis (``_canon_axis``, the exact
+    order ``expand_grid`` applies) with every DONOR arch removed: a donor
+    arch's warm start is the donor's own product, so this run neither
+    pretrains it nor builds its pretrain data. ``submit`` sizes the pretrain
+    array with this list and ``_pretrain._distinct_archs`` maps the array
+    index through it, so both sides see the same list in the same order.
+    """
+    donors = getattr(cfg.pretrain, "donor_checkpoints", None) or {}
+    return [a for a in _canon_axis(cfg.sweep.arch) if a not in donors]
+
+
+def pretrain_checkpoint_for(cfg, run_dir: str, arch: str) -> str:
+    """The one resolution rule every consumer shares: the donor stated for
+    ``arch``, else the run's own pretrain product.
+
+    ``spec_builder`` (the spec's warm start), the on-node and preflight
+    certificate gates, ``validate_run``'s certificate loop and the status
+    tally all resolve through this, so a donor arch is gated, validated and
+    reported on its DONOR rather than on a product this run never writes.
+    The fidelity module's own (run_dir, arch)-keyed bookkeeping (regate,
+    certificate paths) stays run-local by design: a donor is another run's
+    product and is not regated from this one.
+    """
+    donors = getattr(cfg.pretrain, "donor_checkpoints", None) or {}
+    donor = donors.get(arch)
+    if donor:
+        return donor
+    return pretrain_checkpoint_dir(run_dir, arch)
+
+
+#: The two spellings a run's resolved config can carry, in resolution order:
+#: a YAML-configured run writes the .yaml, a JSON-configured one (the
+#: ``_pretrain`` dispatch) writes the .json.
+_RESOLVED_CONFIG_NAMES = ("resolved_config.yaml", "resolved_config.json")
+
+
+def load_resolved_run_config(run_dir: str):
+    """Load a run's resolved config from whichever spelling it wrote.
+
+    A YAML-configured run writes ``resolved_config.yaml``; a JSON-configured
+    one (the ``_pretrain`` dispatch) writes ``resolved_config.json``. The
+    consumers that re-read the run's config on the node -- the train task's
+    fidelity gate, the status tally, the record layer -- accept both through
+    this one loader and are loud when neither exists, rather than silently
+    gating the run-local directory of a run that never wrote a config.
+    """
+    for name in _RESOLVED_CONFIG_NAMES:
+        path = os.path.join(run_dir, name)
+        if os.path.isfile(path):
+            return load_grid_config(path)
+    raise FileNotFoundError(
+        f"no resolved config under {run_dir!r}: expected one of "
+        f"{', '.join(_RESOLVED_CONFIG_NAMES)} (written by submit for every "
+        "run it stages)")

@@ -776,6 +776,56 @@ def test_submit_anywhere_checkout_relative_grid_path_resolves(
     assert len(os.listdir(out / "runs")) == 1
 
 
+# ---------------------------------------------------------------------------
+# Donor warm-starts: the status tally and regate read the donors
+# ---------------------------------------------------------------------------
+
+def test_pretrain_counts_reads_donors(tmp_path):
+    """The status tally counts a donor arch on its donor (the networks and
+    the certificate live there); a tally that counted run-local dirs would
+    call a released donor arch uncertified and mis-state the stalled stage."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    donor = tmp_path / "donor_run" / "pretrain" / "medium"
+    donor.mkdir(parents=True)
+    (donor / "xnet.eqx").write_bytes(b"x")
+    (donor / "cnet.eqx").write_bytes(b"c")
+    with open(donor / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": "medium",
+                   "summary": {"max_atom_mHa": 0.1,
+                               "max_dAE_kcalmol": 0.2}}, f)
+
+    d = _base_config_dict()
+    d["pretrain"]["donor_checkpoints"] = {"medium": str(donor)}
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps(d))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cli._write_resolved_config(load_grid_config(str(p)), str(run_dir))
+
+    assert cli._pretrain_counts(str(run_dir)) == (1, 1, 1, 1, [])
+
+
+def test_regate_skips_donor_archs_and_reports_nothing_to_regate(
+        tmp_path, capsys):
+    """A run whose every arch warm-starts from a donor has no run-local
+    certificate to re-verdict: the command says so and returns 1 (a success
+    exit having done nothing would mask the state)."""
+    rd, tracked, _cert = _regate_fixture(tmp_path)
+    _rewrite_resolved(
+        tmp_path, rd,
+        lambda d: d["pretrain"].__setitem__(
+            "donor_checkpoints", {"medium": "/gpfs/donors/medium"}),
+        "donor")
+
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "donor" in out
+    assert "nothing to regate" in out
+
+
 def test_prepare_anywhere_checkout_relative_grid_path_resolves(
         tmp_path, monkeypatch, capsys):
     """``prepare`` resolves the grid argument the same way ``submit`` does:

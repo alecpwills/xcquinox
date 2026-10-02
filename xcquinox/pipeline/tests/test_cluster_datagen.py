@@ -216,3 +216,17 @@ def test_datagen_call_is_the_stage_call(monkeypatch, tmp_path):
     assert calls[0] == datagen_call(cfg, True, "scan")
 
 
+# ---------------------------------------------------------------------------
+# Donor warm-starts: a donor arch consumes no pretrain data in this run
+# ---------------------------------------------------------------------------
+
+def test_required_data_specs_skip_donor_archs():
+    """A donor arch's warm start is the donor's own product, so the stage must
+    not build a data file for it: an auto-parent sweep that mixes a meta-GGA
+    arch with a GGA arch needs both the SCAN and PBE files on its own, and
+    drops to the PBE file alone when its only meta-GGA arch is a donor."""
+    cfg = _cfg2(["deep_mgga_3x16", "deep"], True, parent_density="auto",
+                donor_checkpoints={"deep_mgga_3x16": "/gpfs/donors/mgga"})
+    assert _datagen._required_data_specs(cfg) == [(True, "pbe")]
+
+

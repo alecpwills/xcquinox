@@ -77,7 +77,7 @@ import time
 from xcquinox.pipeline.config import PretrainSpec, apply_model_block, get_architecture
 from xcquinox.pipeline.cluster import fidelity
 from xcquinox.pipeline.cluster.grid_config import (
-    load_grid_config, _canon_axis, pretrain_checkpoint_dir,
+    load_resolved_run_config, pretrain_checkpoint_dir, pretrain_stage_archs,
 )
 
 
@@ -199,14 +199,14 @@ def _fmt_secs(seconds):
 # ---------------------------------------------------------------------------
 
 def _distinct_archs(cfg):
-    """Return the de-duplicated, sorted list of arch names from the sweep.
+    """Return the arch names the pretrain STAGE runs for, in canonical order.
 
-    Reuses ``grid_config._canon_axis`` -- the EXACT de-dup + sort that
-    ``expand_grid`` applies to the arch axis -- so the i-th distinct arch here
-    is the same i-th arch the grid expansion sees. Keeping these in lock-step
-    is what makes ``<arch_idx>`` a stable selector.
+    Delegates to ``grid_config.pretrain_stage_archs`` -- the sweep's de-dup +
+    sort with every DONOR arch removed, the exact list ``submit`` sizes the
+    pretrain array with -- so ``<arch_idx>`` selects the same arch on both
+    sides: an arch whose warm start is a donor has no array task here.
     """
-    return _canon_axis(cfg.sweep.arch)
+    return pretrain_stage_archs(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -375,22 +375,17 @@ def main(argv=None) -> int:
     arch_idx = args.arch_idx
 
     # --- load resolved config ----------------------------------------------
-    cfg_path = os.path.join(run_dir, "resolved_config.yaml")
-    if not os.path.isfile(cfg_path):
-        # load_grid_config also accepts .json; fall back so a JSON-only run dir
-        # still works (mirrors the test fixtures' yaml-or-json dispatch).
-        json_path = os.path.join(run_dir, "resolved_config.json")
-        if os.path.isfile(json_path):
-            cfg_path = json_path
-        else:
-            sys.stdout.write(
-                f"[harness pretrain] ERROR: resolved_config.yaml not found at "
-                f"{cfg_path}\n"
-            )
-            sys.stdout.flush()
-            return 1
+    # The shared loader accepts both spellings (.yaml and .json) so a
+    # JSON-configured run resolves the same as a YAML one.
     try:
-        cfg = load_grid_config(cfg_path)
+        cfg = load_resolved_run_config(run_dir)
+    except FileNotFoundError:
+        sys.stdout.write(
+            f"[harness pretrain] ERROR: no resolved_config.yaml or "
+            f".json found in {run_dir}\n"
+        )
+        sys.stdout.flush()
+        return 1
     except (ValueError, ImportError, OSError) as exc:
         sys.stdout.write(
             f"[harness pretrain] ERROR: failed to load resolved config: "

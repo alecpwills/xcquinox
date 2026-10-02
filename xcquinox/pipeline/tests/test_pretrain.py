@@ -316,11 +316,15 @@ def test_run_pretrain_metadata_json_all_fields(tiny_pretrain_data_dir):
         "min_loss_x", "min_loss_c", "use_cusp", "use_dm",
         "meta_gga", "n_extra_features", "pretrain_mesh",
         "timestamp", "duration_seconds",
+        # The two static registry fields the pretraining loader compares
+        # (train._require_matching_model_class): the record is the only
+        # channel it has for either.
+        "dm_entropy_intensive", "double_lob_clamp_allowed",
     }
 
     with tempfile.TemporaryDirectory() as ckdir:
         spec = PretrainSpec(
-            arch=_make_arch(),
+            arch=_make_arch(dm_entropy_intensive=True),
             data_dir=tiny_pretrain_data_dir,
             checkpoint_dir=ckdir,
             n_steps=3,
@@ -340,6 +344,10 @@ def test_run_pretrain_metadata_json_all_fields(tiny_pretrain_data_dir):
         assert md["meta_gga"] is False
         assert md["n_extra_features"] == 0
         assert md["pretrain_mesh"] is False
+        # The static registry fields carry the arch's own values, not a
+        # constant: the arch sets one and leaves the other at its default.
+        assert md["dm_entropy_intensive"] is True
+        assert md["double_lob_clamp_allowed"] is False
 
 
 def test_run_pretrain_warmup_phase_and_progress_callback(tiny_pretrain_data_dir):

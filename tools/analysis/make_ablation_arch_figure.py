@@ -704,6 +704,26 @@ def _certificate_status_label(status: str, cert) -> str:
     return status
 
 
+def _pretrain_dir_for(run_dir: Path, key: str) -> str:
+    """The arch's pretrain directory through the run's resolved config: the
+    config's DONOR for a donated arch, the run's own pretrain product
+    otherwise -- the one resolution rule every consumer shares
+    (``merge_v4_arms._arm_pretrain_dir`` resolves identically).
+
+    A config that does not load keeps the run-local product: the analysis
+    layer also runs beside runs with no readable config, and this resolution
+    must not open a second refusal path for them.
+    """
+    from xcquinox.pipeline.cluster.grid_config import (
+        load_resolved_run_config, pretrain_checkpoint_dir,
+        pretrain_checkpoint_for)
+    try:
+        cfg = load_resolved_run_config(str(run_dir))
+    except Exception:  # noqa: BLE001 -- no readable config: run-local product
+        return pretrain_checkpoint_dir(str(run_dir), key)
+    return pretrain_checkpoint_for(cfg, str(run_dir), key)
+
+
 def _arch_certificate_status(run_dir: Path, arch: str) -> Optional[str]:
     """``arch``'s record-layer certificate status under ``run_dir``.
 
@@ -712,11 +732,16 @@ def _arch_certificate_status(run_dir: Path, arch: str) -> Optional[str]:
     the registry does not know (legacy display name, test fixture), matching
     ``merge_v4_arms._arm_certificate_statuses`` -- or when the package is not
     importable, since the analysis layer also runs without it.
+
+    The certificate directory is resolved through the run's resolved config
+    (:func:`_pretrain_dir_for`): a donor-backed architecture certifies on its
+    DONOR's certificate, every other architecture on the run's own pretrain
+    product. A merged view's config carries no donors, so its slots resolve
+    to the linked directories as before.
     """
     try:
         from xcquinox.pipeline.config import get_architecture
         from xcquinox.pipeline.cluster.fidelity import read_certificate_status_in
-        from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
     except ImportError:      # the analysis layer runs without the package
         return None
     # the rows hold shown names; the certificate sits in pretrain/<stored key>
@@ -728,7 +753,7 @@ def _arch_certificate_status(run_dir: Path, arch: str) -> Optional[str]:
     except KeyError:
         return None
     status, _reason, cert = read_certificate_status_in(
-        pretrain_checkpoint_dir(str(run_dir), key))
+        _pretrain_dir_for(run_dir, key))
     return _certificate_status_label(status, cert)
 
 
@@ -788,7 +813,11 @@ def fidelity_summary(run_dir: Path,
     :func:`uncertified_statuses`: a name the registry does not know carries no
     certificate expectation, so it is neither counted nor read. The
     certificate is located by directory, and without that scoping a directory
-    under any name at all could move the bound the footer discloses.
+    under any name at all could move the bound the footer discloses. The
+    directory itself resolves through the donor rule
+    (:func:`_pretrain_dir_for`): a donor-backed architecture's numbers are
+    its donor's certificate's, so the footer discloses the bound the run's
+    networks actually warm-started under.
 
     ``n_archs`` counts the architectures a figure may say it is bounding: the
     ones whose certificate states BOTH numbers. One that states neither (a
@@ -819,7 +848,6 @@ def fidelity_summary(run_dir: Path,
         from xcquinox.pipeline.config import get_architecture
         from xcquinox.pipeline.cluster.fidelity import (VERDICT_PASS,
                                                     read_certificate_status_in)
-        from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
     except ImportError:
         return None
     if archs is None:
@@ -840,8 +868,12 @@ def fidelity_summary(run_dir: Path,
             # know would otherwise move the disclosed worst (measured: a
             # foreign PASS stating 99.0 / 88.0 replaced a run's 0.31 / 0.62).
             continue
+        # The donor rule (:func:`_pretrain_dir_for`): a donor-backed arch's
+        # numbers are its DONOR's, so a run whose pretrain product was never
+        # generated still discloses the bound its certificates carry, and a
+        # bound is never dropped from the footer by bookkeeping.
         status, _reason, cert = read_certificate_status_in(
-            pretrain_checkpoint_dir(str(run_dir), key))
+            _pretrain_dir_for(run_dir, key))
         if not cert:
             n_unreadable += 1
             continue

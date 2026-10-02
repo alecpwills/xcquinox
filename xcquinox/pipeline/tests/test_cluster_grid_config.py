@@ -525,6 +525,88 @@ def test_load_missing_pretrain_required_key(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# PretrainConfig.donor_checkpoints: the optimization warm-start donors
+# ---------------------------------------------------------------------------
+
+def _donor_cfg(**donors):
+    """A two-arch cfg whose pretrain section states the given donors."""
+    import dataclasses
+
+    cfg = _cfg(arch=("medium", "deep_3x16"))
+    return dataclasses.replace(
+        cfg, pretrain=PretrainConfig(
+            data_dir="/shared/pretrain_data",
+            donor_checkpoints=dict(donors)))
+
+
+def test_donor_checkpoints_load_and_resolved_round_trip(tmp_path):
+    """pretrain.donor_checkpoints (arch -> absolute dir) loads from a grid
+    file and survives the resolved_config.yaml round trip: the gate, the
+    status tally and the record layer all re-read the RESOLVED file, so a
+    donor the serializer drops silently reverts this run to run-local
+    pretraining for every downstream decision."""
+    data = _base_config_dict()
+    data["sweep"]["arch"] = ["medium", "deep_3x16"]
+    data["pretrain"]["donor_checkpoints"] = {
+        "deep_3x16": "/gpfs/donors/run_20260901/pretrain/deep_3x16",
+    }
+    cfg = load_grid_config(_write(tmp_path, "grid.json", data))
+    assert cfg.pretrain.donor_checkpoints == {
+        "deep_3x16": "/gpfs/donors/run_20260901/pretrain/deep_3x16",
+    }
+
+    from xcquinox.pipeline.cluster import __main__ as cli
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cli._write_resolved_config(cfg, str(run_dir))
+    cfg2 = load_grid_config(str(run_dir / "resolved_config.yaml"))
+    assert cfg2.pretrain.donor_checkpoints == cfg.pretrain.donor_checkpoints
+
+
+def _cfg_with_donor(cfg, arch, path):
+    """A copy of ``cfg`` whose pretrain section carries one more donor."""
+    import dataclasses
+
+    donors = dict(cfg.pretrain.donor_checkpoints)
+    donors[arch] = path
+    return dataclasses.replace(
+        cfg, pretrain=dataclasses.replace(cfg.pretrain,
+                                          donor_checkpoints=donors))
+
+
+def test_donor_key_outside_the_sweep_is_refused(tmp_path):
+    """A donor key that is not a swept arch is a loud ValueError: a
+    misspelled donor would otherwise silently fall back to run-local
+    pretraining for that arch."""
+    cfg = _cfg_with_donor(_cfg(), "ghost_arch", "/gpfs/donors/ghost")
+    with pytest.raises(ValueError, match="ghost_arch"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_donor_path_must_be_absolute(tmp_path):
+    """A relative donor dir is refused the way pretrain.data_dir is: the
+    node stages resolve paths against the shared filesystem, and a relative
+    donor silently resolves against whatever directory the stage runs in."""
+    cfg = _donor_cfg(medium="pretrain/medium")
+    with pytest.raises(ValueError, match="absolute"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_donor_defaults_to_empty_and_validation_passes():
+    """A config with no donors validates exactly as before (every existing
+    YAML is unchanged), and the empty dict is the default."""
+    cfg = _cfg()
+    assert cfg.pretrain.donor_checkpoints == {}
+    validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_valid_donors_pass_validation():
+    cfg = _donor_cfg(medium="/gpfs/donors/medium",
+                     deep_3x16="/gpfs/donors/deep_3x16")
+    validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+# ---------------------------------------------------------------------------
 # Per-stage allocation mode + optional mem
 # ---------------------------------------------------------------------------
 
@@ -532,6 +614,65 @@ def test_load_missing_pretrain_required_key(tmp_path):
 # ---------------------------------------------------------------------------
 # pretrain_checkpoint_dir: run-scoped pretrain output path
 # ---------------------------------------------------------------------------
+
+def test_pretrain_stage_archs_drop_donors_and_keep_the_canonical_order():
+    """The stage's arch list is the canonical (dedup + sorted) sweep axis
+    with the donors removed -- submit sizes the pretrain array with it and
+    the pretrain worker maps array index through it, so both sides must see
+    the SAME list in the SAME order."""
+    from xcquinox.pipeline.cluster.grid_config import pretrain_stage_archs
+
+    cfg = _cfg_with_donor(_cfg(arch=("deep_3x16", "medium", "deep_3x16")),
+                          "medium", "/gpfs/donors/medium")
+    assert pretrain_stage_archs(cfg) == ["deep_3x16"]
+
+
+def test_pretrain_checkpoint_for_donor_else_run_product():
+    """The one resolution rule every consumer shares: the donor when one is
+    stated for the arch, the run's own pretrain product otherwise."""
+    from xcquinox.pipeline.cluster.grid_config import (
+        pretrain_checkpoint_dir, pretrain_checkpoint_for)
+
+    cfg = _cfg_with_donor(_cfg(), "medium", "/gpfs/donors/medium")
+    assert pretrain_checkpoint_for(cfg, "/run", "medium") == \
+        "/gpfs/donors/medium"
+    assert pretrain_checkpoint_for(cfg, "/run", "deep_3x16") == \
+        pretrain_checkpoint_dir("/run", "deep_3x16")
+
+
+def test_load_resolved_run_config_reads_yaml_and_json(tmp_path):
+    """The gate, the status tally and the record layer re-read a run's
+    resolved config; JSON-configured runs write resolved_config.json (the
+    _pretrain dispatch), so the loader accepts both spellings and is loud
+    when neither exists (a gate that silently saw no config would gate the
+    run-local dir for a run that never wrote one)."""
+    from xcquinox.pipeline.cluster.grid_config import (
+        load_resolved_run_config)
+
+    cfg = _cfg()
+    d1 = tmp_path / "run_yaml"
+    d1.mkdir()
+    with open(d1 / "resolved_config.yaml", "w") as f:
+        import yaml
+        yaml.safe_dump(_config_to_raw(cfg), f)
+    assert load_resolved_run_config(str(d1)).hyperparams.n_steps == 200
+
+    d2 = tmp_path / "run_json"
+    d2.mkdir()
+    with open(d2 / "resolved_config.json", "w") as f:
+        json.dump(_config_to_raw(cfg), f)
+    assert load_resolved_run_config(str(d2)).hyperparams.n_steps == 200
+
+    d3 = tmp_path / "run_none"
+    d3.mkdir()
+    with pytest.raises(FileNotFoundError):
+        load_resolved_run_config(str(d3))
+
+
+def _config_to_raw(cfg):
+    """The raw dict a grid file parses to, via the CLI's own serializer."""
+    from xcquinox.pipeline.cluster import __main__ as cli
+    return cli._config_to_raw_dict(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -960,7 +1101,8 @@ def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
         raw, n_steps=7, lr_start=3e-2, lr_end=3e-6, lr_decay_start=0.4,
         lr_decay_end=0.7, grad_clip=2.5, seed=1234,
         loss_weighting="rho_w_sampled", points_per_system=333,
-        sampling_seed=9, atoms=[["Li", 1], ["C", 2]]))
+        sampling_seed=9, atoms=[["Li", 1], ["C", 2]],
+        donor_checkpoints={"medium": "/gpfs/donors/medium"}))
     default = PretrainConfig(data_dir="/d")
     for f in dataclasses.fields(every):
         if f.name == "data_dir":

@@ -83,8 +83,7 @@ import traceback
 
 from xcquinox.pipeline.cluster.domain import KCAL_PER_HA
 from xcquinox.pipeline.cluster.grid_config import (
-    _canon_axis, load_grid_config, pretrain_checkpoint_dir,
-)
+    load_grid_config, pretrain_checkpoint_dir, pretrain_stage_archs)
 from xcquinox.pipeline.cluster.materialize import (
     _sha256_file, _write_json_atomic, running_xcquinox_version)
 
@@ -716,14 +715,19 @@ def certificate_describes_run(cfg, pretrain_dir: str, arch_name: str,
 
 
 def _distinct_archs(cfg):
-    """The de-duplicated, sorted architecture list of the sweep.
+    """The arch names this module certifies run-local products for, in
+    canonical order.
 
-    Uses ``grid_config._canon_axis`` -- the EXACT de-dup + sort ``expand_grid``
-    applies to the arch axis -- so ``<arch_idx>`` selects the same
-    architecture here as in ``cluster._pretrain``. Deliberately NOT imported
-    from ``_pretrain``: that module imports this one for its gate.
+    Delegates to ``grid_config.pretrain_stage_archs`` -- the sweep's de-dup +
+    sort with every DONOR arch removed, the exact list ``submit`` sizes the
+    pretrain array with and ``_pretrain._distinct_archs`` maps the array
+    index through -- so ``<arch_idx>`` selects the same architecture on all
+    three sides: an arch whose warm start is a donor has no run-local
+    certificate to compute and no array task to compute it. Imported from
+    ``grid_config`` (not ``_pretrain``, which imports this module for its
+    gate), so the list is the same object everywhere without a cycle.
     """
-    return _canon_axis(cfg.sweep.arch)
+    return pretrain_stage_archs(cfg)
 
 
 # ---------------------------------------------------------------------------

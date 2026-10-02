@@ -143,6 +143,26 @@ def _certificate_status_label(status: str, payload) -> str:
     return status
 
 
+def _arm_pretrain_dir(run: Path, arch: str) -> str:
+    """The arch's pretrain checkpoint directory through the arm's resolved
+    config: the config's DONOR for a donated arch, the run's own pretrain
+    product otherwise -- the one resolution rule every consumer shares.
+
+    A config that does not load keeps the run-local product: an arm with no
+    readable config is refused where its identity matters (the seed policy,
+    the identity re-check), and this resolution must not open a second
+    refusal path for it.
+    """
+    from xcquinox.pipeline.cluster.grid_config import (
+        load_resolved_run_config, pretrain_checkpoint_dir,
+        pretrain_checkpoint_for)
+    try:
+        cfg = load_resolved_run_config(str(run))
+    except Exception:  # noqa: BLE001 -- falls back to the run-local product
+        return pretrain_checkpoint_dir(str(run), arch)
+    return pretrain_checkpoint_for(cfg, str(run), arch)
+
+
 def _arm_certificate_statuses(run: Path, arch_names) -> dict:
     """``{arch: (status, reason, certificate_path, payload)}`` for the arm's
     REGISTRY architectures, sorted by name.
@@ -160,9 +180,8 @@ def _arm_certificate_statuses(run: Path, arch_names) -> dict:
     an arm over a file that never existed as a whole. ``payload`` is the
     parsed object, or ``None`` when the file is absent or is not one.
     """
-    from xcquinox.pipeline.cluster.fidelity import (certificate_path,
+    from xcquinox.pipeline.cluster.fidelity import (certificate_path_in,
                                                 read_certificate_status_in)
-    from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
     from xcquinox.pipeline.config import get_architecture
     statuses = {}
     for arch in arch_names:
@@ -172,10 +191,9 @@ def _arm_certificate_statuses(run: Path, arch_names) -> dict:
             get_architecture(arch)
         except KeyError:
             continue
-        status, reason, payload = read_certificate_status_in(
-            pretrain_checkpoint_dir(str(run), arch))
-        statuses[arch] = (status, reason, certificate_path(str(run), arch),
-                          payload)
+        d = _arm_pretrain_dir(run, arch)
+        status, reason, payload = read_certificate_status_in(d)
+        statuses[arch] = (status, reason, certificate_path_in(d), payload)
     return dict(sorted(statuses.items()))
 
 
@@ -238,8 +256,7 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
     """
     from xcquinox.pipeline.cluster.fidelity import (VERDICT_PASS, resolve_parent,
                                                 run_identity)
-    from xcquinox.pipeline.cluster.grid_config import (load_grid_config,
-                                                   pretrain_checkpoint_dir)
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
     from xcquinox.pipeline.cluster.materialize import _sha256_file
     statuses = _arm_certificate_statuses(run, arch_names)
     if not statuses:
@@ -271,7 +288,7 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
             f"for arch {arch} at {path} {detail}")
 
     for arch, (_status, _reason, path, read_payload) in statuses.items():
-        pretrain_dir = pretrain_checkpoint_dir(str(run), arch)
+        pretrain_dir = _arm_pretrain_dir(run, arch)
         # The document the PASS above was read from, not a fresh open of the
         # same path: the verdict acted on and the records re-checked have to
         # describe one file.
@@ -367,6 +384,11 @@ def _carry_arm_certificates(run: Path, view_dir: Path, arch_names,
     so what the view exposes is verified at the point of exposure and not only
     inferred from the gate above.
 
+    A donor-backed architecture (``pretrain.donor_checkpoints`` in the arm's
+    resolved config) links its DONOR directory under the same view slot: that
+    is the certificate the gate cleared and the directory the train stage
+    loaded from.
+
     The view has ONE slot per architecture name. When a second arm brings the
     same name, the two certificates are compared: differing verdicts or
     differing recorded identities are refused, since neither record can stand
@@ -376,13 +398,12 @@ def _carry_arm_certificates(run: Path, view_dir: Path, arch_names,
     """
     from xcquinox.pipeline.cluster.fidelity import (VERDICT_PASS,
                                                 read_certificate_status_in)
-    from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
     if not arch_names:
         return
     pt_out = view_dir / "pretrain"
     pt_out.mkdir(exist_ok=True)
     for arch in sorted(arch_names):
-        src = Path(pretrain_checkpoint_dir(str(run), arch))
+        src = Path(_arm_pretrain_dir(run, arch))
         # One parse per certificate here too: the precondition that releases
         # the link and the identity compared below are the same document.
         status, reason, payload = read_certificate_status_in(str(src))

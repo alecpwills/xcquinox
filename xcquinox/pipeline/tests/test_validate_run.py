@@ -251,3 +251,108 @@ def test_gate_mismatch_is_detected(tmp_path, patched_cfg):
                    "descriptor_coordinates": "legacy", "ueg_gate": "tanh2"}, f)
     failures, _w, _n = vr.validate_run(run)
     assert not any("ueg_gate=" in f for f in failures), failures
+
+
+def test_static_registry_provenance_fields_are_cross_checked(
+        tmp_path, patched_cfg):
+    """``dm_entropy_intensive`` and ``double_lob_clamp_allowed`` join the
+    provenance keys cross-checked against the registry (deep_3x16's registry
+    values are True and False): a record stating the other value is a failure
+    naming it, and a record written before the keys existed is a warning
+    rather than a silent pass."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    d = os.path.join(run, "pretrain", "deep_3x16")
+    with open(os.path.join(d, "pretrain_metadata.json"), "w") as f:
+        json.dump({"use_polarized_correlation": True, "parent_anchor": False,
+                   "descriptor_coordinates": "legacy",
+                   "dm_entropy_intensive": False,
+                   "double_lob_clamp_allowed": True}, f)
+    failures, _w, _n = vr.validate_run(run)
+    assert any("dm_entropy_intensive" in f for f in failures), failures
+    assert any("double_lob_clamp_allowed" in f for f in failures), failures
+
+    with open(os.path.join(d, "pretrain_metadata.json"), "w") as f:
+        json.dump({"use_polarized_correlation": True, "parent_anchor": False,
+                   "descriptor_coordinates": "legacy"}, f)
+    failures, warnings, _n = vr.validate_run(run)
+    assert not any("dm_entropy_intensive" in f
+                   or "double_lob_clamp_allowed" in f
+                   for f in failures), failures
+    assert any("dm_entropy_intensive" in w for w in warnings), warnings
+    assert any("double_lob_clamp_allowed" in w for w in warnings), warnings
+
+
+# ---------------------------------------------------------------------------
+# Donor warm-starts: a donor arch certifies on its donor, compat still binds
+# ---------------------------------------------------------------------------
+
+def _donor_setup(tmp_path, patched_cfg, *, donor_arch="deep_3x16",
+                 donor_certificate=True, donor_metadata=None):
+    """A two-arch run whose config states a donor for ``donor_arch``; the
+    OTHER arch certifies run-locally, the donor dir lives outside the run,
+    and the cfg's pretrain namespace carries the donors mapping."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")],
+                     certificates=False)
+    other = "deep_attn_3x16" if donor_arch == "deep_3x16" else "deep_3x16"
+    _write_certificate(run, other)
+    donor_root = tmp_path / "donor_run"
+    donor = os.path.join(str(donor_root), "pretrain", donor_arch)
+    os.makedirs(donor)
+    if donor_certificate:
+        # Foreign on purpose: another run's identity, version and step count.
+        _write_certificate(str(donor_root), donor_arch, identity={
+            "basis": "def2-svp", "grid_level": 2, "density_fit": False,
+            "auxbasis": None, "orientation_lock_strength": 0.0},
+            version="donor-build-2026.09")
+    if donor_metadata is not None:
+        with open(os.path.join(donor, "pretrain_metadata.json"), "w") as f:
+            json.dump(donor_metadata, f)
+    patched_cfg.pretrain = SimpleNamespace(
+        n_steps=2500, donor_checkpoints={donor_arch: donor})
+    return run, donor
+
+
+def test_donor_arch_certifies_on_its_donor_and_states_the_provenance(
+        tmp_path, patched_cfg):
+    """The donor's own PASS certificate releases the arch; the comparisons
+    that presuppose the product was made by THIS run (its identity, its code
+    version, its step count) do not apply to a foreign product, and the
+    report SAYS the arch warm-starts from a donor rather than falling
+    silent about it."""
+    run, donor = _donor_setup(tmp_path, patched_cfg)
+    # The donor's metadata records its own (different) protocol; the compat
+    # fields match this config, the protocol fields do not and must not bind.
+    with open(os.path.join(donor, "pretrain_metadata.json"), "w") as f:
+        json.dump({"use_polarized_correlation": True, "parent_anchor": False,
+                   "descriptor_coordinates": "legacy", "ueg_gate": "tanh2",
+                   "pretrain_steps": 999}, f)
+
+    failures, warnings, _n = vr.validate_run(run)
+
+    assert failures == [], failures
+    assert any("deep_3x16" in w and "donor" in w for w in warnings), warnings
+    assert not os.path.exists(os.path.join(run, "pretrain", "deep_3x16"))
+
+
+def test_donor_without_a_certificate_is_a_failure_naming_the_donor(
+        tmp_path, patched_cfg):
+    run, donor = _donor_setup(tmp_path, patched_cfg, donor_certificate=False)
+    failures, _w, _n = vr.validate_run(run)
+    assert any("donor" in f and "deep_3x16" in f for f in failures), failures
+
+
+def test_donor_metadata_compat_still_binds(tmp_path, patched_cfg):
+    """The model-class compatibility checks apply to the donor's metadata
+    exactly as to a run-local product: a donor pretrained in another class
+    is a warm start this config must refuse, not a provenance difference to
+    wave through."""
+    run, donor = _donor_setup(
+        tmp_path, patched_cfg,
+        donor_metadata={"use_polarized_correlation": False,
+                        "parent_anchor": False,
+                        "descriptor_coordinates": "legacy",
+                        "ueg_gate": "tanh2"})
+    failures, _w, _n = vr.validate_run(run)
+    assert any("use_polarized_correlation" in f for f in failures), failures

@@ -2031,6 +2031,20 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # legacy warning rather than a failure.
         "meta_gga": ArchitectureConfig.is_meta_gga(spec.arch),
         "n_extra_features": int(spec.arch.n_extra_features),
+        # The two STATIC registry fields, recorded as provenance and
+        # cross-checked by the run validator (validate_run.py). Only the
+        # clamp permission reaches the loader's model-class gate
+        # (train._require_matching_model_class): dm_entropy_intensive has
+        # scaled nothing since 2026-08-06 and survives in the registry only
+        # so live spec files unpickle, so it is stated here and compared
+        # nowhere downstream of this file's own validator read. Like the
+        # shape keys above the two are fixed per architecture name, change
+        # no parameter shape, and read at the registry default (False) in
+        # files written before the keys existed.
+        "dm_entropy_intensive": bool(
+            getattr(spec.arch, "dm_entropy_intensive", False)),
+        "double_lob_clamp_allowed": bool(
+            getattr(spec.arch, "double_lob_clamp_allowed", False)),
         # Whether the (s, alpha) parameter mesh was appended to this
         # pretrain's inputs -- checkpoint provenance the run validator
         # cross-checks (a meta-GGA checkpoint trained WITHOUT the mesh has
