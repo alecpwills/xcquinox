@@ -62,7 +62,11 @@ jobs:
           pytest -v -m "not slow and not oracle" --cov=xcquinox --cov-report=xml --color=yes
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4.0.1
+        # Reporting, after the tests: a crash in the action's own process (its
+        # gpg verification of the uploader, run 37033864579) must not red-build
+        # a suite that passed, and only continue-on-error guards that class.
+        continue-on-error: true
+        uses: codecov/codecov-action@v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: alecpwills/xcquinox
