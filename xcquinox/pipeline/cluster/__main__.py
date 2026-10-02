@@ -65,7 +65,8 @@ from xcquinox.pipeline.cluster.grid_config import (
 )
 from xcquinox.pipeline.cluster.domain import get_domain_profile
 from xcquinox.pipeline.cluster.inputs import prepare_inputs
-from xcquinox.pipeline.cluster.submit import _repo_root, submit_jobs
+from xcquinox.pipeline.cluster.submit import (_repo_root, submit_jobs,
+                                              validate_stage_selection)
 from xcquinox.pipeline.cluster.materialize import write_manifest
 from xcquinox.pipeline.holdout_channels import REPORTING_CHANNEL
 from xcquinox.pipeline.cluster.fidelity import (CERTIFICATE_FILENAME,
@@ -937,6 +938,52 @@ def _apply_inline_eval_override(cfg, args):
     return cfg
 
 
+def _apply_donor_run_override(cfg, args):
+    """Return a copy of ``cfg`` whose donor map names a completed pretraining
+    run, when ``--donor-run`` was given.
+
+    The map is ``{arch: <donor_run>/pretrain/<arch>}`` over every canonical
+    sweep arch (the layout ``pretrain_checkpoint_dir`` defines and the pretrain
+    worker writes), REPLACING any ``pretrain.donor_checkpoints`` the config
+    stated: the flag names one pretraining suite for the whole sweep. It rides
+    into ``resolved_config.yaml`` like every other CLI override, so recovery
+    commands and the node stages re-read it there.
+
+    Unlike the config-file path (whose donor existence check is advisory, a
+    /gpfs donor is invisible on the workstation), this flag is used on the
+    login node where the named run lives, so an incomplete suite is refused
+    HERE: every arch dir must exist and carry a fidelity certificate, or the
+    submission stops before the run dir is created. A donor without its
+    certificate cannot be gated, and discovering that only when the first
+    train task hits the fidelity gate wastes a whole queued graph.
+    """
+    donor_run = getattr(args, "donor_run", None)
+    if not donor_run:
+        return cfg
+    if not os.path.isabs(donor_run):
+        # Same rule as --run-root (submit-anywhere): a relative submit-time
+        # path resolves against the checkout, never the caller's CWD.
+        resolved = os.path.join(_repo_root(), donor_run)
+        _log(f"submit: relative donor run {donor_run!r} resolved against "
+             f"the checkout: {resolved}")
+        donor_run = resolved
+    donors = {arch: pretrain_checkpoint_dir(donor_run, arch)
+              for arch in _canon_axis(cfg.sweep.arch)}
+    incomplete = [path for arch, path in donors.items()
+                  if not (os.path.isdir(path)
+                          and os.path.isfile(
+                              os.path.join(path, CERTIFICATE_FILENAME)))]
+    if incomplete:
+        raise ValueError(
+            f"submit: --donor-run {donor_run!r} is not a completed "
+            f"pretraining run; no {CERTIFICATE_FILENAME} under "
+            f"{', '.join(incomplete)}"
+        )
+    return dataclasses.replace(
+        cfg, pretrain=dataclasses.replace(
+            cfg.pretrain, donor_checkpoints=donors))
+
+
 def _apply_time_overrides(cfg, args):
     """Return a copy of ``cfg`` with CLI-resolved per-stage wall times.
 
@@ -1059,6 +1106,24 @@ def cmd_submit(args) -> int:
     cfg = _apply_polarized_override(cfg, args)
     cfg = _apply_defer_eval_override(cfg, args)
     cfg = _apply_inline_eval_override(cfg, args)
+    try:
+        cfg = _apply_donor_run_override(cfg, args)
+    except ValueError as exc:
+        _log(f"ERROR: {exc}")
+        return 1
+    # The stage-group consistency checks (same function submit_jobs runs),
+    # BEFORE the run dir is created: a refused selection must leave nothing
+    # on disk for list-runs/status/pull to trip over. The eval-mode flags are
+    # passed as the EXPLICIT choices they are; a config-borne inline_eval /
+    # defer_eval switch is inert in a group that submits no eval stage.
+    try:
+        validate_stage_selection(
+            cfg, args.stages,
+            defer_eval=args.defer_eval or None,
+            inline_eval=args.inline_eval or None)
+    except ValueError as exc:
+        _log(f"ERROR: {exc}")
+        return 1
     domain = get_domain_profile(cfg.domain_profile)
     validate_grid_semantics(cfg, domain)
 
@@ -1077,15 +1142,21 @@ def cmd_submit(args) -> int:
     _write_resolved_config(cfg, run_dir)
     _log(f"submit: created run dir {run_dir}")
 
-    result = submit_jobs(cfg, run_dir, submit=args.submit, force=args.force)
+    result = submit_jobs(cfg, run_dir, submit=args.submit, force=args.force,
+                         stages=args.stages)
 
     if result.get("dry_run", True):
         pretrain_part = (
             f"pretrain array 0-{result['pretrain_array_max']}, "
             if result.get("pretrain_array_max") is not None
             else "no pretrain stage (every arch warm-starts from a donor), ")
-        _log(f"submit: DRY-RUN ({result['n_specs']} specs, array "
-             f"0-{result['array_max']}, {result['n_archs']} distinct arch(s), "
+        # The train array belongs to the optimize group; a pretrain-only run
+        # names only the arrays it actually submits.
+        array_part = (f"array 0-{result['array_max']}, "
+                      if args.stages in ("all", "optimize") else "")
+        _log(f"submit: DRY-RUN (stages={result['stages']}, "
+             f"{result['n_specs']} specs, {array_part}"
+             f"{result['n_archs']} distinct arch(s), "
              f"{pretrain_part}"
              f"device={result['device']}). "
              "No SLURM call was made; pass --submit to submit for real.")
@@ -1093,21 +1164,32 @@ def cmd_submit(args) -> int:
             _log(f"  would run: {line}")
     else:
         ids = result.get("job_ids", {})
-        if result.get("defer_eval"):
-            eval_part = (f"eval_launcher={ids.get('eval_launcher')} "
-                         "(eval array deferred until train terminates)")
+        # The optimize stages are named only by the group that submits them:
+        # a pretrain-only line reading "preflight=None train=None eval=None"
+        # would read as failed submissions rather than unrequested stages.
+        if args.stages in ("all", "optimize"):
+            if result.get("defer_eval"):
+                eval_part = (f"eval_launcher={ids.get('eval_launcher')} "
+                             "(eval array deferred until train terminates)")
+            else:
+                eval_part = f"eval={ids.get('eval')}"
+            opt_part = (f"preflight={ids.get('preflight')} "
+                        f"train={ids.get('train')} {eval_part}")
         else:
-            eval_part = f"eval={ids.get('eval')}"
+            opt_part = ""
         bench_part = (f" benchmark_refs={ids['benchmark_refs']}"
                       if ids.get("benchmark_refs") else "")
         pretrain_part = (f"pretrain={ids.get('pretrain')} "
                          if "pretrain" in ids else "")
-        _log(f"submit: SUBMITTED ({result['n_specs']} specs, "
-             f"{result['n_archs']} distinct arch(s)), "
-             f"datagen={ids.get('datagen')} "
-             f"{pretrain_part}"
-             f"preflight={ids.get('preflight')} train={ids.get('train')} "
-             f"{eval_part}{bench_part}")
+        datagen_part = (f"datagen={ids.get('datagen')} "
+                        if "datagen" in ids else "")
+        msg = (f"submit: SUBMITTED (stages={result['stages']}, "
+               f"{result['n_specs']} specs, "
+               f"{result['n_archs']} distinct arch(s)), "
+               f"{datagen_part}"
+               f"{pretrain_part}"
+               f"{opt_part}{bench_part}")
+        _log(msg.rstrip())
         if result.get("manual_eval_command"):
             _log("submit: if the launcher cannot submit from a compute node, "
                  f"run after train finishes: {result['manual_eval_command']}")
@@ -2074,11 +2156,26 @@ def cmd_resubmit_preflight(args) -> int:
         old_train = _newest_live("train")
         old_eval = _newest_live("eval")
 
+        # Recover the SAME stage group the run dir records: a pretrain-only
+        # submission (kinds datagen+pretrain alone) must recover with another
+        # pretrain-only submission, not grow a train/eval graph it never had;
+        # an optimize-only one (no datagen/pretrain records) stays optimize.
+        # `stages` is deliberately not recorded in the config, the job records
+        # are its record.
+        kinds_present = {r.get("kind") for r in records}
+        if not kinds_present:
+            recovery_stages = "all"
+        elif kinds_present <= {"datagen", "pretrain"}:
+            recovery_stages = "pretrain"
+        elif not (kinds_present & {"datagen", "pretrain"}):
+            recovery_stages = "optimize"
+        else:
+            recovery_stages = "all"
+
         if not args.submit:
-            _log("resubmit-preflight: DRY-RUN, would re-submit the full "
-                 "datagen->pretrain->preflight->train->eval graph via "
-                 "submit_jobs(force=True), then scancel + mark_superseded the "
-                 "old datagen/pretrain/train/eval arrays.")
+            _log(f"resubmit-preflight: DRY-RUN, would re-submit the "
+                 f"{recovery_stages} stage group via submit_jobs(force=True), "
+                 "then scancel + mark_superseded the old recorded arrays.")
             if old_datagen:
                 _log(f"  old datagen job {old_datagen['array_job_id']} "
                      f"(gen {old_datagen['generation']}) would be cancelled.")
@@ -2096,15 +2193,15 @@ def cmd_resubmit_preflight(args) -> int:
 
         # --- real re-submission ----------------------------------------------
         # submit_jobs does its own best-effort scancel rollback if any of its
-        # four sbatch calls is rejected; force=True bypasses the live-jobs
+        # sbatch calls is rejected; force=True bypasses the live-jobs
         # guard (the old graph is intentionally still recorded here).
-        result = submit_jobs(cfg, run_dir, submit=True, force=True)
+        result = submit_jobs(cfg, run_dir, submit=True, force=True,
+                             stages=recovery_stages)
         new_ids = result.get("job_ids", {})
-        _log(f"resubmit-preflight: re-submitted graph, "
-             f"datagen={new_ids.get('datagen')} "
-             f"pretrain={new_ids.get('pretrain')} "
-             f"preflight={new_ids.get('preflight')} "
-             f"train={new_ids.get('train')} eval={new_ids.get('eval')}.")
+        _log(f"resubmit-preflight: re-submitted the {recovery_stages} stage "
+             "group, "
+             + " ".join(f"{kind}={jid}" for kind, jid in new_ids.items())
+             + ".")
 
         # All new sbatch calls succeeded (submit_jobs would have raised
         # otherwise). NOW, and only now: scancel old datagen/pretrain/train/eval
@@ -2740,6 +2837,25 @@ def _build_parser() -> argparse.ArgumentParser:
              "3-stage graph (pretrain -> preflight -> train+eval inline) and "
              "eliminates the inter-stage queue gap. Mutually exclusive with "
              "--defer-eval. Default off.")
+    p_submit.add_argument(
+        "--stages", default="all", choices=["all", "pretrain", "optimize"],
+        help="which stage group to submit. 'all' (default) submits the whole "
+             "datagen -> pretrain -> preflight -> train -> eval graph. "
+             "'pretrain' submits only datagen -> pretrain (a pretraining "
+             "suite; nothing downstream is rendered or queued). 'optimize' "
+             "submits only preflight -> train -> eval (the optional "
+             "benchmark_refs job included), with preflight carrying NO "
+             "dependency; it requires every swept arch to be donor-backed "
+             "(see --donor-run), because this group never pretrains.")
+    p_submit.add_argument(
+        "--donor-run", default=None, dest="donor_run", metavar="DIR",
+        help="seed every swept arch's optimization from the completed "
+             "pretraining run dir DIR (sets pretrain.donor_checkpoints to "
+             "<DIR>/pretrain/<arch> per arch, replacing the config's map). "
+             "Every arch dir must carry its fidelity_certificate.json or the "
+             "submission is refused before the run dir is created. Pairs "
+             "with --stages optimize. A relative DIR resolves against the "
+             "checkout.")
     p_submit.set_defaults(func=cmd_submit)
 
     p_submit_eval = sub.add_parser(

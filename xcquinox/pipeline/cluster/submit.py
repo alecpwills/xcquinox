@@ -24,6 +24,17 @@ warm-starts from that checkpoint and never pretrains here). A run whose every
 arch is donated has NO pretrain stage: no script written, no sbatch, no
 jobs.json record, preflight depends on datagen alone and train on preflight
 alone.
+
+Stage selection (``stages=``): the graph submits whole, or as one of two
+closed groups. ``stages="pretrain"`` submits only datagen -> pretrain (a
+pretraining suite: nothing downstream is rendered, recorded or queued).
+``stages="optimize"`` submits only preflight -> train -> eval (plus the
+optional benchmark_refs job), re-rooted on preflight with NO dependency: it
+requires every swept arch to carry a donor and skips datagen entirely (with
+every arch donated there is no pretrain-data file this run's to generate;
+only the pretrain worker reads one). The consistency checks live in
+:func:`validate_stage_selection`, which the CLI also calls before it creates
+the run dir, so a refused selection leaves nothing on disk.
 ``aftercorr`` requires the train and eval arrays to share an *identical index
 range* (only the ``%throttle`` suffix may differ); :func:`submit_jobs` asserts
 that. The pretrain array's range is independent (over archs) and is NOT part
@@ -429,14 +440,73 @@ def _has_live_jobs(run_dir: str) -> bool:
     return any(not r.get("superseded", False) for r in records)
 
 
+def validate_stage_selection(cfg, stages, *, defer_eval=None,
+                             inline_eval=None) -> None:
+    """Refuse an inconsistent stage selection before anything is rendered.
+
+    One implementation shared by :func:`submit_jobs` (direct callers get the
+    ``ValueError``) and ``cmd_submit`` (which calls it before creating the run
+    dir, so a refused selection leaves no half-built run behind). The checks:
+
+      - ``stages`` must be one of ``"all"``, ``"pretrain"``, ``"optimize"``:
+        a mistyped mode word must not fall back to the full graph.
+      - ``"pretrain"`` needs at least one arch without a donor: a config whose
+        every arch is donated has no pretrain stage to run.
+      - ``"pretrain"`` excludes an EXPLICIT ``defer_eval``/``inline_eval``
+        choice: both shape how the EVAL stage is submitted, and this group
+        submits no eval stage. The kwargs are explicit submit-time choices
+        only; a None means "not chosen here" and does NOT read the config,
+        whose eval-mode switch is inert in a group with no eval stage (the
+        arm configs carry ``inline_eval: true`` for their optimization runs
+        while their pretraining submits pretrain-only).
+      - ``"optimize"`` needs a donor for EVERY swept arch: this group never
+        pretrains, so an uncovered arch would train from a checkpoint that
+        does not exist.
+    """
+    if stages not in ("all", "pretrain", "optimize"):
+        raise ValueError(
+            "stages must be one of 'all', 'pretrain' or 'optimize', got "
+            f"{stages!r}"
+        )
+    stage_archs = pretrain_stage_archs(cfg)
+    if stages == "pretrain":
+        if not stage_archs:
+            raise ValueError(
+                "stages='pretrain': nothing to pretrain, every sweep arch "
+                "warm-starts from a stated donor (pretrain.donor_checkpoints)"
+            )
+        if defer_eval or inline_eval:
+            raise ValueError(
+                "stages='pretrain' submits no eval stage, so the defer_eval "
+                "and inline_eval choices (both shape how EVAL is submitted) "
+                "are excluded; drop the choice or pick stages='all'"
+            )
+    if stages == "optimize" and stage_archs:
+        raise ValueError(
+            "stages='optimize': no donor for arch(s) "
+            f"{', '.join(stage_archs)}; this group never pretrains, so every "
+            "swept arch needs a pretrain.donor_checkpoints entry (or submit "
+            "with --donor-run <completed pretraining run dir>)"
+        )
+
+
 def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
                 force: bool = False, defer_eval=None,
-                inline_eval=None) -> dict:
+                inline_eval=None, stages: str = "all") -> dict:
     """Render the 5-stage sbatch graph and (optionally) submit it.
 
     Defaults to dry-run (``submit=False``): writes the rendered scripts and
     a ``submit_commands.txt`` record, but calls neither ``sbatch`` nor
     writes ``jobs.json``.
+
+    ``stages`` selects the whole graph (``"all"``, the default, today's
+    behavior) or one closed group: ``"pretrain"`` renders and submits only
+    datagen -> pretrain; ``"optimize"`` only preflight -> train -> eval
+    (plus the optional benchmark_refs job), with preflight carrying NO
+    dependency (no datagen is submitted ahead of it). See
+    :func:`validate_stage_selection` for the consistency requirements each
+    group imposes; an unselected stage leaves no script, no submit-commands
+    line, no sbatch and no jobs.json record.
 
     Control flow:
       1. ``N = len(expand_grid(cfg))``; train/eval ``array_max = N-1``.
@@ -465,6 +535,9 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     instead of +eval array). Only pretrain/preflight/train records are written
     here; the eval record is written later by the launcher (or by a manual
     ``submit-eval`` run). ``defer_eval=None`` (the default) reads ``cfg.defer_eval``.
+    In a group that submits no eval stage (``stages="pretrain"``) the launcher
+    is not rendered and no eval record or manual command is returned, whatever
+    the config states.
 
     Returns:
         A dict describing what was (or would be) submitted: ``n_specs``,
@@ -485,6 +558,14 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             "(inline eval runs in the SAME SLURM task as train; defer eval "
             "submits a SEPARATE deferred eval array). Pick one."
         )
+    # Stage-group consistency (G1-G4); cmd_submit runs the same function
+    # before it creates the run dir, so a CLI refusal leaves nothing on disk.
+    # The raw kwargs, NOT the resolved bools: a config-borne eval switch is
+    # inert in a group with no eval stage, only an explicit choice conflicts.
+    validate_stage_selection(cfg, stages,
+                             defer_eval=defer_eval, inline_eval=inline_eval)
+    want_front = stages in ("all", "pretrain")   # datagen + pretrain array
+    want_opt = stages in ("all", "optimize")    # preflight + train + eval
     cells = expand_grid(cfg)
     n_specs = len(cells)
     if n_specs == 0:
@@ -512,31 +593,44 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     os.makedirs(logs_dir, exist_ok=True)
 
     # --- render --------------------------------------------------------------
-    datagen_text = render_sbatch("datagen", cfg, run_dir)
+    # An unselected stage is not rendered at all: no script lands under
+    # scripts/ for a stage this submission never queues (the all-donor pretrain
+    # omission is the precedent; a stray script reads downstream as a stage
+    # that failed rather than one that was never requested).
+    datagen_text = (render_sbatch("datagen", cfg, run_dir)
+                    if want_front else None)
+    # has_pretrain can only be True in a group that submits the front stages
+    # ("optimize" is refused above unless every arch is donated).
     pretrain_text = (render_sbatch("pretrain", cfg, run_dir,
                                    array_max=pretrain_array_max)
                      if has_pretrain else None)
-    preflight_text = render_sbatch("preflight", cfg, run_dir)
-    if inline:
-        # Single combined train+eval array; no separate eval submission.
-        train_text = render_sbatch("train_eval_inline", cfg, run_dir,
-                                    array_max=array_max)
-        eval_text = None  # No separate eval array in inline mode.
-    else:
-        train_text = render_sbatch("train", cfg, run_dir, array_max=array_max)
-        eval_text = render_sbatch("eval", cfg, run_dir, array_max=array_max)
+    preflight_text = (render_sbatch("preflight", cfg, run_dir)
+                      if want_opt else None)
+    train_text = None
+    eval_text = None
+    if want_opt:
+        if inline:
+            # Single combined train+eval array; no separate eval submission.
+            train_text = render_sbatch("train_eval_inline", cfg, run_dir,
+                                       array_max=array_max)
+            eval_text = None  # No separate eval array in inline mode.
+        else:
+            train_text = render_sbatch("train", cfg, run_dir,
+                                       array_max=array_max)
+            eval_text = render_sbatch("eval", cfg, run_dir,
+                                      array_max=array_max)
 
-        # aftercorr requires identical index ranges (throttle may differ).
-        # The pretrain array range is independent (over archs), NOT checked
-        # here. Inline mode has no separate eval array, so no range check.
-        train_range = _array_range(train_text)
-        eval_range = _array_range(eval_text)
-        if train_range != eval_range:
-            raise AssertionError(
-                f"submit_jobs: train array range {train_range!r} != eval array "
-                f"range {eval_range!r}; --dependency=aftercorr requires identical "
-                "index ranges"
-            )
+            # aftercorr requires identical index ranges (throttle may differ).
+            # The pretrain array range is independent (over archs), NOT checked
+            # here. Inline mode has no separate eval array, so no range check.
+            train_range = _array_range(train_text)
+            eval_range = _array_range(eval_text)
+            if train_range != eval_range:
+                raise AssertionError(
+                    f"submit_jobs: train array range {train_range!r} != eval "
+                    f"array range {eval_range!r}; --dependency=aftercorr "
+                    "requires identical index ranges"
+                )
 
     datagen_path = os.path.join(scripts_dir, "datagen.sbatch")
     pretrain_path = os.path.join(scripts_dir, "pretrain.sbatch")
@@ -545,26 +639,31 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         scripts_dir,
         "train_eval_inline.sbatch" if inline else "train_array.sbatch")
     eval_path = os.path.join(scripts_dir, "eval_array.sbatch")
-    scripts_to_write = [
-        (datagen_path, datagen_text),
-        (preflight_path, preflight_text),
-        (train_path, train_text),
-    ]
+    scripts_to_write = []
+    if want_front:
+        scripts_to_write.append((datagen_path, datagen_text))
     if has_pretrain:
         scripts_to_write.append((pretrain_path, pretrain_text))
-    if not inline:
-        scripts_to_write.append((eval_path, eval_text))
+    if want_opt:
+        scripts_to_write.append((preflight_path, preflight_text))
+        scripts_to_write.append((train_path, train_text))
+        if not inline:
+            scripts_to_write.append((eval_path, eval_text))
     # In deferred mode the launcher job (submitted afterany:train) re-uses the
-    # eval_array.sbatch above and is itself a tiny single-task script.
+    # eval_array.sbatch above and is itself a tiny single-task script. It
+    # exists only to submit the EVAL array, so a group that submits no eval
+    # stage (pretrain) never renders it -- a stray launcher script would read
+    # as an eval arrangement this run does not have.
     launcher_path = os.path.join(scripts_dir, "eval_launcher.sbatch")
-    if defer:
+    if defer and want_opt:
         launcher_text = render_sbatch("eval_launcher", cfg, run_dir)
         scripts_to_write.append((launcher_path, launcher_text))
     # Hold-out benchmark refs: one standalone resumable job, rendered only
-    # when configured (inputs.benchmark_refs_dir).
+    # when configured (inputs.benchmark_refs_dir). It is 'after:train', so a
+    # group that submits no train stage (pretrain) omits it.
     bench_refs_dir = getattr(cfg.inputs, "benchmark_refs_dir", None)
     bench_path = os.path.join(scripts_dir, "benchmark_refs.sbatch")
-    if bench_refs_dir:
+    if bench_refs_dir and want_opt:
         bench_text = render_sbatch("benchmark_refs", cfg, run_dir)
         scripts_to_write.append((bench_path, bench_text))
     for path, text in scripts_to_write:
@@ -574,26 +673,31 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     device = (cfg.cluster.device or "cpu").strip().lower()
     result = {
         "run_dir": run_dir,
+        "stages": stages,
         "n_specs": n_specs,
         "n_archs": n_archs,
         "array_max": array_max,
         "pretrain_array_max": pretrain_array_max,
         "device": device,
-        "scripts": {
-            "datagen": datagen_path,
-            "preflight": preflight_path,
-            "train": train_path,
-        },
-        "defer_eval": defer,
-        "inline_eval": inline,
+        "scripts": {},
+        # What THIS submission did: a config-borne eval-mode switch is inert
+        # in a group that submits no eval stage, so the fields report False
+        # there rather than an arrangement no submitted stage realizes.
+        "defer_eval": defer and want_opt,
+        "inline_eval": inline and want_opt,
     }
+    if want_front:
+        result["scripts"]["datagen"] = datagen_path
     if has_pretrain:
         result["scripts"]["pretrain"] = pretrain_path
-    if not inline:
-        result["scripts"]["eval"] = eval_path
-    if defer:
+    if want_opt:
+        result["scripts"]["preflight"] = preflight_path
+        result["scripts"]["train"] = train_path
+        if not inline:
+            result["scripts"]["eval"] = eval_path
+    if defer and want_opt:
         result["scripts"]["eval_launcher"] = launcher_path
-    if bench_refs_dir:
+    if bench_refs_dir and want_opt:
         result["scripts"]["benchmark_refs"] = bench_path
 
     # Manual fallback: if the launcher can't submit (compute nodes barred from
@@ -601,59 +705,73 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     manual_eval_cmd = (
         f"python -m xcquinox.pipeline.cluster submit-eval {run_dir}"
     )
-    if defer:
+    if defer and want_opt:
         result["manual_eval_command"] = manual_eval_cmd
 
     # --- dry-run -------------------------------------------------------------
     if not submit:
-        cmds = [f"sbatch --parsable {datagen_path}"]
+        cmds = []
+        if want_front:
+            cmds.append(f"sbatch --parsable {datagen_path}")
         if has_pretrain:
             cmds.append(
                 f"sbatch --parsable --dependency=afterok:<DATAGEN_ID> "
                 f"{pretrain_path}")
-            cmds.append(
-                f"sbatch --parsable --dependency=afterok:<PRETRAIN_ID> "
-                f"{preflight_path}")
-            cmds.append(
-                f"sbatch --parsable "
-                f"--dependency=afterok:<PRETRAIN_ID>:<PREFLIGHT_ID> "
-                f"{train_path}")
-        else:
-            # Every arch warm-starts from a stated donor: no pretrain job, so
-            # preflight hangs off datagen alone and train off preflight alone.
-            cmds.append(
-                f"sbatch --parsable --dependency=afterok:<DATAGEN_ID> "
-                f"{preflight_path}")
-            cmds.append(
-                f"sbatch --parsable "
-                f"--dependency=afterok:<PREFLIGHT_ID> {train_path}")
-        if inline:
-            cmds.append(
-                f"# inline-eval mode: each train array task runs "
-                "_eval_one_spec at the end of its SLURM task. "
-                "No separate eval array is submitted."
-            )
-        elif defer:
-            cmds.append(
-                f"sbatch --parsable --dependency=afterany:<TRAIN_ID> "
-                f"{launcher_path}"
-            )
-            cmds.append(
-                f"# (launcher then runs) {manual_eval_cmd}  "
-                f"# submits: sbatch --dependency=aftercorr:<TRAIN_ID> {eval_path}"
-            )
-        else:
-            cmds.append(
-                f"sbatch --parsable --dependency=aftercorr:<TRAIN_ID> "
-                f"{eval_path}"
-            )
-        if bench_refs_dir:
-            # 'after' (not afterok): starts once the train array has BEGUN,
-            # running in parallel with training.
-            cmds.append(
-                f"sbatch --parsable --dependency=after:<TRAIN_ID> "
-                f"{bench_path}"
-            )
+        if want_opt:
+            if stages == "all":
+                if has_pretrain:
+                    cmds.append(
+                        f"sbatch --parsable --dependency=afterok:"
+                        f"<PRETRAIN_ID> {preflight_path}")
+                    cmds.append(
+                        f"sbatch --parsable "
+                        f"--dependency=afterok:<PRETRAIN_ID>:<PREFLIGHT_ID> "
+                        f"{train_path}")
+                else:
+                    # Every arch warm-starts from a stated donor: no pretrain
+                    # job, so preflight hangs off datagen alone and train off
+                    # preflight alone.
+                    cmds.append(
+                        f"sbatch --parsable --dependency=afterok:"
+                        f"<DATAGEN_ID> {preflight_path}")
+                    cmds.append(
+                        f"sbatch --parsable "
+                        f"--dependency=afterok:<PREFLIGHT_ID> {train_path}")
+            else:
+                # optimize: no datagen was submitted ahead of preflight, so it
+                # carries no dependency at all; train gates on it alone.
+                cmds.append(f"sbatch --parsable {preflight_path}")
+                cmds.append(
+                    f"sbatch --parsable --dependency=afterok:<PREFLIGHT_ID> "
+                    f"{train_path}")
+            if inline:
+                cmds.append(
+                    f"# inline-eval mode: each train array task runs "
+                    "_eval_one_spec at the end of its SLURM task. "
+                    "No separate eval array is submitted."
+                )
+            elif defer:
+                cmds.append(
+                    f"sbatch --parsable --dependency=afterany:<TRAIN_ID> "
+                    f"{launcher_path}"
+                )
+                cmds.append(
+                    f"# (launcher then runs) {manual_eval_cmd}  "
+                    "# submits: sbatch --dependency=aftercorr:<TRAIN_ID> "
+                    f"{eval_path}"
+                )
+            else:
+                cmds.append(
+                    f"sbatch --parsable --dependency=aftercorr:<TRAIN_ID> "
+                    f"{eval_path}"
+                )
+            if bench_refs_dir:
+                # 'after' (not afterok): starts once the train array has
+                # BEGUN, running in parallel with training.
+                cmds.append(
+                    f"sbatch --parsable --dependency=after:<TRAIN_ID> "
+                    f"{bench_path}"
+                )
         _append_commands(run_dir, "dry-run", cmds)
         result["dry_run"] = True
         result["commands"] = cmds
@@ -670,19 +788,28 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
 
     submitted_ids: list[str] = []  # ids returned in THIS call, for rollback.
     issued_cmds: list[str] = []
+    datagen_id = None
+    pretrain_id = None
+    preflight_id = None
+    train_id = None
+    eval_id = None
+    launcher_id = None
+    bench_id = None
     try:
         # 1. datagen, FIRST stage, NO dependency. Generates the pretrain-data
-        # file(s) every swept arch needs before pretrain (afterok:datagen) runs.
-        datagen_cmd = ["sbatch", "--parsable", datagen_path]
-        issued_cmds.append(" ".join(datagen_cmd))
-        proc = job_tracking._run_slurm(datagen_cmd)
-        datagen_id = proc.stdout.strip().split(";")[0].split()[0]
-        submitted_ids.append(datagen_id)
+        # file(s) every swept arch needs before pretrain (afterok:datagen)
+        # runs. Skipped by the optimize group: with every arch donated there
+        # is no pretrain-data file this run's to generate.
+        if want_front:
+            datagen_cmd = ["sbatch", "--parsable", datagen_path]
+            issued_cmds.append(" ".join(datagen_cmd))
+            proc = job_tracking._run_slurm(datagen_cmd)
+            datagen_id = proc.stdout.strip().split(";")[0].split()[0]
+            submitted_ids.append(datagen_id)
 
         # 2. pretrain array (one task per PRETRAINING arch, donor archs
         # excluded), afterok on datagen. Omitted entirely when every arch
         # warm-starts from a stated donor.
-        pretrain_id = None
         if has_pretrain:
             pretrain_cmd = ["sbatch", "--parsable",
                             f"--dependency=afterok:{datagen_id}",
@@ -693,75 +820,80 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             submitted_ids.append(pretrain_id)
 
         # 3. preflight, afterok on the pretrain array when this run has one,
-        # on datagen alone when it does not.
-        preflight_dep = (f"afterok:{pretrain_id}" if has_pretrain
-                         else f"afterok:{datagen_id}")
-        preflight_cmd = [
-            "sbatch", "--parsable",
-            f"--dependency={preflight_dep}", preflight_path,
-        ]
-        issued_cmds.append(" ".join(preflight_cmd))
-        proc = job_tracking._run_slurm(preflight_cmd)
-        preflight_id = proc.stdout.strip().split(";")[0].split()[0]
-        submitted_ids.append(preflight_id)
+        # on datagen alone when it does not. In the optimize group neither
+        # predecessor was submitted, so it carries NO dependency: the donor
+        # pretraining suite this run seeds from is already complete.
+        if want_opt:
+            if stages == "all":
+                preflight_dep = (f"afterok:{pretrain_id}" if has_pretrain
+                                 else f"afterok:{datagen_id}")
+                preflight_cmd = [
+                    "sbatch", "--parsable",
+                    f"--dependency={preflight_dep}", preflight_path,
+                ]
+            else:
+                preflight_cmd = ["sbatch", "--parsable", preflight_path]
+            issued_cmds.append(" ".join(preflight_cmd))
+            proc = job_tracking._run_slurm(preflight_cmd)
+            preflight_id = proc.stdout.strip().split(";")[0].split()[0]
+            submitted_ids.append(preflight_id)
 
-        # 4. train array, afterok on preflight and on the pretrain array when
-        # this run has one (the colon-list is valid SLURM afterok syntax:
-        # every listed job must succeed).
-        train_dep = (f"afterok:{pretrain_id}:{preflight_id}" if has_pretrain
-                     else f"afterok:{preflight_id}")
-        train_cmd = [
-            "sbatch", "--parsable",
-            f"--dependency={train_dep}", train_path,
-        ]
-        issued_cmds.append(" ".join(train_cmd))
-        proc = job_tracking._run_slurm(train_cmd)
-        train_id = proc.stdout.strip().split(";")[0].split()[0]
-        submitted_ids.append(train_id)
+            # 4. train array, afterok on preflight and on the pretrain array
+            # when this run has one (the colon-list is valid SLURM afterok
+            # syntax: every listed job must succeed).
+            train_dep = (f"afterok:{pretrain_id}:{preflight_id}"
+                         if (stages == "all" and has_pretrain)
+                         else f"afterok:{preflight_id}")
+            train_cmd = [
+                "sbatch", "--parsable",
+                f"--dependency={train_dep}", train_path,
+            ]
+            issued_cmds.append(" ".join(train_cmd))
+            proc = job_tracking._run_slurm(train_cmd)
+            train_id = proc.stdout.strip().split(";")[0].split()[0]
+            submitted_ids.append(train_id)
 
-        # 5. eval, three modes:
-        #    (a) inline: the train array task ALREADY ran eval as its final
-        #        step (see train_eval_inline_*.sbatch.tmpl); no further sbatch.
-        #    (b) defer: a tiny launcher (afterany:train) submits the eval
-        #        array only after train terminates.
-        #    (c) default: queue the eval array now (aftercorr:train).
-        eval_id = None
-        launcher_id = None
-        if inline:
-            pass  # no separate eval submission
-        elif defer:
-            launcher_cmd = [
-                "sbatch", "--parsable",
-                f"--dependency=afterany:{train_id}", launcher_path,
-            ]
-            issued_cmds.append(" ".join(launcher_cmd))
-            proc = job_tracking._run_slurm(launcher_cmd)
-            launcher_id = proc.stdout.strip().split(";")[0].split()[0]
-            submitted_ids.append(launcher_id)
-        else:
-            eval_cmd = [
-                "sbatch", "--parsable",
-                f"--dependency=aftercorr:{train_id}", eval_path,
-            ]
-            issued_cmds.append(" ".join(eval_cmd))
-            proc = job_tracking._run_slurm(eval_cmd)
-            eval_id = proc.stdout.strip().split(";")[0].split()[0]
-            submitted_ids.append(eval_id)
+            # 5. eval, three modes:
+            #    (a) inline: the train array task ALREADY ran eval as its final
+            #        step (see train_eval_inline_*.sbatch.tmpl); no further
+            #        sbatch.
+            #    (b) defer: a tiny launcher (afterany:train) submits the eval
+            #        array only after train terminates.
+            #    (c) default: queue the eval array now (aftercorr:train).
+            if inline:
+                pass  # no separate eval submission
+            elif defer:
+                launcher_cmd = [
+                    "sbatch", "--parsable",
+                    f"--dependency=afterany:{train_id}", launcher_path,
+                ]
+                issued_cmds.append(" ".join(launcher_cmd))
+                proc = job_tracking._run_slurm(launcher_cmd)
+                launcher_id = proc.stdout.strip().split(";")[0].split()[0]
+                submitted_ids.append(launcher_id)
+            else:
+                eval_cmd = [
+                    "sbatch", "--parsable",
+                    f"--dependency=aftercorr:{train_id}", eval_path,
+                ]
+                issued_cmds.append(" ".join(eval_cmd))
+                proc = job_tracking._run_slurm(eval_cmd)
+                eval_id = proc.stdout.strip().split(";")[0].split()[0]
+                submitted_ids.append(eval_id)
 
-        # 6. hold-out benchmark refs: single standalone job, eligible to start
-        # once the train array has BEGUN ('after', not afterok), independent of
-        # the training-refs preflight. Same rollback umbrella as the rest of
-        # the graph.
-        bench_id = None
-        if bench_refs_dir:
-            bench_cmd = [
-                "sbatch", "--parsable",
-                f"--dependency=after:{train_id}", bench_path,
-            ]
-            issued_cmds.append(" ".join(bench_cmd))
-            proc = job_tracking._run_slurm(bench_cmd)
-            bench_id = proc.stdout.strip().split(";")[0].split()[0]
-            submitted_ids.append(bench_id)
+            # 6. hold-out benchmark refs: single standalone job, eligible to
+            # start once the train array has BEGUN ('after', not afterok),
+            # independent of the training-refs preflight. Same rollback
+            # umbrella as the rest of the graph.
+            if bench_refs_dir:
+                bench_cmd = [
+                    "sbatch", "--parsable",
+                    f"--dependency=after:{train_id}", bench_path,
+                ]
+                issued_cmds.append(" ".join(bench_cmd))
+                proc = job_tracking._run_slurm(bench_cmd)
+                bench_id = proc.stdout.strip().split(";")[0].split()[0]
+                submitted_ids.append(bench_id)
     except Exception as exc:
         # Best-effort rollback: cancel everything submitted in THIS call.
         rollback_failed: list[str] = []
@@ -802,54 +934,62 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     # deferred mode the eval record is NOT written here; the launcher (or a
     # manual `submit-eval`) writes it once the eval array is actually submitted.
     # In inline-eval mode there is NO separate eval array, the eval runs in
-    # the train SLURM task, so no eval record exists to write.
+    # the train SLURM task, so no eval record exists to write. A record is
+    # written for a stage this submission actually queued, so a stage-group
+    # run dir records only its group's stages.
     indices = list(range(n_specs))
-    job_tracking.append_job_record(run_dir, "datagen", datagen_id, [0])
+    if want_front:
+        job_tracking.append_job_record(run_dir, "datagen", datagen_id, [0])
     if has_pretrain:
         # The record's indices are the STAGE archs (donor archs excluded):
         # the worker maps an array index through the same donorless list.
         job_tracking.append_job_record(run_dir, "pretrain", pretrain_id,
                                        list(range(len(stage_archs))))
-    job_tracking.append_job_record(run_dir, "preflight", preflight_id, [0])
-    job_tracking.append_job_record(run_dir, "train", train_id, indices)
-    if not (defer or inline):
-        job_tracking.append_job_record(run_dir, "eval", eval_id, indices)
-    if bench_refs_dir:
-        job_tracking.append_job_record(run_dir, "benchmark_refs", bench_id,
-                                       [0])
+    if want_opt:
+        job_tracking.append_job_record(run_dir, "preflight", preflight_id, [0])
+        job_tracking.append_job_record(run_dir, "train", train_id, indices)
+        if not (defer or inline):
+            job_tracking.append_job_record(run_dir, "eval", eval_id, indices)
+        if bench_refs_dir:
+            job_tracking.append_job_record(run_dir, "benchmark_refs",
+                                           bench_id, [0])
 
     _append_commands(run_dir, "submit", issued_cmds)
 
     result["dry_run"] = False
     result["commands"] = issued_cmds
-    job_ids = {
-        "datagen": datagen_id,
-        "preflight": preflight_id,
-        "train": train_id,
-    }
+    job_ids = {}
+    if want_front:
+        job_ids["datagen"] = datagen_id
     if has_pretrain:
         job_ids["pretrain"] = pretrain_id
-    if defer:
-        job_ids["eval_launcher"] = launcher_id
-        print(
-            "submit_jobs: deferred-eval mode, the eval array will be submitted "
-            f"by launcher job {launcher_id} after the train array terminates. "
-            "If the launcher cannot submit from a compute node, run this from a "
-            f"login node once train finishes:\n    {manual_eval_cmd}",
-            flush=True,
-        )
-    elif inline:
-        # No separate eval array, each train task ran eval as its final step
-        # via train_eval_inline_*.sbatch.tmpl. Don't record eval=None.
-        print(
-            "submit_jobs: inline-eval mode, each train array task runs its "
-            "own eval at the end of the SLURM task. No separate eval array "
-            f"submitted (train array {train_id} carries both stages).",
-            flush=True,
-        )
-    else:
-        job_ids["eval"] = eval_id
-    if bench_refs_dir:
-        job_ids["benchmark_refs"] = bench_id
+    if want_opt:
+        job_ids["preflight"] = preflight_id
+        job_ids["train"] = train_id
+        if defer:
+            job_ids["eval_launcher"] = launcher_id
+            print(
+                "submit_jobs: deferred-eval mode, the eval array will be "
+                f"submitted by launcher job {launcher_id} after the train "
+                "array terminates. If the launcher cannot submit from a "
+                "compute node, run this from a login node once train "
+                f"finishes:\n    {manual_eval_cmd}",
+                flush=True,
+            )
+        elif inline:
+            # No separate eval array, each train task ran eval as its final
+            # step via train_eval_inline_*.sbatch.tmpl. Don't record
+            # eval=None.
+            print(
+                "submit_jobs: inline-eval mode, each train array task runs "
+                "its own eval at the end of the SLURM task. No separate eval "
+                f"array submitted (train array {train_id} carries both "
+                "stages).",
+                flush=True,
+            )
+        else:
+            job_ids["eval"] = eval_id
+        if bench_refs_dir:
+            job_ids["benchmark_refs"] = bench_id
     result["job_ids"] = job_ids
     return result
