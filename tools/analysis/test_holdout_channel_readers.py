@@ -66,9 +66,11 @@ _BASIS = "svp_grid2"
 _ALIAS = "svp"
 _DOMAIN = "bh76w411_repr"
 #: the manifest holds the stored registry key; the rows and the figures hold
-#: the shown name, and the certificate sits under the stored one
+#: the shown name, and the certificate sits under the stored one. This key
+#: states its own size, so the two spellings coincide -- the rows are asserted
+#: against the shown name either way, which is what the readers produce
 _ARCH_STORED = "deep_3x16"
-_ARCH_SHOWN = "deep0_3x16"
+_ARCH_SHOWN = "deep_3x16"
 _SUBSET = 26
 
 #: the channel directories of a run evaluated under the cold-start protocol

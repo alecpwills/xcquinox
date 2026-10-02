@@ -55,15 +55,17 @@ from xcquinox.pipeline.cluster.grid_config import (
     expand_grid,
     fidelity_to_raw_dict,
     load_grid_config,
+    load_resolved_run_config,
     normalize_cluster_walltimes,
     pretrain_checkpoint_dir,
+    pretrain_checkpoint_for,
     pretrain_to_raw_dict,
     require_explicit_bh76_mode,
     validate_grid_semantics,
 )
 from xcquinox.pipeline.cluster.domain import get_domain_profile
 from xcquinox.pipeline.cluster.inputs import prepare_inputs
-from xcquinox.pipeline.cluster.submit import submit_jobs
+from xcquinox.pipeline.cluster.submit import _repo_root, submit_jobs
 from xcquinox.pipeline.cluster.materialize import write_manifest
 from xcquinox.pipeline.holdout_channels import REPORTING_CHANNEL
 from xcquinox.pipeline.cluster.fidelity import (CERTIFICATE_FILENAME,
@@ -749,6 +751,25 @@ def _parse_job_id(proc) -> str:
     return proc.stdout.strip().split(";")[0].split()[0]
 
 
+def _resolve_grid_path(path: str) -> str:
+    """Resolve the grid-config argument against the checkout when needed.
+
+    The runbook spells configs relative to the checkout
+    (``hpcjobs/configs/...``); a submit from any other directory resolves that
+    spelling against the checkout, not the caller's CWD. A path that exists as
+    given (absolute or CWD-relative) is returned untouched, and a path found
+    nowhere is returned as given so the loader's error names it.
+    """
+    if os.path.isabs(path) or os.path.exists(path):
+        return path
+    checkout_path = os.path.join(_repo_root(), path)
+    if os.path.exists(checkout_path):
+        _log(f"submit: grid path {path!r} resolved against the checkout: "
+             f"{checkout_path}")
+        return checkout_path
+    return path
+
+
 # ===========================================================================
 # Subcommand: prepare
 # ===========================================================================
@@ -765,15 +786,16 @@ def cmd_prepare(args) -> int:
     the precompute entirely so ``prepare`` can validate the ledger cheaply on a
     login node.
     """
+    grid = _resolve_grid_path(args.grid)
     try:
-        require_explicit_bh76_mode(args.grid)
+        require_explicit_bh76_mode(grid)
     except ValueError as exc:
         _log(f"ERROR: {exc}")
         return 1
     try:
-        cfg = load_grid_config(args.grid)
+        cfg = load_grid_config(grid)
     except Exception as exc:
-        _log(f"prepare: cannot parse {args.grid} ({exc!r}); fix the file.")
+        _log(f"prepare: cannot parse {grid} ({exc!r}); fix the file.")
         return 1
     # Same semantic validation `submit` runs. `prepare` accepts any grid
     # config, a run's already-written resolved_config.yaml included, so the
@@ -796,7 +818,7 @@ def cmd_prepare(args) -> int:
         return 2
 
     mode = "validate-only" if args.no_recompute_refs else "with refs precompute"
-    _log(f"prepare: staging inputs ({mode}) from {args.grid}")
+    _log(f"prepare: staging inputs ({mode}) from {grid}")
     staged = prepare_inputs(cfg, recompute_refs=recompute_refs)
     n_entries = len(staged.subset_ledger)
     _log(
@@ -1019,15 +1041,16 @@ def cmd_submit(args) -> int:
     ``submit_jobs`` (dry-run unless ``--submit``) which renders + submits the
     5-stage datagen -> pretrain -> preflight -> train -> eval graph.
     """
+    grid = _resolve_grid_path(args.grid)
     try:
-        require_explicit_bh76_mode(args.grid)
+        require_explicit_bh76_mode(grid)
     except ValueError as exc:
         _log(f"ERROR: {exc}")
         return 1
     try:
-        cfg = load_grid_config(args.grid)
+        cfg = load_grid_config(grid)
     except Exception as exc:
-        _log(f"submit: cannot parse {args.grid} ({exc!r}); fix the file.")
+        _log(f"submit: cannot parse {grid} ({exc!r}); fix the file.")
         return 1
     cfg = _apply_partition_overrides(cfg, args)
     cfg = _apply_max_nodes_overrides(cfg, args)
@@ -1039,7 +1062,15 @@ def cmd_submit(args) -> int:
     domain = get_domain_profile(cfg.domain_profile)
     validate_grid_semantics(cfg, domain)
 
-    root = args.run_root or cfg.inputs.output_root
+    if args.run_root and not os.path.isabs(args.run_root):
+        # A relative --run-root resolves against the checkout, not the
+        # caller's CWD, so the runbook's `--run-root hpcjobs` spelling lands
+        # under the checkout from any directory.
+        root = os.path.join(_repo_root(), args.run_root)
+        _log(f"submit: relative run root {args.run_root!r} resolved against "
+             f"the checkout: {root}")
+    else:
+        root = args.run_root or cfg.inputs.output_root
     run_dir = _make_run_dir(root)
     os.makedirs(os.path.join(run_dir, "scripts"), exist_ok=True)
     os.makedirs(os.path.join(run_dir, "logs"), exist_ok=True)
@@ -1049,9 +1080,13 @@ def cmd_submit(args) -> int:
     result = submit_jobs(cfg, run_dir, submit=args.submit, force=args.force)
 
     if result.get("dry_run", True):
+        pretrain_part = (
+            f"pretrain array 0-{result['pretrain_array_max']}, "
+            if result.get("pretrain_array_max") is not None
+            else "no pretrain stage (every arch warm-starts from a donor), ")
         _log(f"submit: DRY-RUN ({result['n_specs']} specs, array "
              f"0-{result['array_max']}, {result['n_archs']} distinct arch(s), "
-             f"pretrain array 0-{result['pretrain_array_max']}, "
+             f"{pretrain_part}"
              f"device={result['device']}). "
              "No SLURM call was made; pass --submit to submit for real.")
         for line in result.get("commands", []):
@@ -1065,10 +1100,12 @@ def cmd_submit(args) -> int:
             eval_part = f"eval={ids.get('eval')}"
         bench_part = (f" benchmark_refs={ids['benchmark_refs']}"
                       if ids.get("benchmark_refs") else "")
+        pretrain_part = (f"pretrain={ids.get('pretrain')} "
+                         if "pretrain" in ids else "")
         _log(f"submit: SUBMITTED ({result['n_specs']} specs, "
              f"{result['n_archs']} distinct arch(s)), "
              f"datagen={ids.get('datagen')} "
-             f"pretrain={ids.get('pretrain')} "
+             f"{pretrain_part}"
              f"preflight={ids.get('preflight')} train={ids.get('train')} "
              f"{eval_part}{bench_part}")
         if result.get("manual_eval_command"):
@@ -1128,11 +1165,8 @@ def _pretrain_counts(run_dir: str):
     dependency question on the PASS count would state that a run was gated out
     by a certificate that in fact released it.
     """
-    cfg_path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
-    if not os.path.exists(cfg_path):
-        return None
     try:
-        cfg = load_grid_config(cfg_path)
+        cfg = load_resolved_run_config(run_dir)
     except Exception:
         return None
     archs = sorted(set(cfg.sweep.arch))
@@ -1141,7 +1175,9 @@ def _pretrain_counts(run_dir: str):
     released = 0
     waived = []
     for arch in archs:
-        d = pretrain_checkpoint_dir(run_dir, arch)
+        # The donor directory for a donated arch, the run's own pretrain
+        # product otherwise -- the one resolution rule every consumer shares.
+        d = pretrain_checkpoint_for(cfg, run_dir, arch)
         if (os.path.exists(os.path.join(d, "xnet.eqx"))
                 and os.path.exists(os.path.join(d, "cnet.eqx"))):
             done += 1
@@ -1830,9 +1866,19 @@ def cmd_regate_certificates(args) -> int:
             return 1
     try:
         archs = _canon_axis(cfg_run.sweep.arch)
+        donors = getattr(cfg_run.pretrain, "donor_checkpoints", None) or {}
         all_pass = True
         any_unreadable = False
+        regated_any = False
         for arch in archs:
+            if arch in donors:
+                # A donor arch's certificate lives in the DONOR directory and
+                # belongs to the run that produced it; this run never gates it
+                # and must not rewrite it.
+                _log(f"{arch}: warm-starts from donor {donors[arch]!r}; its "
+                     "certificate is not this run's to regate")
+                continue
+            regated_any = True
             cpath = os.path.join(pretrain_checkpoint_dir(run_dir, arch),
                                  CERTIFICATE_FILENAME)
             if not os.path.exists(cpath):
@@ -1882,6 +1928,14 @@ def cmd_regate_certificates(args) -> int:
                     _log(f"{arch}: {report} -- dry-run, not written")
             if end_verdict != VERDICT_PASS:
                 all_pass = False
+        if not regated_any:
+            # Every arch warm-starts from a donor: a command that regated
+            # nothing must not report success (which would read as "the gate
+            # was applied") nor rewrite the resolved config's gate policy.
+            _log("every architecture warm-starts from a donor; nothing to "
+                 "regate (a donor's certificate belongs to the run that "
+                 "wrote it)")
+            return 1
         if args.apply:
             if any_unreadable:
                 # A run with an unreadable certificate is broken; a

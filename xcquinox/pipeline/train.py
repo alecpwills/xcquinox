@@ -506,7 +506,17 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
 
     The uniform-gas gate (``ueg_gate``) is the third such field: a record
     that states it is held to it, and a record written before the field is
-    read at ``tanh2``, the gate every model before it carried.
+    read at ``tanh2``, the gate every model before it carried. The registry's
+    ``double_lob_clamp_allowed`` is the same class of static field (a Lieb-
+    Oxford ceiling without it is refused at construction, networks.py) and is
+    read the same way: a record written before the key existed is read at the
+    registry default, False, so every existing checkpoint loads exactly as it
+    did and a configuration that sets the flag is refused against it.
+    ``dm_entropy_intensive`` is deliberately NOT compared here: the quantity
+    it scaled was removed (2026-08-06) and the field survives only so live
+    spec files unpickle (config.py's materialize_descriptors says so), so
+    loading across it cannot produce a model that is neither. It is recorded
+    by the writer and cross-checked by the run validator as provenance.
     ``descriptor_log_transform`` is the fourth such field and is compared ONLY
     WHERE THE RECORD STATES IT, as the trained checkpoints' own record
     compares it (``checkpoint_class.require_matching_log_transform``): every
@@ -524,18 +534,22 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     want_anchor = bool(getattr(arch, "parent_anchor", False))
     want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
     want_gate = str(getattr(arch, "ueg_gate", "tanh2"))
+    want_lob = bool(getattr(arch, "double_lob_clamp_allowed", False))
     md_path = os.path.join(pretrain_checkpoint, "pretrain_metadata.json")
     if not os.path.isfile(md_path):
-        if want_anchor or want_coords != "legacy" or want_gate != "tanh2":
+        if (want_anchor or want_coords != "legacy" or want_gate != "tanh2"
+                or want_lob):
             raise ValueError(
                 f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r} "
                 f"into a model with parent_anchor={want_anchor}, "
-                f"descriptor_coordinates={want_coords!r} and "
-                f"ueg_gate={want_gate!r}: the directory carries "
-                "no pretrain_metadata.json recording the model class its "
-                "networks were written as, and the checkpoint's leaves do not "
-                "reveal it (the anchor, the coordinates and the uniform-gas "
-                "gate are static fields with no parameters of their own)")
+                f"descriptor_coordinates={want_coords!r}, "
+                f"ueg_gate={want_gate!r} and "
+                f"double_lob_clamp_allowed={want_lob}: the directory "
+                "carries no pretrain_metadata.json recording the model class "
+                "its networks were written as, and the checkpoint's leaves "
+                "do not reveal it (the anchor, the coordinates, the "
+                "uniform-gas gate and the clamp permission are "
+                "static fields with no parameters of their own)")
         return
     try:
         with open(md_path) as f:
@@ -549,18 +563,24 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     # A metadata file written before the gate existed states nothing about
     # it and is read at the gate every model before the field carried.
     got_gate = str(md.get("ueg_gate", "tanh2"))
+    # The clamp permission likewise reads at its default (False) in a record
+    # written before the key existed.
+    got_lob = bool(md.get("double_lob_clamp_allowed", False))
     if (got_anchor != want_anchor or got_coords != want_coords
-            or got_gate != want_gate):
+            or got_gate != want_gate
+            or got_lob != want_lob):
         raise ValueError(
             f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r}: "
             f"its networks were written as parent_anchor={got_anchor}, "
-            f"descriptor_coordinates={got_coords!r}, ueg_gate={got_gate!r} "
+            f"descriptor_coordinates={got_coords!r}, ueg_gate={got_gate!r}, "
+            f"double_lob_clamp_allowed={got_lob} "
             "(pretrain_metadata.json"
             + ("" if "parent_anchor" in md else
                ", which predates the fields and so records the unanchored "
                "legacy class")
             + f"), but the model being built is parent_anchor={want_anchor}, "
-            f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}. "
+            f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}, "
+            f"double_lob_clamp_allowed={want_lob}. "
             "The two are different "
             "model classes with identical parameter shapes; loading across "
             "them would silently produce a model that is neither.")

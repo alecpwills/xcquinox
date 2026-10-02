@@ -475,17 +475,15 @@ def test_an_anchored_zeta_blind_correlation_network_is_refused():
 
 def test_the_anchored_helper_forces_the_zero_initialized_final_layer():
     """``config.anchored`` turns on ``zero_init_final_layer`` whatever the
-    registry entry says: ``shallow``, ``shallow_attn``, ``medium`` and
-    ``medium_attn`` carry False, and without the override their ``gated`` at
-    initialization is not zero (measured +1.826e-3 in ``F_x`` and -8.063e-3 in
-    ``F_c`` on a live packed row for ``shallow``), so they would start off
-    their parent."""
-    for name in ("shallow", "shallow_attn", "medium", "medium_attn"):
-        base = pipeline.get_architecture(name)
+    registry entry says: no entry carries True, and without the override the
+    ``gated`` output at initialization is not zero (measured +1.826e-3 in
+    ``F_x`` and -8.063e-3 in ``F_c`` on a live packed row for ``shallow``), so
+    an anchored network would start off its parent."""
+    for name, base in sorted(pipeline.ARCHITECTURES.items()):
         assert base.zero_init_final_layer is False, name
         arch = anchored(base)
-        assert arch.parent_anchor is True
-        assert arch.zero_init_final_layer is True
+        assert arch.parent_anchor is True, name
+        assert arch.zero_init_final_layer is True, name
 
 
 # ---------------------------------------------------------------------------
@@ -583,8 +581,9 @@ def test_certificate_passes_at_initialization_for_an_anchored_architecture(
     The bound asserted is 1e-2 mHa and 1e-2 kcal/mol -- fourteen times the
     measurement and two orders under the binding 1.0 / 1.0 gate.
 
-    The same architecture UNANCHORED is the control: ``zero_init_final_layer``
-    gives it ``F_x = F_c = 1``, the LDA/PW92 limit, which is nowhere near PBE
+    The same architecture UNANCHORED is the control, built with
+    ``zero_init_final_layer`` set here (no registry entry sets it) so that it
+    starts at ``F_x = F_c = 1``, the LDA/PW92 limit, which is nowhere near PBE
     and FAILs the same gate. Without that half the PASS would be consistent
     with a certificate that cannot fail.
     """
@@ -610,7 +609,8 @@ def test_certificate_passes_at_initialization_for_an_anchored_architecture(
 
     control_dir = str(tmp_path / "control")
     plain = dataclasses.replace(pipeline.get_architecture("deep_3x16"),
-                                use_polarized_correlation=True)
+                                use_polarized_correlation=True,
+                                zero_init_final_layer=True)
     _write_untrained_pretrain_checkpoint(control_dir, plain, "deep_3x16", seed=0)
     control = fid.fidelity_certificate(
         _anchored_cfg(parent_anchor=False), control_dir, "deep_3x16",

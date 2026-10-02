@@ -75,9 +75,9 @@ E_xc = ∫ n(r) [ ε_x^LDA(n) · F_x + ε_c^PW92(n,ζ) · F_c ] dr
   `ex_density = ρ·ε_x^LDA·F_x` (`models.py:170-171`).
 
 At `F_x = F_c = 1` the functional is exactly LDA/PW92 (the uniform-gas limit). This is where the
-**untrained** network sits (its final layer is zero-initialized when `zero_init_final_layer=True`,
-which both notebook archs set, `networks.py:117-122`) and where the
-low-density **tail** is masked (`models.py:164-166`). Training moves `F` away from 1. *Why this form:*
+low-density **tail** is masked (`models.py:164-166`), and an **untrained** network starts near it
+from the default initialization of its final layer (no registry architecture zeroes that layer;
+`zero_init_final_layer` is set only by the parent anchor). Training moves `F` away from 1. *Why this form:*
 factoring out the exact uniform-gas limit makes the network a bounded correction to a physically sound
 baseline rather than an unconstrained fit -- the standard construction of DFS [4] and of PBE-family GGAs
 [1].
@@ -226,8 +226,10 @@ configuration:
   cycles (`full_3` = 3, `full_25` = 25) from a converged-PBE seed, with a step-decaying linear mixer
   `α = 0.3^step + 0.3` and a tail-weighted energy loss [4]; optimization is AdamW with a per-molecule
   (dpyscf-style) update loop.
-- **Pretrain to PBE first.** The archs zero-initialize to **LDA** (`F=1`), so each network is first fit
-  to **PBE** enhancement factors (`F_x = F_x^PBE/F_x^LDA - 1`) as a warm-start before density training.
+- **Pretrain to PBE first.** An untrained network starts near **LDA** (`F=1` exactly is the
+  uniform-gas limit; the default initialization puts an untrained `F` close to it), so each network
+  is first fit to **PBE** enhancement factors (`F_x = F_x^PBE/F_x^LDA - 1`) as a warm-start before
+  density training.
 
 **Documented deviations from DFS [4]** (also listed in the notebook): plain **CCSD** (not CCSD(T))
 reference densities; the modern GGA + rung-3.5 networks rather than the paper's meta-GGA (no

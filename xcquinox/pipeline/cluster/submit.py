@@ -5,7 +5,7 @@ The HPC harness submits a **5-stage SLURM job graph**:
     datagen (single job, no dependency)
         |  --dependency=afterok:<datagen>
         v
-    pretrain array  (--array=0-A-1%pretrain_throttle, A = distinct archs)
+    pretrain array  (--array=0-A-1%pretrain_throttle, A = pretraining archs)
         |  --dependency=afterok:<pretrain>
         v
     preflight (single job)
@@ -18,8 +18,12 @@ The HPC harness submits a **5-stage SLURM job graph**:
 
 The train/eval array size ``N = len(expand_grid(cfg))`` is known at submit
 time from the config alone, no preflight result is needed to size the arrays.
-The pretrain array size ``A = len(_canon_axis(cfg.sweep.arch))`` is the distinct
-architecture count (the same de-dup ``expand_grid`` applies to the arch axis).
+The pretrain array size ``A`` is the distinct-arch count LESS the donor archs
+(``pretrain_stage_archs``: an arch with a stated ``donor_checkpoints`` entry
+warm-starts from that checkpoint and never pretrains here). A run whose every
+arch is donated has NO pretrain stage: no script written, no sbatch, no
+jobs.json record, preflight depends on datagen alone and train on preflight
+alone.
 ``aftercorr`` requires the train and eval arrays to share an *identical index
 range* (only the ``%throttle`` suffix may differ); :func:`submit_jobs` asserts
 that. The pretrain array's range is independent (over archs) and is NOT part
@@ -44,7 +48,8 @@ from string import Template
 import importlib.resources
 import os
 
-from xcquinox.pipeline.cluster.grid_config import expand_grid, _canon_axis
+from xcquinox.pipeline.cluster.grid_config import (expand_grid, _canon_axis,
+                                                   pretrain_stage_archs)
 from xcquinox.pipeline.cluster import job_tracking
 from xcquinox.pipeline.parallel import PYSCF_POOL_THREADS_MAX
 
@@ -94,6 +99,28 @@ def _load_template_text(filename: str) -> str:
         / "templates" / filename
     )
     return res.read_text(encoding="utf-8")
+
+
+def _repo_root() -> str:
+    """The checkout root, anchored to this package's own location.
+
+    ``submit.py`` sits at ``<repo>/xcquinox/pipeline/cluster/submit.py``, so
+    three parents up from its directory is the checkout on every host that
+    installs the package editable from the checkout (the workstation and the
+    cluster env, build_parity_env.sbatch: ``pip install -e "$REPO"``). The
+    anchor is asserted against the repo layout (a ``hpcjobs/`` directory and a
+    ``pyproject.toml`` beside it); a wrong anchor is a loud error, never a
+    silent CWD fallback. NOT cached at import, so tests can monkeypatch it.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    if not (os.path.isdir(os.path.join(root, "hpcjobs"))
+            and os.path.isfile(os.path.join(root, "pyproject.toml"))):
+        raise RuntimeError(
+            f"_repo_root: {root!r} (derived from {__file__}) does not carry "
+            "the repo layout (hpcjobs/ + pyproject.toml); refusing to resolve "
+            "paths against it")
+    return root
 
 
 def _optional_sbatch_line(directive: str, value: str) -> str:
@@ -269,6 +296,7 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         "CPUS_PER_TASK": cpus,
         "PYSCF_POOL_THREADS_MAX": PYSCF_POOL_THREADS_MAX,
         "RUN_DIR": run_dir,
+        "REPO_ROOT": _repo_root(),
         "CONDA_ACTIVATION": _conda_activation_block(
             cl.conda_profile, cl.conda_env
         ),
@@ -470,7 +498,12 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         raise ValueError(
             "submit_jobs: arch sweep axis is empty, nothing to pretrain"
         )
-    pretrain_array_max = n_archs - 1
+    # The archs this run itself pretrains: distinct sweep archs minus the
+    # donor archs (a stated donor warm-starts optimization from it and this
+    # run never pretrains that arch). All archs donated -> NO pretrain stage.
+    stage_archs = pretrain_stage_archs(cfg)
+    has_pretrain = bool(stage_archs)
+    pretrain_array_max = len(stage_archs) - 1 if has_pretrain else None
 
     scripts_dir = os.path.join(run_dir, "scripts")
     logs_dir = os.path.join(run_dir, "logs")
@@ -480,8 +513,9 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
 
     # --- render --------------------------------------------------------------
     datagen_text = render_sbatch("datagen", cfg, run_dir)
-    pretrain_text = render_sbatch("pretrain", cfg, run_dir,
-                                  array_max=pretrain_array_max)
+    pretrain_text = (render_sbatch("pretrain", cfg, run_dir,
+                                   array_max=pretrain_array_max)
+                     if has_pretrain else None)
     preflight_text = render_sbatch("preflight", cfg, run_dir)
     if inline:
         # Single combined train+eval array; no separate eval submission.
@@ -513,10 +547,11 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     eval_path = os.path.join(scripts_dir, "eval_array.sbatch")
     scripts_to_write = [
         (datagen_path, datagen_text),
-        (pretrain_path, pretrain_text),
         (preflight_path, preflight_text),
         (train_path, train_text),
     ]
+    if has_pretrain:
+        scripts_to_write.append((pretrain_path, pretrain_text))
     if not inline:
         scripts_to_write.append((eval_path, eval_text))
     # In deferred mode the launcher job (submitted afterany:train) re-uses the
@@ -546,13 +581,14 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         "device": device,
         "scripts": {
             "datagen": datagen_path,
-            "pretrain": pretrain_path,
             "preflight": preflight_path,
             "train": train_path,
         },
         "defer_eval": defer,
         "inline_eval": inline,
     }
+    if has_pretrain:
+        result["scripts"]["pretrain"] = pretrain_path
     if not inline:
         result["scripts"]["eval"] = eval_path
     if defer:
@@ -570,15 +606,27 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
 
     # --- dry-run -------------------------------------------------------------
     if not submit:
-        cmds = [
-            f"sbatch --parsable {datagen_path}",
-            f"sbatch --parsable --dependency=afterok:<DATAGEN_ID> "
-            f"{pretrain_path}",
-            f"sbatch --parsable --dependency=afterok:<PRETRAIN_ID> "
-            f"{preflight_path}",
-            f"sbatch --parsable "
-            f"--dependency=afterok:<PRETRAIN_ID>:<PREFLIGHT_ID> {train_path}",
-        ]
+        cmds = [f"sbatch --parsable {datagen_path}"]
+        if has_pretrain:
+            cmds.append(
+                f"sbatch --parsable --dependency=afterok:<DATAGEN_ID> "
+                f"{pretrain_path}")
+            cmds.append(
+                f"sbatch --parsable --dependency=afterok:<PRETRAIN_ID> "
+                f"{preflight_path}")
+            cmds.append(
+                f"sbatch --parsable "
+                f"--dependency=afterok:<PRETRAIN_ID>:<PREFLIGHT_ID> "
+                f"{train_path}")
+        else:
+            # Every arch warm-starts from a stated donor: no pretrain job, so
+            # preflight hangs off datagen alone and train off preflight alone.
+            cmds.append(
+                f"sbatch --parsable --dependency=afterok:<DATAGEN_ID> "
+                f"{preflight_path}")
+            cmds.append(
+                f"sbatch --parsable "
+                f"--dependency=afterok:<PREFLIGHT_ID> {train_path}")
         if inline:
             cmds.append(
                 f"# inline-eval mode: each train array task runs "
@@ -631,29 +679,40 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         datagen_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(datagen_id)
 
-        # 2. pretrain array (one task per distinct architecture), afterok on datagen
-        pretrain_cmd = ["sbatch", "--parsable",
-                        f"--dependency=afterok:{datagen_id}", pretrain_path]
-        issued_cmds.append(" ".join(pretrain_cmd))
-        proc = job_tracking._run_slurm(pretrain_cmd)
-        pretrain_id = proc.stdout.strip().split(";")[0].split()[0]
-        submitted_ids.append(pretrain_id)
+        # 2. pretrain array (one task per PRETRAINING arch, donor archs
+        # excluded), afterok on datagen. Omitted entirely when every arch
+        # warm-starts from a stated donor.
+        pretrain_id = None
+        if has_pretrain:
+            pretrain_cmd = ["sbatch", "--parsable",
+                            f"--dependency=afterok:{datagen_id}",
+                            pretrain_path]
+            issued_cmds.append(" ".join(pretrain_cmd))
+            proc = job_tracking._run_slurm(pretrain_cmd)
+            pretrain_id = proc.stdout.strip().split(";")[0].split()[0]
+            submitted_ids.append(pretrain_id)
 
-        # 3. preflight, afterok on pretrain
+        # 3. preflight, afterok on the pretrain array when this run has one,
+        # on datagen alone when it does not.
+        preflight_dep = (f"afterok:{pretrain_id}" if has_pretrain
+                         else f"afterok:{datagen_id}")
         preflight_cmd = [
             "sbatch", "--parsable",
-            f"--dependency=afterok:{pretrain_id}", preflight_path,
+            f"--dependency={preflight_dep}", preflight_path,
         ]
         issued_cmds.append(" ".join(preflight_cmd))
         proc = job_tracking._run_slurm(preflight_cmd)
         preflight_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(preflight_id)
 
-        # 4. train array, afterok on BOTH pretrain and preflight (the colon-
-        # list is valid SLURM afterok syntax: every listed job must succeed).
+        # 4. train array, afterok on preflight and on the pretrain array when
+        # this run has one (the colon-list is valid SLURM afterok syntax:
+        # every listed job must succeed).
+        train_dep = (f"afterok:{pretrain_id}:{preflight_id}" if has_pretrain
+                     else f"afterok:{preflight_id}")
         train_cmd = [
             "sbatch", "--parsable",
-            f"--dependency=afterok:{pretrain_id}:{preflight_id}", train_path,
+            f"--dependency={train_dep}", train_path,
         ]
         issued_cmds.append(" ".join(train_cmd))
         proc = job_tracking._run_slurm(train_cmd)
@@ -745,10 +804,12 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     # In inline-eval mode there is NO separate eval array, the eval runs in
     # the train SLURM task, so no eval record exists to write.
     indices = list(range(n_specs))
-    arch_indices = list(range(n_archs))
     job_tracking.append_job_record(run_dir, "datagen", datagen_id, [0])
-    job_tracking.append_job_record(run_dir, "pretrain", pretrain_id,
-                                   arch_indices)
+    if has_pretrain:
+        # The record's indices are the STAGE archs (donor archs excluded):
+        # the worker maps an array index through the same donorless list.
+        job_tracking.append_job_record(run_dir, "pretrain", pretrain_id,
+                                       list(range(len(stage_archs))))
     job_tracking.append_job_record(run_dir, "preflight", preflight_id, [0])
     job_tracking.append_job_record(run_dir, "train", train_id, indices)
     if not (defer or inline):
@@ -763,10 +824,11 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     result["commands"] = issued_cmds
     job_ids = {
         "datagen": datagen_id,
-        "pretrain": pretrain_id,
         "preflight": preflight_id,
         "train": train_id,
     }
+    if has_pretrain:
+        job_ids["pretrain"] = pretrain_id
     if defer:
         job_ids["eval_launcher"] = launcher_id
         print(

@@ -96,8 +96,10 @@ import time
 
 from xcquinox.pipeline import parallel
 from xcquinox.pipeline.config import get_architecture
-from xcquinox.pipeline.cluster.fidelity import gate_certificate
-from xcquinox.pipeline.cluster.grid_config import load_grid_config
+from xcquinox.pipeline.cluster.fidelity import (gate_certificate_from_read,
+                                               read_certificate_status_in)
+from xcquinox.pipeline.cluster.grid_config import (load_grid_config,
+                                                   pretrain_checkpoint_for)
 from xcquinox.pipeline.cluster.domain import get_domain_profile
 from xcquinox.pipeline.cluster._train_task import (
     _CPU_OOM_MARKERS,
@@ -836,15 +838,21 @@ def main(argv=None) -> int:
     # This sweep is the run-level cross-check: it catches an architecture that
     # was pretrained under a different submission, a certificate that was
     # deleted, and a partial pretrain array that SLURM reported as complete.
-    # ``gate_certificate`` honours a run configured with
+    # ``gate_certificate_from_read`` honours a run configured with
     # ``fidelity.enforce: false`` (the workflow-verification matrix), which
     # ``validate_run``, ``merge_v4_arms`` and the figure suite still refuse.
+    # The certificate directory is resolved through the ONE donor rule: a
+    # donated arch certifies on its DONOR's certificate (this run never writes
+    # one), every other arch on the run's own pretrain product.
     archs = sorted(set(cfg.sweep.arch))
     uncertified = []
     for arch in archs:
-        allowed, message = gate_certificate(run_dir, arch)
+        pretrain_dir = pretrain_checkpoint_for(cfg, run_dir, arch)
+        allowed, message = gate_certificate_from_read(
+            *read_certificate_status_in(pretrain_dir))
         if allowed:
-            _log(f"fidelity gate for arch {arch}: {message}")
+            _log(f"fidelity gate for arch {arch}: {message} "
+                 f"(checkpoint {pretrain_dir})")
             continue
         uncertified.append(arch)
         _log(f"ERROR: fidelity certificate for arch {arch} does not release "

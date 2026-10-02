@@ -440,7 +440,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
         ledger entry names a training point absent from the ``points`` pool.
     """
     from xcquinox.pipeline.cluster.grid_config import (
-        expand_grid, pretrain_checkpoint_dir,
+        expand_grid, pretrain_checkpoint_for,
     )
     from xcquinox.pipeline.balancing import GradNormConfig
 
@@ -645,12 +645,15 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             solver_config=solver_cfg,
             # The pretrain stage writes one checkpoint per architecture to the
             # run-scoped ``<run_dir>/pretrain/<arch>/``; that directory IS this
-            # cell's pretrained checkpoint. Derived through the SAME helper the
-            # pretrain worker uses so the two sides cannot drift. validate()
-            # only checks the path when the dir exists, so building specs before
-            # the pretrain stage runs is fine, the preflight runs
-            # pretrain-then-validate.
-            pretrain_checkpoint=pretrain_checkpoint_dir(run_dir, cell.arch),
+            # cell's pretrained checkpoint, unless the config states a DONOR
+            # for the arch (an earlier run's product this run warm-starts
+            # from instead of pretraining). Derived through the ONE resolution
+            # helper so every consumer -- the worker, the gates, the
+            # validator -- sees the same directory. validate() only checks the
+            # path when the dir exists, so building specs before the pretrain
+            # stage runs is fine, the preflight runs pretrain-then-validate.
+            pretrain_checkpoint=pretrain_checkpoint_for(cfg, run_dir,
+                                                       cell.arch),
             checkpoint_dir=_checkpoint_dir(run_dir, idx, n),
             n_steps=hp.n_steps,
             lr_start=hp.lr_start,

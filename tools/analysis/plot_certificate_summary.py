@@ -48,7 +48,8 @@ matplotlib.use("Agg")  # headless-safe; must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
 
 # the certificate directory is the STORED registry key; the axis and the CSV
-# show the derived name (medium -> deep_3x16, deep_3x16 -> deep0_3x16)
+# show the derived name (medium -> medium_3x16, deep -> deep_4x32; a key that
+# states its size, deep_3x16, is its own shown name)
 from xcquinox.pipeline.arch_names import display_name  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -83,23 +84,58 @@ _LABEL_COLORS = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
 _SPECIES_FLAG_KCALMOL = 1.0
 
 
+def _certificate_paths(run_dir):
+    """The certificate files ``run_dir`` plots, through the one resolution
+    rule: an architecture the run's resolved config warm-starts from a donor
+    reads the DONOR's certificate, every other architecture the run-local
+    ``pretrain/<arch>`` product (``grid_config.pretrain_checkpoint_for``,
+    the rule every consumer shares). Without a loadable config the run-local
+    glob stands alone, as it always did.
+    """
+    run_local = sorted(glob.glob(
+        os.path.join(run_dir, "pretrain", "*", "fidelity_certificate.json")))
+    try:
+        from xcquinox.pipeline.cluster.grid_config import (
+            load_resolved_run_config, pretrain_checkpoint_for)
+        cfg = load_resolved_run_config(run_dir)
+        donors = getattr(cfg.pretrain, "donor_checkpoints", None) or {}
+    except Exception:  # noqa: BLE001 -- no readable config: run-local glob
+        return run_local
+    # The arch universe: what the run-local glob found plus the donated
+    # names, each then resolved through the rule -- so a donated arch plots
+    # its donor's certificate even when the run wrote no pretrain tree, and
+    # a leftover run-local file under a donated name is not plotted beside
+    # the donor's as a second word on the same arch.
+    by_arch = {os.path.basename(os.path.dirname(p)): p
+               for p in run_local}
+    paths = []
+    for arch in sorted(set(by_arch) | set(donors)):
+        p = os.path.join(pretrain_checkpoint_for(cfg, run_dir, arch),
+                         "fidelity_certificate.json")
+        if os.path.isfile(p):
+            paths.append(p)
+    return sorted(paths)
+
+
 def collect_certificates(runs):
     """``[(label, arch, record)]`` for every certificate under ``runs``.
 
-    ``runs`` is a list of ``(label, run_dir)`` pairs. Each record carries the
-    recomputed statistics plus the recorded verdict and tolerances. A
-    duplicate (label, arch) pair and a run directory with no certificate are
-    both refused: the first silently averages two campaigns into one bar, the
-    second draws an empty axis that reads as a clean sweep.
+    ``runs`` is a list of ``(label, run_dir)`` pairs; each run's
+    certificates resolve through the donor rule (:func:`_certificate_paths`),
+    so a donor-backed architecture plots its donor's numbers. Each record
+    carries the recomputed statistics plus the recorded verdict and
+    tolerances. A duplicate (label, arch) pair and a run directory with no
+    certificate are both refused: the first silently averages two campaigns
+    into one bar, the second draws an empty axis that reads as a clean sweep.
     """
     out = []
     seen = set()
     for label, run_dir in runs:
-        paths = sorted(glob.glob(
-            os.path.join(run_dir, "pretrain", "*", "fidelity_certificate.json")))
+        paths = _certificate_paths(run_dir)
         if not paths:
             raise ValueError(
-                f"no pretrain/*/fidelity_certificate.json under {run_dir}")
+                f"no fidelity_certificate.json under {run_dir} (run-local "
+                "pretrain/*/ or a config-stated donor)")
         for path in paths:
             with open(path) as f:
                 cert = json.load(f)

@@ -66,6 +66,30 @@ def reaction_energy(record: dict, energies: dict) -> float:
     return total * KCAL_PER_HA
 
 
+def reaction_rows(molecules: list, reactions: list, pbe_df: dict,
+                  subsets: dict) -> tuple:
+    """``(rows_all, rows_converged)``: the ``paper_wtmad2`` rows of one
+    network, the reference leg PBE-DF (the paper's footing) and the
+    converged-only filter the paper applies -- a reaction enters the
+    converged set when every species it names reports ``scf_converged``.
+
+    Shared by the metrics table and the figure, so the two state one set of
+    numbers; a reaction whose subset the pool does not name reads ``'?'``.
+    """
+    converged = {m["molecule"] for m in molecules if m.get("scf_converged")}
+    rows_all, rows_converged = [], []
+    for record in reactions:
+        de_ref = reaction_energy(record, pbe_df)
+        de_nn = record.get("de_nn_kcalmol")
+        row = {"subset": subsets.get(record["name"], "?"), "de_nn": de_nn,
+               "de_ref": de_ref}
+        rows_all.append(row)
+        names = list(record.get("reactants", [])) + list(record.get("products", []))
+        if all(n in converged for n in names):
+            rows_converged.append(row)
+    return rows_all, rows_converged
+
+
 def network_metrics(molecules: list, reactions: list, pbe_df: dict,
                     subsets: dict) -> dict:
     """The metrics of one network from its channel outputs, the PBE-DF table
@@ -79,18 +103,13 @@ def network_metrics(molecules: list, reactions: list, pbe_df: dict,
                 if _finite(e_nn[n]) and _finite(e_pbe.get(n))}
     footing = [(pbe_df[n] - e_pbe[n]) * KCAL_PER_HA for n in e_pbe
                if _finite(e_pbe[n]) and _finite(pbe_df.get(n))]
-    rows_all, rows_converged, ref_rows = [], [], []
+    rows_all, rows_converged = reaction_rows(molecules, reactions, pbe_df, subsets)
+    ref_rows = []
     for record in reactions:
-        de_ref = reaction_energy(record, pbe_df)
-        de_nn = record.get("de_nn_kcalmol")
-        row = {"subset": subsets.get(record["name"], "?"), "de_nn": de_nn,
-               "de_ref": de_ref}
-        rows_all.append(row)
-        names = list(record.get("reactants", [])) + list(record.get("products", []))
-        if all(n in converged for n in names):
-            rows_converged.append(row)
-        ref = record.get("reaction_energy_ref_kcalmol")
-        ref_rows.append((de_nn, de_ref, record.get("de_pbe_kcalmol"), ref))
+        ref_rows.append((record.get("de_nn_kcalmol"),
+                         reaction_energy(record, pbe_df),
+                         record.get("de_pbe_kcalmol"),
+                         record.get("reaction_energy_ref_kcalmol")))
     wt_conv, _ = paper_wtmad2(rows_converged)
     wt_all, _ = paper_wtmad2(rows_all)
     return {
@@ -115,7 +134,12 @@ def network_metrics(molecules: list, reactions: list, pbe_df: dict,
     }
 
 
-def build_table(run_dir: Path) -> list:
+def run_context(run_dir: Path) -> tuple:
+    """``(manifest, width, pbe_df, subsets, n_species_not_df)``: what every
+    reader of the run's channels starts from -- the run's manifest and its
+    index width, the PBE-DF footing table (name -> energy in Hartree, empty
+    when the run wrote none), the pool's reaction -> subset map, and the
+    not-density-fitted species count (None when the table is absent)."""
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     width = int(manifest["width"])
     pool = manifest.get("identity", {}).get("pool", "slim16")
@@ -129,18 +153,33 @@ def build_table(run_dir: Path) -> list:
         n_not_df = payload.get("n_species_not_df")
         pbe_df = {name: value.get("E_pbe_df")
                   for name, value in payload.get("species", {}).items()}
+    return manifest, width, pbe_df, subsets, n_not_df
+
+
+def channel_records(run_dir: Path, width: int, idx: int):
+    """``(molecules, reactions)`` of network ``idx``'s holdout channel, or
+    None when the channel was never evaluated (no ``per_reaction.json``)."""
+    channel = run_dir / "checkpoints" / f"spec_{idx:0{width}d}" / HOLDOUT_SUBDIR
+    if not (channel / "per_reaction.json").is_file():
+        return None
+    molecules = json.loads((channel / "per_molecule.json").read_text(encoding="utf-8"))
+    reactions = json.loads((channel / "per_reaction.json").read_text(encoding="utf-8"))
+    return molecules, reactions
+
+
+def build_table(run_dir: Path) -> list:
+    manifest, width, pbe_df, subsets, n_not_df = run_context(run_dir)
     rows = []
     for network in manifest["networks"]:
         idx = int(network["index"])
-        channel = run_dir / "checkpoints" / f"spec_{idx:0{width}d}" / HOLDOUT_SUBDIR
         row = {"label": network.get("label"), "arch_name": network.get("arch_name"),
                "kind": network.get("kind"),
                "certificate": network.get("certificate_verdict")}
-        if not (channel / "per_reaction.json").is_file():
+        records = channel_records(run_dir, width, idx)
+        if records is None:
             rows.append(row)
             continue
-        molecules = json.loads((channel / "per_molecule.json").read_text(encoding="utf-8"))
-        reactions = json.loads((channel / "per_reaction.json").read_text(encoding="utf-8"))
+        molecules, reactions = records
         row.update(network_metrics(molecules, reactions, pbe_df, subsets))
         row["n_species_not_df"] = n_not_df
         rows.append(row)

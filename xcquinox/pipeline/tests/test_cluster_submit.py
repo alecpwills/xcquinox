@@ -416,6 +416,28 @@ def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Submit from any directory: the node stages run at the checkout
+# ---------------------------------------------------------------------------
+
+def test_submit_anywhere_rendered_scripts_cd_to_the_checkout(
+        tmp_path, monkeypatch):
+    """Every rendered script pins its working directory to the checkout, so
+    the node stages never inherit the submit-time CWD (sbatch's default
+    working directory is the submission directory)."""
+    from xcquinox.pipeline.cluster import submit as submit_mod
+    checkout = tmp_path / "fake_checkout"
+    (checkout / "hpcjobs").mkdir(parents=True)
+    (checkout / "pyproject.toml").write_text("# fake checkout\n", encoding="utf-8")
+    monkeypatch.setattr(submit_mod, "_repo_root", lambda: str(checkout))
+    cfg = _make_cfg(tmp_path)
+    for kind, kw in (("datagen", {}), ("pretrain", {"array_max": 0}),
+                     ("preflight", {}), ("train", {"array_max": 39}),
+                     ("eval", {"array_max": 39})):
+        text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
+        assert f'cd "{checkout}"' in text, kind
+
+
+# ---------------------------------------------------------------------------
 # Train worker is exec'd so it receives the SLURM B:TERM grace signal
 # ---------------------------------------------------------------------------
 
@@ -430,3 +452,67 @@ def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Donor warm-starts: the pretrain stage covers only the archs without one
+# --------------------------------------------------------------------------- #
+
+def _donor_cfg(tmp_path, archs, donors):
+    """A config whose sweep carries ``archs`` and whose pretrain section
+    states ``donors`` (arch -> absolute donor dir)."""
+    d = _base_config_dict()
+    d["sweep"]["arch"] = archs
+    d["pretrain"]["donor_checkpoints"] = donors
+    p = tmp_path / f"grid_donor_{len(archs)}_{len(donors)}.json"
+    p.write_text(json.dumps(d))
+    return load_grid_config(str(p))
+
+
+def test_all_donor_run_omits_the_pretrain_stage(tmp_path, monkeypatch):
+    """Donors for every arch -> no pretrain job at all: no script written,
+    no sbatch, no jobs.json record, preflight hangs off datagen alone and
+    train off preflight alone. The dry-run record states pretrain_array_max
+    None rather than an array range nothing backs."""
+    cfg = _donor_cfg(tmp_path, ["medium"],
+                     {"medium": "/gpfs/donors/run_1/pretrain/medium"})
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory(ids=["6000", "6001", "6002", "6003"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=True)
+
+    assert result["n_archs"] == 1
+    assert result["pretrain_array_max"] is None
+    assert "pretrain" not in result["job_ids"]
+    assert not os.path.exists(os.path.join(run_dir, "scripts",
+                                           "pretrain.sbatch"))
+    kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
+    assert kinds == ["datagen", "eval", "preflight", "train"]
+    sbatch_calls = [" ".join(c) for c in fake.calls
+                    if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch_calls) == 4
+    assert "--dependency" not in sbatch_calls[0]      # datagen
+    assert "--dependency=afterok:6000" in sbatch_calls[1]   # preflight
+    assert "--dependency=afterok:6001" in sbatch_calls[2]   # train: no pretrain id
+    assert "--dependency=aftercorr:6002" in sbatch_calls[3]  # eval
+    cmds = open(os.path.join(run_dir, "submit_commands.txt")).read()
+    assert "pretrain.sbatch" not in cmds
+
+
+def test_partial_donor_run_shrinks_the_pretrain_array(tmp_path, monkeypatch):
+    """Donors for SOME archs -> the pretrain array covers only the rest, in
+    the canonical order, while n_archs still counts the sweep's distinct
+    archs (the donor arch trains too, it just never pretrains here)."""
+    cfg = _donor_cfg(
+        tmp_path, ["medium", "deep_3x16"],
+        {"medium": "/gpfs/donors/run_1/pretrain/medium"})
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=False)
+
+    assert result["n_archs"] == 2
+    assert result["pretrain_array_max"] == 0   # deep_3x16 alone remains
+    pretrain_text = open(os.path.join(run_dir, "scripts",
+                                      "pretrain.sbatch")).read()
+    assert "--array=0-0%" in pretrain_text

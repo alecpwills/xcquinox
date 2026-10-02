@@ -67,7 +67,8 @@ import sys
 import numpy as np
 
 from xcquinox.pipeline.config import get_architecture
-from xcquinox.pipeline.cluster.grid_config import load_grid_config
+from xcquinox.pipeline.cluster.grid_config import (load_grid_config,
+                                                   pretrain_stage_archs)
 
 
 # ---------------------------------------------------------------------------
@@ -126,16 +127,21 @@ def _log(msg: str) -> None:
 
 
 def _swept_architectures(cfg):
-    """The sweep's architecture objects, patched the way ``spec_builder`` does.
+    """The PRETRAINING architectures' objects, patched as ``spec_builder`` does.
 
-    The run-level ``use_polarized_correlation`` is applied to each swept arch
-    before anything is read off it, so the polarization flag and the parent
-    density derived here are the ones the train specs will carry. One
-    implementation of the patch, so the two required-file derivations below can
-    never disagree about which architecture they are describing.
+    The run-level ``use_polarized_correlation`` is applied to each arch before
+    anything is read off it, so the polarization flag and the parent density
+    derived here are the ones the train specs will carry. One implementation
+    of the patch, so the two required-file derivations below can never
+    disagree about which architecture they are describing.
+
+    The list is the pretrain STAGE's (``pretrain_stage_archs``): a donor arch
+    never pretrains in this run, so its pretrain-data file is not this run's
+    to generate; the donor's networks were fitted against the donor run's
+    already-generated data.
     """
     run_polarized = bool(getattr(cfg, "use_polarized_correlation", False))
-    for name in cfg.sweep.arch:
+    for name in pretrain_stage_archs(cfg):
         arch = get_architecture(name)
         if run_polarized:
             arch = dataclasses.replace(arch, use_polarized_correlation=True)

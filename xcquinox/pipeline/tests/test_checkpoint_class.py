@@ -743,3 +743,76 @@ def test_the_gate_reaches_the_pretraining_records_and_their_readers(tmp_path):
         out.mkdir()
         path = write_manifest([], [], str(out), model=block)
         assert _json.loads(pathlib.Path(path).read_text())["model"]["ueg_gate"] == gate
+
+
+def test_the_static_registry_fields_reach_the_pretraining_record_reader(
+        tmp_path):
+    """``double_lob_clamp_allowed`` joins the model class the pretraining
+    loader reads: it changes what the networks compute and no parameter
+    shape, so a checkpoint written under one value deserialises into the
+    other's skeleton in silence unless the record states it. A record
+    written before the field states nothing and is read at the registry
+    default every model before it carried, so an existing checkpoint loads
+    exactly as it did and a configuration that sets the flag is refused
+    against it.
+
+    ``dm_entropy_intensive`` is deliberately NOT gated on: the quantity it
+    scaled was removed (2026-08-06) and the field survives in the registry
+    only so live spec files unpickle, so a record-and-arch pair that differs
+    in it alone still loads. 31 of the 36 registry architectures set it
+    True against pre-field records, so the regression case below -- a legacy
+    record beside a dm-setting arch -- is the acceptance every donor and
+    every pre-change checkpoint depends on.
+
+    Oracle: the loader's acceptances and refusals on hand-written records.
+    """
+    import json as _json
+
+    from xcquinox.pipeline.train import _require_matching_model_class
+
+    plain = _base_arch()
+    dm = _base_arch(dm_entropy_intensive=True)
+    lob = _base_arch(double_lob_clamp_allowed=True)
+    dm_lob = _base_arch(dm_entropy_intensive=True,
+                        double_lob_clamp_allowed=True)
+
+    pre = tmp_path / "pre"
+    pre.mkdir()
+    record = pre / "pretrain_metadata.json"
+    # A record that predates the field: the pre-field class (clamp False).
+    # The dm arch ACCEPTS -- the D1 regression case: a record that predates
+    # the keys beside an arch that sets dm is every pre-change donor.
+    record.write_text(_json.dumps(
+        {"parent_anchor": False, "descriptor_coordinates": "legacy"}))
+    _require_matching_model_class(str(pre), plain)
+    _require_matching_model_class(str(pre), dm)
+    with pytest.raises(ValueError, match="double_lob_clamp_allowed"):
+        _require_matching_model_class(str(pre), lob)
+
+    # A record that states the clamp is held to it; the dm key on either
+    # side of the pair changes nothing.
+    record.write_text(_json.dumps(
+        {"parent_anchor": False, "descriptor_coordinates": "legacy",
+         "dm_entropy_intensive": True, "double_lob_clamp_allowed": False}))
+    _require_matching_model_class(str(pre), plain)
+    _require_matching_model_class(str(pre), dm)
+    with pytest.raises(ValueError, match="double_lob_clamp_allowed"):
+        _require_matching_model_class(str(pre), lob)
+    record.write_text(_json.dumps(
+        {"parent_anchor": False, "descriptor_coordinates": "legacy",
+         "dm_entropy_intensive": False, "double_lob_clamp_allowed": True}))
+    _require_matching_model_class(str(pre), lob)
+    # The same record under an arch differing from it in dm ALONE: the
+    # record states dm False, the arch True, and the pair loads.
+    _require_matching_model_class(str(pre), dm_lob)
+    with pytest.raises(ValueError, match="double_lob_clamp_allowed"):
+        _require_matching_model_class(str(pre), plain)
+
+    # A directory with no record admits the pre-field class alone; the dm
+    # arch among it, for the same reason as the legacy record above.
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    _require_matching_model_class(str(bare), plain)
+    _require_matching_model_class(str(bare), dm)
+    with pytest.raises(ValueError, match="double_lob_clamp_allowed"):
+        _require_matching_model_class(str(bare), lob)

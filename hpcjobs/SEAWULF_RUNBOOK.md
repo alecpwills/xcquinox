@@ -167,12 +167,14 @@ python tools/capture_notebook_spec_snapshot.py
 
 ## 7. Dry-run on the login node
 
-From a **milan** login node (so the `*-96core-shared` queues resolve):
+From a **milan** login node (so the `*-96core-shared` queues resolve). The
+command works from any directory: a relative grid path and a relative
+`--run-root` resolve against the checkout (the package's own location), not
+the caller's CWD:
 
 ```bash
-cd $GROUP/Alec/xcquinox
 python -m xcquinox.pipeline.cluster submit hpcjobs/configs/step7.local.yaml \
-    --run-root "$(pwd)/hpcjobs" \
+    --run-root hpcjobs \
     --partition long-96core-shared \
     --max-nodes 3
 ```
@@ -217,8 +219,10 @@ a benign CPython quirk -- ignore it.
 
 ## 8. Real submit
 
+Works from any directory, like the dry-run in section 7 (relative grid path
+and `--run-root` resolve against the checkout):
+
 ```bash
-cd $GROUP/Alec/xcquinox
 python -m xcquinox.pipeline.cluster submit hpcjobs/configs/step7.local.yaml --submit \
     --partition long-96core-shared \
     --max-nodes 3

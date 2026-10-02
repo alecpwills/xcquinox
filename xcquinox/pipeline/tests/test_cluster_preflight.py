@@ -528,6 +528,52 @@ def test_preflight_blocks_the_array_on_a_missing_certificate(tmp_path,
     assert "shallow" in out
 
 
+def _donor_preflight_run(tmp_path, *, donor_certificate=True):
+    """A one-arch run whose resolved config warm-starts ``shallow`` from a
+    donor directory outside the run; the run-local pretrain dir is absent,
+    and the donor carries a PASS certificate or nothing."""
+    import yaml
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    path = _write_resolved_config(run_dir)
+    donor = tmp_path / "donor_run" / "pretrain" / "shallow"
+    donor.mkdir(parents=True)
+    if donor_certificate:
+        _write_pass_certificate(str(tmp_path / "donor_run"))
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    cfg["pretrain"]["donor_checkpoints"] = {"shallow": str(donor)}
+    with open(path, "w") as f:
+        yaml.safe_dump(cfg, f)
+    import shutil
+    shutil.rmtree(os.path.join(str(run_dir), "pretrain"))
+    return run_dir, str(donor)
+
+
+def test_preflight_releases_a_donor_arch_on_its_donor_certificate(
+        tmp_path, patched, capsys):
+    """The preflight is the run-level cross-check that catches an arch
+    pretrained under a different submission; a donor arch certifies on its
+    DONOR's certificate, or the train array is blocked by a product this run
+    never writes."""
+    run_dir, donor = _donor_preflight_run(tmp_path)
+    assert main([str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "fidelity gate PASSED" in out
+    assert donor in out
+
+
+def test_preflight_blocks_a_donor_arch_without_a_certificate(
+        tmp_path, patched, capsys):
+    run_dir, donor = _donor_preflight_run(tmp_path, donor_certificate=False)
+    assert main([str(run_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "fidelity gate FAILED" in out
+    assert "shallow" in out
+    assert donor in out
+
+
 # ---------------------------------------------------------------------------
 # The compile-smoke selector: which cell is "the heaviest attention cell"
 # ---------------------------------------------------------------------------

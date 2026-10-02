@@ -723,3 +723,135 @@ def test_regate_apply_rewrites_the_certificate_and_the_resolved_config(
     assert cfg2.fidelity.tol_AE_max_backstop == 2.0
 
 
+# ---------------------------------------------------------------------------
+# Submit from any directory (the submit-anywhere rule)
+# ---------------------------------------------------------------------------
+
+def _fake_checkout(tmp_path):
+    """A fake checkout root carrying the layout marker (hpcjobs/ + pyproject)."""
+    root = tmp_path / "fake_checkout"
+    (root / "hpcjobs").mkdir(parents=True)
+    (root / "pyproject.toml").write_text("# fake checkout\n", encoding="utf-8")
+    return root
+
+
+def test_submit_anywhere_relative_run_root_lands_under_the_checkout(
+        tmp_path, monkeypatch):
+    """A relative --run-root resolves against the checkout, not the caller's
+    CWD: the runbook's ``--run-root hpcjobs`` spelling works from anywhere."""
+    checkout = _fake_checkout(tmp_path)
+    monkeypatch.setattr(cli, "_repo_root", lambda: str(checkout))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    grid = _write_grid(tmp_path)
+    monkeypatch.setattr(jt, "_run_slurm", _fake_slurm())
+
+    rc = main(["submit", grid, "--run-root", "hpcjobs/zz_out",
+               "--partition", "long-40core"])
+    assert rc == 0
+    runs = list((checkout / "hpcjobs" / "zz_out" / "runs").iterdir())
+    assert len(runs) == 1, "the run dir must sit under the checkout"
+    assert not (elsewhere / "hpcjobs").exists(), \
+        "a relative run root must not resolve against the caller's CWD"
+
+
+def test_submit_anywhere_checkout_relative_grid_path_resolves(
+        tmp_path, monkeypatch):
+    """A grid path spelled relative to the checkout (the runbook's
+    ``hpcjobs/configs/...``) resolves there when it does not exist as given."""
+    checkout = _fake_checkout(tmp_path)
+    grid_rel = _write_grid(checkout / "hpcjobs")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(cli, "_repo_root", lambda: str(checkout))
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(jt, "_run_slurm", _fake_slurm())
+
+    rc = main(["submit", os.path.relpath(grid_rel, checkout),
+               "--run-root", str(out), "--partition", "long-40core"])
+    assert rc == 0, "the checkout-relative spelling must resolve and dry-run"
+    assert len(os.listdir(out / "runs")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Donor warm-starts: the status tally and regate read the donors
+# ---------------------------------------------------------------------------
+
+def test_pretrain_counts_reads_donors(tmp_path):
+    """The status tally counts a donor arch on its donor (the networks and
+    the certificate live there); a tally that counted run-local dirs would
+    call a released donor arch uncertified and mis-state the stalled stage."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    donor = tmp_path / "donor_run" / "pretrain" / "medium"
+    donor.mkdir(parents=True)
+    (donor / "xnet.eqx").write_bytes(b"x")
+    (donor / "cnet.eqx").write_bytes(b"c")
+    with open(donor / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": "medium",
+                   "summary": {"max_atom_mHa": 0.1,
+                               "max_dAE_kcalmol": 0.2}}, f)
+
+    d = _base_config_dict()
+    d["pretrain"]["donor_checkpoints"] = {"medium": str(donor)}
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps(d))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cli._write_resolved_config(load_grid_config(str(p)), str(run_dir))
+
+    assert cli._pretrain_counts(str(run_dir)) == (1, 1, 1, 1, [])
+
+
+def test_regate_skips_donor_archs_and_reports_nothing_to_regate(
+        tmp_path, capsys):
+    """A run whose every arch warm-starts from a donor has no run-local
+    certificate to re-verdict: the command says so and returns 1 (a success
+    exit having done nothing would mask the state)."""
+    rd, tracked, _cert = _regate_fixture(tmp_path)
+    _rewrite_resolved(
+        tmp_path, rd,
+        lambda d: d["pretrain"].__setitem__(
+            "donor_checkpoints", {"medium": "/gpfs/donors/medium"}),
+        "donor")
+
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "donor" in out
+    assert "nothing to regate" in out
+
+
+def test_prepare_anywhere_checkout_relative_grid_path_resolves(
+        tmp_path, monkeypatch, capsys):
+    """``prepare`` resolves the grid argument the same way ``submit`` does:
+    the checkout-relative spelling works from any directory, and the refs
+    precompute is skipped (``prepare_inputs`` stubbed; an unresolved grid
+    would fail at load with rc 1 and no resolution log line)."""
+    from types import SimpleNamespace
+
+    checkout = _fake_checkout(tmp_path)
+    grid_rel = _write_grid(checkout / "hpcjobs")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(cli, "_repo_root", lambda: str(checkout))
+    calls = []
+    monkeypatch.setattr(
+        cli, "prepare_inputs",
+        lambda cfg, recompute_refs: calls.append(recompute_refs)
+        or SimpleNamespace(points=[1, 2], subset_ledger=[{}, {}]))
+
+    rc = main(["prepare", os.path.relpath(grid_rel, checkout),
+               "--no-recompute-refs"])
+    assert rc == 0, "the checkout-relative spelling must resolve and prepare"
+    assert calls == [False]
+    assert "resolved against the checkout" in capsys.readouterr().out
+    assert not (elsewhere / "hpcjobs").exists(), \
+        "a checkout-relative grid must not resolve against the caller's CWD"
+
+
