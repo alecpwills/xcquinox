@@ -1993,6 +1993,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "lr_decay_end": getattr(spec, "lr_decay_end", 1.0),
         "grad_clip": spec.grad_clip,
         "loss_weighting": spec.loss_weighting,
+        # The seed the two networks were built from (create_network_pair
+        # above); None when the caller supplied them. It is this record's
+        # statement of the initialization, compared with nothing: an arm can
+        # take its clones from pretraining runs at different seeds.
+        "seed": int(spec.seed) if networks is None else None,
         # The SAVED network's loss, and the last step's beside it.
         "final_loss_x": final_loss_x,
         "final_loss_c": final_loss_c,

@@ -9939,19 +9939,39 @@ def _basis_fig_alias(basis: str) -> str:
     return basis.replace("_grid2", "")
 
 
-def _newest_run_per_basis(results_root: Path,
-                          bases: Tuple[str, ...] = _BH76W411_BASES,
-                          domain: str = "bh76w411_repr") -> Dict[str, Path]:
-    """Map each basis -> its newest ``run_*`` dir under
-    ``<results_root>/<domain>/<basis>/runs/``. ISO-Z timestamps sort
-    lexicographically, so the last ``sorted`` entry is the latest pull."""
+def _run_per_basis(results_root: Path,
+                   bases: Tuple[str, ...] = _BH76W411_BASES,
+                   domain: str = "bh76w411_repr",
+                   named: Optional[Dict[str, str]] = None) -> Dict[str, Path]:
+    """Map each basis -> the run the suite draws for it: the ``run_*`` dir
+    ``named`` for the basis, else the newest under
+    ``<results_root>/<domain>/<basis>/runs/`` (ISO-Z timestamps sort
+    lexicographically, so the last ``sorted`` entry is the latest pull).
+
+    The newest run of a basis is not always the one that carries cells: a
+    pretraining suite is a run of its own with no checkpoints, and it can
+    postdate the run whose cells are evaluated. A name for a basis outside
+    ``bases`` and a name that is not a pulled run directory are refused."""
+    named = dict(named or {})
+    unknown = sorted(set(named) - set(bases))
+    if unknown:
+        raise ValueError(
+            f"a run is named for {unknown}, not among the bases {list(bases)}")
     out: Dict[str, Path] = {}
     for basis in bases:
         runs_dir = Path(results_root) / domain / basis / "runs"
-        runs = sorted(runs_dir.glob("run_*"))
+        runs = sorted(r for r in runs_dir.glob("run_*") if r.is_dir())
         if not runs:
             raise FileNotFoundError(f"no run_* dir under {runs_dir}")
-        out[basis] = runs[-1]
+        if basis in named:
+            by_name = {r.name: r for r in runs}
+            if named[basis] not in by_name:
+                raise FileNotFoundError(
+                    f"no run dir {named[basis]} under {runs_dir}; pulled: "
+                    f"{', '.join(by_name)}")
+            out[basis] = by_name[named[basis]]
+        else:
+            out[basis] = runs[-1]
     return out
 
 
@@ -9990,9 +10010,12 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                          bases: Tuple[str, ...] = _BH76W411_BASES,
                          domain: str = "bh76w411_repr",
                          comparison_archs: Optional[Tuple[str, ...]] = None,
-                         archs=None) -> List[Path]:
-    """Regenerate EVERY figure family for ``domain`` from the newest run per
-    basis, so a fresh spec pull lands on all figures in one call. Per basis: the
+                         archs=None,
+                         named_runs: Optional[Dict[str, str]] = None
+                         ) -> List[Path]:
+    """Regenerate EVERY figure family for ``domain`` from one run per basis
+    (the run ``named_runs`` names for it, else its newest), so a fresh spec
+    pull lands on all figures in one call. Per basis: the
     arch-aware ablation set (:func:`build_all`), the held-out energy/density set
     (:func:`build_density_energy_figures`), the five parity-layout variants
     (:func:`build_parity_variants`) and the per-run size-consistency/training-loss
@@ -10027,14 +10050,19 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
 
     ``archs`` restricts every rendered figure to the named architectures (see
     :func:`build_all`); the certificate refusal is then scoped to them too, a
-    withheld architecture's certificate bearing on no figure of the set."""
+    withheld architecture's certificate bearing on no figure of the set.
+
+    ``named_runs`` maps a basis to the name of the ``run_*`` dir to draw for
+    it (:func:`_run_per_basis`): the newest run of a basis can be a
+    pretraining suite, which carries no cell."""
     archs = _validate_archs(archs)
     results_root = Path(results_root) if results_root else _DEFAULT_LOCAL_ROOT
     outroot = Path(outroot) if outroot else Path(__file__).resolve().parent
     prefix = "" if domain == "bh76w411_repr" else f"{domain}_"
-    runs = _newest_run_per_basis(results_root, bases, domain=domain)
+    runs = _run_per_basis(results_root, bases, domain=domain, named=named_runs)
     written: List[Path] = []
     n_sets = 0
+    drawn: Set[str] = set()
     # one set per channel of the vocabulary's figure list, every set gated on
     # having cells: a basis renders exactly the channels it carries
     for eval_subdir in FIGURE_CHANNELS:
@@ -10093,6 +10121,7 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                                                  eval_subdir=eval_subdir,
                                                  archs=archs)
             n_sets += 1
+            drawn.add(basis)
         if not ordered_runs:
             print(f"   (no {eval_subdir}/ data found -- skipping the "
                   f"{_ckpt_label(eval_subdir)} figure set)")
@@ -10118,8 +10147,35 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
             f"{[str(r) for r in runs.values()]}: none of {FIGURE_CHANNELS} "
             "carries a per_reaction.json for a rendered architecture, so the "
             "pull holds no held-out evaluation to draw (re-pull the run with "
-            "the summaries profile, or widen --archs)")
+            "the summaries profile, or widen --archs; where the newest run "
+            "of a base is a pretraining suite, name the run that carries the "
+            "cells with --runs BASE=RUN_NAME)")
+    # A base whose run carries no cell under any channel is skipped channel
+    # by channel above; beside bases that were drawn it would otherwise be
+    # left out of the output without a word.
+    for basis in bases:
+        if basis not in drawn:
+            print(f"   ({basis}: {runs[basis].name} carries no evaluated cell "
+                  "under any channel and is not drawn; where it is a "
+                  f"pretraining suite, name the run with --runs "
+                  f"{basis}=RUN_NAME)")
     return written
+
+
+def _parse_named_runs(values) -> Dict[str, str]:
+    """``--runs BASE=RUN_NAME`` values as ``{base: run_name}``. A value
+    without ``=`` or with an empty side is refused, and so is a base named
+    twice: the second name would otherwise replace the first in silence."""
+    named: Dict[str, str] = {}
+    for value in values or ():
+        basis, sep, run_name = value.partition("=")
+        basis, run_name = basis.strip(), run_name.strip()
+        if not sep or not basis or not run_name:
+            raise ValueError(f"--runs takes BASE=RUN_NAME, got {value!r}")
+        if basis in named:
+            raise ValueError(f"--runs names the base {basis!r} twice")
+        named[basis] = run_name
+    return named
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -10133,9 +10189,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="output directory for PNGs (single-run mode)")
     p.add_argument("--suite", action="store_true",
                    help="regenerate ALL figure families for --domain (every "
-                        "--bases basis) from the newest run per basis, into "
+                        "--bases basis) from one run per basis (its newest, "
+                        "or the one --runs names), into "
                         "figures_<basis>/ + figures_basis_comparison/ under "
                         "--outroot")
+    p.add_argument("--runs", action="append", default=None,
+                   metavar="BASE=RUN_NAME",
+                   help="for --suite: draw the named run_* dir of a base "
+                        "instead of its newest; repeat per base. Needed "
+                        "where a base's newest run carries no cells (a "
+                        "pretraining suite submitted after the run whose "
+                        "cells are evaluated)")
     p.add_argument("--results-root", default=None,
                    help="results runs root for --suite "
                         f"(default: {_DEFAULT_LOCAL_ROOT})")
@@ -10171,6 +10235,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = p.parse_args(argv)
     archs = (tuple(a.strip() for a in args.archs.split(",") if a.strip())
              if args.archs else None)
+    try:
+        named_runs = _parse_named_runs(args.runs)
+    except ValueError as exc:
+        p.error(str(exc))
+    if named_runs and not args.suite:
+        p.error("--runs names the run of a base for --suite; the single-run "
+                "mode takes --run-dir")
 
     if args.suite:
         bases = tuple(b.strip() for b in args.bases.split(",") if b.strip())
@@ -10182,7 +10253,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                        bases=bases,
                                        domain=args.domain,
                                        comparison_archs=cmp_archs,
-                                       archs=archs)
+                                       archs=archs,
+                                       named_runs=named_runs)
         for pth in written:
             print(f"  wrote {pth}")
         return 0

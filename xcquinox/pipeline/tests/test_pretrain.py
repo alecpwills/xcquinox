@@ -350,6 +350,41 @@ def test_run_pretrain_metadata_json_all_fields(tiny_pretrain_data_dir):
         assert md["double_lob_clamp_allowed"] is False
 
 
+def test_run_pretrain_metadata_records_initialization_seed(
+        tiny_pretrain_data_dir):
+    """pretrain_metadata.json states at its top level the seed the networks
+    were initialized from (PretrainSpec.seed, the argument of
+    create_network_pair), so a refit at another seed is told apart from the
+    fit it replaces by its own record. The sampling and validation seeds stay
+    at defaults that differ from it, so the recorded value is neither."""
+    from xcquinox.pipeline.pretrain import run_pretrain
+
+    with tempfile.TemporaryDirectory() as ckdir:
+        spec = PretrainSpec(
+            arch=_make_arch(),
+            data_dir=tiny_pretrain_data_dir,
+            checkpoint_dir=ckdir,
+            n_steps=3,
+            seed=5,
+        )
+        assert 5 not in (spec.sampling_seed, spec.validation_seed)
+        run_pretrain(spec)
+        with open(os.path.join(ckdir, "pretrain_metadata.json")) as f:
+            md = json.load(f)
+    assert md.get("seed") == 5
+
+    # Networks handed in by the caller were not built from the spec's seed,
+    # and the record does not say they were.
+    from xcquinox.pipeline.networks import create_network_pair
+
+    with tempfile.TemporaryDirectory() as ckdir:
+        spec = dataclasses.replace(spec, checkpoint_dir=ckdir)
+        run_pretrain(spec, networks=create_network_pair(spec.arch, seed=11))
+        with open(os.path.join(ckdir, "pretrain_metadata.json")) as f:
+            md = json.load(f)
+    assert md["seed"] is None
+
+
 def test_run_pretrain_warmup_phase_and_progress_callback(tiny_pretrain_data_dir):
     """(16) warmup phase is respected and progress_callback receives dict payloads."""
     from xcquinox.pipeline.pretrain import run_pretrain

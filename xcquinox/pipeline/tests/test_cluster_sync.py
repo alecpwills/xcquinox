@@ -603,3 +603,40 @@ def test_the_pull_inventory_counts_the_reporting_channel(tmp_path):
     bare = tmp_path / "bare" / "run_20260101T000000Z"
     (bare / "checkpoints" / "spec_0000" / "eval_holdout").mkdir(parents=True)
     assert "reporting evals 0" in _pull_inventory(bare)
+
+
+def test_the_pull_inventory_states_the_status_of_each_certificate(tmp_path):
+    """The certificate count printed after a pull states the status each
+    certificate reads as: PASS first, then every other status by name. A
+    bare file count reads the same for a run whose every architecture passed
+    and for one holding a failed certificate. The run holds one PASS beside
+    two FAIL, a file that does not parse (UNREADABLE) and an entry of the
+    certificate's name that is not a file (MISSING), in directories that
+    sort the unreadable one first: the order the field states is the rule's,
+    neither the order in which the files are found nor the order of the
+    counts. The metadata file that lies beside a certificate is not counted.
+    A run with no certificate, a pretraining still in flight, states a bare
+    zero."""
+    from xcquinox.pipeline.cluster.__main__ import _pull_inventory
+
+    run = tmp_path / "run_20261002T163927Z"
+    for arch, text in (("a_truncated", '{"verdict": "PA'),
+                       ("b_failed", '{"verdict": "FAIL"}'),
+                       ("c_passed", '{"verdict": "PASS"}'),
+                       ("d_failed", '{"verdict": "FAIL"}')):
+        (run / "pretrain" / arch).mkdir(parents=True)
+        (run / "pretrain" / arch / "fidelity_certificate.json").write_text(
+            text)
+    (run / "pretrain" / "c_passed" / "pretrain_metadata.json").write_text(
+        '{"seed": 42}')
+    (run / "pretrain" / "e_directory" / "fidelity_certificate.json").mkdir(
+        parents=True)
+    field = _pull_inventory(run).rsplit(" | ", 1)[-1]
+    assert field == (
+        "certificates 5 (1 PASS, 2 FAIL, 1 MISSING, 1 UNREADABLE)"), field
+
+    bare = tmp_path / "bare" / "run_20261005T000000Z"
+    (bare / "pretrain" / "in_flight").mkdir(parents=True)
+    (bare / "pretrain" / "in_flight" / "xnet.eqx").write_bytes(b"x")
+    field = _pull_inventory(bare).rsplit(" | ", 1)[-1]
+    assert field == "certificates 0", field
