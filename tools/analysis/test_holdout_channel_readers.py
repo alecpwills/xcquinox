@@ -3,9 +3,10 @@
 The figure suite and the command-line tools that read a pulled run each name a
 held-out evaluation channel. What is asserted here: the suite renders one
 figure set per channel the run actually carries and none for a channel it does
-not; a reader handed no channel resolves the reporting one and says so when it
-falls back; and the tools' channel tables are the vocabulary's values rather
-than literals of their own.
+not, from the run named for a base where one is named; a reader handed no
+channel resolves the reporting one and says so when it falls back; and the
+tools' channel tables are the vocabulary's values rather than literals of
+their own.
 
 The modules are loaded from their paths rather than imported as packages:
 there is no ``__init__.py`` under ``tools``, and every consumer of these
@@ -225,6 +226,126 @@ def test_the_suite_renders_a_set_per_channel_present(tmp_path, monkeypatch,
                                  outroot=tmp_path / "out_bare",
                                  bases=(_BASIS,), domain=_DOMAIN)
     assert recorded == []
+
+
+def _make_pretraining_suite(results_root, basis, stamp):
+    """A pulled pretraining suite under ``basis``: a resolved configuration
+    and a certified ``pretrain/`` directory, no manifest and no checkpoints."""
+    run = results_root / _DOMAIN / basis / "runs" / stamp
+    certified = run / "pretrain" / _ARCH_STORED
+    certified.mkdir(parents=True)
+    (run / "resolved_config.yaml").write_text(
+        "basis: def2-svp\ndensity_fit: false\n")
+    (certified / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "PASS",
+                    "summary": {"max_atom_mHa": 0.1,
+                                "max_dAE_kcalmol": 0.2}}))
+    return run
+
+
+def test_the_suite_draws_the_named_run_of_a_base(tmp_path, monkeypatch,
+                                                 capsys):
+    """The suite draws the run named for a base, and a name it cannot honour
+    is refused before any figure is drawn.
+
+    A pretraining suite submitted after a base's evaluated run sorts after it
+    and holds a resolved configuration and its fidelity certificates, but no
+    manifest and no checkpoints. A rule that draws the newest run of every
+    base finds no evaluated cell in it under any channel and refuses the base,
+    however complete the evaluated run beside it; that refusal is kept here as
+    the control. Named, the evaluated run is drawn: every figure set comes from
+    it, one per channel it carries. A name that is not pulled under the base
+    is refused rather than replaced by the newest run, and so is a name for a
+    base the suite does not render, which would otherwise pass unnoticed.
+    Only directories are runs, under the newest-run rule as under a name; and
+    beside a base that is drawn, a base whose run carries no cell is named in
+    the output rather than left out of it without a word.
+    """
+    root, _run = _make_run(tmp_path, _COLDSTART_ONLY)
+    _make_pretraining_suite(root, _BASIS, "run_20261002T000000Z")
+
+    recorded = []
+    _record_builders(monkeypatch, recorded)
+    out = tmp_path / "out"
+
+    # no name: the newest run is the pretraining suite, and nothing is drawn
+    with pytest.raises(ValueError):
+        FIG.build_bh76w411_suite(results_root=root, outroot=out,
+                                 bases=(_BASIS,), domain=_DOMAIN)
+    assert recorded == []
+
+    # the named run is drawn, and only it
+    FIG.build_bh76w411_suite(results_root=root, outroot=out,
+                             bases=(_BASIS,), domain=_DOMAIN,
+                             named_runs={_BASIS: _RUN_STAMP})
+    assert {r[1] for r in recorded} == {(_RUN_STAMP,)}
+    assert {r[3] for r in recorded} == set(_COLDSTART_ONLY)
+
+    # a run that is not pulled under the base is refused, not replaced; a
+    # file of that name is not a run, and neither is the leading part of a
+    # run's name
+    recorded.clear()
+    (root / _DOMAIN / _BASIS / "runs" / "run_20261004T000000Z").write_text("")
+    for absent in ("run_20261003T000000Z", "run_20261004T000000Z",
+                   _RUN_STAMP[:-3]):
+        with pytest.raises(FileNotFoundError):
+            FIG.build_bh76w411_suite(results_root=root, outroot=out,
+                                     bases=(_BASIS,), domain=_DOMAIN,
+                                     named_runs={_BASIS: absent})
+    assert recorded == []
+
+    # a base outside the rendered ones is refused; the rendered base is named
+    # as well, so a suite that ignored the stray entry would draw the named
+    # run and raise nothing
+    with pytest.raises(ValueError):
+        FIG.build_bh76w411_suite(results_root=root, outroot=out,
+                                 bases=(_BASIS,), domain=_DOMAIN,
+                                 named_runs={_BASIS: _RUN_STAMP,
+                                             "tzvpd_grid2_df": _RUN_STAMP})
+    assert recorded == []
+
+    # the same through the command line: the named run reaches the suite
+    argv = ["--suite", "--results-root", str(root), "--domain", _DOMAIN,
+            "--bases", _BASIS, "--outroot", str(out)]
+    assert FIG.main(argv + ["--runs", f"{_BASIS}={_RUN_STAMP}"]) == 0
+    assert {r[1] for r in recorded} == {(_RUN_STAMP,)}
+    # a value naming no run or no base, a base named twice, and the flag
+    # outside the suite mode each stop at the argument parser
+    recorded.clear()
+    for bad in (["--runs", _BASIS],
+                ["--runs", f"{_BASIS}="],
+                ["--runs", f"={_RUN_STAMP}"],
+                ["--runs", f"{_BASIS}={_RUN_STAMP}",
+                 "--runs", f"{_BASIS}=run_20261002T000000Z"]):
+        with pytest.raises(SystemExit):
+            FIG.main(argv + bad)
+    with pytest.raises(SystemExit):
+        FIG.main(["--run-dir", str(_run), "--outdir", str(out),
+                  "--runs", f"{_BASIS}={_RUN_STAMP}"])
+    assert recorded == []
+
+    # the newest-run rule counts directories alone: a file named like a later
+    # run does not displace the evaluated run, which can also be named
+    stray, _stray_run = _make_run(tmp_path, _COLDSTART_ONLY, name="stray")
+    (stray / _DOMAIN / _BASIS / "runs" / "run_20261004T000000Z").write_text("")
+    for named in (None, {_BASIS: _RUN_STAMP}):
+        recorded.clear()
+        FIG.build_bh76w411_suite(results_root=stray, outroot=out,
+                                 bases=(_BASIS,), domain=_DOMAIN,
+                                 named_runs=named)
+        assert {r[1] for r in recorded} == {(_RUN_STAMP,)}
+
+    # beside a base that is drawn, a base whose run carries no cell is named
+    other = "tzvpd_grid2_df"
+    _make_pretraining_suite(stray, other, "run_20261002T000000Z")
+    recorded.clear()
+    capsys.readouterr()
+    FIG.build_bh76w411_suite(results_root=stray, outroot=out,
+                             bases=(_BASIS, other), domain=_DOMAIN)
+    assert {r[1] for r in recorded} == {(_RUN_STAMP,)}
+    undrawn = [line for line in capsys.readouterr().out.splitlines()
+               if other in line and "run_20261002T000000Z" in line]
+    assert undrawn
 
 
 def test_build_all_defaults_to_the_reporting_channel_and_names_a_fallback(
