@@ -1023,9 +1023,55 @@ def _apply_inline_eval_override(cfg, args):
     return cfg
 
 
+def _require_donors_release_the_gate(donor_run, donors):
+    """Refuse a ``--donor-run`` map holding a directory the on-node gate does
+    not release.
+
+    Every directory of ``donors`` (``{arch: dir}``) is held to
+    :func:`gate_certificate_from_read`: PASS, or FAIL under a recorded waiver
+    naming its reason. That is the rule the preflight sweep and the train
+    task apply to the same directory, and the preflight holds the whole train
+    array on one refused architecture, so a donor that is absent, unreadable
+    or failed would queue a graph that stops at its first gate. When the
+    donor run releases some of the swept architectures, the refusal ends with
+    the ``--archs`` value that restricts the sweep to those.
+
+    A donor released by a waiver is stated in the log, whether the submission
+    is then accepted or refused: it is a FAIL that certifies nothing, and the
+    run it seeds can never enter ``validate_run``, ``merge_v4_arms`` or the
+    figure suite. The note is composed from the certificate's own fields; the
+    gate's message speaks of the run that recorded the waiver, which is the
+    donor run and not the one being submitted.
+    """
+    released, refused = [], []
+    for arch, path in donors.items():
+        # ONE read per directory, as on the node: the status the refusal
+        # states and the decision it rests on describe the same document.
+        status, reason, payload = read_certificate_status_in(path)
+        allowed, message = gate_certificate_from_read(status, reason, payload)
+        if not allowed:
+            refused.append(f"{arch}: {message}")
+            continue
+        released.append(arch)
+        if status != VERDICT_PASS:
+            recorded = (payload.get("tolerances") or {}).get("override_reason")
+            _log(f"submit: --donor-run: {arch} is released by the waiver its "
+                 f"certificate records (verdict {status}, enforced=false, "
+                 f"override_reason: {recorded!r}), not by a PASS; a run "
+                 "seeded from it can never enter validate_run, merge_v4_arms "
+                 "or the figure suite")
+    if refused:
+        remedy = (f"; --archs {','.join(released)} restricts the sweep to "
+                  "the architectures this donor run releases"
+                  if released else "")
+        raise ValueError(
+            f"submit: --donor-run {donor_run!r} cannot seed this sweep; "
+            + "; ".join(refused) + remedy)
+
+
 def _apply_donor_run_override(cfg, args):
-    """Return a copy of ``cfg`` whose donor map names a completed pretraining
-    run, when ``--donor-run`` was given.
+    """Return a copy of ``cfg`` whose donor map names the pretraining run
+    given with ``--donor-run``.
 
     The map is ``{arch: <donor_run>/pretrain/<arch>}`` over every canonical
     sweep arch (the layout ``pretrain_checkpoint_dir`` defines and the pretrain
@@ -1036,11 +1082,14 @@ def _apply_donor_run_override(cfg, args):
 
     Unlike the config-file path (whose donor existence check is advisory, a
     /gpfs donor is invisible on the workstation), this flag is used on the
-    login node where the named run lives, so an incomplete suite is refused
-    HERE: every arch dir must exist and carry a fidelity certificate, or the
-    submission stops before the run dir is created. A donor without its
-    certificate cannot be gated, and discovering that only when the first
-    train task hits the fidelity gate wastes a whole queued graph.
+    login node where the named run lives, so a run that cannot seed the sweep
+    is refused HERE, before the run dir is created: the named directory must
+    exist, and every arch dir must carry a certificate that releases the
+    on-node gate (:func:`_require_donors_release_the_gate`). The gate is
+    applied for the stage groups that train from a donor. The pretrain group
+    reads none, and with every swept architecture donated the stage selection
+    refuses it for having nothing to pretrain; a certificate refusal there
+    would name a remedy that leads to that refusal.
     """
     donor_run = getattr(args, "donor_run", None)
     if not donor_run:
@@ -1052,18 +1101,13 @@ def _apply_donor_run_override(cfg, args):
         _log(f"submit: relative donor run {donor_run!r} resolved against "
              f"the checkout: {resolved}")
         donor_run = resolved
+    if not os.path.isdir(donor_run):
+        raise ValueError(
+            f"submit: --donor-run {donor_run!r} is not a directory")
     donors = {arch: pretrain_checkpoint_dir(donor_run, arch)
               for arch in _canon_axis(cfg.sweep.arch)}
-    incomplete = [path for arch, path in donors.items()
-                  if not (os.path.isdir(path)
-                          and os.path.isfile(
-                              os.path.join(path, CERTIFICATE_FILENAME)))]
-    if incomplete:
-        raise ValueError(
-            f"submit: --donor-run {donor_run!r} is not a completed "
-            f"pretraining run; no {CERTIFICATE_FILENAME} under "
-            f"{', '.join(incomplete)}"
-        )
+    if getattr(args, "stages", None) != "pretrain":
+        _require_donors_release_the_gate(donor_run, donors)
     return dataclasses.replace(
         cfg, pretrain=dataclasses.replace(
             cfg.pretrain, donor_checkpoints=donors))
@@ -2548,15 +2592,30 @@ def _ssh_transport_arg(cm_opts) -> str:
 
 def _pull_inventory(run_dir: Path) -> str:
     """One-line count of the figure-critical artifacts under a pulled run,
-    the reporting channel's evaluations first."""
+    the reporting channel's evaluations first.
+
+    The certificates are the run's own (a donor-backed architecture's
+    certificate lives in its donor run) and are counted by the status each
+    reads as (:func:`read_certificate_status_in`; PASS first, then the other
+    statuses by name): a file that records FAIL is not a certified
+    architecture, and a bare file count reads as one."""
     def n(pattern: str) -> int:
         return len(sorted(run_dir.glob(pattern)))
+    statuses = [read_certificate_status_in(str(path.parent))[0]
+                for path in sorted(
+                    run_dir.glob("pretrain/*/" + CERTIFICATE_FILENAME))]
+    by_status = ", ".join(
+        f"{statuses.count(status)} {status}"
+        for status in sorted(set(statuses),
+                             key=lambda s: (s != VERDICT_PASS, s)))
+    certificates = f"certificates {len(statuses)}" + (
+        f" ({by_status})" if by_status else "")
     return (f"reporting evals {n('checkpoints/*/' + REPORTING_CHANNEL)} | "
             f"val-best weights {n('checkpoints/*/model_val_best.eqx')} | "
             f"val-best evals {n('checkpoints/*/eval_holdout_val_best')} | "
             f"holdout evals {n('checkpoints/*/eval_holdout')} | "
             f"pretrain xnets {n('pretrain/*/xnet.eqx')} | "
-            f"certificates {n('pretrain/*/fidelity_certificate.json')}")
+            f"{certificates}")
 
 
 def _cmd_pull_auto(args, spec_indices) -> int:
@@ -2953,13 +3012,15 @@ def _build_parser() -> argparse.ArgumentParser:
              "(see --donor-run), because this group never pretrains.")
     p_submit.add_argument(
         "--donor-run", default=None, dest="donor_run", metavar="DIR",
-        help="seed every swept arch's optimization from the completed "
-             "pretraining run dir DIR (sets pretrain.donor_checkpoints to "
+        help="seed every swept arch's optimization from the pretraining run "
+             "dir DIR (sets pretrain.donor_checkpoints to "
              "<DIR>/pretrain/<arch> per arch, replacing the config's map). "
-             "Every arch dir must carry its fidelity_certificate.json or the "
-             "submission is refused before the run dir is created. Pairs "
-             "with --stages optimize. A relative DIR resolves against the "
-             "checkout.")
+             "Every arch dir must carry a fidelity certificate that releases "
+             "the gate (a PASS, or a FAIL under a recorded waiver), the rule "
+             "the preflight applies, or the submission is refused before the "
+             "run dir is created; the refusal names the --archs value of the "
+             "architectures DIR does release. Pairs with --stages optimize. "
+             "A relative DIR resolves against the checkout.")
     p_submit.set_defaults(func=cmd_submit)
 
     p_submit_eval = sub.add_parser(

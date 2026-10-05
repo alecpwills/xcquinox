@@ -90,9 +90,12 @@ preflight carries no dependency, because the pretraining it seeds from is alread
 It requires every swept architecture to be donor-backed -- `--donor-run DIR` builds that
 donor map (`<DIR>/pretrain/<arch>` per arch, into `pretrain.donor_checkpoints`, replacing
 the configuration's map) and refuses before creating the run dir unless every arch dir
-carries its `fidelity_certificate.json`. A refused `--stages` selection likewise leaves
-nothing on disk. `resubmit-preflight` recovers a run with the same stage group its job
-records show, so a pretraining suite never grows a train array in recovery.
+carries a certificate that releases the fidelity gate: a PASS, or a FAIL under a recorded
+waiver, the rule the preflight applies to the same directories. When the donor run releases
+only some of the swept architectures, the refusal names the `--archs` value that restricts
+the sweep to those. A refused `--stages` selection likewise leaves nothing on disk.
+`resubmit-preflight` recovers a run with the same stage group its job records show, so a
+pretraining suite never grows a train array in recovery.
 
 `--archs A[,B...]` restricts the run to the named architectures of the configuration's sweep
 (a name the sweep does not carry is refused before the run dir is created), and
