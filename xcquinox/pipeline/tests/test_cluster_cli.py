@@ -890,6 +890,207 @@ def test_submit_stages_pretrain_cli_dry_run(tmp_path, monkeypatch):
         assert absent not in cmds
 
 
+def _two_arch_grid(tmp_path):
+    """The base grid with two registry keys, medium and shallow, swept."""
+    return _write_grid(tmp_path, mutate=lambda d: d["sweep"].__setitem__(
+        "arch", ["medium", "shallow"]))
+
+
+def test_submit_archs_and_pretrain_seed_state_a_one_arch_refit(tmp_path):
+    """``submit --stages pretrain --archs shallow --pretrain-seed 7`` on a
+    grid sweeping medium and shallow stages a pretraining run of shallow
+    alone at initialization seed 7. The run's resolved_config.yaml, which
+    every node stage re-reads, sweeps shallow only and states pretrain.seed
+    7; hyperparams.seed, the optimization seed, keeps the value the grid file
+    loads to; and the pretrain array is the single task 0-0. Shallow is the
+    later name in canonical order, so index 0 of that array is shallow only
+    if the axis itself was restricted."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    grid = _two_arch_grid(tmp_path)
+    base = load_grid_config(grid)
+    assert sorted(set(base.sweep.arch)) == ["medium", "shallow"]
+    assert 7 not in (base.pretrain.seed, base.hyperparams.seed)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "pretrain",
+               "--archs", "shallow", "--pretrain-seed", "7"])
+    assert rc == 0
+
+    runs = os.listdir(run_root / "runs")
+    assert len(runs) == 1
+    run_dir = run_root / "runs" / runs[0]
+    cfg = load_grid_config(str(run_dir / "resolved_config.yaml"))
+    assert sorted(set(cfg.sweep.arch)) == ["shallow"]
+    assert cfg.pretrain.seed == 7
+    assert cfg.hyperparams.seed == base.hyperparams.seed
+    # The template renders "#SBATCH --array=0-<ARRAY_MAX>%<THROTTLE>"; the
+    # index range is the part before the throttle.
+    script = (run_dir / "scripts" / "pretrain.sbatch").read_text()
+    ranges = [line.split("=", 1)[1].split("%", 1)[0]
+              for line in script.splitlines()
+              if line.startswith("#SBATCH --array=")]
+    assert ranges == ["0-0"]
+
+
+def test_submit_archs_outside_the_sweep_refused_before_run_dir(
+        tmp_path, monkeypatch):
+    """``--archs`` naming a registry key the grid does not sweep is refused
+    before the run dir exists: rc 1, nothing under the run root, no sbatch.
+    The override restricts the configuration's sweep and never extends it.
+    The list pairs a swept name with the unswept one, so only the membership
+    check refuses it; a restriction that dropped the unswept name without a
+    word would stage and submit a run of the swept one."""
+    grid = _two_arch_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "pretrain",
+               "--archs", "shallow,deep", "--submit"])
+
+    assert rc == 1
+    assert os.listdir(str(run_root)) == []
+    assert [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"] == []
+
+    # A list that names nothing is refused the same way, under the whole
+    # graph too, where an emptied axis would otherwise reach the grid
+    # expansion.
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--archs", ","])
+    assert rc == 1
+    assert os.listdir(str(run_root)) == []
+
+
+def test_submit_pretrain_seed_is_held_to_the_loaders_seed_range(tmp_path):
+    """``--pretrain-seed`` takes exactly the range the configuration loader
+    holds ``pretrain.seed`` to. A value the loader refuses, written into
+    resolved_config.yaml unchecked, would be refused only when the first node
+    stage reloads that file, after the graph was queued; it is refused at
+    submit instead, before the run dir exists. The two ends of the range are
+    seeds like any other and are written into the run."""
+    from xcquinox.pipeline.cluster.grid_config import (_MAX_SEED,
+                                                       load_grid_config)
+
+    grid = _write_grid(tmp_path)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    for seed in (-1, _MAX_SEED + 1):
+        rc = main(["submit", grid, "--run-root", str(run_root),
+                   "--partition", "long-40core", "--stages", "pretrain",
+                   f"--pretrain-seed={seed}"])
+        assert rc == 1
+        assert os.listdir(str(run_root)) == []
+
+    for seed in (0, _MAX_SEED):
+        root = tmp_path / f"accepted_{seed}"
+        root.mkdir()
+        rc = main(["submit", grid, "--run-root", str(root),
+                   "--partition", "long-40core", "--stages", "pretrain",
+                   f"--pretrain-seed={seed}"])
+        assert rc == 0
+        (run,) = os.listdir(root / "runs")
+        cfg = load_grid_config(
+            str(root / "runs" / run / "resolved_config.yaml"))
+        assert cfg.pretrain.seed == seed
+
+
+def test_submit_pretrain_seed_refused_on_a_run_that_pretrains_nothing(
+        tmp_path):
+    """``--pretrain-seed`` names the seed of a pretraining. A run seeded
+    entirely from donors pretrains nothing, and a seed written into its
+    resolved_config.yaml would state an initialization none of its networks
+    had: the flag is refused there, before the run dir exists, whether the
+    stage group excludes the pretraining or the donor map empties it."""
+    arch = "medium"  # _write_grid's single sweep arch
+    donor_run = tmp_path / "pretrain_run"
+    donor_dir = donor_run / "pretrain" / arch
+    donor_dir.mkdir(parents=True)
+    with open(donor_dir / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": arch}, f)
+
+    grid = _write_grid(tmp_path)
+    for stages in ("optimize", "all"):
+        run_root = tmp_path / f"out_{stages}"
+        run_root.mkdir()
+        rc = main(["submit", grid, "--run-root", str(run_root),
+                   "--partition", "long-40core", "--stages", stages,
+                   "--donor-run", str(donor_run), "--pretrain-seed", "7"])
+        assert rc == 1
+        assert os.listdir(str(run_root)) == []
+
+
+def test_submit_donor_run_is_asked_for_the_architectures_archs_keeps(
+        tmp_path):
+    """A ``--donor-run`` holding the one architecture ``--archs`` keeps seeds
+    the restricted run: the donor map is built over the axis the run sweeps,
+    so the architectures left out are not asked of the donor run. This is the
+    optimization of a refit, a pretraining suite of one network."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    donor_run = tmp_path / "refit_run"
+    donor_dir = donor_run / "pretrain" / "shallow"
+    donor_dir.mkdir(parents=True)
+    with open(donor_dir / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": "shallow"}, f)
+
+    grid = _two_arch_grid(tmp_path)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "optimize",
+               "--archs", "shallow", "--donor-run", str(donor_run)])
+    assert rc == 0
+    (run,) = os.listdir(run_root / "runs")
+    cfg = load_grid_config(
+        str(run_root / "runs" / run / "resolved_config.yaml"))
+    assert cfg.pretrain.donor_checkpoints == {"shallow": str(donor_dir)}
+
+
+def test_submit_archs_narrows_the_donor_map_to_the_swept_architectures(
+        tmp_path):
+    """A configuration-stated donor for an architecture ``--archs`` leaves
+    out goes with it: the run's resolved_config.yaml names the donors of the
+    architectures it sweeps and no other. A donor key the configuration's own
+    sweep never carried is a different matter, a misspelt key, and stays
+    refused whatever ``--archs`` says."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    def _donors(extra):
+        def _mutate(d):
+            d["sweep"]["arch"] = ["medium", "shallow"]
+            d["pretrain"]["donor_checkpoints"] = {
+                "medium": "/shared/donors/medium",
+                "shallow": "/shared/donors/shallow", **extra}
+        return _mutate
+
+    grid = _write_grid(tmp_path, mutate=_donors({}))
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "optimize",
+               "--archs", "shallow"])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    assert len(runs) == 1
+    cfg = load_grid_config(
+        str(run_root / "runs" / runs[0] / "resolved_config.yaml"))
+    assert cfg.pretrain.donor_checkpoints == {
+        "shallow": "/shared/donors/shallow"}
+
+    misspelt = _write_grid(tmp_path, mutate=_donors(
+        {"medim": "/shared/donors/medim"}))
+    with pytest.raises(ValueError):
+        main(["submit", misspelt, "--run-root", str(tmp_path / "other"),
+              "--partition", "long-40core", "--stages", "optimize",
+              "--archs", "shallow"])
+
+
 def test_submit_stages_optimize_with_donor_run(tmp_path, monkeypatch):
     """``submit --stages optimize --donor-run DIR`` builds the donor map from
     a completed pretraining run (one entry per canonical sweep arch), and

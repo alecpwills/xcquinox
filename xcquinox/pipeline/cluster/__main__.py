@@ -51,6 +51,7 @@ from xcquinox.pipeline.cluster import analyze
 from xcquinox.pipeline.cluster import job_tracking
 from xcquinox.pipeline.cluster import sync as _sync
 from xcquinox.pipeline.cluster.grid_config import (
+    _MAX_SEED,
     _canon_axis,
     expand_grid,
     fidelity_to_raw_dict,
@@ -59,6 +60,7 @@ from xcquinox.pipeline.cluster.grid_config import (
     normalize_cluster_walltimes,
     pretrain_checkpoint_dir,
     pretrain_checkpoint_for,
+    pretrain_stage_archs,
     pretrain_to_raw_dict,
     require_explicit_bh76_mode,
     validate_grid_semantics,
@@ -887,6 +889,89 @@ def _apply_step_overrides(cfg, args):
     return cfg
 
 
+def _apply_pretrain_seed_override(cfg, args):
+    """Return a copy of ``cfg`` with the pretraining seed ``--pretrain-seed``
+    names.
+
+    ``pretrain.seed`` is the seed the pretrain stage builds its networks from
+    (``_pretrain.pretrain_spec_from_config``), so the refit of a network that
+    failed its certificate is a run of its own at another value. Unset leaves
+    the configuration's seed. The value rides into ``resolved_config.yaml``,
+    which is a pretraining run's statement of the seed its networks started
+    from.
+
+    The value is held to the range the loader holds the file's own
+    ``pretrain.seed`` to: ``dataclasses.replace`` writes straight onto the
+    frozen ``PretrainConfig``, so an out-of-range seed would reach
+    ``resolved_config.yaml`` unchecked and be refused only when the first node
+    stage reloaded it, after the graph was queued. The refusal names the flag
+    and is raised here, before the run directory and any ``sbatch``.
+
+    A run that pretrains nothing refuses the flag: with every swept
+    architecture seeded from a donor, which is what ``--stages optimize``
+    requires of a run, no network starts from this seed, and a value written
+    into the run's ``resolved_config.yaml`` would state an initialization none
+    of them had. Applied after the donor map is settled, which is what decides
+    it.
+    """
+    seed = getattr(args, "pretrain_seed", None)
+    if seed is None:
+        return cfg
+    if not (0 <= seed <= _MAX_SEED):
+        raise ValueError(
+            f"submit: --pretrain-seed must be in [0, {_MAX_SEED}], got {seed}")
+    if not pretrain_stage_archs(cfg):
+        raise ValueError(
+            "submit: --pretrain-seed names the seed of a pretraining, and "
+            "this run pretrains nothing (every swept architecture is seeded "
+            "from a donor, whose own record states the seed it started from)")
+    return dataclasses.replace(
+        cfg, pretrain=dataclasses.replace(cfg.pretrain, seed=seed))
+
+
+def _apply_arch_override(cfg, args):
+    """Return a copy of ``cfg`` whose sweep carries only the architectures
+    ``--archs`` names.
+
+    A run that refits one architecture of a pretraining suite, or optimizes
+    the certified architectures while another is refit, sweeps a subset of its
+    configuration's architecture axis. The names are registry keys that axis
+    carries: the flag restricts a sweep and never extends one, so a name
+    outside it is refused here, before the run directory is created. The
+    restricted axis rides into ``resolved_config.yaml``, where every node
+    stage reads it.
+
+    A configuration-stated donor for an architecture the run no longer sweeps
+    goes with it, since ``validate_grid_semantics`` refuses a donor key
+    outside the sweep. Only keys of the configuration's own sweep are dropped:
+    a key that sweep never carried is a misspelt one, and it is left in place
+    for that refusal. Applied before ``_apply_donor_run_override``, so a
+    ``--donor-run`` map is built over the restricted axis.
+    """
+    raw = getattr(args, "archs", None)
+    if raw is None:
+        return cfg
+    named = {a.strip() for a in raw.split(",") if a.strip()}
+    swept = _canon_axis(cfg.sweep.arch)
+    unknown = sorted(named - set(swept))
+    if not named or unknown:
+        raise ValueError(
+            f"submit: --archs {raw!r} names "
+            f"{unknown if unknown else 'no architecture'}; the "
+            f"configuration's sweep carries {swept}, and the flag restricts "
+            "that sweep without extending it")
+    dropped = set(swept) - named
+    donors = getattr(cfg.pretrain, "donor_checkpoints", None) or {}
+    return dataclasses.replace(
+        cfg,
+        sweep=dataclasses.replace(
+            cfg.sweep, arch=tuple(a for a in swept if a in named)),
+        pretrain=dataclasses.replace(
+            cfg.pretrain,
+            donor_checkpoints={a: p for a, p in donors.items()
+                               if a not in dropped}))
+
+
 def _apply_polarized_override(cfg, args):
     """Return a copy of ``cfg`` with spin-polarized correlation enabled when the
     ``--polarized`` flag is set.
@@ -1107,7 +1192,12 @@ def cmd_submit(args) -> int:
     cfg = _apply_defer_eval_override(cfg, args)
     cfg = _apply_inline_eval_override(cfg, args)
     try:
+        # The restriction first: the donor map is built over the axis the
+        # run actually sweeps. The seed last: whether the run pretrains at
+        # all is known once the donor map is.
+        cfg = _apply_arch_override(cfg, args)
         cfg = _apply_donor_run_override(cfg, args)
+        cfg = _apply_pretrain_seed_override(cfg, args)
     except ValueError as exc:
         _log(f"ERROR: {exc}")
         return 1
@@ -2816,6 +2906,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pretrain-n-steps", type=int, default=None,
         help="override the pretraining step count (pretrain.n_steps); "
              "unset -> the config value")
+    p_submit.add_argument(
+        "--pretrain-seed", type=int, default=None,
+        help="override the seed the pretraining builds its networks from "
+             "(pretrain.seed); unset -> the config value. The run's "
+             "resolved_config.yaml and each pretrain_metadata.json state it. "
+             "Refused on a run that pretrains nothing (--stages optimize, or "
+             "every swept arch donor-backed).")
+    p_submit.add_argument(
+        "--archs", default=None, metavar="A[,B...]",
+        help="sweep only these architectures of the config's sweep "
+             "(comma-separated registry keys); a name that sweep does not "
+             "carry is refused before the run dir is created. With "
+             "--stages pretrain and --pretrain-seed it refits one "
+             "architecture of a suite as a run of its own.")
     p_submit.add_argument(
         "--polarized", action="store_true",
         help="activate spin-polarized correlation on the networks for this run "

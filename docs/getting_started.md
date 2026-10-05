@@ -76,6 +76,11 @@ python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_slim05_a
 python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_dfs_parity.yaml \
     --stages optimize --donor-run /gpfs/scratch/awills/xcquinox_runs/.../run_<stamp> \
     --partition extended-96core --max-nodes 4 --submit
+
+# One architecture of a suite refit at another initialization seed:
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_dfs_allsc.yaml \
+    --stages pretrain --archs deep_geom_3x16 --pretrain-seed 44 \
+    --partition extended-96core --submit
 ```
 
 `--stages pretrain` renders and queues only datagen and the pretrain array; no preflight,
@@ -88,6 +93,19 @@ the configuration's map) and refuses before creating the run dir unless every ar
 carries its `fidelity_certificate.json`. A refused `--stages` selection likewise leaves
 nothing on disk. `resubmit-preflight` recovers a run with the same stage group its job
 records show, so a pretraining suite never grows a train array in recovery.
+
+`--archs A[,B...]` restricts the run to the named architectures of the configuration's sweep
+(a name the sweep does not carry is refused before the run dir is created), and
+`--pretrain-seed N` replaces `pretrain.seed`, the seed the pretraining builds its networks
+from. Both are written into the run's `resolved_config.yaml`, and each
+`pretrain_metadata.json` states the seed its networks started from. Together with
+`--stages pretrain` they refit one architecture of a suite, for instance a network that failed
+its certificate, as a run of its own. The correlation network is built from the seed plus
+one, so a refit takes a seed at least two away from the fit it replaces. A run that pretrains
+nothing (`--stages optimize`, or every swept architecture donor-backed) refuses
+`--pretrain-seed`. With `--stages optimize`, `--archs` and `--donor-run` together optimize the
+architectures of one pretraining run, the donor run being asked only for the architectures the
+run sweeps.
 
 ## Following a run
 

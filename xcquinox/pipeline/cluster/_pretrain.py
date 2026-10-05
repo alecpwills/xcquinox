@@ -458,7 +458,7 @@ def main(argv=None) -> int:
     # log says what the job trained with rather than what its defaults are.
     _log(
         arch_name,
-        f"running run_pretrain: n_steps={pt.n_steps}, "
+        f"running run_pretrain: n_steps={pt.n_steps}, seed={pt.seed}, "
         f"loss_weighting={pt.loss_weighting!r}, "
         f"parent_density={getattr(pt, 'parent_density', 'pbe')!r}, "
         f"energy_term_weight={getattr(pt, 'energy_term_weight', 0.0)}, "
