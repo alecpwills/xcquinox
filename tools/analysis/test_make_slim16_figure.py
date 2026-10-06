@@ -1,24 +1,34 @@
-"""The Slim16 figure: the paper's WTMAD-2 per network per subset.
+"""The Slim16 figure: each held-out subset's error per network beside PBE-DF.
 
-The figure stacks each network's subsets into one horizontal bar whose width
-is the network's total WTMAD-2, so a reader sees which subsets dominate each
-network on one axis. The collect layer reuses the table's own row assembly
-(``slim16_table``), so the figure and the metrics CSV state one set of
-numbers.
+The figure puts the subsets on the x axis and draws, per subset, one bar per
+evaluated network and one PBE-DF bar, each the subset's mean absolute error of
+the reaction energies against the benchmark references over every reaction
+the network reports, converged or not. Each network's WTMAD-2 (the paper's
+form) is computed with the FULL set's weights twice, over all reactions and
+over the converged ones only, and the legend carries both; a subset with no
+converged reaction is dropped from the converged total, its weight is not
+redistributed, and the unconverged reactions are named. Where a subset holds
+converged and unconverged reactions both, the converged-only error is marked
+on the bar. Bars are coloured by architecture and hatched by network group.
+The collect layer reuses the table's row assembly (``slim16_table``), so the
+figure and the metrics CSV state one set of numbers.
 
-Oracle: synthetic run dirs with hand-computed WTMAD-2 (two subsets chosen so
-the shares are exact: both contributions equal, so each share is 0.5 and the
-total is exactly 0.15 kcal/mol), the converged-only filter exercised by a
-network whose second reaction never converged, and ``build_table`` checked
-against the same hand values after its rewiring onto the shared functions.
+Oracle: synthetic run dirs whose PBE-DF reaction energies are exact in
+kcal/mol (41.0, 121.8, 80.6 and 65.0 for the four reactions) and whose
+benchmark references are 40, 120, 80 and 60 (mean 75, four reactions, so the
+scale is 18.75), so every per-subset error and every WTMAD-2 is a hand value:
+18.75 times the sum over the subsets of N_i MAD_i / m_i.
 """
 from __future__ import annotations
 
+import csv
 import importlib.util
 import json
+import math
 import sys
 from pathlib import Path
 
+import matplotlib.colors as mcolors
 import pytest
 
 _HERE = Path(__file__).resolve().parent
@@ -34,12 +44,12 @@ def _load(name: str):
 
 figure = _load("make_slim16_figure")
 table = figure.slim16_table
+arch_style = _load("arch_style")
 
 _KCAL = 627.5094740631
 
 # Reaction A, subset ALKBDE10 (name and stoichiometry from load_full_slim):
-# de_ref = (+1.0 - 0.5 - 0.4) Ha = 0.1 Ha; with de_nn offset +0.05 kcal the
-# subset's MAD is 0.05 and its contribution 0.05/(0.1*KCAL) = 0.5/KCAL.
+# the PBE-DF reaction energy is 41.0 kcal/mol, the reference 40.0.
 _A = {
     "name": "alkbde10_006",
     "reactants": ["slim16@alkbde10_lif"],
@@ -48,10 +58,9 @@ _A = {
 }
 _A_SPECIES = {"slim16@alkbde10_lif": -1.0,
               "slim16@alkbde10_li": -0.5,
-              "slim16@alkbde10_f": -0.4}
-# Reaction B, subset RC21: de_ref = (2.0 - 1.0 - 0.5) Ha = 0.5 Ha; the +0.25
-# kcal offset makes its contribution 0.25/(0.5*KCAL) = 0.5/KCAL too, so the
-# total is (0.3*KCAL/2)*(1/KCAL) = 0.15 kcal/mol EXACTLY and each share 0.5.
+              "slim16@alkbde10_f": -0.5 + 41.0 / _KCAL}
+_A_REF = 40.0
+# Reaction B, subset RC21: PBE-DF 121.8 kcal/mol, reference 120.0.
 _B = {
     "name": "rc21_010",
     "reactants": ["slim16@rc21_4e"],
@@ -60,11 +69,33 @@ _B = {
 }
 _B_SPECIES = {"slim16@rc21_4e": -2.0,
               "slim16@rc21_4p": -1.0,
-              "slim16@rc21_me": -0.5}
-# Reaction D, the smoke-run shape: its species are evaluated and converged,
-# but they are NOT in pbe_df.json (the slice runs' footing covers fewer
-# species than the reactions name), so de_ref is nan and the network's
-# WTMAD-2 is not finite.
+              "slim16@rc21_me": -1.0 + 121.8 / _KCAL}
+_B_REF = 120.0
+# Reactions E and H, the two RSE43 reactions of the pool: PBE-DF 80.6 and
+# 65.0 kcal/mol, references 80.0 and 60.0. They share two species.
+_E = {
+    "name": "rse43_033",
+    "reactants": ["slim16@rse43_E35", "slim16@rse43_P1"],
+    "products": ["slim16@rse43_P35", "slim16@rse43_E1"],
+    "coeffs": [-1.0, -1.0, 1.0, 1.0],
+}
+_H = {
+    "name": "rse43_019",
+    "reactants": ["slim16@rse43_E21", "slim16@rse43_P1"],
+    "products": ["slim16@rse43_P21", "slim16@rse43_E1"],
+    "coeffs": [-1.0, -1.0, 1.0, 1.0],
+}
+_RSE43_SPECIES = {"slim16@rse43_E35": -1.0,
+                  "slim16@rse43_P1": -0.5,
+                  "slim16@rse43_P35": -1.2,
+                  "slim16@rse43_E1": -0.3 + 80.6 / _KCAL,
+                  "slim16@rse43_E21": -1.0,
+                  "slim16@rse43_P21": -1.2 - 15.6 / _KCAL}
+_E_REF = 80.0
+_H_REF = 60.0
+# Reaction D: its species are evaluated and converged but NOT in pbe_df.json
+# and the record carries no benchmark reference, so the network that reports
+# it alone has nothing that can be scored against the references.
 _D = {
     "name": "isrc26_001",
     "reactants": ["slim16@isrc26_ch3"],
@@ -74,24 +105,73 @@ _D = {
 _D_SPECIES = {"slim16@isrc26_ch3": -0.6,
               "slim16@isrc26_h": -0.3,
               "slim16@isrc26_ch4": -0.55}
+# Reaction F, subset ADIM6, converges under every network but carries no
+# benchmark reference: it is outside every reference-basis number (its
+# PBE-DF reaction energy, 10.0 kcal/mol, keeps it inside the PBE-DF basis).
+_F = {
+    "name": "adim6_001",
+    "reactants": ["slim16@adim6_AD2"],
+    "products": ["slim16@adim6_AM2"],
+    "coeffs": [-1.0, 2.0],
+}
+_F_SPECIES = {"slim16@adim6_AD2": -2.0,
+              "slim16@adim6_AM2": -1.0 + 5.0 / _KCAL}
+
+# The hand values against the references, with the full set's weights:
+# N 4, mean |ref| 75, scale 75 / 4 = 18.75; N_i 1 for ALKBDE10 (m 40) and
+# RC21 (m 120), 2 for RSE43 (m 70). total = 18.75 * sum N_i MAD_i / m_i.
+# S_a: A 0.4, B 1.2, H 0.7 converged, E 3.5 unconverged ->
+#   all 18.75 * (0.01 + 0.01 + 2 * 2.1 / 70) = 1.5,
+#   converged 18.75 * (0.01 + 0.01 + 2 * 0.7 / 70) = 0.75.
+# slim05_b: A 0.2, B 0.72 converged, E 1.4 unconverged, H with no reported
+#   energy (unscored: out of every mean, inside the weights) ->
+#   all 18.75 * (0.005 + 0.006 + 2 * 1.4 / 70) = 0.95625,
+#   converged 18.75 * (0.005 + 0.006) = 0.20625, RSE43 dropped. (No hand
+#   total sits on a two-decimal rounding tie: the legend text is read back.)
+# S_e: everything converged, A 0.4, B 1.2, E 0.7, H without an energy
+#   (RSE43 keeps its weight of two, its mean is E's) -> 0.75 both.
+# S_g: the same errors as S_e with nothing converged -> all 0.75, converged
+#   none (every subset dropped).
+# PBE-DF: 1.0, 1.8, 0.6, 5.0 -> 18.75 * (0.025 + 0.015 + 2 * 2.8 / 70) = 2.25;
+# its RSE43 bar, 2.8, is the tallest bar of the figure.
+_MAE_S_A = {"ALKBDE10": 0.4, "RC21": 1.2, "RSE43": 2.1}
+_MAE_S_A_CONV = {"ALKBDE10": 0.4, "RC21": 1.2, "RSE43": 0.7}
+_WT_S_A = (1.5, 0.75)
+_MAE_SLIM05_B = {"ALKBDE10": 0.2, "RC21": 0.72, "RSE43": 1.4}
+_MAE_SLIM05_B_CONV = {"ALKBDE10": 0.2, "RC21": 0.72, "RSE43": None}
+_WT_SLIM05_B = (0.95625, 0.20625)
+_MAE_S_E = {"ALKBDE10": 0.4, "RC21": 1.2, "RSE43": 0.7}
+_WT_S_E = (0.75, 0.75)
+_MAE_S_G_CONV = {"ALKBDE10": None, "RC21": None, "RSE43": None}
+_WT_S_G_ALL = 0.75
+_MAE_PBE = {"ALKBDE10": 1.0, "RC21": 1.8, "RSE43": 2.8}
+_WT_PBE = 2.25
+
+_ARCH_SHARED = "deep_3x16"
+_ARCH_OTHER = "deep_geom_3x16"
 
 
 def _pbe_df_json() -> dict:
     species = {name: {"E_pbe_df": value}
-               for name, value in {**_A_SPECIES, **_B_SPECIES}.items()}
+               for name, value in {**_A_SPECIES, **_B_SPECIES,
+                                   **_RSE43_SPECIES, **_F_SPECIES}.items()}
     return {"identity": {"pool": "slim16"}, "n_species_not_df": 0,
             "species": species}
 
 
-def _reaction_record(record: dict, de_nn: float) -> dict:
+def _reaction_record(record: dict, de_nn: float, ref) -> dict:
     out = dict(record)
     out["de_nn_kcalmol"] = de_nn
+    out["reaction_energy_ref_kcalmol"] = ref
     return out
 
 
-def _molecules(species: dict, *, converged: bool) -> list:
+def _molecules(species: dict, *, converged, unconverged=()) -> list:
+    """One per-molecule record per species, ``scf_converged`` as given,
+    the names in ``unconverged`` overriding it to False."""
     return [{"molecule": name, "E_total_nn": value - 0.001,
-             "E_pbe": value + 1e-5, "scf_converged": converged}
+             "E_pbe": value + 1e-5,
+             "scf_converged": bool(converged) and name not in unconverged}
             for name, value in species.items()]
 
 
@@ -103,138 +183,392 @@ def _channel(run: Path, idx: int, molecules: list, reactions: list) -> None:
 
 
 def _run(tmp_path: Path) -> Path:
-    """Four networks: netA both reactions converged (total 0.15, shares
-    0.5/0.5); netB carrying both reactions but B's species unconverged (the
-    converged filter keeps A alone: total 0.10, share 1.0); netC with no
-    channel at all (recorded absent); netD the smoke-run shape (species
-    evaluated and converged, absent from the PBE-DF table, WTMAD-2 not
-    finite)."""
+    """Six networks: S_a (deep_3x16; E unconverged through its species
+    P35), slim05_b (deep_3x16; E unconverged, H reported without an energy,
+    so RSE43 has no converged reaction), S_e (deep_geom_3x16; everything
+    converged, H reported without an energy), S_g (deep_geom_3x16; nothing converged), slim05_c with no
+    channel at all, and v7_d whose one reaction has species absent from the
+    PBE-DF table and no reference. Every evaluated network also reports F,
+    which carries no reference."""
     run = tmp_path / "run"
     run.mkdir()
     (run / "manifest.json").write_text(json.dumps({
         "kind": "slim16_eval", "width": 4,
         "identity": {"pool": "slim16"},
         "networks": [
-            {"index": 0, "label": "netA", "kind": "pretrain",
-             "arch_name": "deep_3x16", "certificate_verdict": "PASS"},
-            {"index": 1, "label": "netB", "kind": "pretrain",
-             "arch_name": "deep_3x16", "certificate_verdict": "PASS"},
-            {"index": 2, "label": "netC", "kind": "trained",
-             "arch_name": "medium", "certificate_verdict": None},
-            {"index": 3, "label": "netD", "kind": "trained",
+            {"index": 0, "label": "S_a", "kind": "pretrain",
+             "arch_name": _ARCH_SHARED, "certificate_verdict": "PASS"},
+            {"index": 1, "label": "slim05_b", "kind": "pretrain",
+             "arch_name": _ARCH_SHARED, "certificate_verdict": "PASS"},
+            {"index": 2, "label": "S_e", "kind": "pretrain",
+             "arch_name": _ARCH_OTHER, "certificate_verdict": "PASS"},
+            {"index": 5, "label": "S_g", "kind": "pretrain",
+             "arch_name": _ARCH_OTHER, "certificate_verdict": "PASS"},
+            {"index": 3, "label": "slim05_c", "kind": "pretrain",
+             "arch_name": "deep_attn_3x16", "certificate_verdict": "PASS"},
+            {"index": 4, "label": "v7_d", "kind": "trained",
              "arch_name": "medium", "certificate_verdict": None},
         ]}))
     (run / "pbe_df.json").write_text(json.dumps(_pbe_df_json()))
+    always = _molecules({**_A_SPECIES, **_B_SPECIES, **_F_SPECIES},
+                        converged=True)
+    without_reference = [_reaction_record(_F, 7.0, None)]
     _channel(run, 0,
-             _molecules(_A_SPECIES, converged=True)
-             + _molecules(_B_SPECIES, converged=True),
-             [_reaction_record(_A, 0.1 * _KCAL + 0.05),
-              _reaction_record(_B, 0.5 * _KCAL + 0.25)])
-    # netB: A converged with offset +0.10 (MAD 0.10, the one-subset identity:
-    # total = MAD); B present but its species never converged, with an offset
-    # (+0.30) that would move the total to 0.24 if the filter were dropped.
+             always + _molecules(_RSE43_SPECIES, converged=True,
+                                 unconverged=("slim16@rse43_P35",)),
+             [_reaction_record(_A, 40.4, _A_REF),
+              _reaction_record(_B, 121.2, _B_REF),
+              _reaction_record(_E, 83.5, _E_REF),
+              _reaction_record(_H, 60.7, _H_REF)] + without_reference)
     _channel(run, 1,
-             _molecules(_A_SPECIES, converged=True)
-             + _molecules(_B_SPECIES, converged=False),
-             [_reaction_record(_A, 0.1 * _KCAL + 0.10),
-              _reaction_record(_B, 0.5 * _KCAL + 0.30)])
-    # netD: everything about the channel says evaluated and converged; only
-    # the PBE-DF table is short a species, so the total is not finite.
-    _channel(run, 3,
+             always + _molecules(_RSE43_SPECIES, converged=True,
+                                 unconverged=("slim16@rse43_P35",)),
+             [_reaction_record(_A, 40.2, _A_REF),
+              _reaction_record(_B, 120.72, _B_REF),
+              _reaction_record(_E, 81.4, _E_REF),
+              _reaction_record(_H, float("nan"), _H_REF)] + without_reference)
+    _channel(run, 2,
+             always + _molecules(_RSE43_SPECIES, converged=True),
+             [_reaction_record(_A, 40.4, _A_REF),
+              _reaction_record(_B, 121.2, _B_REF),
+              _reaction_record(_E, 80.7, _E_REF),
+              _reaction_record(_H, float("nan"), _H_REF)] + without_reference)
+    _channel(run, 5,
+             _molecules({**_A_SPECIES, **_B_SPECIES, **_F_SPECIES,
+                         **_RSE43_SPECIES}, converged=False),
+             [_reaction_record(_A, 40.4, _A_REF),
+              _reaction_record(_B, 121.2, _B_REF),
+              _reaction_record(_E, 80.7, _E_REF),
+              _reaction_record(_H, 60.7, _H_REF)] + without_reference)
+    _channel(run, 4,
              _molecules(_D_SPECIES, converged=True),
-             [_reaction_record(_D, -0.25 * _KCAL)])
+             [_reaction_record(_D, -0.25 * _KCAL, None)])
     return run
 
 
-def test_collect_matches_the_hand_values(tmp_path):
-    order, records = figure.collect_subset_wtmad2(_run(tmp_path))
-    assert order == ["netA", "netB", "netC", "netD"]
-    a = records["netA"]
-    assert a["total"] == pytest.approx(0.15)
-    assert set(a["shares"]) == {"ALKBDE10", "RC21"}
-    assert a["shares"]["ALKBDE10"] == pytest.approx(0.5)
-    assert a["shares"]["RC21"] == pytest.approx(0.5)
-    # the shares are shares OF THE TOTAL: they sum to the printed number
-    assert sum(a["shares"].values()) * a["total"] == pytest.approx(a["total"])
-    b = records["netB"]
-    assert b["total"] == pytest.approx(0.10)
-    assert b["shares"] == {"ALKBDE10": pytest.approx(1.0)}
+def _approx_map(values: dict):
+    return {key: (None if value is None else pytest.approx(value))
+            for key, value in values.items()}
 
 
-def test_an_unevaluated_network_is_recorded_absent(tmp_path):
-    order, records = figure.collect_subset_wtmad2(_run(tmp_path))
-    assert records["netC"]["total"] is None
-    assert records["netC"]["reason"] == "no evaluated channel"
-    manifest = figure.plot_slim16_wtmad2(
-        order, records, tmp_path / "fig.png")
-    assert "netC" in manifest["absent"]
-    assert {b["label"] for b in manifest["bars"]} == {"netA", "netB"}
-
-
-def test_a_not_finite_wtmad2_is_not_labeled_no_evaluated_channel(tmp_path):
-    """The smoke-run shape, found on real data: the channel exists and every
-    species converged, but the run's PBE-DF table does not cover the
-    reaction's species, so the total is nan. Lumping that network under the
-    no-channel label would state a falsehood about the run."""
-    order, records = figure.collect_subset_wtmad2(_run(tmp_path))
-    d = records["netD"]
-    assert d["total"] is None
-    assert d["shares"] == {}
-    assert d["reason"] != "no evaluated channel"
-    assert "not finite" in d["reason"]
-    manifest = figure.plot_slim16_wtmad2(order, records, tmp_path / "fig.png")
-    assert "netD" in manifest["absent"]
-    assert "netD" not in manifest["totals"]
-    assert not any(b["label"] == "netD" for b in manifest["bars"])
-
-
-def test_the_converged_filter_holds(tmp_path):
-    """netB carries both reactions; the unconverged one must not enter, or
-    its 0.30-offset reaction would move the total off 0.10."""
-    _order, records = figure.collect_subset_wtmad2(_run(tmp_path))
-    assert records["netB"]["total"] == pytest.approx(0.10)
-    assert "RC21" not in records["netB"]["shares"]
-
-
-def test_the_bars_and_totals_reach_the_manifest(tmp_path):
+def test_collect_set_errors_against_the_references(tmp_path):
+    """Each evaluated network is scored on every reaction it reports, with
+    the weights of the full set of referenced reactions: the per-subset
+    errors over all reactions, and the WTMAD-2 over all reactions and over
+    the converged ones alone, the converged total keeping the full weights
+    and dropping, by name, a subset with no converged reaction; a network
+    with nothing converged has no converged total. A reaction reported
+    without an energy keeps its weight, enters no mean and is named. The
+    unconverged reactions are named per network. A network without a
+    channel and one with no reaction that carries a reference are absent,
+    each with its own reason. PBE-DF is scored over every reaction its table
+    covers. A subset whose references average to zero carries no weight and
+    is named. The table's rows give the same numbers."""
     run = _run(tmp_path)
-    order, records = figure.collect_subset_wtmad2(run)
-    manifest = figure.plot_slim16_wtmad2(order, records, tmp_path / "fig.png")
-    assert manifest["order"] == ["netA", "netB", "netC", "netD"]
-    assert manifest["subsets"] == ["ALKBDE10", "RC21"]
-    assert manifest["totals"]["netA"] == pytest.approx(0.15)
-    assert manifest["totals"]["netB"] == pytest.approx(0.10)
-    net_a = [b for b in manifest["bars"] if b["label"] == "netA"]
-    assert len(net_a) == 2
-    # the tab20 cycle: the two subsets take the first two colors, and a
-    # subset appears under both networks with the SAME color
-    colors = {b["subset"]: b["color"] for b in manifest["bars"]}
-    assert len(set(colors.values())) == len(colors)
-    for bar in manifest["bars"]:
-        assert bar["share"] == pytest.approx(
-            records[bar["label"]]["shares"][bar["subset"]])
+    order, records, pbe = figure.collect_set_errors(run)
+    assert order == ["S_a", "slim05_b", "S_e", "S_g", "slim05_c", "v7_d"]
+
+    expected = {
+        "S_a": (_MAE_S_A, _MAE_S_A_CONV, _WT_S_A, ["rse43_033"], [], [],
+                _ARCH_SHARED, "S"),
+        "slim05_b": (_MAE_SLIM05_B, _MAE_SLIM05_B_CONV, _WT_SLIM05_B,
+                     ["rse43_033"], ["rse43_019"], ["RSE43"], _ARCH_SHARED,
+                     "slim05"),
+        "S_e": (_MAE_S_E, _MAE_S_E, _WT_S_E, [], ["rse43_019"], [], _ARCH_OTHER, "S"),
+        "S_g": (_MAE_S_E, _MAE_S_G_CONV, (_WT_S_G_ALL, None),
+                ["alkbde10_006", "rc21_010", "rse43_019", "rse43_033"], [],
+                ["ALKBDE10", "RC21", "RSE43"], _ARCH_OTHER, "S"),
+    }
+    for label, (mae, conv, wt, unconverged, unscored, dropped, arch,
+                group) in expected.items():
+        record = records[label]
+        assert record["mae"] == _approx_map(mae), label
+        assert record["mae_converged"] == _approx_map(conv), label
+        assert record["wtmad2_all"] == pytest.approx(wt[0]), label
+        if wt[1] is None:
+            assert record["wtmad2_converged"] is None, label
+        else:
+            assert record["wtmad2_converged"] == pytest.approx(wt[1]), label
+        assert record["unconverged"] == unconverged, label
+        assert record["unscored"] == unscored, label
+        assert record["dropped"] == dropped, label
+        assert record["arch_name"] == arch
+        assert record["group"] == group
+        assert record["reason"] is None
+    assert "ADIM6" not in records["S_a"]["mae"]
+
+    absent_c = records["slim05_c"]
+    assert absent_c["reason"] == "no evaluated channel"
+    assert absent_c["mae"] == {} and absent_c["wtmad2_all"] is None
+    absent_d = records["v7_d"]
+    assert absent_d["reason"] and absent_d["reason"] != "no evaluated channel"
+    assert absent_d["mae"] == {} and absent_d["wtmad2_all"] is None
+    assert absent_d["group"] == "v7"
+
+    assert pbe["mae"] == _approx_map(_MAE_PBE)
+    assert pbe["wtmad2"] == pytest.approx(_WT_PBE)
+    assert pbe["n_reactions"] == 4 and pbe["unscored"] == []
+
+    # the table's own rows and totals state the same numbers
+    _manifest, width, pbe_df, subsets, _n = table.run_context(run)
+    molecules, reactions = table.channel_records(run, width, 0)
+    rows_nn, rows_pbe = table.reference_rows(molecules, reactions, pbe_df, subsets)
+    scored = table.wtmad2_full_weights(rows_nn)
+    assert scored["all"] == pytest.approx(_WT_S_A[0])
+    assert scored["converged"] == pytest.approx(_WT_S_A[1])
+    assert {name: entry["MAD_all"] for name, entry in scored["per_subset"].items()} \
+        == _approx_map(_MAE_S_A)
+    assert scored["per_subset"]["RSE43"]["MAD_converged"] == pytest.approx(0.7)
+    assert scored["per_subset"]["RSE43"]["N_i"] == 2
+    assert scored["unconverged"] == ["rse43_033"] and scored["dropped"] == []
+    assert scored["n_reactions"] == 4
+    assert table.wtmad2_full_weights(rows_pbe)["all"] == pytest.approx(_WT_PBE)
+    # slim05_b's unscored reaction keeps RSE43's weight of two
+    molecules, reactions = table.channel_records(run, width, 1)
+    rows_nn, _rows_pbe = table.reference_rows(molecules, reactions, pbe_df, subsets)
+    scored = table.wtmad2_full_weights(rows_nn)
+    assert scored["per_subset"]["RSE43"]["N_i"] == 2
+    assert scored["n_reactions"] == 4 and scored["unscored"] == ["rse43_019"]
+    # a subset whose references average to zero carries no weight: named,
+    # its term out of both totals, its reaction still counted in N
+    scored = table.wtmad2_full_weights([
+        {"name": "z1", "subset": "Z", "de_ref": 0.0, "de_nn": 0.3, "converged": True},
+        {"name": "y1", "subset": "Y", "de_ref": 10.0, "de_nn": 11.0, "converged": True}])
+    assert scored["unweighted"] == ["Z"]
+    assert scored["all"] == pytest.approx(0.25) and scored["converged"] == pytest.approx(0.25)
+
+    # a network scored on another list of referenced reactions is refused by
+    # name: the weights in the legend are one set
+    manifest_path = run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["networks"].append({"index": 6, "label": "S_h", "kind": "pretrain",
+                                 "arch_name": _ARCH_OTHER, "certificate_verdict": "PASS"})
+    manifest_path.write_text(json.dumps(manifest))
+    _channel(run, 6, _molecules({**_A_SPECIES, **_B_SPECIES}, converged=True),
+             [_reaction_record(_A, 40.4, _A_REF), _reaction_record(_B, 121.2, _B_REF)])
+    with pytest.raises(ValueError, match="S_h"):
+        figure.collect_set_errors(run)
+
+
+def test_the_drawn_figure_reads_back_the_set_errors(tmp_path, monkeypatch):
+    """Read from the matplotlib axes: the subsets on the x axis in name
+    order, per subset one bar per evaluated network (in manifest order) and
+    then one PBE-DF bar, each at its own x and as tall as the subset's error
+    over all reactions; a marker on the bar at the converged-only error
+    where the subset holds converged and unconverged reactions both, and no
+    marker where every reaction converged or none did. Bars of one
+    architecture share a colour and differ from another architecture's, bars
+    of one network group share a hatch and differ from another group's, the
+    PBE-DF bars share one colour of their own, every bar lies inside a y
+    range common to the axes, the legend reads each network's label with its
+    two WTMAD-2 values and PBE-DF with its one, and the title names the
+    absent networks, the unconverged reactions and the dropped subset."""
+    closed = []
+    monkeypatch.setattr(figure.plt, "close",
+                        lambda fig=None, *a, **k: closed.append(fig))
+    order, records, pbe = figure.collect_set_errors(_run(tmp_path))
+    manifest = figure.plot_slim16_set_errors(order, records, pbe,
+                                             tmp_path / "fig.png")
+    fig = closed[-1] if closed and closed[-1] is not None else figure.plt.gcf()
+    try:
+        subsets = ["ALKBDE10", "RC21", "RSE43"]
+        assert manifest["subsets"] == subsets
+        ticks = [t.get_text() for ax in fig.axes for t in ax.get_xticklabels()]
+        assert [t for t in ticks if t] == subsets
+
+        bars = sorted((p for ax in fig.axes for p in ax.patches
+                       if p.get_width() > 0),
+                      key=lambda p: p.get_x() + p.get_width() / 2)
+        centres = [round(p.get_x() + p.get_width() / 2, 9) for p in bars]
+        assert len(set(centres)) == len(bars)
+        expected = []
+        for name in subsets:
+            for label, mae in (("S_a", _MAE_S_A), ("slim05_b", _MAE_SLIM05_B),
+                               ("S_e", _MAE_S_E), ("S_g", _MAE_S_E)):
+                expected.append((label, mae[name]))
+            expected.append(("PBE-DF", _MAE_PBE[name]))
+        assert len(bars) == len(expected)
+        assert [p.get_height() for p in bars] == pytest.approx(
+            [value for _label, value in expected])
+
+        # the one marker: S_a's RSE43 bar, at the converged-only error,
+        # black; slim05_b and S_g have nothing converged there, S_e nothing
+        # unconverged
+        lines = [line for ax in fig.axes for line in ax.lines]
+        markers = [(round(float(line.get_xdata()[0]), 9), float(line.get_ydata()[0]))
+                   for line in lines]
+        rse43_s_a = [centres[i] for i, (label, _v) in enumerate(expected)
+                     if label == "S_a"][2]
+        assert markers == [(rse43_s_a, pytest.approx(0.7))]
+        assert mcolors.to_hex(lines[0].get_color()) == "#000000"
+        assert manifest["markers"] == [{"label": "S_a", "subset": "RSE43",
+                                        "value": pytest.approx(0.7)}]
+
+        style = {}
+        for (label, _value), patch in zip(expected, bars):
+            style.setdefault(label, set()).add(
+                (mcolors.to_hex(patch.get_facecolor(), keep_alpha=False),
+                 patch.get_hatch() or ""))
+        assert all(len(found) == 1 for found in style.values()), style
+        color = {label: next(iter(found))[0] for label, found in style.items()}
+        hatch = {label: next(iter(found))[1] for label, found in style.items()}
+        assert color["S_a"] == mcolors.to_hex(arch_style.arch_color(_ARCH_SHARED))
+        assert color["S_e"] == mcolors.to_hex(arch_style.arch_color(_ARCH_OTHER))
+        assert color["slim05_b"] == color["S_a"]
+        assert color["S_e"] != color["S_a"]
+        assert color["PBE-DF"] not in {color["S_a"], color["S_e"]}
+        assert hatch["S_e"] == hatch["S_a"]
+        assert hatch["slim05_b"] != hatch["S_a"]
+
+        limits = {ax.get_ylim() for ax in fig.axes if ax.patches}
+        assert len(limits) == 1
+        low, high = limits.pop()
+        assert all(low <= 0.0 and p.get_height() <= high for p in bars)
+
+        legends = list(fig.legends) + [ax.get_legend() for ax in fig.axes
+                                       if ax.get_legend() is not None]
+        texts = [t.get_text() for legend in legends for t in legend.get_texts()]
+        assert texts == [f"S_a ({_WT_S_A[0]:.2f} / {_WT_S_A[1]:.2f})",
+                         f"slim05_b ({_WT_SLIM05_B[0]:.2f} / {_WT_SLIM05_B[1]:.2f})",
+                         f"S_e ({_WT_S_E[0]:.2f} / {_WT_S_E[1]:.2f})",
+                         f"S_g ({_WT_S_G_ALL:.2f} / n/a)",
+                         f"PBE-DF ({_WT_PBE:.2f})"]
+        assert len(legends) == 1 and "4 reactions" in legends[0].get_title().get_text()
+        assert manifest["n_reactions"] == 4
+
+        titles = " ".join(
+            [fig._suptitle.get_text() if fig._suptitle is not None else ""]
+            + [ax.get_title() for ax in fig.axes])
+        for text in ("slim05_c", "v7_d", "rse43_033", "rse43_019", "RSE43",
+                     records["slim05_c"]["reason"], records["v7_d"]["reason"]):
+            assert text in titles
+        assert set(manifest["absent"]) == {"slim05_c", "v7_d"}
+        assert manifest["unconverged"] == {
+            "S_a": ["rse43_033"], "slim05_b": ["rse43_033"],
+            "S_g": ["alkbde10_006", "rc21_010", "rse43_019", "rse43_033"]}
+        assert manifest["unscored"] == {"slim05_b": ["rse43_019"], "S_e": ["rse43_019"]}
+        assert "reported without an energy" in titles and "slim05_b: rse43_019" in titles
+        assert manifest["dropped"] == {"slim05_b": ["RSE43"],
+                                       "S_g": ["ALKBDE10", "RC21", "RSE43"]}
+    finally:
+        monkeypatch.undo()
+        figure.plt.close(fig)
+
+    # the wrap: fourteen subsets of one network go into rows of thirteen
+    # and one, each row an axes with its own tick labels
+    closed.clear()
+    monkeypatch.setattr(figure.plt, "close",
+                        lambda fig=None, *a, **k: closed.append(fig))
+    names = [f"SET{i:02d}" for i in range(14)]
+    # SET01 and SET02 hold converged and unconverged reactions both; the
+    # converged-only error of SET01 stands above every bar
+    record = {"mae": {n: 1.0 for n in names},
+              "mae_converged": {**{n: 1.0 for n in names}, "SET01": 5.0},
+              "mixed": ["SET01", "SET02"],
+              "wtmad2_all": 1.0, "wtmad2_converged": 1.0, "unconverged": [],
+              "unscored": [], "dropped": [], "unweighted": [],
+              "n_reactions": 14,
+              "arch_name": _ARCH_SHARED, "group": "S", "reason": None}
+    wide = figure.plot_slim16_set_errors(
+        ["only"], {"only": record},
+        {"mae": {}, "wtmad2": None, "n_reactions": 0, "unscored": []},
+        tmp_path / "wide.png")
+    fig = closed[-1]
+    try:
+        per_axes = [[t.get_text() for t in ax.get_xticklabels() if t.get_text()]
+                    for ax in fig.axes]
+        assert per_axes == [names[:13], names[13:]]
+        assert wide["subsets"] == names and wide["legend"] == ["only (1.00 / 1.00)"]
+        assert wide["yscale"] == "linear" and wide["y_floor"] == 0.0
+        marks = [(line.get_ydata()[0], line.axes.get_ylim()[1])
+                 for ax in fig.axes for line in ax.lines]
+        assert [y for y, _high in marks] == pytest.approx([5.0, 1.0])
+        assert all(y <= high for y, high in marks)
+        assert wide["y_cap"] == pytest.approx(5.5)
+        assert "14 reactions" in fig.legends[0].get_title().get_text()
+    finally:
+        monkeypatch.undo()
+        figure.plt.close(fig)
+
+    # the log copy: every axis logarithmic, the floor half the smallest
+    # drawn value so every bar stays inside the limits
+    closed.clear()
+    monkeypatch.setattr(figure.plt, "close",
+                        lambda fig=None, *a, **k: closed.append(fig))
+    record["mae"]["SET00"] = record["mae_converged"]["SET00"] = 0.01
+    logged = figure.plot_slim16_set_errors(
+        ["only"], {"only": record},
+        {"mae": {}, "wtmad2": None, "n_reactions": 0, "unscored": []},
+        tmp_path / "wide_log.png", log=True)
+    fig = closed[-1]
+    try:
+        assert logged["yscale"] == "log" and logged["y_floor"] == pytest.approx(0.005)
+        assert all(ax.get_yscale() == "log" for ax in fig.axes)
+        for ax in fig.axes:
+            low, high = ax.get_ylim()
+            assert low == pytest.approx(0.005)
+            assert all(low < p.get_height() <= high for p in ax.patches)
+    finally:
+        monkeypatch.undo()
+        figure.plt.close(fig)
 
 
 def test_build_table_matches_the_hand_values_after_the_rewiring(tmp_path):
-    rows = table.build_table(_run(tmp_path))
+    """The metrics table keeps its WTMAD-2 against PBE-DF (the paper's
+    converged filter, and over all reactions) and ends with the three
+    reference-basis totals: the network over all its reactions and over the
+    converged ones with the full weights, and PBE-DF; the CSV the tool
+    writes carries them in those columns, a missing converged total as
+    ``nan``."""
+    run = _run(tmp_path)
+    rows = table.build_table(run)
     by_label = {r["label"]: r for r in rows}
-    assert by_label["netA"]["n_converged"] == 6
-    assert by_label["netA"]["n_reactions"] == 2
-    assert by_label["netA"]["wtmad2_paper_converged"] == pytest.approx(0.15)
-    assert by_label["netA"]["wtmad2_paper_all"] == pytest.approx(0.15)
-    assert by_label["netB"]["n_converged"] == 3
-    assert by_label["netB"]["wtmad2_paper_converged"] == pytest.approx(0.10)
-    # rows_all still sees both reactions: the 0.30 offset moves it to 0.24
-    assert by_label["netB"]["wtmad2_paper_all"] == pytest.approx(0.24)
-    # netC has no channel: its row carries the identity fields only, exactly
-    # as before the rewiring (the CSV prints the empty string via .get)
-    assert "n_converged" not in by_label["netC"]
-    assert by_label["netC"]["kind"] == "trained"
+    a, b, e = by_label["S_a"], by_label["slim05_b"], by_label["S_e"]
+    assert a["n_converged"] == 13
+    assert a["n_reactions"] == 5
+    # against PBE-DF (41.0, 121.8, 65.0, 10.0 for A, B, H, F; E out of the
+    # converged rows): S_a |d| 0.6, 0.6, 4.3, 3.0
+    assert a["wtmad2_paper_converged"] == pytest.approx(
+        ((41.0 + 121.8 + 65.0 + 10.0) / 4) / 4
+        * (0.6 / 41.0 + 0.6 / 121.8 + 4.3 / 65.0 + 3.0 / 10.0))
+    # over all rows RSE43 holds E (|83.5 - 80.6| = 2.9) and H together
+    assert a["wtmad2_paper_all"] == pytest.approx(
+        ((41.0 + 121.8 + 2 * (80.6 + 65.0) / 2 + 10.0) / 5) / 5
+        * (0.6 / 41.0 + 0.6 / 121.8 + 2 * (2.9 + 4.3) / 2 / ((80.6 + 65.0) / 2)
+           + 3.0 / 10.0))
+    # against the benchmark references, with the full set's weights
+    assert a["wtmad2_ref_nn_all"] == pytest.approx(_WT_S_A[0])
+    assert a["wtmad2_ref_nn_converged"] == pytest.approx(_WT_S_A[1])
+    assert b["wtmad2_ref_nn_all"] == pytest.approx(_WT_SLIM05_B[0])
+    assert b["wtmad2_ref_nn_converged"] == pytest.approx(_WT_SLIM05_B[1])
+    assert e["wtmad2_ref_nn_all"] == pytest.approx(_WT_S_E[0])
+    assert e["wtmad2_ref_nn_converged"] == pytest.approx(_WT_S_E[1])
+    for row in (a, b, e):
+        assert row["wtmad2_ref_pbe_df"] == pytest.approx(_WT_PBE)
+    assert by_label["S_g"]["wtmad2_ref_nn_all"] == pytest.approx(_WT_S_G_ALL)
+    assert math.isnan(by_label["S_g"]["wtmad2_ref_nn_converged"])
+    assert table.COLUMNS[-3:] == ("wtmad2_ref_nn_all", "wtmad2_ref_nn_converged",
+                                  "wtmad2_ref_pbe_df")
+    # slim05_c has no channel: its row carries the identity fields only
+    assert "n_converged" not in by_label["slim05_c"]
+    assert by_label["slim05_c"]["kind"] == "pretrain"
+
+    assert table.main([str(run)]) == 0
+    with open(run / "slim16_metrics.csv", newline="", encoding="utf-8") as handle:
+        cells = {row["label"]: row for row in csv.DictReader(handle)}
+    assert float(cells["S_a"]["wtmad2_ref_nn_all"]) == pytest.approx(_WT_S_A[0], abs=5e-4)
+    assert float(cells["S_a"]["wtmad2_ref_nn_converged"]) == pytest.approx(
+        _WT_S_A[1], abs=5e-4)
+    assert float(cells["S_a"]["wtmad2_ref_pbe_df"]) == pytest.approx(_WT_PBE, abs=5e-4)
+    assert cells["S_g"]["wtmad2_ref_nn_converged"] == "nan"
+    assert cells["slim05_c"]["wtmad2_ref_nn_all"] == ""
 
 
 def test_main_writes_the_png_beside_the_run(tmp_path):
     run = _run(tmp_path)
     assert figure.main([str(run)]) == 0
+    assert figure.main([str(run), "--log"]) == 0
+    assert (run / "slim16_wtmad2_log.png").is_file()
     out = run / "slim16_wtmad2.png"
     assert out.is_file()
     assert out.stat().st_size > 0
