@@ -410,8 +410,11 @@ def weighted_reaction_mae_kcalmol(
 def paper_wtmad2(rows: Sequence[Dict[str, Any]]
                  ) -> Tuple[float, Dict[str, Dict[str, float]]]:
     """The WTMAD-2 of the cloning paper (arXiv:2605.10331, its
-    ``evaluation_functions.py``) over the reactions of a Slim set, against a
-    reference functional rather than the benchmark values.
+    ``evaluation_functions.py``) over the reactions of a Slim set, against
+    whatever ``de_ref`` the rows carry: the paper's reference functional, or
+    the benchmark values. The scale is the kept reactions' own mean absolute
+    reference, not the 56.84 kcal/mol of the GMTKN55 WTMAD-2, so the number
+    is the paper's form and not the published one.
 
     Per subset i of the set's own reactions: N_i reactions, MAD_i the mean
     of ``abs(de_ref - de_nn)`` and m_i the mean of ``abs(de_ref)``; the subset
