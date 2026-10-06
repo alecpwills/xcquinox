@@ -1,7 +1,14 @@
 % Bibliography of the repository: the step-7 notebook, the OEP override records and the
 % manuscripts cite it. Every entry was checked against a verbatim quote retrieved from the
 % published PDF or from a publisher snippet or preprint mirror; the quotes themselves are in
-% the manuscript records outside the tree.
+% the manuscript records outside the tree. The block of references of the self-consistent
+% sequel to the cloning study (the last block) was checked field by field against the
+% Crossref or OpenAlex record of the DOI, the arXiv API record of the preprint, the
+% proceedings page of the conference, or the project's own citation block.
+%
+% bibtex reads every at-sign as the start of an entry, inside comment lines too, so no
+% comment below spells an entry type with its at-sign. Titles brace the words whose case
+% the style must keep (proper names and the words after a colon or a question mark).
 
 @article{PerdewBurkeErnzerhof1996,
   author = {Perdew, John P. and Burke, Kieron and Ernzerhof, Matthias},
@@ -164,7 +171,7 @@
 
 @article{Dirac1930,
   author = {Dirac, P. A. M.},
-  title = {Note on Exchange Phenomena in the Thomas Atom},
+  title = {Note on Exchange Phenomena in the {T}homas Atom},
   journal = {Math. Proc. Cambridge Phil. Soc.},
   volume = {26},
   pages = {376--385},
@@ -207,7 +214,7 @@
 }
 @article{Goerigk2017,
   author = {Goerigk, Lars and Hansen, Andreas and Bauer, Christoph and Ehrlich, Stephan and Najibi, Asim and Grimme, Stefan},
-  title = {A look at the density functional theory zoo with the advanced GMTKN55 database for general main group thermochemistry, kinetics and noncovalent interactions},
+  title = {A look at the density functional theory zoo with the advanced {GMTKN55} database for general main group thermochemistry, kinetics and noncovalent interactions},
   journal = {Phys. Chem. Chem. Phys.},
   volume = {19},
   issue = {48},
@@ -247,7 +254,7 @@
 % PDF.  Per the convention at the top of this file ("Every entry has a
 % verified verbatim quote retrieved either from the published PDF or from
 % a publisher snippet / preprint mirror"),
-% these MUST be downloaded and verified before being promoted to @article
+% these MUST be downloaded and verified before being promoted to article
 % entries.  Do not cite from the comments below.
 % =============================================================================
 %
@@ -300,7 +307,7 @@
 %     in code comments (descriptors.py, rung35.py) and had no bib entry.
 @article{Mayer1983,
   author = {Mayer, Istv\'{a}n},
-  title = {Charge, bond order and valence in the ab initio SCF theory},
+  title = {Charge, bond order and valence in the ab initio {SCF} theory},
   journal = {Chem. Phys. Lett.},
   volume = {97},
   pages = {270--274},
@@ -369,15 +376,16 @@
           model density matrix.}
 }
 
-@misc{Janesko2022,
+@article{Janesko2022,
   author = {Janesko, Benjamin G.},
-  title = {Unification of {Perdew-Zunger} Self-Interaction Correction, {DFT+U}, and Rung 3.5 Density Functionals},
+  title = {Unification of {Perdew-Zunger} self-interaction correction, {DFT+U}, and {R}ung 3.5 density functionals},
+  journal = {J. Chem. Phys.},
+  volume = {157},
+  pages = {151101},
   year = {2022},
-  eprint = {2206.07118},
-  archivePrefix = {arXiv},
-  primaryClass = {physics.chem-ph},
-  note = {Eqs. 12--13 give the bounded local occupancy implemented as
-          DMRung35Descriptor in xcquinox/pipeline/rung35.py.}
+  doi = {10.1063/5.0109338},
+  note = {Preprint: \texttt{arXiv:2206.07118}, whose eqs. 12--13 give the bounded local
+          occupancy implemented as DMRung35Descriptor in xcquinox/pipeline/rung35.py.}
 }
 
 @article{VermaEtAl2019,
@@ -395,4 +403,901 @@
   note = {Source of the rung-3.5 kernel scale ($d^2 = 5\,a_0^2$) used as the
           default Gaussian-projector width in rung35.py. Establishes the
           rung-3.5 ingredient as a CORRELATION ingredient.}
+}
+
+% --- The references of the self-consistent sequel to the cloning study. Every field below
+%     was read from the Crossref or OpenAlex record of the DOI, from the arXiv API record of
+%     the preprint, from the proceedings page of the conference, or (JAX) from the project's
+%     own citation block. Preprints are articles of the journal arXiv whose DOI carries the
+%     identifier (natbib prints the doi field and has no eprint field); conference papers
+%     follow the ChenGradNorm2018 form.
+
+% The lineage: learned functionals, differentiable DFT, exact constraints, exact-data learning.
+@article{NavarroRodriguez2026,
+  author = {Navarro-Rodr\'{i}guez, Sara and Wills, Alec and Daas, Kimberly J.
+            and Camarasa-G\'{o}mez, Mar\'{i}a and Fern\'{a}ndez-Serra, Marivi},
+  title = {Constraint-aware functional cloning for stable and transferable machine-learned
+           density functional theory},
+  year = {2026},
+  journal = {arXiv},
+  eprint = {2605.10331},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.2605.10331}
+}
+
+@article{KasimVinko2021,
+  author = {Kasim, M. F. and Vinko, S. M.},
+  title = {Learning the Exchange-Correlation Functional from Nature with Fully Differentiable
+           Density Functional Theory},
+  journal = {Phys. Rev. Lett.},
+  volume = {127},
+  pages = {126403},
+  year = {2021},
+  doi = {10.1103/PhysRevLett.127.126403}
+}
+
+@article{LiHoyerBurke2021,
+  author = {Li, Li and Hoyer, Stephan and Pederson, Ryan and Sun, Ruoxi and Cubuk, Ekin D.
+            and Riley, Patrick and Burke, Kieron},
+  title = {{K}ohn-{S}ham Equations as Regularizer: Building Prior Knowledge into Machine-Learned
+           Physics},
+  journal = {Phys. Rev. Lett.},
+  volume = {126},
+  pages = {036401},
+  year = {2021},
+  doi = {10.1103/PhysRevLett.126.036401}
+}
+
+@article{NagaiAkashiSugino2020,
+  author = {Nagai, Ryo and Akashi, Ryosuke and Sugino, Osamu},
+  title = {Completing density functional theory by machine learning hidden messages from
+           molecules},
+  journal = {npj Comput. Mater.},
+  volume = {6},
+  pages = {43},
+  year = {2020},
+  doi = {10.1038/s41524-020-0310-0}
+}
+
+@article{NagaiAkashiSugino2022,
+  author = {Nagai, Ryo and Akashi, Ryosuke and Sugino, Osamu},
+  title = {Machine-learning-based exchange correlation functional with physical asymptotic
+           constraints},
+  journal = {Phys. Rev. Research},
+  volume = {4},
+  pages = {013106},
+  year = {2022},
+  doi = {10.1103/PhysRevResearch.4.013106}
+}
+
+@article{ChenZhangWangE2021,
+  author = {Chen, Yixiao and Zhang, Linfeng and Wang, Han and E, Weinan},
+  title = {{DeePKS}: A Comprehensive Data-Driven Approach toward Chemically Accurate Density
+           Functional Theory},
+  journal = {J. Chem. Theory Comput.},
+  volume = {17},
+  pages = {170--181},
+  year = {2021},
+  doi = {10.1021/acs.jctc.0c00872}
+}
+
+@article{Kirkpatrick2021,
+  author = {Kirkpatrick, James and McMorrow, Brendan and Turban, David H. P.
+            and Gaunt, Alexander L. and Spencer, James S. and Matthews, Alexander G. D. G.
+            and Obika, Annette and Thiry, Louis and Fortunato, Meire and Pfau, David
+            and Rom\'{a}n Castellanos, Lara and Petersen, Stig and Nelson, Alexander W. R.
+            and Kohli, Pushmeet and Mori-S\'{a}nchez, Paula and Hassabis, Demis and Cohen, Aron J.},
+  title = {Pushing the frontiers of density functionals by solving the fractional electron
+           problem},
+  journal = {Science},
+  volume = {374},
+  pages = {1385--1389},
+  year = {2021},
+  doi = {10.1126/science.abj6511}
+}
+
+% The Comment is cited together with the authors' Response (Kirkpatrick2022).
+@article{Gerasimov2022,
+  author = {Gerasimov, Igor S. and Losev, Timofey V. and Epifanov, Evgeny Yu.
+            and Rudenko, Irina and Bushmarinov, Ivan S. and Ryabov, Alexander A.
+            and Zhilyaev, Petr A. and Medvedev, Michael G.},
+  title = {Comment on ``{P}ushing the frontiers of density functionals by solving the fractional
+           electron problem''},
+  journal = {Science},
+  volume = {377},
+  pages = {eabq3385},
+  year = {2022},
+  doi = {10.1126/science.abq3385}
+}
+
+@article{Kirkpatrick2022,
+  author = {Kirkpatrick, James and McMorrow, Brendan and Turban, David H. P.
+            and Gaunt, Alexander L. and Spencer, James S. and Matthews, Alexander G. D. G.
+            and Obika, Annette and Thiry, Louis and Fortunato, Meire and Pfau, David
+            and Rom\'{a}n Castellanos, Lara and Petersen, Stig and Nelson, Alexander W. R.
+            and Kohli, Pushmeet and Mori-S\'{a}nchez, Paula and Hassabis, Demis and Cohen, Aron J.},
+  title = {Response to {C}omment on ``{P}ushing the frontiers of density functionals by solving
+           the fractional electron problem''},
+  journal = {Science},
+  volume = {377},
+  pages = {eabq4282},
+  year = {2022},
+  doi = {10.1126/science.abq4282}
+}
+
+@article{Hollingsworth2018,
+  author = {Hollingsworth, Jacob and Li, Li and Baker, Thomas E. and Burke, Kieron},
+  title = {Can exact conditions improve machine-learned density functionals?},
+  journal = {J. Chem. Phys.},
+  volume = {148},
+  pages = {241743},
+  year = {2018},
+  doi = {10.1063/1.5025668}
+}
+
+@article{Pokharel2022,
+  author = {Pokharel, Kanun and Furness, James W. and Yao, Yi and Blum, Volker
+            and Irons, Tom J. P. and Teale, Andrew M. and Sun, Jianwei},
+  title = {Exact constraints and appropriate norms in machine-learned exchange-correlation
+           functionals},
+  journal = {J. Chem. Phys.},
+  volume = {157},
+  pages = {174106},
+  year = {2022},
+  doi = {10.1063/5.0111183}
+}
+
+@article{Kanungo2025,
+  author = {Kanungo, Bikash and Hatch, Jeffrey and Zimmerman, Paul M. and Gavini, Vikram},
+  title = {Learning local and semi-local density functionals from exact exchange-correlation
+           potentials and energies},
+  journal = {Sci. Adv.},
+  volume = {11},
+  pages = {eady8962},
+  year = {2025},
+  doi = {10.1126/sciadv.ady8962}
+}
+
+@article{PaulKanungoDasGavini2026,
+  author = {Paul, Arghadwip and Kanungo, Bikash and Das, Sambit and Gavini, Vikram},
+  title = {Machine-learned {L}aplacian-level density functional from exact exchange-correlation
+           potentials and energies},
+  year = {2026},
+  journal = {arXiv},
+  eprint = {2609.34194},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.2609.34194}
+}
+
+@article{Gedeon2022,
+  author = {Gedeon, Johannes and Schmidt, Jonathan and Hodgson, Matthew J. P.
+            and Wetherell, Jack and Benavides-Riveros, Carlos L. and Marques, Miguel A. L.},
+  title = {Machine learning the derivative discontinuity of density-functional theory},
+  journal = {Mach. Learn.: Sci. Technol.},
+  volume = {3},
+  pages = {015011},
+  year = {2022},
+  doi = {10.1088/2632-2153/ac3149}
+}
+
+@article{Snyder2012,
+  author = {Snyder, John C. and Rupp, Matthias and Hansen, Katja and M{\"u}ller, Klaus-Robert
+            and Burke, Kieron},
+  title = {Finding Density Functionals with Machine Learning},
+  journal = {Phys. Rev. Lett.},
+  volume = {108},
+  pages = {253002},
+  year = {2012},
+  doi = {10.1103/PhysRevLett.108.253002}
+}
+
+@article{Brockherde2017,
+  author = {Brockherde, Felix and Vogt, Leslie and Li, Li and Tuckerman, Mark E.
+            and Burke, Kieron and M{\"u}ller, Klaus-Robert},
+  title = {Bypassing the {K}ohn-{S}ham equations with machine learning},
+  journal = {Nat. Commun.},
+  volume = {8},
+  pages = {872},
+  year = {2017},
+  doi = {10.1038/s41467-017-00839-3}
+}
+
+@article{Schmidt2019,
+  author = {Schmidt, Jonathan and Benavides-Riveros, Carlos L. and Marques, Miguel A. L.},
+  title = {Machine Learning the Physical Nonlocal Exchange-Correlation Functional of
+           Density-Functional Theory},
+  journal = {J. Phys. Chem. Lett.},
+  volume = {10},
+  pages = {6425--6431},
+  year = {2019},
+  doi = {10.1021/acs.jpclett.9b02422}
+}
+
+@article{LeiMedford2019,
+  author = {Lei, Xiangyun and Medford, Andrew J.},
+  title = {Design and analysis of machine learning exchange-correlation functionals via
+           rotationally invariant convolutional descriptors},
+  journal = {Phys. Rev. Materials},
+  volume = {3},
+  pages = {063801},
+  year = {2019},
+  doi = {10.1103/PhysRevMaterials.3.063801}
+}
+
+@article{Riemelmoser2023,
+  author = {Riemelmoser, Stefan and Verdi, Carla and Kaltak, Merzuk and Kresse, Georg},
+  title = {Machine Learning Density Functionals from the Random-Phase Approximation},
+  journal = {J. Chem. Theory Comput.},
+  volume = {19},
+  pages = {7287--7299},
+  year = {2023},
+  doi = {10.1021/acs.jctc.3c00848}
+}
+
+% Non-local learned functionals and the architectures of the screen.
+@article{BystromKozinsky2022,
+  author = {Bystrom, Kyle and Kozinsky, Boris},
+  title = {{CIDER}: An Expressive, Nonlocal Feature Set for Machine Learning Density
+           Functionals with Exact Constraints},
+  journal = {J. Chem. Theory Comput.},
+  volume = {18},
+  pages = {2180--2192},
+  year = {2022},
+  doi = {10.1021/acs.jctc.1c00904}
+}
+
+@article{BystromKozinsky2024,
+  author = {Bystrom, Kyle and Kozinsky, Boris},
+  title = {Nonlocal machine-learned exchange functional for molecules and solids},
+  journal = {Phys. Rev. B},
+  volume = {110},
+  pages = {075130},
+  year = {2024},
+  doi = {10.1103/PhysRevB.110.075130}
+}
+
+@article{BystromFallettaKozinsky2024,
+  author = {Bystrom, Kyle and Falletta, Stefano and Kozinsky, Boris},
+  title = {Training Machine-Learned Density Functionals on Band Gaps},
+  journal = {J. Chem. Theory Comput.},
+  volume = {20},
+  pages = {7516--7532},
+  year = {2024},
+  doi = {10.1021/acs.jctc.4c00999}
+}
+
+@article{Abdallah2026,
+  author = {Abdallah, Mohamed S. and Jin, Zhuotao and Kozinsky, Boris and Bystrom, Kyle},
+  title = {Machine-learned exchange-correlation functionals for molecules, solids, and
+           reactive surfaces},
+  year = {2026},
+  journal = {arXiv},
+  eprint = {2608.21525},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.2608.21525}
+}
+
+@article{Luise2025,
+  author = {Luise, Giulia and Huang, Chin-Wei and Vogels, Thijs and Kooi, Derk P.
+            and Ehlert, Sebastian and Lanius, Stephanie and Giesbertz, Klaas J. H.
+            and Karton, Amir and Gunceler, Deniz and Battaglia, Stefano and Simm, Gregor N. C.
+            and Szab\'{o}, P. Bern\'{a}t and Stanley, Megan and Bruinsma, Wessel P. and Huang, Lin
+            and Wei, Xinran and Garrido Torres, Jos\'{e} and Katbashev, Abylay
+            and Chavez Zavaleta, Rodrigo and M\'{a}t\'{e}, B\'{a}lint and Kaba, S\'{e}kou-Oumar
+            and Sordillo, Roberto and Chen, Yingrong and Williams-Young, David B.
+            and Bishop, Christopher M. and Hermann, Jan and van den Berg, Rianne
+            and Gori-Giorgi, Paola},
+  title = {Accurate and scalable exchange-correlation with deep learning},
+  year = {2025},
+  journal = {arXiv},
+  eprint = {2506.14665},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.2506.14665}
+}
+
+@article{Ehlert2026,
+  author = {Ehlert, Sebastian and Hermann, Jan and Vogels, Thijs and Garcia Satorras, Victor
+            and Lanius, Stephanie and Segler, Marwin and Giesbertz, Klaas J. H. and Kooi, Derk P.
+            and Takeda, Kenji and Huang, Chin-Wei and Luise, Giulia and van den Berg, Rianne
+            and Gori-Giorgi, Paola and Karton, Amir},
+  title = {{Accurate Chemistry Collection}: Coupled cluster atomization energies for broad
+           chemical space},
+  journal = {Sci. Data},
+  volume = {13},
+  pages = {951},
+  year = {2026},
+  doi = {10.1038/s41597-026-07200-8}
+}
+
+@inproceedings{GaoEberhardGuennemann2025,
+  author = {Gao, Nicholas and Eberhard, Eike and G{\"u}nnemann, Stephan},
+  title = {Learning Equivariant Non-Local Electron Density Functionals},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  pages = {50197--50221},
+  year = {2025},
+  note = {Preprint: \texttt{arXiv:2410.07972}}
+}
+
+@inproceedings{Eberhard2026,
+  author = {Eberhard, Eike S. and Thiede, Luca A. and Aldossary, Abdul and Burger, Andreas
+            and Gao, Nicholas and Bhethanabotla, Vignesh and Aspuru-Guzik, Al\'{a}n
+            and G{\"u}nnemann, Stephan},
+  title = {Derivative Informed Learning of Exchange-Correlation Functionals},
+  booktitle = {Proceedings of the 43rd International Conference on Machine Learning (ICML)},
+  year = {2026},
+  note = {Preprint: \texttt{arXiv:2606.04279}}
+}
+
+@article{AlaaElDin2026,
+  author = {Alaa El-Din, Karim K. and v. Strachwitz, Antonius and Vinko, Sam M.},
+  title = {Expander attention as exchange-correlation},
+  year = {2026},
+  journal = {arXiv},
+  eprint = {2605.10265},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.2605.10265}
+}
+
+@article{Medvidovic2025,
+  author = {Medvidovi\'{c}, Matija and Umana, Jaylyn C. and Ahmadabadi, Iman
+            and Di Sante, Domenico and Flick, Johannes and Rubio, Angel},
+  title = {Neural network distillation of orbital dependent density functional theory},
+  journal = {Phys. Rev. Research},
+  volume = {7},
+  pages = {023113},
+  year = {2025},
+  doi = {10.1103/PhysRevResearch.7.023113}
+}
+
+@article{Zhuang2025,
+  author = {Zhuang, Yuan and Gu, Yonghao and Zhang, Beini and Wu, Jiang and Chen, Guanhua},
+  title = {Machine Learning Accurate Exchange-Correlation Potentials for Reducing Delocalization
+           Error in Density Functional Theory},
+  journal = {JACS Au},
+  volume = {5},
+  pages = {4002--4010},
+  year = {2025},
+  doi = {10.1021/jacsau.5c00632}
+}
+
+@article{Kovacs2026,
+  author = {Kov\'{a}cs, N\'{o}ra and \'{S}miga, Szymon and Kaupp, Martin and Wody\'{n}ski, Artur},
+  title = {Toward Doubly Local Double Hybrid Functionals Using Neural-Network Local Mixing
+           Functions},
+  journal = {J. Chem. Theory Comput.},
+  volume = {22},
+  pages = {3268--3281},
+  year = {2026},
+  doi = {10.1021/acs.jctc.5c01952}
+}
+
+@article{CroninTiwariSanvito2025,
+  author = {Cronin, Eoghan and Tiwari, Rajarshi and Sanvito, Stefano},
+  title = {Machine learning semilocal exchange-correlation functionals for {K}ohn-{S}ham density
+           functional theory of the {H}ubbard model},
+  journal = {Phys. Rev. B},
+  volume = {112},
+  pages = {195103},
+  year = {2025},
+  doi = {10.1103/vm99-khkz}
+}
+
+@article{Kulaev2025DM21,
+  author = {Kulaev, Kirill and Ryabov, Alexander and Medvedev, Michael G. and Burnaev, Evgeny
+            and Vanovskiy, Vladimir},
+  title = {On the practical applicability of {DM21} neural-network {DFT} functional for chemical
+           calculations: {F}ocus on geometry optimization},
+  journal = {J. Chem. Phys.},
+  volume = {163},
+  pages = {074105},
+  year = {2025},
+  doi = {10.1063/5.0266500}
+}
+
+@article{MaNarayanaswamyRileyLi2022,
+  author = {Ma, He and Narayanaswamy, Arunachalam and Riley, Patrick and Li, Li},
+  title = {Evolving symbolic density functionals},
+  journal = {Sci. Adv.},
+  volume = {8},
+  pages = {eabq0279},
+  year = {2022},
+  doi = {10.1126/sciadv.abq0279}
+}
+
+@article{TanSoubkiCranmer2026,
+  author = {Tan, Elizabeth S. Z. and Soubki, Adil and Cranmer, Miles},
+  title = {{SymTorch}: Symbolic Distillation of Neural Networks},
+  year = {2026},
+  journal = {arXiv},
+  eprint = {2602.21307},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.2602.21307}
+}
+
+@inproceedings{Liu2025KAN,
+  author = {Liu, Ziming and Wang, Yixuan and Vaidya, Sachin and Ruehle, Fabian
+            and Halverson, James and Solja\v{c}i\'{c}, Marin and Hou, Thomas Y. and Tegmark, Max},
+  title = {{KAN}: {K}olmogorov-{A}rnold Networks},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  pages = {70367--70413},
+  year = {2025},
+  note = {Preprint: \texttt{arXiv:2404.19756}}
+}
+
+@inproceedings{Sitzmann2020,
+  author = {Sitzmann, Vincent and Martel, Julien N. P. and Bergman, Alexander W.
+            and Lindell, David B. and Wetzstein, Gordon},
+  title = {Implicit Neural Representations with Periodic Activation Functions},
+  booktitle = {Advances in Neural Information Processing Systems 33 (NeurIPS)},
+  year = {2020},
+  note = {Preprint: \texttt{arXiv:2006.09661}}
+}
+
+@inproceedings{Tancik2020,
+  author = {Tancik, Matthew and Srinivasan, Pratul P. and Mildenhall, Ben
+            and Fridovich-Keil, Sara and Raghavan, Nithin and Singhal, Utkarsh
+            and Ramamoorthi, Ravi and Barron, Jonathan T. and Ng, Ren},
+  title = {{F}ourier Features Let Networks Learn High Frequency Functions in Low Dimensional
+           Domains},
+  booktitle = {Advances in Neural Information Processing Systems 33 (NeurIPS)},
+  year = {2020},
+  note = {Preprint: \texttt{arXiv:2006.10739}}
+}
+
+@inproceedings{AmosXuKolter2017,
+  author = {Amos, Brandon and Xu, Lei and Kolter, J. Zico},
+  title = {Input Convex Neural Networks},
+  booktitle = {Proceedings of the 34th International Conference on Machine Learning (ICML)},
+  series = {Proceedings of Machine Learning Research},
+  volume = {70},
+  pages = {146--155},
+  year = {2017},
+  note = {Preprint: \texttt{arXiv:1609.07152}}
+}
+
+@article{HendrycksGimpel2016,
+  author = {Hendrycks, Dan and Gimpel, Kevin},
+  title = {Gaussian Error Linear Units ({GELUs})},
+  year = {2016},
+  journal = {arXiv},
+  eprint = {1606.08415},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.1606.08415}
+}
+
+% Training objectives, reference data and uncertainty.
+@article{PolakZhaoVuckovic2025,
+  author = {Polak, Elias and Zhao, Heng and Vuckovic, Stefan},
+  title = {Real-space machine learning of correlation density functionals},
+  journal = {Nat. Commun.},
+  volume = {16},
+  pages = {11306},
+  year = {2025},
+  doi = {10.1038/s41467-025-66450-z}
+}
+
+@article{KhannaZimmerman2026,
+  author = {Khanna, Vaibhav and Zimmerman, Paul M.},
+  title = {{XC100}: A Wavefunction-Derived Exchange-Correlation Energy Dataset for Atomic and
+           Molecular Species},
+  year = {2026},
+  journal = {arXiv},
+  eprint = {2609.22490},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.2609.22490}
+}
+
+@article{CuiReuterMargraf2025,
+  author = {Cui, Mengnan and Reuter, Karsten and Margraf, Johannes T.},
+  title = {Multi-fidelity transfer learning for quantum chemical data using a robust density
+           functional tight binding baseline},
+  journal = {Mach. Learn.: Sci. Technol.},
+  volume = {6},
+  pages = {015071},
+  year = {2025},
+  doi = {10.1088/2632-2153/adc222}
+}
+
+@article{SimSongVuckovicBurke2022,
+  author = {Sim, Eunji and Song, Suhwan and Vuckovic, Stefan and Burke, Kieron},
+  title = {Improving Results by Improving Densities: Density-Corrected Density Functional Theory},
+  journal = {J. Am. Chem. Soc.},
+  volume = {144},
+  pages = {6625--6639},
+  year = {2022},
+  doi = {10.1021/jacs.1c11506}
+}
+
+@article{SongVuckovicSimBurke2022,
+  author = {Song, Suhwan and Vuckovic, Stefan and Sim, Eunji and Burke, Kieron},
+  title = {Density-Corrected {DFT} Explained: Questions and Answers},
+  journal = {J. Chem. Theory Comput.},
+  volume = {18},
+  pages = {817--827},
+  year = {2022},
+  doi = {10.1021/acs.jctc.1c01045}
+}
+
+@article{WuYang2003,
+  author = {Wu, Qin and Yang, Weitao},
+  title = {A direct optimization method for calculating density functionals and
+           exchange-correlation potentials from electron densities},
+  journal = {J. Chem. Phys.},
+  volume = {118},
+  pages = {2498--2509},
+  year = {2003},
+  doi = {10.1063/1.1535422}
+}
+
+@inproceedings{Lakshminarayanan2017,
+  author = {Lakshminarayanan, Balaji and Pritzel, Alexander and Blundell, Charles},
+  title = {Simple and Scalable Predictive Uncertainty Estimation using Deep Ensembles},
+  booktitle = {Advances in Neural Information Processing Systems 30 (NeurIPS)},
+  year = {2017},
+  note = {Preprint: \texttt{arXiv:1612.01474}}
+}
+
+@article{Wellendorff2012,
+  author = {Wellendorff, Jess and Lundgaard, Keld T. and M{\o}gelh{\o}j, Andreas
+            and Petzold, Vivien and Landis, David D. and N{\o}rskov, Jens K. and Bligaard, Thomas
+            and Jacobsen, Karsten W.},
+  title = {Density functionals for surface science: Exchange-correlation model development with
+           {B}ayesian error estimation},
+  journal = {Phys. Rev. B},
+  volume = {85},
+  pages = {235149},
+  year = {2012},
+  doi = {10.1103/PhysRevB.85.235149}
+}
+
+@article{Hansen2025,
+  author = {Hansen, Teitur and Mortensen, Jens J{\o}rgen and Bligaard, Thomas
+            and Jacobsen, Karsten Wedel},
+  title = {Uncertainty-aware electronic density-functional distributions},
+  journal = {Phys. Rev. B},
+  volume = {112},
+  pages = {075412},
+  year = {2025},
+  doi = {10.1103/yhly-wxhv}
+}
+
+@inproceedings{Jin2025,
+  author = {Jin, Sizhuo and Chen, Shuo and Qian, Jianjun and Tai, Ying and Li, Jun},
+  title = {Learning Generalized Residual Exchange-Correlation-Uncertain Functional for Density
+           Functional Theory},
+  booktitle = {Proceedings of the AAAI Conference on Artificial Intelligence},
+  volume = {39},
+  pages = {361--369},
+  year = {2025},
+  doi = {10.1609/aaai.v39i1.32014},
+  note = {Preprint: \texttt{arXiv:2412.18350}}
+}
+
+@article{Borlido2020,
+  author = {Borlido, Pedro and Schmidt, Jonathan and Huran, Ahmad W. and Tran, Fabien
+            and Marques, Miguel A. L. and Botti, Silvana},
+  title = {Exchange-correlation functionals for band gaps of solids: benchmark,
+           reparametrization and machine learning},
+  journal = {npj Comput. Mater.},
+  volume = {6},
+  pages = {96},
+  year = {2020},
+  doi = {10.1038/s41524-020-00360-0}
+}
+
+% Reviews, exact constraints, the functionals compared against, and the physics of the descriptors.
+@article{AkashiSogalBurke2025,
+  author = {Akashi, Ryosuke and Sogal, Mihira and Burke, Kieron},
+  title = {Can machines learn density functionals? {P}ast, present, and future of {ML} in {DFT}},
+  year = {2025},
+  journal = {arXiv},
+  eprint = {2503.01709},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.2503.01709}
+}
+
+@article{PedersonKalitaBurke2022,
+  author = {Pederson, Ryan and Kalita, Bhupalee and Burke, Kieron},
+  title = {Machine learning and density functional theory},
+  journal = {Nat. Rev. Phys.},
+  volume = {4},
+  pages = {357--358},
+  year = {2022},
+  doi = {10.1038/s42254-022-00470-2}
+}
+
+@article{Kalita2021,
+  author = {Kalita, Bhupalee and Li, Li and McCarty, Ryan J. and Burke, Kieron},
+  title = {Learning to Approximate Density Functionals},
+  journal = {Acc. Chem. Res.},
+  volume = {54},
+  pages = {818--826},
+  year = {2021},
+  doi = {10.1021/acs.accounts.0c00742}
+}
+
+@article{KaplanLevyPerdew2023,
+  author = {Kaplan, Aaron D. and Levy, Mel and Perdew, John P.},
+  title = {The Predictive Power of Exact Constraints and Appropriate Norms in Density Functional
+           Theory},
+  journal = {Annu. Rev. Phys. Chem.},
+  volume = {74},
+  pages = {193--218},
+  year = {2023},
+  doi = {10.1146/annurev-physchem-062422-013259}
+}
+
+@article{PerdewRuzsinszkySunBurke2014,
+  author = {Perdew, John P. and Ruzsinszky, Adrienn and Sun, Jianwei and Burke, Kieron},
+  title = {Gedanken densities and exact constraints in density functional theory},
+  journal = {J. Chem. Phys.},
+  volume = {140},
+  pages = {18A533},
+  year = {2014},
+  doi = {10.1063/1.4870763}
+}
+
+@article{OliverPerdew1979,
+  author = {Oliver, G. L. and Perdew, J. P.},
+  title = {Spin-density gradient expansion for the kinetic energy},
+  journal = {Phys. Rev. A},
+  volume = {20},
+  pages = {397--403},
+  year = {1979},
+  doi = {10.1103/PhysRevA.20.397}
+}
+
+@article{PerdewZunger1981,
+  author = {Perdew, J. P. and Zunger, Alex},
+  title = {Self-interaction correction to density-functional approximations for many-electron
+           systems},
+  journal = {Phys. Rev. B},
+  volume = {23},
+  pages = {5048--5079},
+  year = {1981},
+  doi = {10.1103/PhysRevB.23.5048}
+}
+
+@article{MoriSanchezCohenYang2008,
+  author = {Mori-S\'{a}nchez, Paula and Cohen, Aron J. and Yang, Weitao},
+  title = {Localization and Delocalization Errors in Density Functional Theory and Implications
+           for Band-Gap Prediction},
+  journal = {Phys. Rev. Lett.},
+  volume = {100},
+  pages = {146401},
+  year = {2008},
+  doi = {10.1103/PhysRevLett.100.146401}
+}
+
+@article{CohenMoriSanchezYang2008,
+  author = {Cohen, Aron J. and Mori-S\'{a}nchez, Paula and Yang, Weitao},
+  title = {Insights into Current Limitations of Density Functional Theory},
+  journal = {Science},
+  volume = {321},
+  pages = {792--794},
+  year = {2008},
+  doi = {10.1126/science.1158722}
+}
+
+@article{Furness2020,
+  author = {Furness, James W. and Kaplan, Aaron D. and Ning, Jinliang and Perdew, John P.
+            and Sun, Jianwei},
+  title = {Accurate and Numerically Efficient {r2SCAN} Meta-Generalized Gradient Approximation},
+  journal = {J. Phys. Chem. Lett.},
+  volume = {11},
+  pages = {8208--8215},
+  year = {2020},
+  doi = {10.1021/acs.jpclett.0c02405}
+}
+
+@article{MardirossianHeadGordon2016,
+  author = {Mardirossian, Narbe and Head-Gordon, Martin},
+  title = {$\omega${B97M-V}: A combinatorially optimized, range-separated hybrid, meta-{GGA}
+           density functional with {VV10} nonlocal correlation},
+  journal = {J. Chem. Phys.},
+  volume = {144},
+  pages = {214110},
+  year = {2016},
+  doi = {10.1063/1.4952647}
+}
+
+@article{MardirossianHeadGordon2017,
+  author = {Mardirossian, Narbe and Head-Gordon, Martin},
+  title = {Thirty years of density functional theory in computational chemistry: an overview and
+           extensive assessment of 200 density functionals},
+  journal = {Mol. Phys.},
+  volume = {115},
+  pages = {2315--2372},
+  year = {2017},
+  doi = {10.1080/00268976.2017.1333644}
+}
+
+@article{VydrovVanVoorhis2010,
+  author = {Vydrov, Oleg A. and Van Voorhis, Troy},
+  title = {Nonlocal van der {W}aals density functional: The simpler the better},
+  journal = {J. Chem. Phys.},
+  volume = {133},
+  pages = {244103},
+  year = {2010},
+  doi = {10.1063/1.3521275}
+}
+
+@article{Caldeweyher2019,
+  author = {Caldeweyher, Eike and Ehlert, Sebastian and Hansen, Andreas and Neugebauer, Hagen
+            and Spicher, Sebastian and Bannwarth, Christoph and Grimme, Stefan},
+  title = {A generally applicable atomic-charge dependent {L}ondon dispersion correction},
+  journal = {J. Chem. Phys.},
+  volume = {150},
+  pages = {154122},
+  year = {2019},
+  doi = {10.1063/1.5090222}
+}
+
+@article{Kato1957,
+  author = {Kato, Tosio},
+  title = {On the eigenfunctions of many-particle systems in quantum mechanics},
+  journal = {Commun. Pure Appl. Math.},
+  volume = {10},
+  pages = {151--177},
+  year = {1957},
+  doi = {10.1002/cpa.3160100201}
+}
+
+@article{Steiner1963,
+  author = {Steiner, Erich},
+  title = {Charge Densities in Atoms},
+  journal = {J. Chem. Phys.},
+  volume = {39},
+  pages = {2365--2366},
+  year = {1963},
+  doi = {10.1063/1.1701443}
+}
+
+% Benchmark sets, reference data and software.
+@article{GouldVuckovic2025,
+  author = {Gould, Tim and Vuckovic, Stefan},
+  title = {``{S}lim'' Benchmark Sets for Faster Method Development},
+  journal = {J. Chem. Theory Comput.},
+  volume = {21},
+  pages = {6517--6527},
+  year = {2025},
+  doi = {10.1021/acs.jctc.5c00512}
+}
+
+@article{Gould2018,
+  author = {Gould, Tim},
+  title = {`{D}iet {GMTKN55}' offers accelerated benchmarking through a representative subset
+           approach},
+  journal = {Phys. Chem. Chem. Phys.},
+  volume = {20},
+  pages = {27735--27739},
+  year = {2018},
+  doi = {10.1039/C8CP05554H}
+}
+
+@article{KartonSylvetskyMartin2017,
+  author = {Karton, Amir and Sylvetsky, Nitai and Martin, Jan M. L.},
+  title = {{W4-17}: A diverse and high-confidence dataset of atomization energies for
+           benchmarking high-level electronic structure methods},
+  journal = {J. Comput. Chem.},
+  volume = {38},
+  pages = {2063--2075},
+  year = {2017},
+  doi = {10.1002/jcc.24854}
+}
+
+@article{MorgantePeverati2019,
+  author = {Morgante, Pierpaolo and Peverati, Roberto},
+  title = {{ACCDB}: A collection of chemistry databases for broad computational purposes},
+  journal = {J. Comput. Chem.},
+  volume = {40},
+  pages = {839--848},
+  year = {2019},
+  doi = {10.1002/jcc.25761}
+}
+
+@article{HaunschildKlopper2012,
+  author = {Haunschild, Robin and Klopper, Wim},
+  title = {New accurate reference energies for the {G2/97} test set},
+  journal = {J. Chem. Phys.},
+  volume = {136},
+  pages = {164102},
+  year = {2012},
+  doi = {10.1063/1.4704796}
+}
+
+@article{HaitHeadGordon2018,
+  author = {Hait, Diptarka and Head-Gordon, Martin},
+  title = {How Accurate Is Density Functional Theory at Predicting Dipole Moments? {A}n Assessment
+           Using a New Database of 200 Benchmark Values},
+  journal = {J. Chem. Theory Comput.},
+  volume = {14},
+  pages = {1969--1981},
+  year = {2018},
+  doi = {10.1021/acs.jctc.7b01252}
+}
+
+@article{WeigendAhlrichs2005,
+  author = {Weigend, Florian and Ahlrichs, Reinhart},
+  title = {Balanced basis sets of split valence, triple zeta valence and quadruple zeta valence
+           quality for {H} to {Rn}: Design and assessment of accuracy},
+  journal = {Phys. Chem. Chem. Phys.},
+  volume = {7},
+  pages = {3297},
+  year = {2005},
+  doi = {10.1039/b508541a}
+}
+
+@article{Sun2020PySCF,
+  author = {Sun, Qiming and Zhang, Xing and Banerjee, Samragni and Bao, Peng and Barbry, Marc
+            and Blunt, Nick S. and Bogdanov, Nikolay A. and Booth, George H. and Chen, Jia
+            and Cui, Zhi-Hao and Eriksen, Janus J. and Gao, Yang and Guo, Sheng and Hermann, Jan
+            and Hermes, Matthew R. and Koh, Kevin and Koval, Peter and Lehtola, Susi
+            and Li, Zhendong and Liu, Junzi and Mardirossian, Narbe and McClain, James D.
+            and Motta, Mario and Mussard, Bastien and Pham, Hung Q. and Pulkin, Artem
+            and Purwanto, Wirawan and Robinson, Paul J. and Ronca, Enrico
+            and Sayfutyarova, Elvira R. and Scheurer, Maximilian and Schurkus, Henry F.
+            and Smith, James E. T. and Sun, Chong and Sun, Shi-Ning and Upadhyay, Shiv
+            and Wagner, Lucas K. and Wang, Xiao and White, Alec F. and Whitfield, James Daniel
+            and Williamson, Mark J. and Wouters, Sebastian and Yang, Jun and Yu, Jason M.
+            and Zhu, Tianyu and Berkelbach, Timothy C. and Sharma, Sandeep
+            and Sokolov, Alexander Yu. and Chan, Garnet Kin-Lic},
+  title = {Recent developments in the {PySCF} program package},
+  journal = {J. Chem. Phys.},
+  volume = {153},
+  pages = {024109},
+  year = {2020},
+  doi = {10.1063/5.0006074}
+}
+
+@article{ZhangChan2022,
+  author = {Zhang, Xing and Chan, Garnet Kin-Lic},
+  title = {Differentiable quantum chemistry with {PySCF} for molecules and materials at the
+           mean-field level and beyond},
+  journal = {J. Chem. Phys.},
+  volume = {157},
+  pages = {204801},
+  year = {2022},
+  doi = {10.1063/5.0118200}
+}
+
+@article{Lehtola2018,
+  author = {Lehtola, Susi and Steigemann, Conrad and Oliveira, Micael J. T.
+            and Marques, Miguel A. L.},
+  title = {Recent developments in libxc --- A comprehensive library of functionals for density
+           functional theory},
+  journal = {SoftwareX},
+  volume = {7},
+  pages = {1--5},
+  year = {2018},
+  doi = {10.1016/j.softx.2017.11.002}
+}
+
+@article{KidgerGarcia2021,
+  author = {Kidger, Patrick and Garcia, Cristian},
+  title = {Equinox: neural networks in {JAX} via callable {PyTrees} and filtered transformations},
+  year = {2021},
+  journal = {arXiv},
+  eprint = {2111.00254},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.2111.00254}
+}
+
+@article{KingmaBa2014,
+  author = {Kingma, Diederik P. and Ba, Jimmy},
+  title = {Adam: A Method for Stochastic Optimization},
+  year = {2014},
+  journal = {arXiv},
+  eprint = {1412.6980},
+  archivePrefix = {arXiv},
+  doi = {10.48550/arXiv.1412.6980}
+}
+
+@misc{Bradbury2018JAX,
+  author = {Bradbury, James and Frostig, Roy and Hawkins, Peter and Johnson, Matthew James
+            and Katariya, Yash and Leary, Chris and Maclaurin, Dougal and Necula, George
+            and Paszke, Adam and Vander{P}las, Jake and Wanderman-{M}ilne, Skye and Zhang, Qiao},
+  title = {{JAX}: composable transformations of {P}ython+{N}um{P}y programs},
+  howpublished = {\texttt{http://github.com/jax-ml/jax}, version 0.10.2},
+  year = {2018}
 }
