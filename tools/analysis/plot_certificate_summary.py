@@ -22,6 +22,21 @@ so a certificate that fails on its atomization energies alone has a hatched
 bar under the atom gate. A certificate with no finite free-atom value draws
 no bar there and is noted with its verdict.
 
+A third panel draws the potential record written beside the certificate
+(``fidelity_vxc.json``, ``cluster.fidelity.evaluate_potential``): the largest
+over the oracle systems of the action of the clone's potential minus the
+parent's on an occupied orbital of the reference density, in mHa, at the same
+x position and in the same color as the certificate's bars, hatched by the
+energy verdict (the record gates nothing). The panel is drawn when at least
+one certificate of the figure carries a record; a figure of certificates
+from before the record keeps the two energy panels. Where the panel is
+drawn, a certificate with no potential record beside it is noted ``no
+potential record``; a record whose checkpoint digests differ from the
+certificate's belongs to another fit and is noted ``potential record of
+another checkpoint``. The CSV carries the record's largest potential
+difference, largest occupied-eigenvalue shift and largest one-step drift,
+empty where no record exists.
+
 Statistics are recomputed here from ``per_atomization`` (rows with a null
 ``dAE_kcalmol`` skipped), so certificates written before the summary carried
 ``mean_dAE_kcalmol`` / ``rmse_dAE_kcalmol`` / ``species_over_1_kcalmol``
@@ -86,8 +101,18 @@ def _display_order(stored_keys):
 # pair 24.7 protan / 33.6 normal for the first two slots. Note the METRIC:
 # under CIEDE2000 with the Vienot 1999 protan model the same pair measures
 # ~48.5 normal / ~57.3 protan -- different formulations, both comfortably
-# above their guidelines; any quoted number must name its metric.
-_LABEL_COLORS = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
+# above their guidelines; any quoted number must name its metric. The second
+# four (brown, pink, grey, dark grey) extend the palette to eight labels, a
+# figure of several pretraining rounds beside their predecessors; they were
+# chosen from a candidate list by the smallest pairwise CIEDE2000 (Sharma, Wu
+# and Dalal 2005) over every pair under normal vision and under the Vienot
+# 1999 protan and deutan simulations: the eight colors' closest pair
+# measures 18.8 under normal vision (the two greys), 9.7 under protan (blue
+# against pink) and 9.4 under deutan (the first four's orange against
+# yellow, the palette's floor before and after the extension). More labels
+# than colors are refused; color follows the label and is never reused.
+_LABEL_COLORS = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                 "#8c564b", "#e377c2", "#7f7f7f", "#4d4d4d")
 
 # The per-species flag threshold the certificates record (kcal/mol; the
 # original per-species gate). Stated here only as a fallback for certificates
@@ -149,6 +174,48 @@ def _max_atom_mha(cert):
     return max(abs(v) for v in values)
 
 
+#: The keys of the checkpoint block a record is matched to its certificate
+#: by: the digests of the two networks, never the directory string, which
+#: another spelling of the same run directory (a symbolic link, a moved
+#: run) changes.
+_CHECKPOINT_DIGESTS = ("xnet_sha256", "cnet_sha256")
+
+
+def _potential_summary(certificate_path, certificate):
+    """``(values, note, present)`` of the potential record beside
+    ``certificate_path``: the three summary values the tool reads, each a
+    finite float or ``None``; a note for the panel where no measured value
+    of this checkpoint exists (the record absent or unreadable, a record
+    whose checkpoint digests differ from the certificate's, a record whose
+    every system failed), the values empty then; and whether a record of
+    this checkpoint exists at all, which decides whether the panel is drawn."""
+    path = os.path.join(os.path.dirname(certificate_path), "fidelity_vxc.json")
+    try:
+        with open(path) as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return {}, "no potential record", False
+    if not isinstance(record, dict):
+        return {}, "no potential record", False
+    recorded = record.get("checkpoint") or {}
+    stated = certificate.get("checkpoint") or {}
+    if any(recorded.get(key) != stated.get(key) for key in _CHECKPOINT_DIGESTS):
+        return {}, "potential record of another checkpoint", True
+    summary = record.get("summary") or {}
+    out = {}
+    for key in ("max_dV_occ_mHa", "max_deps_occ_mHa",
+                "max_dE_one_step_kcalmol"):
+        value = summary.get(key)
+        out[key] = (float(value) if isinstance(value, (int, float))
+                    and math.isfinite(float(value)) else None)
+    if all(value is None for value in out.values()):
+        n_failed = summary.get("n_failed")
+        n_systems = len(record.get("per_system") or [])
+        return {}, (f"potential record: {n_failed} of {n_systems} systems "
+                    "failed, none measured"), True
+    return out, None, True
+
+
 def collect_certificates(runs):
     """``[(label, arch, record)]`` for every certificate under ``runs``.
 
@@ -195,6 +262,8 @@ def collect_certificates(runs):
                      and r.get("dAE_kcalmol") is not None]
             tol = cert.get("tolerances") or {}
             summary = cert.get("summary") or {}
+            potential, potential_note, potential_present = _potential_summary(
+                path, cert)
             species = summary.get("species_over_1_kcalmol")
             if species is None:
                 species = [n for n, v in names if v > _SPECIES_FLAG_KCALMOL]
@@ -214,6 +283,14 @@ def collect_certificates(runs):
                 # records none)
                 "max_atom": _max_atom_mha(cert),
                 "tol_atom": tol.get("tol_atom"),
+                # the potential record beside the certificate: None without
+                # a measured value, and the panel's note then; whether a
+                # record of this checkpoint exists at all
+                "max_dV": potential.get("max_dV_occ_mHa"),
+                "max_deps": potential.get("max_deps_occ_mHa"),
+                "max_drift": potential.get("max_dE_one_step_kcalmol"),
+                "potential_note": potential_note,
+                "potential_present": potential_present,
             }))
     return out
 
@@ -228,13 +305,16 @@ def write_csv(records, path):
                     "mean_abs_dAE_kcalmol", "rmse_dAE_kcalmol",
                     "max_abs_dAE_kcalmol", "species_over_1_kcalmol",
                     "tol_AE", "tol_AE_aggregate", "tol_AE_max_backstop",
-                    "max_atom_mHa", "tol_atom"])
+                    "max_atom_mHa", "tol_atom",
+                    "max_dV_occ_mHa", "max_deps_occ_mHa",
+                    "max_dE_one_step_kcalmol"])
         for label, arch, r in records:
             w.writerow([label, display_name(arch), arch, r["verdict"], r["n"],
                         r["mean"], r["rmse"], r["max"],
                         ";".join(r["species_over"]),
                         r["tol_AE"], r["aggregate"], r["backstop"],
-                        r["max_atom"], r["tol_atom"]])
+                        r["max_atom"], r["tol_atom"],
+                        r["max_dV"], r["max_deps"], r["max_drift"]])
 
 
 def plot_certificate_summary(records, out_path):
@@ -247,12 +327,25 @@ def plot_certificate_summary(records, out_path):
     the y cap. The lower panel's entries carry the ``atom_`` prefix: its
     bars by (label, arch), the hatched ones, one gate line per distinct
     recorded ``tol_atom``, the records noted as carrying no free-atom value,
-    and its y cap.
+    and its y cap. The third panel's entries carry the ``vxc_`` prefix: its
+    bars (the record's largest potential difference, mHa) and its markers
+    (the largest occupied-level shift, mHa) by (label, arch), the notes of
+    the certificates drawn without a bar, and its y cap. ``vxc_panel``
+    states whether the panel was drawn at all: it is drawn when a potential
+    record exists beside at least one certificate of the figure; without
+    one the bars, markers and notes are empty and the cap is ``None``.
     """
     labels = []
     for label, _arch, _r in records:
         if label not in labels:
             labels.append(label)
+    # Colour follows the label: more labels than the palette holds would
+    # reuse a colour, so such a figure is refused rather than drawn.
+    if len(labels) > len(_LABEL_COLORS):
+        raise ValueError(
+            f"{len(labels)} labels for a palette of {len(_LABEL_COLORS)} "
+            "colours; colour follows the label, so a figure with more labels "
+            "than colours is not drawn")
     # the axis runs in the figures' display order of the SHOWN names (the
     # ticks are labelled with them), not in the sorted order of the
     # directory keys
@@ -290,14 +383,29 @@ def plot_certificate_summary(records, out_path):
     atom_values = [r["max_atom"] for _l, _a, r in records
                    if r["max_atom"] is not None]
     atom_cap = 1.25 * max(atom_values + atom_gates, default=1.0)
+    # The potential panel: no gate line (the record gates nothing); a range
+    # that covers every bar and every marker. It is drawn only where a record
+    # exists beside some certificate of the figure: a figure of certificates
+    # from before the record keeps the two energy panels instead of a panel
+    # of notes.
+    vxc_values = [v for _l, _a, r in records
+                  for v in (r["max_dV"], r["max_deps"]) if v is not None]
+    has_potential = any(r.get("potential_present") for _l, _a, r in records)
+    vxc_cap = (1.25 * max(vxc_values, default=1.0)) if has_potential else None
 
     n_labels = max(len(labels), 1)
     group_w = 0.8
     bar_w = group_w / n_labels
     fig_w = max(7.5, 1.05 * len(archs) * n_labels + 2.5)
-    fig, (ax, ax_atom) = plt.subplots(
-        2, 1, figsize=(fig_w, 8.2), sharex=True,
-        gridspec_kw={"height_ratios": [3, 2]})
+    if has_potential:
+        fig, (ax, ax_atom, ax_vxc) = plt.subplots(
+            3, 1, figsize=(fig_w, 10.6), sharex=True,
+            gridspec_kw={"height_ratios": [3, 2, 2]})
+    else:
+        fig, (ax, ax_atom) = plt.subplots(
+            2, 1, figsize=(fig_w, 8.2), sharex=True,
+            gridspec_kw={"height_ratios": [3, 2]})
+        ax_vxc = None
 
     # The render manifest is written beside each draw call and returned: the
     # gate lines and their rule text, FAIL hatching, clipped markers with
@@ -306,7 +414,9 @@ def plot_certificate_summary(records, out_path):
     manifest = {"out_path": out_path, "y_cap": y_cap, "gate_lines": [],
                 "hatched": [], "clipped": [], "colors": {}, "notes": {},
                 "atom_bars": {}, "atom_hatched": [], "atom_gate_lines": [],
-                "atom_notes": {}, "atom_y_cap": atom_cap}
+                "atom_notes": {}, "atom_y_cap": atom_cap,
+                "vxc_panel": has_potential, "vxc_bars": {}, "vxc_markers": {},
+                "vxc_notes": {}, "vxc_y_cap": vxc_cap}
 
     for li, label in enumerate(labels):
         color = _LABEL_COLORS[li % len(_LABEL_COLORS)]
@@ -335,6 +445,34 @@ def plot_certificate_summary(records, out_path):
                             hatch=hatch, edgecolor="white", linewidth=0.5,
                             zorder=3)
                 manifest["atom_bars"][(label, arch)] = r["max_atom"]
+            # The potential panel, where drawn: the record's largest potential
+            # difference as the bar, hatched by the energy verdict, and its
+            # largest occupied-level shift as the marker above it (a
+            # difference acting on the virtual space alone shows there and
+            # not in the bar); a note where no measured record of this
+            # checkpoint exists.
+            if ax_vxc is None:
+                pass
+            elif r["max_dV"] is None:
+                text = r.get("potential_note") or "no potential record"
+                ax_vxc.annotate(text, (x, 0.0), xytext=(0, 6),
+                                textcoords="offset points", ha="center",
+                                fontsize=7, color="#444444", zorder=5)
+                manifest["vxc_notes"][(label, arch)] = text
+            else:
+                ax_vxc.bar(x, r["max_dV"], width=0.92 * bar_w, color=color,
+                           hatch=hatch, edgecolor="white", linewidth=0.5,
+                           zorder=3)
+                manifest["vxc_bars"][(label, arch)] = r["max_dV"]
+                if r["max_deps"] is not None:
+                    ax_vxc.plot([x, x], [r["max_dV"], r["max_deps"]],
+                                color=color, linewidth=1.0, alpha=0.55,
+                                zorder=3)
+                    ax_vxc.plot([x], [r["max_deps"]], marker="D",
+                                markersize=5, color=color,
+                                markeredgecolor="white", markeredgewidth=0.5,
+                                zorder=4)
+                    manifest["vxc_markers"][(label, arch)] = r["max_deps"]
             if r["mean"] is None:
                 # A certificate with no usable atomization rows still shows:
                 # an unmarked gap would read as a clean absence.
@@ -418,17 +556,22 @@ def plot_certificate_summary(records, out_path):
                          ha="right", fontsize=8, color="#555555")
         manifest["atom_gate_lines"].append((value, text))
 
-    # The two panels share the architecture axis; the tick labels sit on the
-    # lower one.
-    ax_atom.set_xticks(range(len(archs)))
-    ax_atom.set_xticklabels([display_name(a) for a in archs], rotation=20,
-                            ha="right", fontsize=9)
+    # The panels share the architecture axis; the tick labels sit on the
+    # lowest one.
+    lowest = ax_atom if ax_vxc is None else ax_vxc
+    lowest.set_xticks(range(len(archs)))
+    lowest.set_xticklabels([display_name(a) for a in archs], rotation=20,
+                           ha="right", fontsize=9)
     ax.set_xlim(-0.6, len(archs) - 0.4)
     ax.set_ylim(0.0, y_cap)
     ax.set_ylabel("|dAE| vs parent (kcal/mol)")
     ax_atom.set_ylim(0.0, atom_cap)
     ax_atom.set_ylabel("max |dE_xc| over free atoms (mHa)")
-    for axis in (ax, ax_atom):
+    if ax_vxc is not None:
+        ax_vxc.set_ylim(0.0, vxc_cap)
+        ax_vxc.set_ylabel("max |dV_xc| on occupied orbitals (bar),\n"
+                          "max occupied-level shift (marker) (mHa)")
+    for axis in ((ax, ax_atom) if ax_vxc is None else (ax, ax_atom, ax_vxc)):
         axis.yaxis.grid(True, color="#dddddd", linewidth=0.7, zorder=0)
         axis.set_axisbelow(True)
         for spine in ("top", "right"):

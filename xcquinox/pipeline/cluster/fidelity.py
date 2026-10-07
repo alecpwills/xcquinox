@@ -40,7 +40,10 @@ checkpoint files measured and the installed code version go to
 ``<run_dir>/pretrain/<arch>/fidelity_certificate.json``. The pretrain
 worker, the train task, the preflight, the in-process model builder, the run
 validator, the cross-arm merge and the figure suite all read that file through
-:func:`certificate_status`, so the gate cannot drift between sites.
+:func:`certificate_status`, so the gate cannot drift between sites. Beside it,
+``fidelity_vxc.json`` records the clone's potential against the parent's and
+the one-step drift on the same systems (:func:`evaluate_potential`), gated by
+nothing: the summary tool reads it and nothing refuses on it.
 
 Invocation on a node::
 
@@ -89,6 +92,9 @@ from xcquinox.pipeline.cluster.materialize import (
 
 
 CERTIFICATE_FILENAME = "fidelity_certificate.json"
+#: The potential record written beside the certificate: the clone's potential
+#: against the parent's and the one-step drift, gated by nothing.
+POTENTIAL_FILENAME = "fidelity_vxc.json"
 VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
 
@@ -186,6 +192,26 @@ def read_certificate(pretrain_dir: str) -> dict | None:
     """The parsed certificate, or ``None`` when absent or unparseable."""
     try:
         with open(certificate_path_in(pretrain_dir)) as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def potential_path_in(pretrain_dir: str) -> str:
+    """The potential record beside the certificate of a pretrain directory."""
+    return os.path.join(pretrain_dir, POTENTIAL_FILENAME)
+
+
+def potential_path(run_dir: str, arch: str) -> str:
+    """The potential record of one architecture of a run."""
+    return potential_path_in(pretrain_checkpoint_dir(run_dir, arch))
+
+
+def read_potential(pretrain_dir: str) -> dict | None:
+    """The parsed potential record, or ``None`` when absent or unparseable."""
+    try:
+        with open(potential_path_in(pretrain_dir)) as f:
             payload = json.load(f)
     except (OSError, ValueError):
         return None
@@ -1109,6 +1135,266 @@ class ReferenceNotConverged(ValueError):
         self.cycles = cycles
 
 
+#: The keys of one potential measurement, in the order the record states them.
+POTENTIAL_KEYS = ("dV_occ_max_mHa", "dV_occ_rms_mHa", "deps_occ_max_mHa",
+                  "dD_one_step", "dE_one_step_kcalmol",
+                  "parent_dD_one_step", "parent_dE_one_step_kcalmol")
+
+
+def evaluate_potential(model, mol_data) -> dict:
+    """The clone's potential against the parent's, on one fixed-density record.
+
+    The record carries the parent's own AO-basis potential (``vxc_pbe``:
+    PySCF's effective potential of the reference SCF minus its Coulomb
+    matrix, per spin for an open shell), the core Hamiltonian the reference
+    ran under (orientation lock included), the Coulomb matrix, the overlap
+    and the occupations. The clone's potential is the matrix the
+    self-consistent solver would assemble at that density: the per-point
+    functional derivative (``oneshot.compute_vxc_nn`` on the total density
+    for a closed shell; ``oneshot._uks_spin_resolved_vxc`` for an open
+    shell, each exchange channel on its doubled density and the correlation
+    on the total density) plus, for a descriptor that depends on the density
+    matrix, the chain-rule term through the descriptor map
+    (``oneshot.feature_response_vxc``; three contractions on an open shell,
+    as ``solver_manual`` assembles them). Without that term the potential of
+    a meta-GGA clone misses the kinetic-energy-density part of its parent's
+    (57.7 mHa on H2O at sto-3g for the anchored SCAN parent, 1.0e-6 mHa with
+    it). The measures, none needing a second SCF, with dV = V_NN - V_parent
+    per spin and the orthonormal basis of S^-1/2:
+
+    * ``dV_occ_max_mHa``: the largest singular value of C_occ^T dV S^-1/2,
+      C_occ the occupied orbitals of the reference density: the largest
+      action of the potential difference on an occupied orbital, the
+      first-order bound on the shift of an occupied level and on the
+      coupling that moves the density out of the occupied space; the
+      maximum over spins. A potential difference acting on the virtual
+      space alone leaves it at the parent's floor and shows in the three
+      measures below.
+    * ``dV_occ_rms_mHa``: the root mean square over the occupied orbitals of
+      the same action, sqrt(Tr[D0 dV S^-1 dV] / N_spin); maximum over spins.
+    * ``deps_occ_max_mHa``: the Fock matrices h + J + V_NN and h + J +
+      V_parent at the parent density, diagonalized against S; the largest
+      absolute shift over the lowest n_occ generalized eigenvalues of each
+      spin, the levels the parent's own next step occupies. Where the
+      reference density is the aufbau state of the parent's Fock those are
+      its occupied levels and ``dV_occ_max_mHa`` bounds the shift to first
+      order; where it is not (the oracle set's spin-0 O2 and Si2, whose
+      lowest n_occ levels include one the reference leaves empty) the
+      shift of that level is bounded by nothing above.
+    * ``dD_one_step``: the aufbau density of the clone's Fock (one Fock build
+      from the parent density, no mixing, no regularization) minus the
+      aufbau density of the parent's own Fock from the same density, in
+      electrons: half the trace norm of S^1/2 (D1_NN - D1_par) S^1/2,
+      summed over the spins (the exchange of one doubly occupied orbital
+      against an empty one reads 2 at any basis; the AO-basis Frobenius
+      norm of the same exchange reads 3.3 at sto-3g and 1.8 at the
+      production basis and is not a count of anything).
+    * ``dE_one_step_kcalmol``: Tr[(D1_NN - D0) F_NN] - Tr[(D1_par - D0)
+      F_par], the Harris energy the clone's step gains beyond the parent's
+      own (each term equals that Fock's Harris energy at its D1 minus the
+      fixed-density energy, the record's ``E_non_xc`` being Tr[D0 h] +
+      1/2 Tr[D0 J] + E_nuc). The difference equals Tr[(D1_NN - D1_par)
+      F_NN] + Tr[(D1_par - D0) dV]: second order in dV where the reference
+      is the aufbau state of the parent's Fock (D1_par is then D0 to the
+      convergence residual), first order through the parent's own step
+      where it is not (O2 at the production basis reads -1.9e-3 kcal/mol
+      per mHa of ``dV_occ_max_mHa``, so the spin-0 O2 and Si2 carry the
+      largest relative drift of any clone while their references stand).
+    * ``parent_dD_one_step`` and ``parent_dE_one_step_kcalmol``: the
+      parent's own step, the electrons of D1_par - D0 counted as above and
+      Tr[(D1_par - D0) F_par]. A reference converged to its criterion reads
+      the convergence residual (1.7e-5 electrons on the locked O atom at
+      sto-3g); a reference that is not an aufbau state of its own Fock
+      reads the occupation change (the oracle set's spin-0 O2: 2.00
+      electrons, the exchange of one doubly occupied orbital, at sto-3g and
+      at the production basis alike), which the two relative measures above
+      state beside the clone's own step.
+
+    The potential measures live on the occupied manifold because the full
+    orthonormalized norm weights the near-dependent diffuse functions of a
+    triple-zeta basis as much as the orbitals: for the parent behind the
+    model at 6-311++G(3df,2pd) the full spectral norm reads 27 mHa on the
+    beta channel of the Li atom (302 tail points where the beta density is
+    below 1e-6 of the total, where libxc's and the clipped-zeta correlation
+    potentials for that channel regularize the zeta -> 1 limit differently)
+    and 1.6e-2 mHa on Na, with occupied shifts below 1e-5 mHa. On the
+    occupied manifold the same parent reads at most 1.8e-3 mHa (Li, the
+    difference's action on the 1s beta orbital), 9.3e-4 mHa on the occupied
+    shift (the H atom, the clipped zeta's alpha residual), 1.2e-6 electrons
+    (Na2) and 2.6e-8 kcal/mol (O2) on the relative step over the 39 oracle
+    systems at that basis, where the parent's own step reads 2.00 electrons
+    on the spin-0 O2 and Si2. A channel without electrons contributes nothing: no occupied
+    orbital, no occupied level, a zero density before and after the step. A
+    constant c per electron added to the clone's energy density shifts V_NN
+    by c times the quadrature overlap: the first three measures read c to
+    the grid's overlap error, the two relative one-step measures stay at
+    zero.
+    """
+    import jax.numpy as jnp
+    import numpy as np
+    import scipy.linalg
+    from xcquinox.pipeline.descriptors import assemble_descriptor_features
+    from xcquinox.pipeline.oneshot import (
+        _uks_spin_resolved_vxc, compute_vxc_nn, feature_energy_derivative,
+        feature_response_vxc, has_dm_dependent_descriptor, uks_zeta)
+    from xcquinox.pipeline.solver import (
+        _contract_dm_to_grid_with_nabla, _reassemble_features,
+        make_uks_feature_fns)
+
+    unrestricted = bool(mol_data["is_unrestricted"])
+    s_matrix = np.asarray(mol_data["s_matrix"], dtype=float)
+    h_core = np.asarray(mol_data["h_core"], dtype=float)
+    j_matrix = np.asarray(mol_data["j_matrix"], dtype=float)
+    v_parent = np.asarray(mol_data["vxc_pbe"], dtype=float)
+    dm0 = np.asarray(mol_data["dm_pbe"], dtype=float)
+    ao_grid = mol_data["ao_grid"]
+    ao_deriv = mol_data["ao_grid_deriv"]
+    weights = mol_data["grid_weights"]
+    n_grid = int(np.asarray(weights).shape[0])
+    features = assemble_descriptor_features(model.descriptors, mol_data)
+    respond = has_dm_dependent_descriptor(model)
+    closure_kwargs = dict(
+        s_matrix=mol_data["s_matrix"], n_grid=n_grid,
+        cusp_features=mol_data.get("cusp_features"),
+        rung35_proj_ao=mol_data.get("rung35_proj_ao"),
+        rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"))
+    if unrestricted:
+        features_a = assemble_descriptor_features(model.descriptors, mol_data,
+                                                  spin_channel=0)
+        features_b = assemble_descriptor_features(model.descriptors, mol_data,
+                                                  spin_channel=1)
+        v_a, v_b = _uks_spin_resolved_vxc(model, mol_data, features_a,
+                                          features_b, features)
+        if respond:
+            features_a_of, features_b_of, features_tot_of = make_uks_feature_fns(
+                descriptors=model.descriptors, ao_deriv=ao_deriv,
+                **closure_kwargs)
+            dm_ab = jnp.asarray(mol_data["dm_pbe"])
+            ao_xyz = ao_deriv[1:4]
+            rho_a = jnp.einsum("ij,gi,gj->g", dm_ab[0], ao_grid, ao_grid)
+            rho_b = jnp.einsum("ij,gi,gj->g", dm_ab[1], ao_grid, ao_grid)
+            nabla_a = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_ab[0], ao_xyz, ao_grid)
+            nabla_b = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_ab[1], ao_xyz, ao_grid)
+            sigma_aa = jnp.einsum("gd,gd->g", nabla_a, nabla_a)
+            sigma_bb = jnp.einsum("gd,gd->g", nabla_b, nabla_b)
+            nabla_tot = nabla_a + nabla_b
+            sigma_tot = jnp.einsum("gd,gd->g", nabla_tot, nabla_tot)
+            response = feature_response_vxc(
+                0.5 * feature_energy_derivative(
+                    model, 2.0 * rho_a, 4.0 * sigma_aa, features_a, part="x"),
+                weights, features_a_of, dm_ab)
+            response = response + feature_response_vxc(
+                0.5 * feature_energy_derivative(
+                    model, 2.0 * rho_b, 4.0 * sigma_bb, features_b, part="x"),
+                weights, features_b_of, dm_ab)
+            if model.cnet.use_spin_polarization:
+                dedf_c = feature_energy_derivative(
+                    model, rho_a + rho_b, sigma_tot, features, part="c",
+                    zeta=uks_zeta(rho_a, rho_b))
+            else:
+                dedf_c = feature_energy_derivative(
+                    model, rho_a + rho_b, sigma_tot, features, part="c")
+            response = response + feature_response_vxc(
+                dedf_c, weights, features_tot_of, dm_ab)
+            v_a = v_a + response[0]
+            v_b = v_b + response[1]
+        v_nn = np.stack([np.asarray(v_a, dtype=float),
+                         np.asarray(v_b, dtype=float)])
+        j_total = j_matrix[0] + j_matrix[1]
+        occupations = (int(mol_data["nocc_a"]), int(mol_data["nocc_b"]))
+        dm0_spins = dm0
+        fill = 1.0
+    else:
+        v_total = compute_vxc_nn(
+            model, mol_data["rho_grid"], mol_data["sigma_grid"], features,
+            ao_grid, weights, nabla_rho=mol_data["nabla_rho_grid"],
+            ao_grad=ao_deriv)
+        if respond:
+            def features_of(dm_live):
+                rho_d, _nabla_d, sigma_d = _contract_dm_to_grid_with_nabla(
+                    dm_live, ao_deriv)
+                return _reassemble_features(
+                    descriptors=model.descriptors, dm=dm_live,
+                    ao_grad=ao_deriv[1:4], rho=rho_d, sigma=sigma_d,
+                    **closure_kwargs)
+            dedf = feature_energy_derivative(
+                model, mol_data["rho_grid"], mol_data["sigma_grid"], features)
+            v_total = v_total + feature_response_vxc(
+                dedf, weights, features_of, jnp.asarray(mol_data["dm_pbe"]))
+        v_nn = np.asarray(v_total, dtype=float)[None]
+        v_parent = v_parent[None]
+        j_total = j_matrix
+        occupations = (int(mol_data["nocc"]),)
+        dm0_spins = dm0[None]
+        fill = 2.0
+
+    s_vals, s_vecs = np.linalg.eigh(s_matrix)
+    orthonormalizer = (s_vecs * s_vals ** -0.5) @ s_vecs.T
+    s_half = (s_vecs * s_vals ** 0.5) @ s_vecs.T
+    dv_max = dv_rms = deps = 0.0
+    dm1_nn, dm1_parent = [], []
+    drift_nn = drift_parent = 0.0
+    for spin, n_occ in enumerate(occupations):
+        if n_occ == 0:
+            # A channel without electrons: no occupied orbital to act on, no
+            # occupied level to shift, a zero density before and after the
+            # step of either Fock.
+            dm1_nn.append(np.zeros_like(dm0_spins[spin]))
+            dm1_parent.append(np.zeros_like(dm0_spins[spin]))
+            continue
+        # The occupied manifold of the reference density in the orthonormal
+        # basis: the eigenvectors of S^1/2 (D0 / fill) S^1/2 at eigenvalue 1.
+        occ_vals, occ_vecs = np.linalg.eigh(
+            s_half @ (dm0_spins[spin] / fill) @ s_half)
+        occupied_ref = occ_vecs[:, occ_vals > 0.5]
+        if occupied_ref.shape[1] != n_occ:
+            raise ValueError(
+                f"the reference density of spin {spin} holds "
+                f"{occupied_ref.shape[1]} orbital(s) at unit occupation, not "
+                f"the {n_occ} the record states")
+        delta_orth = (orthonormalizer @ (v_nn[spin] - v_parent[spin])
+                      @ orthonormalizer)
+        action = occupied_ref.T @ delta_orth
+        dv_max = max(dv_max, float(np.linalg.norm(action, ord=2)))
+        dv_rms = max(dv_rms, float(np.linalg.norm(action)) / math.sqrt(n_occ))
+        fock_nn = h_core + j_total + v_nn[spin]
+        fock_parent = h_core + j_total + v_parent[spin]
+        eps_nn, coeff_nn = scipy.linalg.eigh(fock_nn, s_matrix)
+        eps_parent, coeff_parent = scipy.linalg.eigh(fock_parent, s_matrix)
+        deps = max(deps, float(np.max(np.abs(eps_nn[:n_occ]
+                                             - eps_parent[:n_occ]))))
+        d1_nn = fill * coeff_nn[:, :n_occ] @ coeff_nn[:, :n_occ].T
+        d1_parent = (fill * coeff_parent[:, :n_occ]
+                     @ coeff_parent[:, :n_occ].T)
+        dm1_nn.append(d1_nn)
+        dm1_parent.append(d1_parent)
+        drift_nn += float(np.einsum("ij,ji->", d1_nn - dm0_spins[spin],
+                                    fock_nn))
+        drift_parent += float(np.einsum("ij,ji->", d1_parent - dm0_spins[spin],
+                                        fock_parent))
+    dm1_nn = np.stack(dm1_nn)
+    dm1_parent = np.stack(dm1_parent)
+
+    def electrons_moved(delta_spins):
+        # Half the trace norm of the orthonormalized difference, summed over
+        # the spins: the electrons a density change moves, independent of
+        # the basis (an orbital exchange reads its occupation).
+        return float(sum(
+            0.5 * np.abs(np.linalg.eigvalsh(s_half @ delta @ s_half)).sum()
+            for delta in delta_spins))
+
+    return {
+        "dV_occ_max_mHa": dv_max * HA_TO_MHA,
+        "dV_occ_rms_mHa": dv_rms * HA_TO_MHA,
+        "deps_occ_max_mHa": deps * HA_TO_MHA,
+        "dD_one_step": electrons_moved(dm1_nn - dm1_parent),
+        "dE_one_step_kcalmol": (drift_nn - drift_parent) * HA_TO_KCAL,
+        "parent_dD_one_step": electrons_moved(dm1_parent - dm0_spins),
+        "parent_dE_one_step_kcalmol": drift_parent * HA_TO_KCAL,
+        "feature_response_included": bool(respond),
+    }
+
+
 def evaluate_system(model, descriptors, mol_spec, *, parent: str,
                     auxbasis=None, orientation_lock_strength: float = 0.0
                     ) -> dict:
@@ -1188,6 +1474,12 @@ def evaluate_system(model, descriptors, mol_spec, *, parent: str,
     # and a third independent route to the same number.
     e_xc_parent_record = float(mol_data["E_xc_pbe"])
     n_grid = int(np.asarray(mol_data["grid_weights"]).shape[0])
+    # The potential record rides on the same record; a failure there is
+    # recorded under its own key and never touches the energy measurement.
+    try:
+        potential = evaluate_potential(model, mol_data)
+    except Exception as exc:  # noqa: BLE001 -- recorded, not raised
+        potential = {"error": f"{type(exc).__name__}: {exc}"}
     del mol_data
 
     return {
@@ -1207,6 +1499,7 @@ def evaluate_system(model, descriptors, mol_spec, *, parent: str,
         "parent_grid_diff_Ha": e_xc_parent - e_xc_parent_numint,
         "parent_record_diff_Ha": e_xc_parent - e_xc_parent_record,
         "dE_xc_mHa": (e_xc_nn - e_xc_parent) * HA_TO_MHA,
+        "potential": potential,
         "duration_s": time.time() - t0,
     }
 
@@ -1277,7 +1570,8 @@ def _write_certificate_payload(payload: dict, path: str) -> None:
 
 
 def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
-                         oracle_set=None, evaluate=None, log=None) -> dict:
+                         oracle_set=None, evaluate=None, log=None,
+                         write_certificate: bool = True) -> dict:
     """Certify one architecture and write its certificate; return the payload.
 
     ``oracle_set`` overrides :func:`build_oracle_set` (a short list for a
@@ -1285,6 +1579,15 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     the schema tests replace so no SCF runs); ``log`` is an optional callable
     given one progress line per system, so a node log shows the sweep moving
     through dozens of production-basis SCFs rather than falling silent.
+
+    The per-system records may carry a ``potential`` block
+    (:func:`evaluate_potential`); those blocks are lifted out of the energy
+    payload and written as the potential record beside the certificate
+    (:data:`POTENTIAL_FILENAME`), with ``enforced: false`` and no tolerance,
+    so the energy payload and its gate are what they were. With
+    ``write_certificate=False`` the certificate on disk is left untouched and
+    only the potential record is written (the ``--potential-only`` path of
+    :func:`main`, for a run already certified).
 
     The verdict is PASS only when every system was evaluated on a converged
     reference SCF, every recorded measurement is finite, the free-atom and
@@ -1428,6 +1731,9 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         data_mod.set_precompute_cache_enabled(cache_was_enabled)
         data_mod.clear_precompute_cache()
 
+    # The potential blocks leave the energy records here, before the energy
+    # payload is formed, so the certificate's schema is unchanged.
+    potentials = {r["name"]: r.pop("potential", None) for r in per_system}
     ok = {r["name"]: r for r in per_system if "error" not in r}
 
     per_atomization = []
@@ -1608,8 +1914,101 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "duration_s": time.time() - t0,
     }
-    _write_certificate_payload(payload, certificate_path(run_dir, arch_name))
+    if write_certificate:
+        _write_certificate_payload(payload, certificate_path(run_dir, arch_name))
+    potential_payload = _potential_payload(
+        payload, systems, per_system, potentials, t0)
+    sibling = potential_path(run_dir, arch_name)
+    if potential_payload is not None:
+        _write_certificate_payload(potential_payload, sibling)
+    elif os.path.exists(sibling):
+        # No system carried a potential block: a record of an earlier run
+        # would otherwise stand beside a certificate it does not belong to.
+        os.remove(sibling)
     return payload
+
+
+def _potential_payload(certificate, systems, per_system, potentials, t0):
+    """The potential record of one certificate run, or ``None`` when no
+    system carried a potential block (the energy-only evaluation seam).
+
+    One entry per system in the oracle order: the measures and ``is_atom``
+    for a measured system; ``error`` for a system whose energy evaluation or
+    whose potential assembly failed, or whose measurement is missing or not
+    finite. The summary holds the largest of each measure (the drift by
+    magnitude) with the system it sits on, the largest of the parent's own
+    one-step density change (a reference that is not an aufbau state of its
+    own Fock shows there), and the measured and failed counts. The record
+    gates nothing: ``enforced`` is false and both tolerances are null.
+    """
+    if all(block is None for block in potentials.values()):
+        return None
+    energy_errors = {r["name"]: r.get("error") for r in per_system}
+    entries = []
+    for mol_spec in systems:
+        name = mol_spec.name
+        block = potentials.get(name)
+        if block is None:
+            entries.append({"name": name,
+                            "error": energy_errors.get(name)
+                            or "no potential block was recorded"})
+            continue
+        if "error" in block:
+            entries.append({"name": name, "error": str(block["error"])})
+            continue
+        values = {key: block.get(key) for key in POTENTIAL_KEYS}
+        bad = [key for key, value in values.items()
+               if not isinstance(value, (int, float))
+               or not math.isfinite(float(value))]
+        if bad:
+            entries.append({
+                "name": name,
+                "error": "a potential measurement is missing or not finite "
+                         f"({', '.join(bad)})"})
+            continue
+        entry = {"name": name, "is_atom": is_atom_system(mol_spec)}
+        entry.update({key: float(value) for key, value in values.items()})
+        entry["feature_response_included"] = bool(
+            block.get("feature_response_included", False))
+        entries.append(entry)
+    measured = [e for e in entries if "error" not in e]
+
+    def _largest(key, magnitude=False):
+        if not measured:
+            return None, None
+        best = max(measured, key=lambda e: abs(e[key]) if magnitude else e[key])
+        return (abs(best[key]) if magnitude else best[key]), best["name"]
+
+    max_dv, at_dv = _largest("dV_occ_max_mHa")
+    max_deps, at_deps = _largest("deps_occ_max_mHa")
+    max_dd, at_dd = _largest("dD_one_step")
+    max_de, at_de = _largest("dE_one_step_kcalmol", magnitude=True)
+    max_parent_dd, at_parent_dd = _largest("parent_dD_one_step")
+    return {
+        "arch": certificate["arch"],
+        "parent": certificate["parent"],
+        "identity": certificate["identity"],
+        "checkpoint": certificate["checkpoint"],
+        "enforced": False,
+        "tolerances": {"tol_dV_occ_mHa": None, "tol_drift_kcalmol": None},
+        "per_system": entries,
+        "summary": {
+            "max_dV_occ_mHa": max_dv,
+            "max_dV_system": at_dv,
+            "max_deps_occ_mHa": max_deps,
+            "max_deps_system": at_deps,
+            "max_dD_one_step": max_dd,
+            "max_dD_system": at_dd,
+            "max_dE_one_step_kcalmol": max_de,
+            "max_dE_system": at_de,
+            "max_parent_dD_one_step": max_parent_dd,
+            "max_parent_dD_system": at_parent_dd,
+            "n_measured": len(measured),
+            "n_failed": len(entries) - len(measured),
+        },
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "duration_s": time.time() - t0,
+    }
 
 
 # The per-species flag threshold, in kcal/mol: the original per-species gate
@@ -1906,6 +2305,23 @@ def _log(arch, message):
     sys.stdout.flush()
 
 
+def potential_summary_line(record) -> str:
+    """One log line stating a potential record's summary, or its absence."""
+    if not isinstance(record, dict):
+        return ("potential record: none (no system carried a potential "
+                "measurement)")
+    summary = record.get("summary") or {}
+    return (f"potential record: max dV on the occupied orbitals="
+            f"{summary.get('max_dV_occ_mHa')} mHa "
+            f"({summary.get('max_dV_system')}), max occupied shift="
+            f"{summary.get('max_deps_occ_mHa')} mHa, max one-step |dE|="
+            f"{summary.get('max_dE_one_step_kcalmol')} kcal/mol, largest "
+            f"parent step={summary.get('max_parent_dD_one_step')} electrons "
+            f"({summary.get('max_parent_dD_system')}) over "
+            f"{summary.get('n_measured')} measured system(s), "
+            f"{summary.get('n_failed')} failed; no gate")
+
+
 def main(argv=None) -> int:
     """Certificate entrypoint. Returns 0 on PASS, non-zero otherwise."""
     _route_jax_env()
@@ -1915,6 +2331,12 @@ def main(argv=None) -> int:
                         help="Index into the sorted distinct-architecture "
                              "list (the same selector the pretrain array "
                              "uses).")
+    parser.add_argument("--potential-only", action="store_true",
+                        help="Write the potential record beside an existing "
+                             "certificate and leave the certificate as it "
+                             "is; the exit code is the recomputed energy "
+                             "verdict's, which the log states as not "
+                             "written.")
     args = parser.parse_args(argv)
     run_dir = os.path.abspath(args.run_dir)
 
@@ -1953,7 +2375,8 @@ def main(argv=None) -> int:
     try:
         payload = fidelity_certificate(
             cfg, run_dir, arch_name,
-            log=lambda message: _log(arch_name, message))
+            log=lambda message: _log(arch_name, message),
+            write_certificate=not args.potential_only)
     except Exception as exc:  # noqa: BLE001 -- the node log carries it
         _log(arch_name, f"ERROR: the certificate could not be computed: "
                         f"{type(exc).__name__}: {exc}")
@@ -1962,12 +2385,15 @@ def main(argv=None) -> int:
         return 1
     summary = payload["summary"]
     _log(arch_name,
-         f"verdict={payload['verdict']} "
+         f"verdict{' (recomputed, not written)' if args.potential_only else ''}"
+         f"={payload['verdict']} "
          f"max_atom={summary['max_atom_mHa']} mHa "
          f"max_dAE={summary['max_dAE_kcalmol']} kcal/mol over "
          f"{summary['n_systems']} system(s) "
          f"({summary['n_atoms']} atom(s), {summary['n_atomizations']} "
          f"atomization(s))")
+    _log(arch_name, potential_summary_line(
+        read_potential(pretrain_checkpoint_dir(run_dir, arch_name))))
     if payload["verdict"] != VERDICT_PASS:
         for reason in summary["failure_reasons"]:
             _log(arch_name, f"FAIL: {reason}")

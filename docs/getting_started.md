@@ -50,7 +50,11 @@ stage and submits the stages with SLURM dependencies:
    for the run's identity and leaves an existing file in place when its manifest matches.
 2. `pretrain`, an array with one task per distinct architecture, after `datagen`. Each task
    fits the exchange and correlation networks to the parent functional and writes the
-   fidelity certificate beside the checkpoint.
+   fidelity certificate beside the checkpoint, and with it the potential record
+   `fidelity_vxc.json`: the action of the clone's exchange-correlation potential minus the
+   parent's on the occupied orbitals of the same systems, and the electrons moved and the
+   energy change in one Fock build from the parent density beyond the parent's own, recorded
+   without a gate.
 3. `preflight`, a single job after the pretrain array: the compile smoke and the cold-start
    convergence census over the training species.
 4. `train`, an array with one task per cell, after both the pretrain array and the preflight.

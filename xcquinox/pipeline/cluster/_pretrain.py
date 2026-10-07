@@ -565,6 +565,8 @@ def main(argv=None) -> int:
     label = {fidelity.VERDICT_PASS: "PASSED",
              fidelity.VERDICT_FAIL: "FAILED"}.get(status, status)
     _log(arch_name, f"fidelity certificate {label}: {line}")
+    _log(arch_name, fidelity.potential_summary_line(
+        fidelity.read_potential(pretrain_checkpoint_dir(run_dir, arch_name))))
     if status != fidelity.VERDICT_PASS:
         for reason in summary.get("failure_reasons") or ():
             _log(arch_name, f"  reason: {reason}")

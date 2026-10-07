@@ -12,6 +12,7 @@ interface on O, H and H2O, so the whole path is shown to be an identity when the
 network is its parent and to report a known per-electron offset exactly.
 """
 import json
+import math
 import os
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import scipy.linalg
 
 from xcquinox.pipeline.cluster import fidelity as fid
 from xcquinox.pipeline.pyscf_determinism import pin_small_rho_cutoff
@@ -941,6 +943,543 @@ def test_certificate_measures_a_known_per_electron_offset(tmp_path,
     assert dae["H2O"] - dae0["H2O"] == pytest.approx(predicted_dae, abs=1e-7)
     assert abs(dae["H2O"]) < 1.0
     assert not any("tol_AE" in r for r in payload["summary"]["failure_reasons"])
+
+
+# ---------------------------------------------------------------------------
+# The potential record beside the certificate (fidelity.evaluate_potential)
+# ---------------------------------------------------------------------------
+
+#: The seven measures of one system, as ``evaluate_potential`` names them.
+_POTENTIAL_MEASURES = ("dV_occ_max_mHa", "dV_occ_rms_mHa", "deps_occ_max_mHa",
+                       "dD_one_step", "dE_one_step_kcalmol",
+                       "parent_dD_one_step", "parent_dE_one_step_kcalmol")
+
+#: Bound on the three potential measures (mHa) with the anchored parent
+#: behind the model, per parent, at sto-3g / grid 1. The full-space spectral
+#: residuals measured 8.4e-9 (PBE, H2O) and 1.05e-6 mHa (SCAN, H2O: the
+#: iso-orbital indicator's smoothing floor); the occupied-manifold measures
+#: are at most those. Without the feature-response term the SCAN comparison
+#: reads 59.8 (O) and 57.7 (H2O) mHa.
+_PARENT_POTENTIAL_BOUND_MHA = {"pbe": 1e-7, "scan": 1e-5}
+#: Bounds on the relative one-step measures (electrons; kcal/mol) for the
+#: parent behind the model at sto-3g, and on the recorded parent step against
+#: the same computation in the test.
+_RELATIVE_STEP_TOL = (1e-7, 1e-9)
+
+
+def _potential_record(model, parent, mol_spec, lock):
+    """One record of ``mol_spec`` on the density of ``parent`` through the
+    library's one construction path, with the model's descriptor keys."""
+    from xcquinox.pipeline.data import precompute_fixed_density_data
+    keys = tuple(sorted({k for d in model.descriptors
+                         for k in d.required_mol_keys}))
+    return precompute_fixed_density_data(
+        mol_spec, required_keys=keys, descriptors=model.descriptors,
+        orientation_lock_strength=lock, reference_xc=parent)
+
+
+def _potential_records(arch_name):
+    """``(model, parent, {name: record})``: the anchored ``arch_name`` and its
+    O-atom (degenerate, locked as the certificate locks it) and H2O records
+    on the parent's own density."""
+    from xcquinox.pipeline.tests.test_parent_anchor import _anchored_live_model
+    _arch, model = _anchored_live_model(arch_name, seed=0)
+    parent = fid.resolve_parent(arch_name)
+    specs = {ms.name: ms for ms in _parent_oracle_set()}
+    records = {
+        "atom_O": _potential_record(model, parent, specs["atom_O"],
+                                    fid.atom_orientation_lock_strength()),
+        "H2O": _potential_record(model, parent, specs["H2O"], 0.0),
+    }
+    return model, parent, records
+
+
+@pytest.fixture(scope="module")
+def pbe_potential_records():
+    return _potential_records("deep_3x16")
+
+
+@pytest.fixture(scope="module")
+def scan_potential_records():
+    return _potential_records("deep_mgga_3x16")
+
+
+def _spin_blocks(md):
+    """``(S, h, J_total, V_parent per spin, D0 per spin, occupations, fill)``
+    of a record; a closed shell is one spin block of fill 2."""
+    s = np.asarray(md["s_matrix"], dtype=float)
+    h = np.asarray(md["h_core"], dtype=float)
+    j = np.asarray(md["j_matrix"], dtype=float)
+    v = np.asarray(md["vxc_pbe"], dtype=float)
+    d = np.asarray(md["dm_pbe"], dtype=float)
+    if bool(md["is_unrestricted"]):
+        return (s, h, j[0] + j[1], v, d,
+                (int(md["nocc_a"]), int(md["nocc_b"])), 1.0)
+    return s, h, j, v[None], d[None], (int(md["nocc"]),), 2.0
+
+
+def _potential_closed_form(md, k_matrix):
+    """The seven measures of a model whose potential is ``V_parent + K`` on
+    both spins, from numpy and scipy alone: the action of K on the occupied
+    manifold of D0, the shift of the lowest n_occ levels, the aufbau step of
+    F_parent + K relative to that of F_parent, and the parent's own step.
+    With ``K = 0`` the relative measures vanish."""
+    s, h, j_total, v_parent, dm0, occ, fill = _spin_blocks(md)
+    w, u = np.linalg.eigh(s)
+    x, y = (u * w ** -0.5) @ u.T, (u * w ** 0.5) @ u.T
+    k_orth = x @ k_matrix @ x
+    out = dict.fromkeys(_POTENTIAL_MEASURES, 0.0)
+    dm1_k, dm1_p = [], []
+    drift_k = drift_p = 0.0
+    for spin, n_occ in enumerate(occ):
+        if n_occ == 0:
+            dm1_k.append(np.zeros_like(dm0[spin]))
+            dm1_p.append(np.zeros_like(dm0[spin]))
+            continue
+        vals, vecs = np.linalg.eigh(y @ (dm0[spin] / fill) @ y)
+        action = vecs[:, vals > 0.5].T @ k_orth
+        out["dV_occ_max_mHa"] = max(out["dV_occ_max_mHa"], float(
+            np.linalg.norm(action, ord=2)) * fid.HA_TO_MHA)
+        out["dV_occ_rms_mHa"] = max(out["dV_occ_rms_mHa"], float(
+            np.linalg.norm(action)) / math.sqrt(n_occ) * fid.HA_TO_MHA)
+        fock0 = h + j_total + v_parent[spin]
+        eps, coeff = scipy.linalg.eigh(fock0 + k_matrix, s)
+        eps0, coeff0 = scipy.linalg.eigh(fock0, s)
+        out["deps_occ_max_mHa"] = max(out["deps_occ_max_mHa"], float(
+            np.max(np.abs(eps[:n_occ] - eps0[:n_occ]))) * fid.HA_TO_MHA)
+        d_k = fill * coeff[:, :n_occ] @ coeff[:, :n_occ].T
+        d_p = fill * coeff0[:, :n_occ] @ coeff0[:, :n_occ].T
+        dm1_k.append(d_k)
+        dm1_p.append(d_p)
+        drift_k += float(np.einsum("ij,ji->", d_k - dm0[spin],
+                                   fock0 + k_matrix))
+        drift_p += float(np.einsum("ij,ji->", d_p - dm0[spin], fock0))
+    dm1_k, dm1_p = np.stack(dm1_k), np.stack(dm1_p)
+
+    def electrons(delta_spins):
+        # half the trace norm of the orthonormalized change, over the spins
+        return float(sum(0.5 * np.abs(np.linalg.eigvalsh(y @ d @ y)).sum()
+                         for d in delta_spins))
+
+    out["dD_one_step"] = electrons(dm1_k - dm1_p)
+    out["dE_one_step_kcalmol"] = (drift_k - drift_p) * fid.HA_TO_KCAL
+    out["parent_dD_one_step"] = electrons(dm1_p - dm0)
+    out["parent_dE_one_step_kcalmol"] = drift_p * fid.HA_TO_KCAL
+    return out
+
+
+def _quadrature_overlap_error(md):
+    """The spectral norm of S^-1/2 (S_q - S) S^-1/2 over the two quadrature
+    overlaps a constant shift of the energy density can add: every grid point
+    (the open-shell correlation path) and the points above the closed-shell
+    path's 1e-10 density floor."""
+    s = np.asarray(md["s_matrix"], dtype=float)
+    ao = np.asarray(md["ao_grid"], dtype=float)
+    w = np.asarray(md["grid_weights"], dtype=float)
+    rho = np.asarray(md["rho_grid"], dtype=float)
+    vals, u = np.linalg.eigh(s)
+    x = (u * vals ** -0.5) @ u.T
+    spectral = 0.0
+    for weights in (w, w * (rho > 1e-10)):
+        e = x @ (np.einsum("g,gi,gj->ij", weights, ao, ao) - s) @ x
+        spectral = max(spectral, float(np.max(np.abs(np.linalg.eigvalsh(e)))))
+    return spectral
+
+
+class _PerturbedParent(eqx.Module):
+    """The wrapped model plus ``g(rho)`` in its correlation energy density:
+    ``c rho`` (``kind="shift"``), ``c rho^2`` (``"rho2"``) or ``c rho^(1/3)``
+    (``"cbrt"``). Every route the energy and the potential read gains the
+    term (the combined and the correlation densities, batched and scalar), so
+    E_xc gains its integral and both spins' potentials the same matrix."""
+    inner: eqx.Module
+    c: float = eqx.field(static=True)
+    kind: str = eqx.field(static=True, default="shift")
+
+    @property
+    def descriptors(self):
+        return self.inner.descriptors
+
+    @property
+    def cnet(self):
+        return self.inner.cnet
+
+    def _g(self, rho):
+        if self.kind == "shift":
+            return self.c * rho
+        if self.kind == "rho2":
+            return self.c * rho * rho
+        return self.c * jnp.cbrt(rho)
+
+    def eval_exc(self, rho, sigma, features, zeta=0.0):
+        return self.inner.eval_exc(rho, sigma, features, zeta=zeta) + self._g(rho)
+
+    def eval_ex(self, rho, sigma, features):
+        return self.inner.eval_ex(rho, sigma, features)
+
+    def eval_ec(self, rho, sigma, features, zeta=0.0):
+        return self.inner.eval_ec(rho, sigma, features, zeta=zeta) + self._g(rho)
+
+    def eval_exc_scalar(self, rho, sigma, features, zeta=0.0):
+        return (self.inner.eval_exc_scalar(rho, sigma, features, zeta=zeta)
+                + self._g(rho))
+
+    def eval_ex_scalar(self, rho, sigma, features):
+        return self.inner.eval_ex_scalar(rho, sigma, features)
+
+    def eval_ec_scalar(self, rho, sigma, features, zeta=0.0):
+        return (self.inner.eval_ec_scalar(rho, sigma, features, zeta=zeta)
+                + self._g(rho))
+
+
+@pytest.mark.parametrize("parent", ["pbe", "scan"])
+def test_potential_record_is_round_off_when_the_model_is_the_parent(
+        parent, request):
+    """With the anchored parent behind the model the three potential measures
+    are round-off (``_PARENT_POTENTIAL_BOUND_MHA``), the two relative one-step
+    measures vanish, and the recorded parent step is the parent's own aufbau
+    step from the record's density: the reference SCF stops at its criterion,
+    so that step is 1.75e-5 electrons on the locked O atom and 3.5e-7 on H2O,
+    not zero. For the SCAN parent the potential carries the feature-response
+    term through the iso-orbital indicator, the matrix the self-consistent
+    solver assembles. On every record the rms never exceeds the largest
+    singular value, and on these references, aufbau states of the parent's
+    Fock, no occupied level moves by more than the largest action on an
+    occupied orbital, to first order."""
+    model, _parent, records = request.getfixturevalue(
+        f"{parent}_potential_records")
+    bound = _PARENT_POTENTIAL_BOUND_MHA[parent]
+    tol_dd, tol_de = _RELATIVE_STEP_TOL
+    for name, md in records.items():
+        got = fid.evaluate_potential(model, md)
+        label = (parent, name, {k: got.get(k) for k in _POTENTIAL_MEASURES})
+        assert all(math.isfinite(float(got[k]))
+                   for k in _POTENTIAL_MEASURES), label
+        for key in ("dV_occ_max_mHa", "dV_occ_rms_mHa", "deps_occ_max_mHa"):
+            assert 0.0 <= got[key] < bound, (key, label)
+        assert got["dV_occ_rms_mHa"] <= got["dV_occ_max_mHa"] + 1e-12, label
+        assert got["deps_occ_max_mHa"] <= got["dV_occ_max_mHa"] + 1e-10, label
+        assert abs(got["dD_one_step"]) < tol_dd, label
+        assert abs(got["dE_one_step_kcalmol"]) < tol_de, label
+        floor = _potential_closed_form(md, np.zeros_like(md["s_matrix"]))
+        assert got["parent_dD_one_step"] == pytest.approx(
+            floor["parent_dD_one_step"], abs=1e-9), (floor, label)
+        assert got["parent_dE_one_step_kcalmol"] == pytest.approx(
+            floor["parent_dE_one_step_kcalmol"], abs=1e-9), (floor, label)
+        assert got["feature_response_included"] is (parent == "scan")
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0], ids=["up", "down"])
+def test_potential_record_reads_a_constant_shift_per_electron(
+        pbe_potential_records, sign):
+    """The parent plus c = +-0.5 mHa per electron: E_xc moves by c times the
+    quadrature electron count (to 1e-12 Ha), and the three potential measures
+    read |c| within Weyl's bound, the parent's residual plus |c| times the
+    orthonormalized difference between the quadrature overlap the shift adds
+    and the analytic overlap the measures use (4.7e-9 on the O atom, 3.1e-5
+    on H2O at grid level 1). The negative sign pins the absolute value in the
+    occupied shift. The occupied space is not rotated beyond that overlap
+    term, so the relative one-step measures stay the parent's."""
+    from xcquinox.pipeline.oneshot import fixed_density_total_energy
+    model, _parent, records = pbe_potential_records
+    c_ha = sign * 0.5e-3
+    shifted = _PerturbedParent(inner=model, c=c_ha, kind="shift")
+    c_mha = abs(c_ha) * fid.HA_TO_MHA
+    for name, md in records.items():
+        n_e_grid = float(np.sum(np.asarray(md["grid_weights"])
+                                * np.asarray(md["rho_grid"])))
+        moved = (float(fixed_density_total_energy(shifted, md))
+                 - float(fixed_density_total_energy(model, md)))
+        assert moved == pytest.approx(c_ha * n_e_grid, abs=1e-12), name
+        base = fid.evaluate_potential(model, md)
+        got = fid.evaluate_potential(shifted, md)
+        slack = c_mha * _quadrature_overlap_error(md) + 1e-10
+        label = (name, sign, got, base)
+        for key in ("dV_occ_max_mHa", "dV_occ_rms_mHa", "deps_occ_max_mHa"):
+            assert abs(got[key] - c_mha) <= base[key] + slack, (key, label)
+        assert abs(got["dD_one_step"] - base["dD_one_step"]) <= 1e-7, label
+        assert abs(got["dE_one_step_kcalmol"]
+                   - base["dE_one_step_kcalmol"]) <= 1e-9, label
+
+
+def test_potential_record_reads_a_quadratic_term_in_closed_form(
+        pbe_potential_records):
+    """The parent plus k rho^2 (k = 1e-3) in the correlation adds
+    K = 2k sum_g w_g rho_g phi_i phi_j to both spins' potentials, and every
+    measure equals the closed form of a potential V_parent + K from numpy
+    alone (on the O atom 76.13 / 43.97 / 73.32 mHa for the largest action,
+    the rms and the occupied shift; on H2O a relative step of 9.19e-3
+    electrons, which pins D1 against a step formed from the parent's Fock).
+    The occupied-orbital selection is pinned by k rho^(1/3) on H2O, whose
+    largest virtual shift (12.0 mHa) is three times its largest occupied one
+    (3.98 mHa)."""
+    from xcquinox.pipeline.descriptors import assemble_descriptor_features
+    from xcquinox.pipeline.oneshot import compute_vxc_nn
+    model, _parent, records = pbe_potential_records
+    k = 1e-3
+    quadratic = _PerturbedParent(inner=model, c=k, kind="rho2")
+    expected_by_name = {}
+    for name, md in records.items():
+        ao = np.asarray(md["ao_grid"], dtype=float)
+        w = np.asarray(md["grid_weights"], dtype=float)
+        rho = np.asarray(md["rho_grid"], dtype=float)
+        k_matrix = np.einsum("g,gi,gj->ij", w * 2.0 * k * rho, ao, ao)
+        expected = expected_by_name[name] = _potential_closed_form(md, k_matrix)
+        got = fid.evaluate_potential(quadratic, md)
+        label = (name, {k_: got.get(k_) for k_ in _POTENTIAL_MEASURES}, expected)
+        for key in ("dV_occ_max_mHa", "dV_occ_rms_mHa", "deps_occ_max_mHa"):
+            assert got[key] == pytest.approx(expected[key], abs=1e-7), (
+                key, label)
+        for key in ("dD_one_step", "parent_dD_one_step",
+                    "dE_one_step_kcalmol", "parent_dE_one_step_kcalmol"):
+            assert got[key] == pytest.approx(expected[key], abs=1e-9), (
+                key, label)
+    assert expected_by_name["H2O"]["dD_one_step"] > 1e-3, expected_by_name
+
+    md = records["H2O"]
+    cube_root = _PerturbedParent(inner=model, c=k, kind="cbrt")
+    v_nn = np.asarray(compute_vxc_nn(
+        cube_root, md["rho_grid"], md["sigma_grid"],
+        assemble_descriptor_features(cube_root.descriptors, md),
+        md["ao_grid"], md["grid_weights"], nabla_rho=md["nabla_rho_grid"],
+        ao_grad=md["ao_grid_deriv"]), dtype=float)
+    s, h, j_total, v_parent, _dm0, (n_occ,), _fill = _spin_blocks(md)
+    shifts = np.abs(
+        scipy.linalg.eigh(h + j_total + v_nn, s, eigvals_only=True)
+        - scipy.linalg.eigh(h + j_total + v_parent[0], s, eigvals_only=True)
+    ) * fid.HA_TO_MHA
+    occupied, every = float(np.max(shifts[:n_occ])), float(np.max(shifts))
+    assert every > 2.0 * occupied, (occupied, every)
+    got = fid.evaluate_potential(cube_root, md)
+    assert got["deps_occ_max_mHa"] == pytest.approx(occupied, abs=1e-7), (
+        got, occupied, every)
+
+
+def test_potential_record_states_a_non_aufbau_reference_step_in_electrons(
+        pbe_potential_records):
+    """The oracle set carries O2 as a spin-0 closed shell, whose PBE reference
+    converges with an empty orbital below an occupied one; the parent's own
+    aufbau step from that density is the exchange of one doubly occupied
+    orbital, 2.00 electrons (half the trace norm of the orthonormalized
+    change, the same at any basis; the AO-basis Frobenius norm of that
+    exchange reads 3.34 here and counts nothing), not a convergence residual.
+    The record states it as the parent step while the relative measures of
+    the parent behind the model stay at round-off; a clone's relative drift
+    on such a reference is first order in its potential difference through
+    the parent's own step."""
+    from xcquinox.pipeline.config import MoleculeSpec
+    model, parent, _records = pbe_potential_records
+    o2 = MoleculeSpec(
+        name="O2", atom="O 0.0 0.0 0.603195; O 0.0 0.0 -0.603195",
+        basis="sto-3g", spin=0, atom_composition=(("O", 2),), grid_level=1)
+    md = _potential_record(model, parent, o2, 0.0)
+    got = fid.evaluate_potential(model, md)
+    floor = _potential_closed_form(md, np.zeros_like(md["s_matrix"]))
+    assert floor["parent_dD_one_step"] == pytest.approx(2.0, abs=1e-6), floor
+    assert got["parent_dD_one_step"] == pytest.approx(
+        floor["parent_dD_one_step"], abs=1e-9), got
+    assert got["parent_dE_one_step_kcalmol"] == pytest.approx(
+        floor["parent_dE_one_step_kcalmol"], abs=1e-9), got
+    for key in ("dV_occ_max_mHa", "dV_occ_rms_mHa", "deps_occ_max_mHa"):
+        assert 0.0 <= got[key] < _PARENT_POTENTIAL_BOUND_MHA["pbe"], (key, got)
+    assert abs(got["dD_one_step"]) < _RELATIVE_STEP_TOL[0], got
+    assert abs(got["dE_one_step_kcalmol"]) < _RELATIVE_STEP_TOL[1], got
+
+
+def test_potential_record_is_free_of_the_tail_artifact_at_the_production_basis(
+        pbe_potential_records):
+    """The Li atom at 6-311++G(3df,2pd) / grid 3: the beta density falls
+    below 1e-6 of the total at points above the assembly's 1e-10 density
+    floor, where libxc's beta correlation potential and the clipped-zeta one
+    of the polarized path regularize the zeta -> 1 limit differently. The
+    full orthonormalized spectral norm of that difference reads 27.4 mHa for
+    the parent behind the model (checked here against 1 mHa); on the occupied
+    manifold it is the difference's action on the 1s beta orbital, 1.83e-3
+    mHa, with the relative step at 2.67e-6 electrons and 1.1e-9 kcal/mol.
+    Bounds 1e-2 mHa, 1e-5 electrons, 1e-7 kcal/mol."""
+    from xcquinox.pipeline.config import MoleculeSpec
+    from xcquinox.pipeline.descriptors import assemble_descriptor_features
+    from xcquinox.pipeline.oneshot import _uks_spin_resolved_vxc
+    model, parent, _records = pbe_potential_records
+    li = MoleculeSpec(name="atom_Li", atom="Li 0.0 0.0 0.0",
+                      basis="6-311++G(3df,2pd)", spin=1,
+                      atom_composition=(("Li", 1),), grid_level=3)
+    md = _potential_record(model, parent, li, 0.0)
+    s, _h, _j, v_parent, _dm0, occ, _fill = _spin_blocks(md)
+    assert occ == (2, 1)
+    features = assemble_descriptor_features(model.descriptors, md)
+    features_a = assemble_descriptor_features(model.descriptors, md,
+                                              spin_channel=0)
+    features_b = assemble_descriptor_features(model.descriptors, md,
+                                              spin_channel=1)
+    _v_a, v_b = _uks_spin_resolved_vxc(model, md, features_a, features_b,
+                                       features)
+    vals, u = np.linalg.eigh(s)
+    x = (u * vals ** -0.5) @ u.T
+    full_beta = float(np.max(np.abs(np.linalg.eigvalsh(
+        x @ (np.asarray(v_b, dtype=float) - v_parent[1]) @ x)))) * fid.HA_TO_MHA
+    assert full_beta > 1.0, full_beta
+    got = fid.evaluate_potential(model, md)
+    for key in ("dV_occ_max_mHa", "dV_occ_rms_mHa", "deps_occ_max_mHa"):
+        assert 0.0 <= got[key] < 1e-2, (key, got, full_beta)
+    assert abs(got["dD_one_step"]) < 1e-5, (got, full_beta)
+    assert abs(got["dE_one_step_kcalmol"]) < 1e-7, got
+
+
+def test_evaluate_system_carries_a_measured_potential_block():
+    """``evaluate_system`` on a real record: the ``potential`` block is a
+    measured block with the seven keys, never an error block (the energy
+    certificate's tests replace the evaluation seam, so a failure of the
+    hook-in on every real record would reach no other test). The H atom has
+    no beta electron and that channel contributes nothing; its alpha channel
+    keeps the residual of the zeta clip of the polarized correlation path,
+    the source the energy certificate pins on the H atom alone (1.07e-3 mHa
+    on the occupied shift, bound 1e-2 mHa). H2 holds the parent bound."""
+    from xcquinox.pipeline.config import get_architecture
+    from xcquinox.pipeline.tests.test_parent_anchor import _anchored_live_model
+    (h_atom, h2) = _tiny_oracle_set()
+    model = _anchored_live_model("deep_3x16", seed=0)[1]
+    arch = get_architecture("deep_3x16")
+    bounds = {"atom_H": 1e-2, "H2": _PARENT_POTENTIAL_BOUND_MHA["pbe"]}
+    for mol_spec in (h_atom, h2):
+        rec = fid.evaluate_system(
+            model, arch.materialize_descriptors(), mol_spec, parent="pbe")
+        block = rec["potential"]
+        assert "error" not in block, (mol_spec.name, block)
+        assert all(math.isfinite(float(block[k]))
+                   for k in _POTENTIAL_MEASURES), block
+        assert block["feature_response_included"] is False, block
+        for key in ("dV_occ_max_mHa", "dV_occ_rms_mHa", "deps_occ_max_mHa"):
+            assert 0.0 <= block[key] < bounds[mol_spec.name], (
+                mol_spec.name, key, block)
+        assert abs(block["dD_one_step"]) < _RELATIVE_STEP_TOL[0], block
+        assert abs(block["dE_one_step_kcalmol"]) < _RELATIVE_STEP_TOL[1], block
+
+
+# The record's schema, the contract the certificate summary reads
+# (tools/analysis/plot_certificate_summary.py); the energy certificate has
+# the same kind of test (test_certificate_passes_within_tolerance_and_
+# writes_the_schema).
+
+_POTENTIAL_ENERGY = {"atom_H": 0.1, "atom_O": 0.2, "H2": 0.2, "H2O": 0.3,
+                     "OH": 0.25}
+#: One block per system; each maximum sits on a system of its own (dV on
+#: atom_O, the occupied shift and the parent step on H2O, dD on H2, |dE| on
+#: atom_H), the largest |dE| is the most negative drift, and OH failed.
+_POTENTIAL_BLOCKS = {
+    "atom_H": {"dV_occ_max_mHa": 0.010, "dV_occ_rms_mHa": 0.004,
+               "deps_occ_max_mHa": 0.006, "dD_one_step": 1.0e-4,
+               "dE_one_step_kcalmol": -0.0300,
+               "parent_dD_one_step": 1.0e-5,
+               "parent_dE_one_step_kcalmol": -1.0e-9},
+    "atom_O": {"dV_occ_max_mHa": 0.090, "dV_occ_rms_mHa": 0.030,
+               "deps_occ_max_mHa": 0.050, "dD_one_step": 2.0e-4,
+               "dE_one_step_kcalmol": -0.0010,
+               "parent_dD_one_step": 2.0e-5,
+               "parent_dE_one_step_kcalmol": -3.0e-9},
+    "H2": {"dV_occ_max_mHa": 0.020, "dV_occ_rms_mHa": 0.010,
+           "deps_occ_max_mHa": 0.015, "dD_one_step": 9.0e-4,
+           "dE_one_step_kcalmol": -0.0020,
+           "parent_dD_one_step": 3.0e-7,
+           "parent_dE_one_step_kcalmol": -1.0e-11},
+    "H2O": {"dV_occ_max_mHa": 0.080, "dV_occ_rms_mHa": 0.040,
+            "deps_occ_max_mHa": 0.070, "dD_one_step": 3.0e-4,
+            "dE_one_step_kcalmol": -0.0050,
+            "parent_dD_one_step": 1.85,
+            "parent_dE_one_step_kcalmol": -44.3},
+    "OH": {"error": "RuntimeError: the potential could not be assembled"},
+}
+
+
+def _potential_schema_oracle_set():
+    """atom_H, atom_O, H2, H2O and OH: the maxima and the failed evaluation
+    each on a system of their own; every molecule's atoms present, so the
+    energy certificate is a PASS."""
+    from xcquinox.pipeline.config import MoleculeSpec
+    parent = {ms.name: ms for ms in _parent_oracle_set()}
+    (h2,) = [ms for ms in _tiny_oracle_set() if ms.name == "H2"]
+    oh = MoleculeSpec(name="OH", atom="O 0.0 0.0 0.0; H 0.0 0.0 0.97",
+                      basis="sto-3g", spin=1,
+                      atom_composition=(("H", 1), ("O", 1)), grid_level=1)
+    return (parent["atom_H"], parent["atom_O"], h2, parent["H2O"], oh)
+
+
+def _evaluate_with_potential(energy, potential):
+    """``_fake_evaluate`` with the ``potential`` block ``evaluate_system``
+    stores on each record (a failure as ``{"error": ...}``)."""
+    plain = _fake_evaluate(energy)
+
+    def _evaluate(model, descriptors, mol_spec, *, parent, auxbasis=None,
+                  orientation_lock_strength=0.0):
+        rec = plain(model, descriptors, mol_spec, parent=parent,
+                    auxbasis=auxbasis,
+                    orientation_lock_strength=orientation_lock_strength)
+        rec["potential"] = dict(potential[mol_spec.name])
+        return rec
+    return _evaluate
+
+
+def test_the_potential_record_is_written_beside_the_certificate(tmp_path):
+    """With a ``potential`` block on every record the certificate writes the
+    potential record beside itself and an energy certificate identical to
+    the one a run without the blocks writes. The record carries the run's
+    arch, parent, identity and checkpoint digests, ``enforced: false`` with
+    two null tolerances, one entry per system in the oracle order (the
+    measures, or the error), and a summary of the maxima (the drift by
+    magnitude; the parent's own step too) with the system at each and the
+    measured and failed counts. Without a block on any record nothing is
+    written and a record left by an earlier run is removed."""
+    run_dir = str(tmp_path / "run")
+    pretrain_dir = _stub_checkpoint(run_dir)
+    cfg = _cfg()
+    systems = _potential_schema_oracle_set()
+    payload = fid.fidelity_certificate(
+        cfg, run_dir, "deep_3x16", oracle_set=systems,
+        evaluate=_evaluate_with_potential(_POTENTIAL_ENERGY,
+                                          _POTENTIAL_BLOCKS))
+    record = fid.read_potential(pretrain_dir)
+    assert record is not None
+    with open(fid.certificate_path(run_dir, "deep_3x16")) as f:
+        assert json.load(f) == payload
+    assert not any("potential" in r for r in payload["per_system"])
+    control_dir = str(tmp_path / "control")
+    control_pretrain = _stub_checkpoint(control_dir)
+    with open(os.path.join(control_pretrain, fid.POTENTIAL_FILENAME), "w") as f:
+        f.write("{}")
+    control = fid.fidelity_certificate(
+        cfg, control_dir, "deep_3x16", oracle_set=systems,
+        evaluate=_fake_evaluate(_POTENTIAL_ENERGY))
+    assert payload["per_system"] == control["per_system"]
+    assert fid.read_potential(control_pretrain) is None
+
+    assert (record["arch"], record["parent"]) == ("deep_3x16", "pbe")
+    assert record["identity"] == fid.run_identity(cfg)
+    assert record["checkpoint"] == payload["checkpoint"]
+    assert record["enforced"] is False
+    assert record["tolerances"] == {"tol_dV_occ_mHa": None,
+                                    "tol_drift_kcalmol": None}
+    assert [e["name"] for e in record["per_system"]] == [
+        ms.name for ms in systems]
+    by_name = {e["name"]: e for e in record["per_system"]}
+    for ms in systems:
+        entry, block = by_name[ms.name], _POTENTIAL_BLOCKS[ms.name]
+        if "error" in block:
+            assert block["error"] in entry["error"], entry
+            continue
+        assert entry["is_atom"] is fid.is_atom_system(ms), entry
+        assert {k: entry[k] for k in _POTENTIAL_MEASURES} == block, entry
+    summary = record["summary"]
+    assert (summary["max_dV_occ_mHa"], summary["max_dV_system"]) == (
+        0.090, "atom_O")
+    assert (summary["max_deps_occ_mHa"], summary["max_deps_system"]) == (
+        0.070, "H2O")
+    assert (summary["max_dD_one_step"], summary["max_dD_system"]) == (
+        9.0e-4, "H2")
+    assert (summary["max_dE_one_step_kcalmol"], summary["max_dE_system"]) == (
+        0.0300, "atom_H")
+    assert (summary["max_parent_dD_one_step"],
+            summary["max_parent_dD_system"]) == (1.85, "H2O")
+    assert (summary["n_measured"], summary["n_failed"]) == (4, 1)
 
 
 # ---------------------------------------------------------------------------

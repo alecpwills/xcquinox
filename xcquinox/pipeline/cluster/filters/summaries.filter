@@ -140,6 +140,10 @@
 # suite refuses to render an arch whose pulled run has no readable certificate,
 # so the default pull must carry it (small JSON beside the metadata).
 + /pretrain/*/fidelity_certificate.json
+# The potential record beside it (fidelity.POTENTIAL_FILENAME): the clone's
+# potential against the parent's and the one-step drift, read by the
+# certificate summary (small JSON).
++ /pretrain/*/fidelity_vxc.json
 + /pretrain/*/losses_*.npy
 # The pretrained networks themselves (2026-08-30), read by pretrain_fx_fc.py
 # and by any local rebuild of a certified model: the final pair at the top

@@ -322,7 +322,8 @@ def test_a_failure_on_the_free_atoms_is_drawn_against_its_gate(tmp_path,
     csv_path = tmp_path / "summary.csv"
     plot.write_csv(records, str(csv_path))
     header, cells = _csv_cells(csv_path)
-    assert header == _CSV_HEAD + ["max_atom_mHa", "tol_atom"]
+    assert header == _CSV_HEAD + ["max_atom_mHa", "tol_atom", "max_dV_occ_mHa",
+                                  "max_deps_occ_mHa", "max_dE_one_step_kcalmol"]
     for key, verdict, atom, max_dae in (
             (("v7", _ARCH), "PASS", 0.2, 0.35),
             (("S", _ARCH), "FAIL", _FAILED_ATOM_MHA, _FAILED_MAX_DAE)):
@@ -509,3 +510,145 @@ def test_each_recorded_atom_tolerance_draws_its_own_gate_line(tmp_path,
     _header, cells = _csv_cells(csv_path)
     assert _number(cells[("tight", _ARCH)]["tol_atom"]) == 0.5
     assert _number(cells[("loose", _ARCH)]["tol_atom"]) == 2.0
+
+
+@pytest.fixture
+def render_panels(monkeypatch):
+    """``render_panels(records, out_path)``: the manifest and the list of
+    panels ``plot_certificate_summary`` drew, two without a potential record
+    among the certificates and three with one, each as :func:`_drawn` reads
+    it; the figure is kept past the tool's own ``close`` as ``render`` keeps
+    it (the two fixtures patch the same ``close`` and are not combined in one
+    test)."""
+    close = plot.plt.close
+    figures = []
+    monkeypatch.setattr(plot.plt, "close", figures.append)
+
+    def _render(records, out_path):
+        manifest = plot.plot_certificate_summary(records, str(out_path))
+        return manifest, [_drawn(axis) for axis in figures[-1].axes]
+
+    yield _render
+    for figure in figures:
+        close(figure)
+
+
+def _write_potential_record(run_dir: str, *, max_dV: float, max_deps: float,
+                            max_drift: float, checkpoint=None) -> None:
+    """A potential record beside the certificate, in the schema the
+    certificate writes; its summary holds the three values the tool reads.
+    ``checkpoint`` other than ``None`` marks a record of another fit by its
+    network digests (the fixture's certificates carry no checkpoint block,
+    and the tool matches records by the digests alone)."""
+    payload = {
+        "arch": _ARCH, "parent": "pbe", "enforced": False,
+        "tolerances": {"tol_dV_occ_mHa": None, "tol_drift_kcalmol": None},
+        "per_system": [
+            {"name": "atom_O", "is_atom": True, "dV_occ_max_mHa": max_dV,
+             "dV_occ_rms_mHa": max_dV / 3, "deps_occ_max_mHa": max_deps,
+             "dD_one_step": 1e-4, "dE_one_step_kcalmol": -max_drift,
+             "parent_dD_one_step": 2e-5, "parent_dE_one_step_kcalmol": -3e-9}],
+        "summary": {"max_dV_occ_mHa": max_dV, "max_dV_system": "atom_O",
+                    "max_deps_occ_mHa": max_deps, "max_deps_system": "atom_O",
+                    "max_dD_one_step": 1e-4, "max_dD_system": "atom_O",
+                    "max_dE_one_step_kcalmol": max_drift,
+                    "max_dE_system": "atom_O",
+                    "max_parent_dD_one_step": 2e-5,
+                    "max_parent_dD_system": "atom_O",
+                    "n_measured": 1, "n_failed": 0},
+        "timestamp": "2026-10-06T00:00:00Z", "duration_s": 1.0}
+    if checkpoint is not None:
+        payload["checkpoint"] = checkpoint
+    with open(Path(run_dir) / "pretrain" / _ARCH / "fidelity_vxc.json", "w") as f:
+        json.dump(payload, f)
+
+
+def test_the_potential_panel_is_drawn_from_the_record(tmp_path, render_panels):
+    """A figure of certificates none of which carries a potential record keeps
+    the two energy panels (``vxc_panel`` False in the manifest). With a record
+    beside any certificate the third panel draws each certificate's largest
+    potential difference from the record beside it, at the x position and in
+    the color of that certificate's atomization bar, hatched by the energy
+    verdict, with a note where no record exists or the record belongs to
+    another checkpoint; the architecture ticks move to the lowest panel; the
+    records and the CSV carry the record's three summary values, empty where
+    absent. Each certificate's free-atom value (0.2, 1.685, 0.3, 0.1 mHa)
+    differs from its potential value (0.8, 2.5, none, none), so a panel
+    drawn from the atom values shows."""
+    runs = [
+        _gate_run(tmp_path, "v7", verdict="PASS",
+                  dAE={"H2O": 0.1, "NH3": -0.35},
+                  summary={"max_atom_mHa": 0.2, "max_dAE_kcalmol": 0.35}),
+        _gate_run(tmp_path, "S", verdict="FAIL",
+                  dAE={"AlCl3": _FAILED_MAX_DAE, "CH4": 0.1, "C2H2": -0.2},
+                  summary={"max_atom_mHa": _FAILED_ATOM_MHA,
+                           "max_dAE_kcalmol": _FAILED_MAX_DAE}),
+        _gate_run(tmp_path, "P", verdict="PASS",
+                  dAE={"H2O": 0.3, "NH3": 0.1},
+                  summary={"max_atom_mHa": 0.3, "max_dAE_kcalmol": 0.3}),
+        _gate_run(tmp_path, "A", verdict="PASS",
+                  dAE={"H2O": 0.2, "NH3": 0.2},
+                  summary={"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2}),
+    ]
+    manifest, panels = render_panels(plot.collect_certificates(runs),
+                                     tmp_path / "two.png")
+    assert manifest["vxc_panel"] is False and manifest["vxc_y_cap"] is None
+    assert manifest["vxc_bars"] == {} and manifest["vxc_notes"] == {}
+    assert len(panels) == 2
+    assert [name for name, _rotation in panels[1]["ticks"]] == [
+        plot.display_name(_ARCH)]
+    assert all(rotation == 20.0 for _name, rotation in panels[1]["ticks"])
+    assert panels[0]["ticks"] == []
+
+    _write_potential_record(runs[0][1], max_dV=0.8, max_deps=0.5,
+                            max_drift=0.012)
+    _write_potential_record(runs[1][1], max_dV=2.5, max_deps=1.5,
+                            max_drift=0.04)
+    _write_potential_record(runs[3][1], max_dV=9.0, max_deps=9.0,
+                            max_drift=9.0,
+                            checkpoint={"xnet_sha256": "0" * 64,
+                                        "cnet_sha256": "0" * 64})
+    records = plot.collect_certificates(runs)
+    by_key = {(label, arch): r for label, arch, r in records}
+    assert (by_key[("v7", _ARCH)]["max_dV"], by_key[("v7", _ARCH)]["max_deps"],
+            by_key[("v7", _ARCH)]["max_drift"]) == (0.8, 0.5, 0.012)
+    for label in ("P", "A"):
+        assert (by_key[(label, _ARCH)]["max_dV"],
+                by_key[(label, _ARCH)]["max_deps"],
+                by_key[(label, _ARCH)]["max_drift"]) == (None, None, None)
+
+    manifest, panels = render_panels(records, tmp_path / "summary.png")
+    assert len(panels) == 3
+    upper, lower, potential = panels
+    assert manifest["vxc_panel"] is True
+    assert manifest["vxc_bars"] == {("v7", _ARCH): 0.8, ("S", _ARCH): 2.5}
+    # the marker above each bar: the record's largest occupied-level shift
+    assert manifest["vxc_markers"] == {("v7", _ARCH): 0.5, ("S", _ARCH): 1.5}
+    assert manifest["vxc_notes"] == {
+        ("P", _ARCH): "no potential record",
+        ("A", _ARCH): "potential record of another checkpoint"}
+    assert manifest["vxc_y_cap"] >= 2.5
+    x_v7 = _bar_x(upper, by_key[("v7", _ARCH)]["mean"])
+    x_s = _bar_x(upper, by_key[("S", _ARCH)]["mean"])
+    assert potential["bars"] == {
+        x_v7: (0.8, upper["bars"][x_v7][1], False),
+        x_s: (2.5, upper["bars"][x_s][1], True)}
+    assert set(manifest["vxc_notes"].values()) <= set(potential["texts"])
+    assert potential["ylim"] == (0.0, manifest["vxc_y_cap"])
+    assert potential["xlim"] == upper["xlim"]
+    assert "occupied" in potential["ylabel"] and "mHa" in potential["ylabel"]
+    assert [name for name, _rotation in potential["ticks"]] == [
+        plot.display_name(_ARCH)]
+    assert all(rotation == 20.0 for _name, rotation in potential["ticks"])
+    assert lower["ticks"] == [] and upper["ticks"] == []
+
+    csv_path = tmp_path / "summary.csv"
+    plot.write_csv(records, str(csv_path))
+    _header, cells = _csv_cells(csv_path)
+    row = cells[("v7", _ARCH)]
+    assert (float(row["max_dV_occ_mHa"]), float(row["max_deps_occ_mHa"]),
+            float(row["max_dE_one_step_kcalmol"])) == (0.8, 0.5, 0.012)
+    for label in ("P", "A"):
+        row = cells[(label, _ARCH)]
+        assert (row["max_dV_occ_mHa"], row["max_deps_occ_mHa"],
+                row["max_dE_one_step_kcalmol"]) == ("", "", "")
