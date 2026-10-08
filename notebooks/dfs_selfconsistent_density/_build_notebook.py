@@ -251,8 +251,10 @@ print(f"integral rho_ref[{ex.name}] = {float((_z['rho_ref_grid'] * _z['grid_weig
 md(r"""
 ## 3. Pretrain to PBE
 
-The networks start from the default initialization of their final layer, so an untrained `F`
-sits near 1 (`F_x = F_c = 1` exactly multiplies `lda_x` + PW92, the uniform-gas limit). The DFS
+The GELU networks start from the default initialization of their final layer, so an untrained
+`F` sits near 1 (`F_x = F_c = 1` exactly multiplies `lda_x` + PW92, the uniform-gas limit); the
+sine network, `deep_sine_3x16`, starts from SIREN's initialization and further from 1, its sine
+hidden activations being of order one. The DFS
 recipe fits `F` to PBE first (`Fx = F_x^PBE/F_x^LDA - 1`). This runs one PBE fit per
 architecture and writes `xnet.eqx`/`cnet.eqx` used as the training warm-start.
 """)

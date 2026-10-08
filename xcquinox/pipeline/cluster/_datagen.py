@@ -127,7 +127,10 @@ def _log(msg: str) -> None:
 
 
 def _swept_architectures(cfg):
-    """The PRETRAINING architectures' objects, patched as ``spec_builder`` does.
+    """The PRETRAINING architectures' objects, patched with the run-level
+    polarization flag, the part of a run's configuration the data file's
+    identity depends on (``spec_builder`` applies the model block as well,
+    through ``config.apply_run_config``; nothing read here depends on it).
 
     The run-level ``use_polarized_correlation`` is applied to each arch before
     anything is read off it, so the polarization flag and the parent density

@@ -12,6 +12,7 @@ import os
 import pickle  # noqa: S403 -- only used for the trusted legacy local .pkl fallback below
 import tempfile
 import time
+from types import SimpleNamespace
 
 import equinox as eqx
 import jax
@@ -22,6 +23,8 @@ from equinox._filters import is_array_like
 
 import xcquinox.net
 
+from xcquinox.pipeline.checkpoint_class import (mlp_class_of, model_class_of_arch,
+                                                model_class_of_model, normalize_mlp)
 from xcquinox.pipeline.config import ArchitectureConfig, PretrainSpec
 from xcquinox.pipeline.networks import AlecGGA_XNet, AlecGGA_CNet, create_network_pair
 from xcquinox.utils import lda_x, pw92c_unpolarized_scalar
@@ -1561,6 +1564,18 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # --- Create network pair (or use the caller-supplied override) ---
     if networks is not None:
         xnet, cnet = networks
+        # The metadata describes spec.arch; a supplied pair must be of that
+        # class, or the record would state a class the leaves are not.
+        stated = model_class_of_arch(spec.arch)
+        supplied = model_class_of_model(SimpleNamespace(xnet=xnet, cnet=cnet))
+        if supplied != stated:
+            differing = sorted(k for k in stated if stated[k] != supplied.get(k))
+            raise ValueError(
+                "run_pretrain: the supplied networks are not of spec.arch's "
+                f"class; fields {differing}: the networks carry "
+                f"{[supplied.get(k) for k in differing]!r}, spec.arch states "
+                f"{[stated[k] for k in differing]!r}, and the metadata would "
+                "state a class the checkpoint is not")
     else:
         xnet, cnet = create_network_pair(spec.arch, seed=spec.seed)
 
@@ -2017,6 +2032,14 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "descriptor_coordinates": str(
             getattr(spec.arch, "descriptor_coordinates", "legacy")),
         "ueg_gate": str(getattr(spec.arch, "ueg_gate", "tanh2")),
+        # The gradient-expansion coefficient the exchange curvature is fixed
+        # at (resolved; None without the term), a static field like the gate.
+        "gea_mu": getattr(spec.arch, "resolved_gea_mu", None),
+        # The MLP front end (the activation, its frequency, the Fourier map
+        # and the digest of its matrices), six static fields of both networks
+        # the loaders compare; metadata that states none states the library
+        # MLP.
+        **mlp_class_of(spec.arch),
         # The descriptor log transform, recorded for the same reason: a static
         # field of both networks and of the cusp descriptor
         # (ArchitectureConfig.materialize_descriptors ->
@@ -2174,19 +2197,29 @@ def _metadata_preflight(
     want_anchor = bool(getattr(arch, "parent_anchor", False))
     want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
     want_gate = str(getattr(arch, "ueg_gate", "tanh2"))
+    want_gea = getattr(arch, "resolved_gea_mu", None)
+    want_mlp = mlp_class_of(arch)
     got_anchor = bool(md.get("parent_anchor", False))
     got_coords = str(md.get("descriptor_coordinates", "legacy"))
     got_gate = str(md.get("ueg_gate", "tanh2"))
+    # A metadata file that states no coefficient states networks without the
+    # term; the term changes no parameter shape either. A file that states
+    # no front end states the library MLP.
+    got_gea = md.get("gea_mu")
+    got_mlp = normalize_mlp(md)
     if (got_anchor != want_anchor or got_coords != want_coords
-            or got_gate != want_gate):
+            or got_gate != want_gate or got_gea != want_gea
+            or got_mlp != want_mlp):
         raise ValueError(
             f"legacy checkpoint metadata {metadata_path}: networks recorded "
             f"as parent_anchor={got_anchor}, descriptor_coordinates="
-            f"{got_coords!r}, ueg_gate={got_gate!r}, but the arch to load "
-            f"them into is parent_anchor={want_anchor}, "
-            f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}; "
-            "the two model classes share their parameter "
-            "shapes and cannot be told apart from the leaves"
+            f"{got_coords!r}, ueg_gate={got_gate!r}, gea_mu={got_gea!r}, "
+            f"mlp={got_mlp!r}, but the arch to load them into is "
+            f"parent_anchor={want_anchor}, descriptor_coordinates="
+            f"{want_coords!r}, ueg_gate={want_gate!r}, gea_mu={want_gea!r}, "
+            f"mlp={want_mlp!r}; the two model classes share their "
+            "parameter shapes (or differ in them through the front end) and "
+            "cannot be told apart from the leaves"
         )
     return md
 

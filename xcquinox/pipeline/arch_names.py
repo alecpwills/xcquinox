@@ -14,8 +14,9 @@ So ``deep_3x16`` is shown as itself, ``deep`` as ``deep_4x32``, ``deep_cusp_attn
 ``deep_cusp_attn_4x32``, ``medium`` as ``medium_3x16`` and ``shallow_attn`` as
 ``shallow_attn_2x8``. A key whose name already carries its size is its own shown name; the
 keys without a size suffix are reached through the aliases (:data:`ALIASES`). The
-initialization is no part of the name: no registry entry zeroes its final layer, and the
-parent anchor, which does, is a run protocol marked by a tag. Files written before this
+initialization is no part of the name: no registry entry zeroes its final layer (the sine
+network's SIREN initialization is a token of its key, ``sine``), and the parent anchor, which
+zeroes it, is a run protocol marked by a tag. Files written before this
 rule (the v7 documents and their CSVs) carry the earlier names, ``deep_3x16`` for
 ``medium`` and ``deep0_*`` for the entries that were then zero-initialized; their
 ``arch_stored`` column is the key.
@@ -163,6 +164,22 @@ def expanded_key(name: str) -> str:
     from xcquinox.pipeline.config import ArchitectureConfig
     if ArchitectureConfig.is_meta_gga(cfg):
         parts.append(_DESCRIPTOR_TEXT["metagga"])
+    coefficient = getattr(cfg, "gea_mu", None)
+    if coefficient is not None:
+        named = {"pbe": "PBE's gradient expansion (mu = beta pi^2/3)",
+                 "gea": "the exact gradient expansion (mu = 10/81)"}
+        parts.append("exchange curvature fixed at " + (
+            named.get(coefficient, f"the gradient expansion mu = {coefficient}")
+            if isinstance(coefficient, str)
+            else f"the gradient expansion mu = {float(coefficient):.6g}"))
+    m = int(getattr(cfg, "fourier_features", 0) or 0)
+    if m:
+        parts.append(f"Fourier features (m = {m}, sigma = "
+                     f"{float(getattr(cfg, 'fourier_scale', 1.0)):g} per "
+                     "coordinate range)")
+    if getattr(cfg, "activation", "gelu") == "sine":
+        parts.append("sine activation (SIREN, omega_0 = "
+                     f"{float(getattr(cfg, 'omega_0', 1.0)):g})")
     text = ", ".join(parts)
     return f"{text}; {_TAG_TEXT.get(tag, tag)}" if tag else text
 

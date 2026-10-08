@@ -77,7 +77,8 @@ E_xc = ∫ n(r) [ ε_x^LDA(n) · F_x + ε_c^PW92(n,ζ) · F_c ] dr
 At `F_x = F_c = 1` the functional is exactly LDA/PW92 (the uniform-gas limit). This is where the
 low-density **tail** is masked (`models.py:164-166`), and an **untrained** network starts near it
 from the default initialization of its final layer (no registry architecture zeroes that layer;
-`zero_init_final_layer` is set only by the parent anchor). Training moves `F` away from 1. *Why this form:*
+`zero_init_final_layer` is set only by the parent anchor; the sine network, `deep_sine_3x16`,
+starts from SIREN's initialization and further from 1). Training moves `F` away from 1. *Why this form:*
 factoring out the exact uniform-gas limit makes the network a bounded correction to a physically sound
 baseline rather than an unconstrained fit -- the standard construction of DFS [4] and of PBE-family GGAs
 [1].
@@ -227,7 +228,8 @@ configuration:
   `α = 0.3^step + 0.3` and a tail-weighted energy loss [4]; optimization is AdamW with a per-molecule
   (dpyscf-style) update loop.
 - **Pretrain to PBE first.** An untrained network starts near **LDA** (`F=1` exactly is the
-  uniform-gas limit; the default initialization puts an untrained `F` close to it), so each network
+  uniform-gas limit; the default initialization puts an untrained `F` close to it, SIREN's
+  initialization of the sine network less close), so each network
   is first fit to **PBE** enhancement factors (`F_x = F_x^PBE/F_x^LDA - 1`) as a warm-start before
   density training.
 

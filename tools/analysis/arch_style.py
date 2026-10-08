@@ -54,7 +54,13 @@ _STORED_ORDER: Tuple[str, ...] = (
     # the pairs test reproducibility at the registry names, not an ablation.
     # Attention twin after its base.
     "shallow", "shallow_attn", "medium", "medium_attn",
-    "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16", "deep_dm_3x16",
+    # the 3x16 family; deep_gea_3x16, deep_ff_3x16 and deep_sine_3x16 are the
+    # plain network with one change each (the gradient-expansion coefficient
+    # fixed by construction, the Fourier-feature map, the sine activation; no
+    # 4x32 sibling; the base colours are set below)
+    "deep_3x16", "deep_attn_3x16", "deep_gea_3x16", "deep_ff_3x16",
+    "deep_sine_3x16", "deep_cusp_3x16",
+    "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
     "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
@@ -74,7 +80,8 @@ _STORED_ORDER: Tuple[str, ...] = (
 # --------------------------------------------------------------------------- #
 _DISPLAY_ORDER: Tuple[str, ...] = (
     "shallow", "shallow_attn", "medium", "medium_attn",
-    "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16",
+    "deep_3x16", "deep_attn_3x16", "deep_gea_3x16", "deep_ff_3x16",
+    "deep_sine_3x16", "deep_cusp_3x16",
     "deep_geom_3x16", "deep_geom_attn_3x16",
     "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
@@ -134,6 +141,17 @@ ARCH_COLOR["medium_attn"] = "#c7e9c0"
 # tab10's pink); base-twin separation 13.57.
 ARCH_COLOR["deep_geom"] = "#d6616b"
 ARCH_COLOR["deep_geom_attn"] = "#e7969c"
+# The gradient-expansion architecture: tab20c's #fdd0a2, the colour no
+# architecture carries with the largest worst-case CIEDE2000 separation
+# (19.17, against deep_cusp_mgga's #bd9e39) when the GGA rung band and white
+# are in the compared set as well (23.63 and 20.35).
+ARCH_COLOR["deep_gea"] = "#fdd0a2"
+# The two MLP front ends, by the same criterion with the gradient-expansion
+# colour carried: tab20c's #9e9ac8 (worst case 16.52, against tab10's purple)
+# for the Fourier features and, with it carried too, tab20c's #9ecae1
+# (13.97, against tab10's cyan) for the sine network.
+ARCH_COLOR["deep_ff"] = "#9e9ac8"
+ARCH_COLOR["deep_sine"] = "#9ecae1"
 for _small in _STORED_ORDER[8:]:
     # Only width-twin names inherit by suffix-strip; a base name in the tail
     # (the size ladder) keeps its explicit entry above -- the unguarded strip

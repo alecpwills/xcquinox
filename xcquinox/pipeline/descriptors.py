@@ -116,6 +116,15 @@ class Descriptor(eqx.Module, abc.ABC):
     def describe(self) -> str:
         return f"{type(self).__name__}({self.registry_name}, n={self.n_features})"
 
+    @property
+    def column_ranges(self) -> tuple:
+        """The range of each feature column as the networks read it, the
+        scale a Fourier-feature map divides the column by; ``None`` for a
+        column that is not bounded by construction, which the map refuses.
+        The base class declares every column unbounded; a descriptor whose
+        columns are bounded states their ranges."""
+        return (None,) * self.n_features
+
     def compute_for_spin_channel(self, mol_data: dict,
                                  spin_channel: int) -> jnp.ndarray:
         """Features of the symmetric doubled density ``diag(P_sigma, P_sigma)``.
@@ -257,6 +266,11 @@ class CuspDescriptor(Descriptor):
     def compute(self, mol_data):
         return mol_data["cusp_features"]
 
+    @property
+    def column_ranges(self) -> tuple:
+        """Column 0 in [0, 1], column 1 in (-1, 1): ranges 1 and 2."""
+        return (1.0, 2.0)
+
 
 @register_descriptor("dm_statistics")
 class DMStatisticsDescriptor(Descriptor):
@@ -348,6 +362,11 @@ class DMRung35Descriptor(Descriptor):
     # then linear in the live DM.
     alpha: float = eqx.field(default=DEFAULT_RUNG35_ALPHA, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35_features",)
+
+    @property
+    def column_ranges(self) -> tuple:
+        """Both occupancies in [0, 1] by Bessel's inequality."""
+        return (1.0, 1.0)
     spin_mol_keys: ClassVar[tuple[str, ...]] = ("rung35_features_a",
                                                 "rung35_features_b")
     density_matrix_dependent: ClassVar[bool] = True
@@ -394,6 +413,11 @@ class DMRung35MultishellDescriptor(Descriptor):
     alphas: tuple = eqx.field(default=DEFAULT_RUNG35_MULTISHELL_ALPHAS,
                               static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35ms_features",)
+
+    @property
+    def column_ranges(self) -> tuple:
+        """Every occupancy in [0, 1] by Bessel's inequality."""
+        return (1.0,) * self.n_features
     spin_mol_keys: ClassVar[tuple[str, ...]] = ("rung35ms_features_a",
                                                 "rung35ms_features_b")
     density_matrix_dependent: ClassVar[bool] = True

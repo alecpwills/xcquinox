@@ -419,8 +419,8 @@ def pretrain_to_pbe(arch, *, data_dir, checkpoint_dir, basis, grid_level, atoms,
     """Pretrain ``arch``'s enhancement factors to PBE; return the checkpoint dir.
 
     The networks start from their default initialization (no registry
-    architecture zeroes its final layer); the DFS recipe warm-starts them to
-    PBE first. This
+    architecture zeroes its final layer; the sine network starts from
+    SIREN's); the DFS recipe warm-starts them to PBE first. This
     generates the shared per-atom PBE Fx/Fc target data (``ensure_pretrain_data``,
     idempotent/cached across archs) then runs the pretrain regression
     (``run_pretrain``), writing ``xnet.eqx``/``cnet.eqx`` under ``checkpoint_dir``

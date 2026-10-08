@@ -10,8 +10,9 @@ import jax.numpy as jnp
 import equinox as eqx
 import xcquinox.net as _xnet
 
+from xcquinox.pipeline import fourier_features as _ff
 from xcquinox.pipeline.config import (DESCRIPTOR_COORDINATES, UEG_GATES,
-                                      ArchitectureConfig)
+                                      ArchitectureConfig, check_front_end)
 from xcquinox.pipeline.constraints import Constraint, _compose_constraints
 from xcquinox.pipeline.metagga import (
     _ALPHA_MAX, _ALPHA_SMOOTHING_WIDTH, invert_smooth_positive_part)
@@ -33,6 +34,76 @@ def _dfs_log_transform(x):
     (dpyscfl net.py lines 198 and 204 with ``s_gam = 1``, line 40; Dick and
     Fernandez-Serra, PRB 104, L161109 (2021), eq. 9)."""
     return (1.0 - jnp.exp(-x * x)) * jnp.log(x + 1.0)
+
+
+# ---------------------------------------------------------------------------
+# The MLP front ends: a fixed Fourier-feature map (fourier_features.py holds
+# the matrix and its digest), or the sine activation
+# ---------------------------------------------------------------------------
+
+def _fourier_features(v, matrix):
+    """gamma(v) = [sin(2 pi B v), cos(2 pi B v)], 2m values for a row v."""
+    proj = 2.0 * jnp.pi * (jnp.asarray(matrix) @ v)
+    return jnp.concatenate([jnp.sin(proj), jnp.cos(proj)])
+
+
+def _extra_ranges(owner, n_extra_features, fourier_features,
+                  extra_feature_ranges):
+    """The descriptor columns' ranges the Fourier map divides by: one per
+    column, required when the map is on; unused without it."""
+    if not fourier_features:
+        return ()
+    if extra_feature_ranges is None:
+        if n_extra_features:
+            raise ValueError(
+                f"{owner}: fourier_features={fourier_features!r} with "
+                f"{n_extra_features} descriptor columns needs "
+                "extra_feature_ranges, one range per column "
+                "(Descriptor.column_ranges)")
+        return ()
+    ranges = tuple(extra_feature_ranges)
+    if len(ranges) != int(n_extra_features):
+        raise ValueError(
+            f"{owner}: extra_feature_ranges has {len(ranges)} entries for "
+            f"{n_extra_features} descriptor columns")
+    return ranges
+
+
+def _siren_initialized(net, omega_0, key):
+    """``net`` with SIREN's weight initialization (Sitzmann et al. 2020,
+    section 3.2 and the reference implementation): layer 0 uniform in
+    (-1/n_in, 1/n_in), every later layer, the final linear included, uniform
+    in (-sqrt(6/n_in)/omega_0, sqrt(6/n_in)/omega_0); the biases keep the
+    library's draw."""
+    layers = list(net.layers)
+    keys = jax.random.split(key, len(layers))
+    weights = []
+    for i, (layer, k) in enumerate(zip(layers, keys)):
+        n_in = layer.weight.shape[1]
+        bound = 1.0 / n_in if i == 0 else math.sqrt(6.0 / n_in) / omega_0
+        weights.append(jax.random.uniform(
+            k, layer.weight.shape, minval=-bound, maxval=bound,
+            dtype=layer.weight.dtype))
+    return eqx.tree_at(lambda m: [layer.weight for layer in m.layers], net,
+                       replace=weights)
+
+
+def _mlp_apply(net, attention, activation, omega_0, netinp):
+    """The MLP's output for one input row. The GELU path without attention is
+    the library's own call, byte for byte the networks before the front-end
+    fields; otherwise the layer loop, with the attention block after the
+    first activation: GELU, or SIREN's sin(omega_0 (W x + b)) at every sine
+    layer."""
+    if activation == "gelu" and attention is None:
+        return net(netinp)
+    x = netinp
+    layers = net.layers
+    for i, layer in enumerate(layers[:-1]):
+        x = layer(x)
+        x = jnp.sin(omega_0 * x) if activation == "sine" else jax.nn.gelu(x)
+        if i == 0 and attention is not None:
+            x = attention(x)
+    return layers[-1](x)
 
 
 #: Floor of the raw iso-orbital indicator fed to the DFS coordinate
@@ -237,6 +308,32 @@ class AlecGGA_XNet(eqx.Module):
     # clone's (1 - exp(-s^2)) ln(1 + s)). Static: part of the class record
     # beside a checkpoint, not of the leaf stream (config.UEG_GATES).
     ueg_gate: str = eqx.field(default="tanh2", static=True)
+    # The second-order gradient expansion fixed by construction: with a
+    # coefficient mu the gated output gains mu a/(a - 1) (1 - exp(-s^2)), a
+    # being the bounded map's limit, so that F_x = 1 + mu s^2 + O(s^3) for
+    # every network state (the map's slope at 0 is (a - 1)/a); None is a
+    # network without the term. Static, with no parameter of its own: the leaf
+    # stream is unchanged and the class record beside a checkpoint states it.
+    # Requires the x2 gate (the network's term is then O(s^3)), the GGA rung,
+    # no parent anchor (the anchored pre-image already carries the parent's
+    # curvature), the built-in map, and no exchange constraint that wraps the
+    # forward (ueg_limit zeroes the curvature; lieb_oxford scales it by the
+    # slope of a second map).
+    gea_mu: float | None = eqx.field(default=None, static=True)
+    # The MLP's front end (config.ArchitectureConfig states the fields):
+    # ``activation`` "gelu" (the library MLP) or "sine" (SIREN: sin(omega_0
+    # (W x + b)) at every hidden layer, SIREN's initialization);
+    # ``fourier_features`` m > 0 feeds the MLP [sin(2 pi B v), cos(2 pi B v)]
+    # of its input row v in place of v, B the (m, d) matrix ``fourier_b``
+    # drawn once from ``fourier_seed`` with ``fourier_scale`` frequencies per
+    # coordinate range (fourier_features.frequency_matrix) and held static:
+    # no parameter, no leaf, the class record states its digest.
+    activation: str = eqx.field(default="gelu", static=True)
+    omega_0: float = eqx.field(default=1.0, static=True)
+    fourier_features: int = eqx.field(default=0, static=True)
+    fourier_scale: float = eqx.field(default=1.0, static=True)
+    fourier_seed: int = eqx.field(default=0, static=True)
+    fourier_b: tuple | None = eqx.field(default=None, static=True)
     net: eqx.nn.MLP
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
@@ -253,7 +350,14 @@ class AlecGGA_XNet(eqx.Module):
                  zero_init_final_layer: bool = False,
                  parent: str | None = None,
                  descriptor_coordinates: str = "legacy",
-                 ueg_gate: str = "tanh2"):
+                 ueg_gate: str = "tanh2",
+                 gea_mu: float | None = None,
+                 activation: str = "gelu",
+                 omega_0: float = 1.0,
+                 fourier_features: int = 0,
+                 fourier_scale: float = 1.0,
+                 fourier_seed: int = 0,
+                 extra_feature_ranges: tuple | None = None):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_XNet: use_self_attention=True requires "
@@ -287,6 +391,57 @@ class AlecGGA_XNet(eqx.Module):
                 "meta-GGA rung's gate is the reference implementation's "
                 "x2 + tanh^2(x3), which already carries x2"
             )
+        if gea_mu is not None:
+            if (isinstance(gea_mu, bool) or not isinstance(gea_mu, (int, float))
+                    or not math.isfinite(float(gea_mu)) or float(gea_mu) <= 0.0):
+                raise ValueError(
+                    f"AlecGGA_XNet: gea_mu must be a positive finite number "
+                    f"(the resolved coefficient), got {gea_mu!r}")
+            if ueg_gate != "x2":
+                raise ValueError(
+                    f"AlecGGA_XNet: gea_mu={gea_mu!r} fixes the s^2 coefficient "
+                    "only under the x2 gate, whose network term is O(s^3); "
+                    f"under ueg_gate={ueg_gate!r} the network adds its own "
+                    "s^2 term")
+            if meta_gga:
+                raise ValueError(
+                    f"AlecGGA_XNet: gea_mu={gea_mu!r} is a GGA-rung "
+                    "construction; the meta-GGA gate carries the indicator")
+            if parent is not None:
+                raise ValueError(
+                    f"AlecGGA_XNet: gea_mu={gea_mu!r} cannot be combined with "
+                    f"the parent anchor {parent!r}: the anchored pre-image "
+                    "already carries the parent's curvature")
+            if lob_lim is None:
+                raise ValueError(
+                    f"AlecGGA_XNet: gea_mu={gea_mu!r} is stated in the "
+                    "pre-image of the built-in bounded map, so lob_lim=None "
+                    "cannot carry it")
+            wrapping = sorted({getattr(c, "registry_name", type(c).__name__)
+                               for c in constraints
+                               if getattr(c, "registry_name", "")
+                               in ("ueg_limit", "lieb_oxford")})
+            if wrapping:
+                raise ValueError(
+                    f"AlecGGA_XNet: gea_mu={gea_mu!r} cannot be combined with "
+                    f"the exchange constraint(s) {wrapping}: they wrap the "
+                    "forward and change the curvature at s = 0 (ueg_limit "
+                    "zeroes it, lieb_oxford scales it by a second map's slope)")
+            gea_mu = float(gea_mu)
+        self.gea_mu = gea_mu
+        ranges = _extra_ranges("AlecGGA_XNet", n_extra_features,
+                               fourier_features, extra_feature_ranges)
+        check_front_end("AlecGGA_XNet", activation=activation, omega_0=omega_0,
+                        fourier_features=fourier_features,
+                        fourier_scale=fourier_scale, fourier_seed=fourier_seed,
+                        descriptor_coordinates=descriptor_coordinates,
+                        descriptor_log_transform=descriptor_log_transform,
+                        extra_feature_ranges=ranges)
+        self.activation = activation
+        self.omega_0 = float(omega_0)
+        self.fourier_features = int(fourier_features)
+        self.fourier_scale = float(fourier_scale)
+        self.fourier_seed = int(fourier_seed)
         self.ueg_gate = ueg_gate
         self.n_extra_features = n_extra_features
         self.lob_lim = lob_lim
@@ -304,6 +459,17 @@ class AlecGGA_XNet(eqx.Module):
         # DFS exchange network reads the reduced gradient (and the indicator,
         # which is already an extras column) and never the density.
         in_size = 1 + n_extra_features
+        # The Fourier map, when on: the scales follow the resolved coordinate
+        # set (fourier_features.scales_for); the MLP then reads 2m features.
+        self.fourier_b = (
+            _ff.frequency_matrix(
+                self.fourier_seed, self.fourier_features,
+                _ff.scales_for("x", descriptor_coordinates,
+                               descriptor_log_transform, False, ranges),
+                self.fourier_scale)
+            if self.fourier_features else None)
+        if self.fourier_b is not None:
+            in_size = 2 * self.fourier_features
 
         key = jax.random.PRNGKey(seed)
         keys = jax.random.split(key, 2)
@@ -311,6 +477,11 @@ class AlecGGA_XNet(eqx.Module):
             in_size=in_size, out_size=1, depth=depth, width_size=nodes,
             activation=jax.nn.gelu, key=keys[0],
         )
+        if self.activation == "sine":
+            # SIREN's initialization from a key of its own, so the split
+            # above and every GELU network's draw are unchanged.
+            self.net = _siren_initialized(self.net, self.omega_0,
+                                          jax.random.fold_in(key, 1))
         # Zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1 at init,
         # ensuring the untrained network returns F_x=1 -- Slater/LDA exchange (the
         # uniform-gas limit, since F multiplies lda_x in models.py), NOT PBE.
@@ -412,19 +583,20 @@ class AlecGGA_XNet(eqx.Module):
         else:
             tanhterm = jnp.tanh(s) ** 2
 
-        if self.attention is not None:
-            x = netinp
-            layers = self.net.layers
-            for i, layer in enumerate(layers[:-1]):
-                x = layer(x)
-                x = jax.nn.gelu(x)
-                if i == 0:
-                    x = self.attention(x)
-            netterm = layers[-1](x)
-        else:
-            netterm = self.net(netinp)
+        if self.fourier_b is not None:
+            netinp = _fourier_features(netinp, self.fourier_b)
+        netterm = _mlp_apply(self.net, self.attention, self.activation,
+                             self.omega_0, netinp)
 
         gated = tanhterm * netterm
+        if self.gea_mu is not None:
+            # The second-order gradient expansion in the pre-image: the
+            # map's slope at 0 is (a - 1)/a, so mu a/(a - 1) s^2 there is
+            # mu s^2 in F_x; the gate's own damping factor 1 - exp(-s^2)
+            # (s^2 - s^4/2 + ...) keeps the term bounded at large s, where
+            # it saturates at mu a/(a - 1).
+            gated = gated + (self.gea_mu * self.lob_lim / (self.lob_lim - 1.0)
+                             * (1.0 - jnp.exp(-s * s)))
         if self.parent is not None:
             f_parent = parent_fx(self.parent, rho, sigma, alpha_raw)
             if raw:
@@ -521,6 +693,14 @@ class AlecGGA_CNet(eqx.Module):
     # clone's (1 - exp(-s^2)) ln(1 + s)). Static: part of the class record
     # beside a checkpoint, not of the leaf stream (config.UEG_GATES).
     ueg_gate: str = eqx.field(default="tanh2", static=True)
+    # The MLP front end, as on the exchange network (AlecGGA_XNet states the
+    # fields); the Fourier matrix is drawn from fourier_seed + 1.
+    activation: str = eqx.field(default="gelu", static=True)
+    omega_0: float = eqx.field(default=1.0, static=True)
+    fourier_features: int = eqx.field(default=0, static=True)
+    fourier_scale: float = eqx.field(default=1.0, static=True)
+    fourier_seed: int = eqx.field(default=0, static=True)
+    fourier_b: tuple | None = eqx.field(default=None, static=True)
     net: eqx.nn.MLP
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
@@ -538,7 +718,13 @@ class AlecGGA_CNet(eqx.Module):
                  zero_init_final_layer: bool = False,
                  parent: str | None = None,
                  descriptor_coordinates: str = "legacy",
-                 ueg_gate: str = "tanh2"):
+                 ueg_gate: str = "tanh2",
+                 activation: str = "gelu",
+                 omega_0: float = 1.0,
+                 fourier_features: int = 0,
+                 fourier_scale: float = 1.0,
+                 fourier_seed: int = 0,
+                 extra_feature_ranges: tuple | None = None):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_CNet: use_self_attention=True requires "
@@ -608,8 +794,39 @@ class AlecGGA_CNet(eqx.Module):
         # spin density. Zeta is packed at inputs[2], descriptor extras at
         # inputs[3:].
         self.use_spin_polarization = use_spin_polarization
+        ranges = _extra_ranges("AlecGGA_CNet", n_extra_features,
+                               fourier_features, extra_feature_ranges)
+        check_front_end("AlecGGA_CNet", activation=activation, omega_0=omega_0,
+                        fourier_features=fourier_features,
+                        fourier_scale=fourier_scale, fourier_seed=fourier_seed,
+                        descriptor_coordinates=descriptor_coordinates,
+                        descriptor_log_transform=descriptor_log_transform,
+                        extra_feature_ranges=ranges)
+        self.activation = activation
+        self.omega_0 = float(omega_0)
+        self.fourier_features = int(fourier_features)
+        self.fourier_scale = float(fourier_scale)
+        self.fourier_seed = int(fourier_seed)
 
         in_size = 2 + (1 if use_spin_polarization else 0) + n_extra_features
+        # The Fourier map, when on (the polarized row [x_0, x_1, x_s,
+        # *extras] of the paper and dfs coordinates, or the legacy row [r_s,
+        # s, (spin scale), *extras] under the log transform): the scales
+        # follow the resolved coordinate set and the row's composition
+        # (fourier_features.scales_for); the matrix is drawn from
+        # fourier_seed + 1, the exchange network's from fourier_seed, as the
+        # networks' own seeds are seed and seed + 1.
+        self.fourier_b = (
+            _ff.frequency_matrix(
+                self.fourier_seed + _ff.CORRELATION_SEED_OFFSET,
+                self.fourier_features,
+                _ff.scales_for("c", descriptor_coordinates,
+                               descriptor_log_transform, use_spin_polarization,
+                               ranges),
+                self.fourier_scale)
+            if self.fourier_features else None)
+        if self.fourier_b is not None:
+            in_size = 2 * self.fourier_features
 
         key = jax.random.PRNGKey(seed)
         keys = jax.random.split(key, 2)
@@ -617,6 +834,9 @@ class AlecGGA_CNet(eqx.Module):
             in_size=in_size, out_size=1, depth=depth, width_size=nodes,
             activation=jax.nn.gelu, key=keys[0],
         )
+        if self.activation == "sine":
+            self.net = _siren_initialized(self.net, self.omega_0,
+                                          jax.random.fold_in(key, 1))
         # Zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1 at init
         # (Fc -> 1, the PW92/LDA-correlation limit, NOT PBE).
         if zero_init_final_layer:
@@ -758,17 +978,10 @@ class AlecGGA_CNet(eqx.Module):
         else:
             tanhterm = jnp.tanh(s) ** 2
 
-        if self.attention is not None:
-            x = netinp
-            layers = self.net.layers
-            for i, layer in enumerate(layers[:-1]):
-                x = layer(x)
-                x = jax.nn.gelu(x)
-                if i == 0:
-                    x = self.attention(x)
-            netterm = layers[-1](x)
-        else:
-            netterm = self.net(netinp)
+        if self.fourier_b is not None:
+            netinp = _fourier_features(netinp, self.fourier_b)
+        netterm = _mlp_apply(self.net, self.attention, self.activation,
+                             self.omega_0, netinp)
 
         gated = tanhterm * netterm
         if self.parent is not None:
@@ -839,6 +1052,19 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
     n_extra_features = sum(d.n_features for d in _descs)
     coordinates = getattr(arch, "descriptor_coordinates", "legacy")
     gate = str(getattr(arch, "ueg_gate", "tanh2"))
+    # The MLP front end, the same on both networks (config states the
+    # fields; an architecture from before them reads the library MLP).
+    front_end = dict(
+        activation=str(getattr(arch, "activation", "gelu")),
+        omega_0=float(getattr(arch, "omega_0", 1.0)),
+        fourier_features=int(getattr(arch, "fourier_features", 0)),
+        fourier_scale=float(getattr(arch, "fourier_scale", 1.0)),
+        fourier_seed=int(getattr(arch, "fourier_seed", 0)))
+    # The descriptor columns' ranges the map divides by, read off the
+    # architecture's descriptors only where the map is on.
+    front_end["extra_feature_ranges"] = (
+        tuple(arch.extra_feature_ranges) if front_end["fourier_features"]
+        else None)
     parent = None
     zero_init_final_layer = arch.zero_init_final_layer
     if getattr(arch, "parent_anchor", False):
@@ -899,6 +1125,11 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         zero_init_final_layer=zero_init_final_layer,
         parent=parent, descriptor_coordinates=coordinates,
         ueg_gate=gate,
+        # The gradient-expansion coefficient, resolved by the architecture
+        # (a name or a number there; the float here); None for every
+        # architecture without the field.
+        gea_mu=getattr(arch, "resolved_gea_mu", None),
+        **front_end,
     )
     cnet = AlecGGA_CNet(
         n_extra_features=n_extra_features, depth=arch.depth, nodes=arch.nodes,
@@ -914,5 +1145,6 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         zero_init_final_layer=zero_init_final_layer,
         parent=parent, descriptor_coordinates=coordinates,
         ueg_gate=gate,
+        **front_end,
     )
     return xnet, cnet

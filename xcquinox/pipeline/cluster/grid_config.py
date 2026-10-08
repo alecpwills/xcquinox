@@ -2231,6 +2231,19 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                     "formed against; a zeta-blind network disagrees with them "
                     "by 14.9 mHa on the N atom). Set "
                     "use_polarized_correlation: true at the run level.")
+    # The block is applied to every swept architecture here, at submit, so a
+    # combination the architecture refuses (a registry entry that requires
+    # the x2 gate under a block resolving the gate to tanh2) fails on the
+    # login node rather than in the pretrain worker on a compute node.
+    if model_block is not None:
+        from xcquinox.pipeline.config import apply_model_block
+        for a in _canon_axis(cfg.sweep.arch):
+            try:
+                apply_model_block(get_architecture(a), model_block)
+            except ValueError as exc:
+                raise ValueError(
+                    f"the model block cannot be applied to architecture "
+                    f"{a!r}: {exc}") from None
     run_coords = str(getattr(model_block, "descriptor_coordinates", "legacy"))
     if model_block is not None and (
             run_coords in ("dfs", "paper")

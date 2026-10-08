@@ -124,6 +124,7 @@ import jax
 import jax.numpy as jnp
 
 from xcquinox.pipeline.config import ArchitectureConfig
+from xcquinox.pipeline.gradient_expansion import MU_GE, PBE_BETA, PBE_MU
 from xcquinox.utils import pw92c_polarized_scalar
 
 #: Parent functionals an architecture can be anchored to, by rung.
@@ -135,8 +136,8 @@ PARENTS = ("pbe", "scan")
 # relative off it, and the paper's mu = 0.21951 is 2.3e-5 off beta pi^2 / 3,
 # which puts F_x 2.6e-6 relative off libxc at s = 1 (measured).
 PBE_KAPPA = 0.804
-PBE_BETA = 0.06672455060314922
-PBE_MU = PBE_BETA * math.pi ** 2 / 3.0          # 0.2195149727645171
+# PBE_BETA and PBE_MU (beta pi^2 / 3 = 0.2195149727645171) are defined in
+# gradient_expansion.py and imported above.
 PBE_GAMMA = (1.0 - math.log(2.0)) / math.pi ** 2  # 0.031090690869654901
 
 #: libxc's zeta_threshold: ``1 -+ zeta`` is floored here before a fractional
@@ -277,7 +278,8 @@ def pbe_fc(rho, sigma, zeta):
 # Sun, Ruzsinszky and Perdew, Phys. Rev. Lett. 115, 036402 (2015), eqs. 2-4
 # and the supplemental material, at the values of libxc 7.0.0 (maple sources
 # named in the module docstring). Exchange: eqs. S6-S13 of the supplement.
-MU_GE = 10.0 / 81.0                    # second-order gradient expansion
+# MU_GE, the second-order gradient expansion 10/81, is defined in
+# gradient_expansion.py and imported above.
 SCAN_K1 = 0.065
 SCAN_H0X = 1.174                       # h_x^0, the exchange ceiling
 SCAN_A1 = 4.9479

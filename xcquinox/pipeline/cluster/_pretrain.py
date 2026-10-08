@@ -69,12 +69,11 @@ This is a thin worker -- no resubmit / retry / outcome-classification
 machinery. Pretrain is a handful of jobs; v1 recovery is re-running the graph.
 """
 import argparse
-import dataclasses
 import os
 import sys
 import time
 
-from xcquinox.pipeline.config import PretrainSpec, apply_model_block, get_architecture
+from xcquinox.pipeline.config import PretrainSpec, apply_run_config, get_architecture
 from xcquinox.pipeline.cluster import fidelity
 from xcquinox.pipeline.cluster.grid_config import (
     load_resolved_run_config, pretrain_checkpoint_dir, pretrain_stage_archs,
@@ -301,15 +300,10 @@ _fidelity_certificate = fidelity.fidelity_certificate
 
 def resolve_run_architecture(cfg, arch):
     """The architecture a run trains: the registry entry with the run's
-    polarization override and its ``model:`` block applied, as spec_builder,
-    the certificate (``fidelity.build_certified_model``) and this stage
-    resolve it."""
-    if getattr(cfg, "use_polarized_correlation", False):
-        arch = dataclasses.replace(arch, use_polarized_correlation=True)
-    model_block = getattr(cfg, "model", None)
-    if model_block is not None:
-        arch = apply_model_block(arch, model_block)
-    return arch
+    polarization override and its ``model:`` block applied
+    (``config.apply_run_config``, the resolver the certificate, its readers
+    and the run validator share)."""
+    return apply_run_config(arch, cfg)
 
 
 def pretrain_spec_from_config(cfg, arch, checkpoint_dir, **overrides):

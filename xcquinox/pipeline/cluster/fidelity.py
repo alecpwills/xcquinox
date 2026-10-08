@@ -89,6 +89,9 @@ from xcquinox.pipeline.cluster.grid_config import (
     load_grid_config, pretrain_checkpoint_dir, pretrain_stage_archs)
 from xcquinox.pipeline.cluster.materialize import (
     _sha256_file, _write_json_atomic, running_xcquinox_version)
+from xcquinox.pipeline.checkpoint_class import (
+    mlp_class_of as _mlp_class_of, mlp_mismatches as _mlp_mismatches,
+    normalize_mlp as _normalize_mlp)
 
 
 CERTIFICATE_FILENAME = "fidelity_certificate.json"
@@ -522,11 +525,12 @@ def identity_mismatches(cfg, cert) -> list:
 def model_class_mismatches(cfg, cert, arch_name=None) -> list:
     """``[(key, recorded, wanted), ...]`` for the model-class fields a
     certificate records -- ``parent_anchor``, ``descriptor_coordinates``,
-    ``ueg_gate`` and ``descriptor_log_transform`` -- that differ from the
-    class this run builds. A certificate written before the first fields
-    existed records none of them, which reads as the unanchored legacy class
-    it certified (the gate at ``tanh2``); a run of any other class must not
-    accept it.
+    ``ueg_gate``, ``descriptor_log_transform``, ``gea_mu`` and the six
+    front-end fields (``checkpoint_class.MLP_FIELDS``) -- that differ
+    from the class this run builds. A certificate written before the first
+    fields existed records none of them, which reads as the unanchored
+    legacy class it certified (the gate at ``tanh2``, no gradient-expansion
+    term); a run of any other class must not accept it.
 
     The anchor, the coordinates and the gate are read from the run's
     ``model`` block, which is what sets them for every architecture of the
@@ -537,10 +541,11 @@ def model_class_mismatches(cfg, cert, arch_name=None) -> list:
     CALLER is asking about, as :func:`parent_mismatch` is asked. With no name
     given the certificate's own is used, which is the run's architecture only
     where the caller has separately held it to that (both do, reporting a
-    disagreement as a finding of its own); since 26 of the 34 registered
+    disagreement as a finding of its own); since most registered
     architectures set the transform, a certificate from another architecture's
     directory agrees on this field more often than not, so the name is worth
-    passing.
+    passing. The gradient-expansion coefficient is read from the same entry
+    under the run's model block, the architecture the run builds.
 
     ``descriptor_log_transform`` is compared ONLY WHERE THE CERTIFICATE STATES
     IT: every certificate written before that key carries the two class fields
@@ -583,6 +588,40 @@ def model_class_mismatches(cfg, cert, arch_name=None) -> list:
             if bool(got_transform) != want_transform:
                 out.append(("descriptor_log_transform", bool(got_transform),
                             want_transform))
+    # The gradient-expansion coefficient of the architecture THIS RUN builds:
+    # the registry entry under the run's configuration, as every builder
+    # resolves it (``config.apply_run_config``: the polarization override and
+    # the model block; an anchored run drops the term, ``config.anchored``).
+    # A certificate that states none certified networks without the term, so
+    # the two are compared whether or not the certificate states it.
+    if isinstance(name, str):
+        from xcquinox.pipeline.config import apply_run_config, get_architecture
+        try:
+            built = get_architecture(name)
+        except KeyError:
+            built = None
+        if built is not None:
+            got_gea = cert.get("gea_mu")
+            try:
+                built = apply_run_config(built, cfg)
+            except ValueError as exc:
+                out.append(("gea_mu", got_gea, f"unresolvable ({exc})"))
+            else:
+                want_gea = getattr(built, "resolved_gea_mu", None)
+                if got_gea != want_gea:
+                    out.append(("gea_mu", got_gea, want_gea))
+                # The MLP front end, six fields of the same kind; a
+                # certificate that states none certified the library MLP.
+                # The digest follows the resolved correlation row, so a row
+                # that cannot carry the map leaves it undefined.
+                got_mlp = _normalize_mlp(cert)
+                try:
+                    want_mlp = _mlp_class_of(built)
+                except ValueError as exc:
+                    out.append(("fourier_digest", got_mlp["fourier_digest"],
+                                f"unresolvable ({exc})"))
+                else:
+                    out.extend(_mlp_mismatches(got_mlp, want_mlp))
     return out
 
 
@@ -987,22 +1026,15 @@ def _build_model(arch, pretrain_dir: str, *, seed: int):
 
 
 def build_certified_model(cfg, run_dir: str, arch_name: str):
-    """``(arch, model)`` for ``arch_name`` as the run itself would build them.
-
-    The registry entry is patched with the run-level polarized-correlation
-    override exactly as ``cluster._pretrain`` patches it before pretraining,
-    so the cnet input width matches the checkpoint on disk.
+    """``(arch, model)`` for ``arch_name`` as the run itself would build them:
+    the registry entry under the run's configuration
+    (``config.apply_run_config``: the polarized-correlation override and the
+    model block, the resolver the pretrain stage, the certificate's readers
+    and the run validator share), so the networks' shapes and static fields
+    match the checkpoint on disk.
     """
-    import dataclasses
-    from xcquinox.pipeline.config import apply_model_block, get_architecture
-    arch = get_architecture(arch_name)
-    if getattr(cfg, "use_polarized_correlation", False):
-        arch = dataclasses.replace(arch, use_polarized_correlation=True)
-    # The run's model block (the parent anchor, the descriptor coordinates),
-    # so the certified model is the class the checkpoint was pretrained as.
-    model_block = getattr(cfg, "model", None)
-    if model_block is not None:
-        arch = apply_model_block(arch, model_block)
+    from xcquinox.pipeline.config import apply_run_config, get_architecture
+    arch = apply_run_config(get_architecture(arch_name), cfg)
     pretrain_dir = pretrain_checkpoint_dir(run_dir, arch_name)
     return arch, _build_model(arch, pretrain_dir, seed=cfg.pretrain.seed)
 
@@ -1869,6 +1901,14 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "ueg_gate": str(getattr(arch, "ueg_gate", "tanh2")),
         "descriptor_log_transform": bool(
             getattr(arch, "descriptor_log_transform", False)),
+        # The gradient-expansion coefficient the exchange curvature is fixed
+        # at (resolved; None without the term), a registry property like the
+        # transform; a certificate that states none certified networks
+        # without the term.
+        "gea_mu": getattr(arch, "resolved_gea_mu", None),
+        # The MLP front end (the activation, its frequency, the Fourier map
+        # and its digest), six fields of the same kind.
+        **_mlp_class_of(arch),
         "xcquinox_version": running_xcquinox_version(),
         "identity": run_identity(cfg),
         "checkpoint": checkpoint,

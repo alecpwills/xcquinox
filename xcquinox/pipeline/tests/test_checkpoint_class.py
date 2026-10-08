@@ -92,9 +92,9 @@ def test_record_schema_carries_no_module_path():
     record = cc.class_record(_anchored_dfs_arch(), sha256="0" * 64, size=1)
     assert set(record) == {
         "parent_anchor", "descriptor_coordinates", cc.UEG_GATE_FIELD,
-        cc.LOG_TRANSFORM_FIELD, "arch_name", "meta_gga",
-        "use_polarized_correlation", "parent", "xcquinox_version", "sha256",
-        "size"}
+        cc.LOG_TRANSFORM_FIELD, cc.GEA_MU_FIELD, *cc.MLP_FIELDS, "arch_name",
+        "meta_gga", "use_polarized_correlation", "parent", "xcquinox_version",
+        "sha256", "size"}
     assert not any("module" in key or "class_path" in key for key in record)
     assert not any(isinstance(value, str) and value.startswith("xcquinox.")
                    for value in record.values())
