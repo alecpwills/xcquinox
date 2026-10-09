@@ -518,16 +518,17 @@ def validate_run(run_dir: str, config_path: str | None = None):
             failures.append(
                 f"pretrain/{arch_name}: metadata gea_mu = {got_gea!r}, the "
                 f"architecture this run builds has {want_gea!r}")
-        # The MLP front end, six fields of the same kind: metadata that
-        # states none states the library MLP. The digest follows the
-        # resolved correlation row; a row that cannot carry the map leaves
-        # it undefined, which is a failure of the configuration.
+        # The front end, ten fields of the same kind: metadata that states
+        # none states the library MLP. The digests follow the resolved
+        # correlation row; a row that cannot carry the map or the spline
+        # grids leaves the digest undefined, which is a failure of the
+        # configuration, reported under the digest's own name.
         try:
             want_mlp = mlp_class_of(built)
         except ValueError as exc:
             failures.append(
                 f"pretrain/{arch_name}: the architecture this run builds "
-                f"has no Fourier digest ({exc})")
+                f"has no {getattr(exc, 'field', 'fourier_digest')} ({exc})")
             continue
         for key, got_value, want_value in mlp_mismatches(
                 normalize_mlp(meta), want_mlp):

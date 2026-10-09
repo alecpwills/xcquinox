@@ -77,6 +77,8 @@ EXPECTED_DISPLAY = {
     "deep_gea_3x16":               "deep_gea_3x16",
     "deep_ff_3x16":                "deep_ff_3x16",
     "deep_sine_3x16":              "deep_sine_3x16",
+    "deep_kan_2x6":                "deep_kan_2x6",
+    "deep_kan_geom_2x6":           "deep_kan_geom_2x6",
     "deep_dm_3x16":                "deep_dm_3x16",
     "deep_combined_3x16":          "deep_combined_3x16",
     "deep_combined_attn_3x16":     "deep_combined_attn_3x16",

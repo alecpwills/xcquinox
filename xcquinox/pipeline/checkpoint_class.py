@@ -71,9 +71,21 @@ Payload, in the vocabulary of the records it sits beside
                                       matrices the networks hold, which follow
                                       the resolved architecture (the
                                       coordinate set, the transform, the
-                                      polarization); null without a map. A
-                                      record that states none of these six
-                                      states the library MLP (DEFAULT_MLP)
+                                      polarization); null without a map
+    network                    str    the class: the network behind the front
+                                      end, "mlp" or "kan" (a Kolmogorov-Arnold
+                                      network of B-spline edge functions on
+                                      fixed grids, xcquinox.pipeline.kan)
+    kan_grid                   int    the class: the spline grid's intervals
+                                      per edge, 0 for the MLP
+    kan_order                  int    the class: the spline degree, 0 for the
+                                      MLP
+    kan_digest                 str    the class: the digest of every layer's
+                                      bounds (the knots), which follow the
+                                      resolved architecture as the Fourier
+                                      digest does; null for the MLP. A record
+                                      that states none of these ten states
+                                      the library MLP (DEFAULT_MLP)
     arch_name                  str    provenance
     meta_gga                   bool   provenance (ArchitectureConfig.is_meta_gga)
     use_polarized_correlation  bool   provenance (a shape-CHANGING flag, which
@@ -198,22 +210,27 @@ UEG_GATE_FIELD = "ueg_gate"
 #: class accepts it (the uniform-gas gate's rule, not the log transform's).
 GEA_MU_FIELD = "gea_mu"
 
-#: The record fields naming the MLP front end of both networks
+#: The record fields naming the front end of both networks
 #: (``ArchitectureConfig.activation``, ``omega_0``, ``fourier_features``,
 #: ``fourier_scale``, ``fourier_seed``, and ``fourier_digest``, the digest of
-#: the Fourier matrices the networks carry), each a top-level field of the
-#: record like the gate. A record that states none of them states the
-#: library MLP (:data:`DEFAULT_MLP`): every record written before the fields
-#: described one, and the front end changes the function (the map also the
-#: shapes), so a skeleton carrying another refuses such a record.
+#: the Fourier matrices the networks carry; ``network``, ``kan_grid``,
+#: ``kan_order`` and ``kan_digest``, the digest of the spline grids' bounds),
+#: each a top-level field of the record like the gate. A record that states
+#: none of them states the library MLP (:data:`DEFAULT_MLP`): every record
+#: written before the fields described one, and the front end changes the
+#: function (the map and the spline network also the shapes), so a skeleton
+#: carrying another refuses such a record.
 MLP_FIELDS = ("activation", "omega_0", "fourier_features", "fourier_scale",
-              "fourier_seed", "fourier_digest")
+              "fourier_seed", "fourier_digest", "network", "kan_grid",
+              "kan_order", "kan_digest")
 DEFAULT_MLP = {"activation": "gelu", "omega_0": 1.0, "fourier_features": 0,
-               "fourier_scale": 1.0, "fourier_seed": 0, "fourier_digest": None}
+               "fourier_scale": 1.0, "fourier_seed": 0, "fourier_digest": None,
+               "network": "mlp", "kan_grid": 0, "kan_order": 0,
+               "kan_digest": None}
 
 
 def normalize_mlp(mapping) -> dict:
-    """The six front-end fields read off ``mapping`` (a record, a metadata
+    """The ten front-end fields read off ``mapping`` (a record, a metadata
     file, a certificate, a class dict, or ``None``) with their types, the
     defaults for what is absent."""
     value = mapping if isinstance(mapping, dict) else {}
@@ -226,44 +243,100 @@ def normalize_mlp(mapping) -> dict:
     }
     digest = value.get("fourier_digest")
     out["fourier_digest"] = None if digest is None else str(digest)
+    out["network"] = str(value.get("network", DEFAULT_MLP["network"]))
+    out["kan_grid"] = int(value.get("kan_grid", 0))
+    out["kan_order"] = int(value.get("kan_order", 0))
+    digest = value.get("kan_digest")
+    out["kan_digest"] = None if digest is None else str(digest)
     return out
 
 
 def mlp_class_of(arch) -> dict:
-    """The six front-end fields ``arch`` (an ``ArchitectureConfig``) states,
-    the digest of its Fourier matrices computed from the resolved fields
-    alone (:mod:`fourier_features`); the defaults for an architecture from
-    before the fields."""
+    """The ten front-end fields ``arch`` (an ``ArchitectureConfig``) states,
+    the digest of its Fourier matrices and the digest of its spline grids'
+    bounds computed from the resolved fields alone (:mod:`fourier_features`,
+    :mod:`kan`); the defaults for an architecture from before the fields."""
     from xcquinox.pipeline import fourier_features as ff
     m = int(getattr(arch, "fourier_features", 0) or 0)
     scale = float(getattr(arch, "fourier_scale", 1.0))
     seed = int(getattr(arch, "fourier_seed", 0))
+    network = str(getattr(arch, "network", "mlp"))
+    coordinates = str(getattr(arch, "descriptor_coordinates", "legacy"))
+    log_transform = bool(getattr(arch, LOG_TRANSFORM_FIELD, False))
+    polarized = bool(getattr(arch, "use_polarized_correlation", False))
+    kan_digest = None
+    if network == "kan":
+        from xcquinox.pipeline import kan
+        try:
+            kan_digest = kan.digest_for(
+                network, coordinates, log_transform, polarized,
+                tuple(getattr(arch, "extra_feature_bounds", ())),
+                int(getattr(arch, "depth")), int(getattr(arch, "nodes")))
+        except ValueError as exc:
+            raise UnresolvableFrontEnd("kan_digest", str(exc)) from exc
+    fourier_digest = None
+    if m:
+        try:
+            fourier_digest = ff.digest_for(
+                m, scale, seed, tuple(getattr(arch, "extra_feature_ranges", ())),
+                coordinates, log_transform, polarized)
+        except ValueError as exc:
+            raise UnresolvableFrontEnd("fourier_digest", str(exc)) from exc
     return normalize_mlp({
         "activation": getattr(arch, "activation", "gelu"),
         "omega_0": getattr(arch, "omega_0", 1.0),
         "fourier_features": m, "fourier_scale": scale, "fourier_seed": seed,
-        "fourier_digest": ff.digest_for(
-            m, scale, seed, tuple(getattr(arch, "extra_feature_ranges", ())),
-            str(getattr(arch, "descriptor_coordinates", "legacy")),
-            bool(getattr(arch, LOG_TRANSFORM_FIELD, False)),
-            bool(getattr(arch, "use_polarized_correlation", False)))
-        if m else None,
+        "fourier_digest": fourier_digest,
+        "network": network,
+        "kan_grid": getattr(arch, "kan_grid", 0),
+        "kan_order": getattr(arch, "kan_order", 0),
+        "kan_digest": kan_digest,
     })
 
 
+class UnresolvableFrontEnd(ValueError):
+    """A front-end digest that cannot be computed for the resolved
+    architecture: the Fourier map or the spline grids on a row that cannot
+    carry them (an unpolarized correlation network on the paper coordinates,
+    the legacy coordinates without the log transform). ``field`` names the
+    digest, so a reader reports the refusal under the right name."""
+
+    def __init__(self, field: str, message: str):
+        super().__init__(message)
+        self.field = field
+
+
 def mlp_mismatches(got, want) -> list:
-    """``[(field, recorded, wanted), ...]`` over the six front-end fields of
+    """``[(field, recorded, wanted), ...]`` over the ten front-end fields of
     two normalized readings, in the fields' order."""
     return [(key, got[key], want[key]) for key in MLP_FIELDS
             if got[key] != want[key]]
 
 
+def _spline_layer_bounds(net):
+    """The bounds of every layer of a network's spline network, in order;
+    ``None`` for an MLP."""
+    inner = getattr(net, "net", None)
+    layers = getattr(inner, "layers", None) or ()
+    bounds = [getattr(layer, "bounds", None) for layer in layers]
+    if not bounds or any(b is None for b in bounds):
+        return None
+    return tuple(bounds)
+
+
 def mlp_class_of_model(model) -> dict:
     """The front end a BUILT model carries, read off its two networks' static
-    fields and the matrices they hold."""
+    fields, the matrices they hold and the grids their splines sit on."""
     from xcquinox.pipeline import fourier_features as ff
     xnet = getattr(model, "xnet", None)
     cnet = getattr(model, "cnet", None)
+    network = str(getattr(xnet, "network", "mlp"))
+    kan_digest = None
+    if network == "kan":
+        from xcquinox.pipeline import kan
+        xb = _spline_layer_bounds(xnet)
+        cb = _spline_layer_bounds(cnet)
+        kan_digest = kan.digest(*xb, *cb) if xb and cb else None
     return normalize_mlp({
         "activation": getattr(xnet, "activation", "gelu"),
         "omega_0": getattr(xnet, "omega_0", 1.0),
@@ -272,6 +345,10 @@ def mlp_class_of_model(model) -> dict:
         "fourier_seed": getattr(xnet, "fourier_seed", 0),
         "fourier_digest": ff.digest(getattr(xnet, "fourier_b", None),
                                     getattr(cnet, "fourier_b", None)),
+        "network": network,
+        "kan_grid": getattr(xnet, "kan_grid", 0),
+        "kan_order": getattr(xnet, "kan_order", 0),
+        "kan_digest": kan_digest,
     })
 
 

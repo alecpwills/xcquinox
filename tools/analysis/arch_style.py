@@ -32,8 +32,8 @@ import matplotlib.pyplot as plt
 # map a stored key through ``display_name``. The places that hold a stored key
 # (a manifest cell, a pretrain directory) convert before anything is drawn.
 from xcquinox.pipeline.arch_names import (  # noqa: E402
-    DISPLAY_NAME, STORED_KEY, display_name, expanded_key, key_line, split_tag,
-    stored_key)
+    _SIZE_SUFFIX, DISPLAY_NAME, STORED_KEY, display_name, expanded_key,
+    key_line, split_tag, stored_key)
 
 # --------------------------------------------------------------------------- #
 # The palette order, in STORED keys. Moved VERBATIM from
@@ -57,9 +57,10 @@ _STORED_ORDER: Tuple[str, ...] = (
     # the 3x16 family; deep_gea_3x16, deep_ff_3x16 and deep_sine_3x16 are the
     # plain network with one change each (the gradient-expansion coefficient
     # fixed by construction, the Fourier-feature map, the sine activation; no
-    # 4x32 sibling; the base colours are set below)
+    # 4x32 sibling; the base colours are set below), and the 2x6 pair the
+    # Kolmogorov-Arnold network in place of the MLP, plain and geometric
     "deep_3x16", "deep_attn_3x16", "deep_gea_3x16", "deep_ff_3x16",
-    "deep_sine_3x16", "deep_cusp_3x16",
+    "deep_sine_3x16", "deep_kan_2x6", "deep_kan_geom_2x6", "deep_cusp_3x16",
     "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
@@ -81,7 +82,7 @@ _STORED_ORDER: Tuple[str, ...] = (
 _DISPLAY_ORDER: Tuple[str, ...] = (
     "shallow", "shallow_attn", "medium", "medium_attn",
     "deep_3x16", "deep_attn_3x16", "deep_gea_3x16", "deep_ff_3x16",
-    "deep_sine_3x16", "deep_cusp_3x16",
+    "deep_sine_3x16", "deep_kan_2x6", "deep_kan_geom_2x6", "deep_cusp_3x16",
     "deep_geom_3x16", "deep_geom_attn_3x16",
     "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
@@ -152,14 +153,21 @@ ARCH_COLOR["deep_gea"] = "#fdd0a2"
 # (13.97, against tab10's cyan) for the sine network.
 ARCH_COLOR["deep_ff"] = "#9e9ac8"
 ARCH_COLOR["deep_sine"] = "#9ecae1"
+# The Kolmogorov-Arnold pair, by the same criterion with the two front-end
+# colours carried: tab20c's #e6550d (worst case 12.49, against tab10's
+# orange) for the plain network and, with it carried too, tab20c's #bdbdbd
+# (12.40, against the GGA rung band) for the geometric one.
+ARCH_COLOR["deep_kan"] = "#e6550d"
+ARCH_COLOR["deep_kan_geom"] = "#bdbdbd"
 for _small in _STORED_ORDER[8:]:
-    # Only width-twin names inherit by suffix-strip; a base name in the tail
-    # (the size ladder) keeps its explicit entry above -- the unguarded strip
-    # would resolve "medium" via ARCH_COLOR.get("m") and clobber it with the
-    # unknown-base default.
-    if not _small.endswith("_3x16"):
+    # Only sized names (the width twins, the 2x6 pair) inherit by stripping
+    # their size suffix; a base name in the tail (the size ladder) keeps its
+    # explicit entry above -- an unguarded strip would resolve "medium" via
+    # ARCH_COLOR.get("m") and clobber it with the unknown-base default.
+    _base = _SIZE_SUFFIX.sub("", _small)
+    if _base == _small:
         continue
-    _STORED_COLOR[_small] = _STORED_COLOR.get(_small[: -len("_3x16")], "#333333")
+    _STORED_COLOR[_small] = _STORED_COLOR.get(_base, "#333333")
 # re-keyed by the shown name; the colour-only base names (deep_rung35,
 # deep_mgga, ...: never registry keys) keep their stored spelling
 ARCH_COLOR: Dict[str, str] = {display_name(k): v for k, v in _STORED_COLOR.items()}
@@ -277,6 +285,10 @@ def arch_color(arch: str) -> str:
     key = stored_key(name)
     if key in _STORED_COLOR:              # a tagged shown name: its architecture's colour
         return _STORED_COLOR[key]
+    # Only a width twin inherits its base's colour here; a sized name outside
+    # the orders (the capacity probes deep_mgga_3x32, deep_mgga_4x16 and
+    # deep_mgga_4x32) keeps the rung accent, as it has since the probes were
+    # registered.
     if key.endswith("_3x16") and key[: -len("_3x16")] in _STORED_COLOR:
         return _STORED_COLOR[key[: -len("_3x16")]]
     return RUNG_ACCENT.get(rung_of(arch), "#333333")

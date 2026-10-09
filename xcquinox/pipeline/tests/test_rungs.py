@@ -22,6 +22,8 @@ _CAMPAIGN_RUNGS = {
     "deep_gea_3x16": rungs.RUNG_GGA,
     "deep_ff_3x16": rungs.RUNG_GGA,
     "deep_sine_3x16": rungs.RUNG_GGA,
+    "deep_kan_2x6": rungs.RUNG_GGA,
+    "deep_kan_geom_2x6": rungs.RUNG_GGA,
     "deep_rung35_3x16": rungs.RUNG_R35,
     "deep_rung35_attn_3x16": rungs.RUNG_R35,
     "deep_rung35ms_3x16": rungs.RUNG_R35,

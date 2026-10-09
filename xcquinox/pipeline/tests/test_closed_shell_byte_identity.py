@@ -680,15 +680,17 @@ _POST_ARCHIVE_ARCH = "deep_mgga_3x32"
 #: the registry joins this tuple or the historical coverage test names it.
 _POST_ARCHIVE_ARCHS = ("deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32",
                        "deep_geom_3x16", "deep_geom_attn_3x16",
-                       "deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16")
+                       "deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16",
+                       "deep_kan_2x6", "deep_kan_geom_2x6")
 
 #: Architectures registered after the live fixture was last recorded, awaiting
 #: their records (the recorder command is in the skip message): the
-#: architecture screen's three single-change entries of the plain 3x16
-#: network, registered after the jax0102 recording. A name listed here that
-#: the fixture DOES carry fails the coverage test: remove it from this tuple
-#: once its record is merged.
-_AWAITING_RECORD = ("deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16")
+#: architecture screen's entries, the three single-change entries of the
+#: plain 3x16 network and the Kolmogorov-Arnold pair, registered after the
+#: jax0102 recording. A name listed here that the fixture DOES carry fails
+#: the coverage test: remove it from this tuple once its record is merged.
+_AWAITING_RECORD = ("deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16",
+                    "deep_kan_2x6", "deep_kan_geom_2x6")
 
 
 def _record_pending(arch_name):

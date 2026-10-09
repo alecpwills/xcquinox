@@ -117,13 +117,22 @@ class Descriptor(eqx.Module, abc.ABC):
         return f"{type(self).__name__}({self.registry_name}, n={self.n_features})"
 
     @property
+    def column_bounds(self) -> tuple:
+        """The (lo, hi) bounds of each feature column as the networks read
+        it, the grid a spline network puts on the column; ``(None, None)``
+        for a column that is not bounded by construction, which a spline
+        network and the Fourier map refuse. The base class declares every
+        column unbounded; a descriptor whose columns are bounded states
+        their bounds."""
+        return ((None, None),) * self.n_features
+
+    @property
     def column_ranges(self) -> tuple:
-        """The range of each feature column as the networks read it, the
-        scale a Fourier-feature map divides the column by; ``None`` for a
-        column that is not bounded by construction, which the map refuses.
-        The base class declares every column unbounded; a descriptor whose
-        columns are bounded states their ranges."""
-        return (None,) * self.n_features
+        """The range of each feature column, hi - lo of its bounds, the scale
+        a Fourier-feature map divides the column by; ``None`` for a column
+        that is not bounded."""
+        return tuple(None if lo is None or hi is None else float(hi - lo)
+                     for lo, hi in self.column_bounds)
 
     def compute_for_spin_channel(self, mol_data: dict,
                                  spin_channel: int) -> jnp.ndarray:
@@ -267,9 +276,9 @@ class CuspDescriptor(Descriptor):
         return mol_data["cusp_features"]
 
     @property
-    def column_ranges(self) -> tuple:
-        """Column 0 in [0, 1], column 1 in (-1, 1): ranges 1 and 2."""
-        return (1.0, 2.0)
+    def column_bounds(self) -> tuple:
+        """Column 0 in [0, 1], column 1 in (-1, 1)."""
+        return ((0.0, 1.0), (-1.0, 1.0))
 
 
 @register_descriptor("dm_statistics")
@@ -364,9 +373,9 @@ class DMRung35Descriptor(Descriptor):
     required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35_features",)
 
     @property
-    def column_ranges(self) -> tuple:
+    def column_bounds(self) -> tuple:
         """Both occupancies in [0, 1] by Bessel's inequality."""
-        return (1.0, 1.0)
+        return ((0.0, 1.0), (0.0, 1.0))
     spin_mol_keys: ClassVar[tuple[str, ...]] = ("rung35_features_a",
                                                 "rung35_features_b")
     density_matrix_dependent: ClassVar[bool] = True
@@ -415,9 +424,9 @@ class DMRung35MultishellDescriptor(Descriptor):
     required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35ms_features",)
 
     @property
-    def column_ranges(self) -> tuple:
+    def column_bounds(self) -> tuple:
         """Every occupancy in [0, 1] by Bessel's inequality."""
-        return (1.0,) * self.n_features
+        return ((0.0, 1.0),) * self.n_features
     spin_mol_keys: ClassVar[tuple[str, ...]] = ("rung35ms_features_a",
                                                 "rung35ms_features_b")
     density_matrix_dependent: ClassVar[bool] = True

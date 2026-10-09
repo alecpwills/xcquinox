@@ -6,8 +6,8 @@ change. The name a figure, a table or a document shows is derived here from the 
 its configuration by one rule:
 
 * the key's family word (``deep``, ``medium`` or ``shallow``), as the key states it;
-* then the descriptor and attention tokens of the stored key (``attn``, ``cusp``, ``dm``,
-  ``combined``, ``notransform``, ``rung35``, ``mgga``, ...) as they are;
+* then the descriptor, attention and network tokens of the stored key (``attn``, ``cusp``,
+  ``dm``, ``combined``, ``notransform``, ``rung35``, ``mgga``, ``kan``, ...) as they are;
 * then the size, ``_<depth>x<nodes>``, which is where the depth is stated.
 
 So ``deep_3x16`` is shown as itself, ``deep`` as ``deep_4x32``, ``deep_cusp_attn`` as
@@ -180,6 +180,13 @@ def expanded_key(name: str) -> str:
     if getattr(cfg, "activation", "gelu") == "sine":
         parts.append("sine activation (SIREN, omega_0 = "
                      f"{float(getattr(cfg, 'omega_0', 1.0)):g})")
+    if getattr(cfg, "network", "mlp") == "kan":
+        order = int(getattr(cfg, "kan_order", 0))
+        degree = {1: "linear", 2: "quadratic", 3: "cubic"}.get(
+            order, f"degree-{order}")
+        parts.append(f"Kolmogorov-Arnold network, {degree} B-splines on "
+                     f"{int(getattr(cfg, 'kan_grid', 0))} intervals per edge, "
+                     "SiLU base")
     text = ", ".join(parts)
     return f"{text}; {_TAG_TEXT.get(tag, tag)}" if tag else text
 

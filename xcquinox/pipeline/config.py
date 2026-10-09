@@ -217,6 +217,14 @@ class ArchitectureConfig:
     fourier_features: int = 0
     fourier_scale: float = 1.0
     fourier_seed: int = 0
+    # The network behind the front end: "mlp" (the library MLP, every
+    # architecture before the field) or "kan", a Kolmogorov-Arnold network
+    # of B-spline edge functions on fixed grids (xcquinox.pipeline.kan),
+    # kan_grid intervals of degree kan_order per edge, both stated by a KAN
+    # and both 0 for the MLP (config.check_front_end).
+    network: str = "mlp"
+    kan_grid: int = 0
+    kan_order: int = 0
 
     def __post_init__(self):
         if not isinstance(self.name, str):
@@ -314,10 +322,15 @@ class ArchitectureConfig:
                         fourier_seed=self.fourier_seed,
                         descriptor_coordinates=self.descriptor_coordinates,
                         descriptor_log_transform=self.descriptor_log_transform,
-                        # the descriptor columns' ranges, materialized only
-                        # where the map reads them
+                        # the descriptor columns' ranges and bounds,
+                        # materialized only where the map or the spline
+                        # network reads them
                         extra_feature_ranges=(self.extra_feature_ranges
-                                              if self.fourier_features else ()))
+                                              if self.fourier_features else ()),
+                        network=self.network, kan_grid=self.kan_grid,
+                        kan_order=self.kan_order, attention=self.attention,
+                        extra_feature_bounds=(self.extra_feature_bounds
+                                              if self.network == "kan" else ()))
         if not isinstance(self.num_heads, int) or isinstance(self.num_heads, bool):
             raise TypeError(
                 f"ArchitectureConfig.num_heads must be a plain Python int, "
@@ -467,6 +480,16 @@ class ArchitectureConfig:
                      for r in d.column_ranges)
 
     @property
+    def extra_feature_bounds(self) -> tuple:
+        """The (lo, hi) bounds of each descriptor column, in the order the
+        networks read them (``Descriptor.column_bounds`` of each
+        materialized descriptor), the grids a spline network puts on the
+        columns; ``(None, None)`` for a column not bounded by construction,
+        which the network refuses (:func:`check_front_end`)."""
+        return tuple(tuple(b) for d in self.materialize_descriptors()
+                     for b in d.column_bounds)
+
+    @property
     def n_input_features(self) -> int:
         # +1 for the spin-polarization (x1) input on the correlation net.
         return 2 + (1 if self.use_polarized_correlation else 0) + self.n_extra_features
@@ -518,7 +541,10 @@ class ArchitectureConfig:
                   omega_0: float = 1.0,
                   fourier_features: int = 0,
                   fourier_scale: float = 1.0,
-                  fourier_seed: int = 0):
+                  fourier_seed: int = 0,
+                  network: str = "mlp",
+                  kan_grid: int = 0,
+                  kan_order: int = 0):
         """Factory that accepts str | (str, dict) | FeatureSpec for each entry.
 
         ``num_heads`` is required when ``attention=True`` (no silent default,
@@ -596,6 +622,7 @@ class ArchitectureConfig:
             activation=activation, omega_0=omega_0,
             fourier_features=fourier_features, fourier_scale=fourier_scale,
             fourier_seed=fourier_seed,
+            network=network, kan_grid=kan_grid, kan_order=kan_order,
         )
 
 
@@ -617,6 +644,10 @@ UEG_GATES = ("tanh2", "x2")
 #: the library's GELU, or the sine of SIREN (Sitzmann et al. 2020).
 ACTIVATIONS = ("gelu", "sine")
 
+#: The networks behind the front end (``ArchitectureConfig.network``): the
+#: library MLP and the Kolmogorov-Arnold network of ``xcquinox.pipeline.kan``.
+NETWORKS = ("mlp", "kan")
+
 #: The bound on ``ArchitectureConfig.fourier_seed``: the correlation network
 #: draws its matrix from ``fourier_seed + 1``, which must still be a seed
 #: numpy's ``RandomState`` accepts (at most 2^32 - 1), as ``MAX_SEED`` keeps
@@ -626,12 +657,15 @@ MAX_FOURIER_SEED = 2 ** 32 - 2
 
 def check_front_end(owner: str, *, activation, omega_0, fourier_features,
                     fourier_scale, fourier_seed, descriptor_coordinates,
-                    descriptor_log_transform, extra_feature_ranges=()):
-    """The rules of the MLP front-end fields, applied by the architecture at
+                    descriptor_log_transform, extra_feature_ranges=(),
+                    network="mlp", kan_grid=0, kan_order=0, attention=False,
+                    extra_feature_bounds=()):
+    """The rules of the front-end fields, applied by the architecture at
     configuration time and by both networks at construction (``owner`` names
     the caller in the message); ``extra_feature_ranges`` are the descriptor
-    columns' ranges, ``None`` for a column not bounded by construction
-    (``Descriptor.column_ranges``). ``ValueError`` names the field."""
+    columns' ranges and ``extra_feature_bounds`` their (lo, hi) bounds,
+    ``None`` where a column is not bounded by construction
+    (``Descriptor.column_bounds``). ``ValueError`` names the field."""
     def _plain(name, value, integer):
         if (isinstance(value, bool) or not isinstance(value, (int, float))
                 or (integer and not isinstance(value, int))):
@@ -698,6 +732,53 @@ def check_front_end(owner: str, *, activation, omega_0, fourier_features,
                 raise ValueError(
                     f"{owner}: extra_feature_ranges[{i}] = {r!r} is not a "
                     "positive finite range")
+    # The network behind the front end. The MLP states no spline grid; a
+    # Kolmogorov-Arnold network states its grid and order, takes no front
+    # end of the MLP's (the map, the sine activation) and no attention
+    # block, and puts a spline grid on every input column, so every column
+    # must be bounded.
+    if network not in NETWORKS:
+        raise ValueError(
+            f"{owner}: network must be one of {NETWORKS}, got {network!r}")
+    _plain("kan_grid", kan_grid, True)
+    _plain("kan_order", kan_order, True)
+    if network == "mlp":
+        if kan_grid != 0 or kan_order != 0:
+            raise ValueError(
+                f"{owner}: kan_grid and kan_order state a spline grid and are "
+                f"0 with network='mlp', got {kan_grid!r} and {kan_order!r}")
+        return
+    if kan_grid < 1 or kan_order < 1:
+        raise ValueError(
+            f"{owner}: network='kan' needs kan_grid (intervals) and kan_order "
+            f"(the spline degree) of at least 1, got {kan_grid!r} and "
+            f"{kan_order!r}")
+    if fourier_features > 0:
+        raise ValueError(
+            f"{owner}: network='kan' with fourier_features={fourier_features!r}"
+            " is not a configuration this version builds; the map is the "
+            "MLP's front end")
+    if activation != "gelu":
+        raise ValueError(
+            f"{owner}: network='kan' with activation={activation!r} is not a "
+            "configuration this version builds; the activation is the MLP's")
+    if attention:
+        raise ValueError(
+            f"{owner}: network='kan' with the attention block is not a "
+            "configuration this version builds")
+    if descriptor_coordinates == "legacy" and not descriptor_log_transform:
+        raise ValueError(
+            f"{owner}: network='kan' puts a spline grid on every input and "
+            "needs bounded inputs: the paper or dfs coordinates, or the "
+            "legacy coordinates under the descriptor log transform "
+            "(descriptor_log_transform=True)")
+    unbounded = [i for i, (lo, hi) in enumerate(extra_feature_bounds)
+                 if lo is None or hi is None]
+    if unbounded:
+        raise ValueError(
+            f"{owner}: network='kan' puts a spline grid on every input "
+            f"column, and descriptor column(s) {unbounded} are not bounded "
+            "by construction (Descriptor.column_bounds)")
 
 
 def anchored(arch: ArchitectureConfig) -> ArchitectureConfig:
@@ -874,6 +955,19 @@ ARCHITECTURES = {
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True,
                               activation="sine", omega_0=1.0),
+    # The Kolmogorov-Arnold networks of the screen: B-spline edge functions
+    # of degree 3 on fixed grids of 5 intervals over the coordinates'
+    # measured bounds, two hidden layers of width six in place of the MLP
+    # (xcquinox.pipeline.kan), without and with the cusp pair.
+    "deep_kan_2x6":             ArchitectureConfig.from_spec("deep_kan_2x6",            2, 6,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              network="kan", kan_grid=5, kan_order=3),
+    "deep_kan_geom_2x6":        ArchitectureConfig.from_spec("deep_kan_geom_2x6",       2, 6,
+                              descriptors=["cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              network="kan", kan_grid=5, kan_order=3),
     # Rung-3.5 localized-DM archs (ADDITIVE). The leaky deep_dm/deep_combined
     # entries above are KEPT so a pending in-flight array task still resolves
     # them. deep_rung35_3x16 (cusp + localized rung-3.5 DM occupancy) replaces

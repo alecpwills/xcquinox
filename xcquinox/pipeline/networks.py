@@ -11,6 +11,7 @@ import equinox as eqx
 import xcquinox.net as _xnet
 
 from xcquinox.pipeline import fourier_features as _ff
+from xcquinox.pipeline import kan as _kan
 from xcquinox.pipeline.config import (DESCRIPTOR_COORDINATES, UEG_GATES,
                                       ArchitectureConfig, check_front_end)
 from xcquinox.pipeline.constraints import Constraint, _compose_constraints
@@ -69,6 +70,42 @@ def _extra_ranges(owner, n_extra_features, fourier_features,
     return ranges
 
 
+def _extra_bounds(owner, n_extra_features, network, extra_feature_bounds):
+    """The descriptor columns' (lo, hi) bounds a spline network puts its
+    grids on: one pair per column, each finite with lo < hi, or ``(None,
+    None)`` for a column not bounded by construction, which
+    ``config.check_front_end`` refuses naming the column; required when the
+    network is a KAN, unused with the MLP."""
+    if network != "kan":
+        return ()
+    if extra_feature_bounds is None:
+        if n_extra_features:
+            raise ValueError(
+                f"{owner}: network='kan' with {n_extra_features} descriptor "
+                "columns needs extra_feature_bounds, one (lo, hi) pair per "
+                "column (Descriptor.column_bounds)")
+        return ()
+    bounds = tuple(tuple(pair) for pair in extra_feature_bounds)
+    if len(bounds) != int(n_extra_features):
+        raise ValueError(
+            f"{owner}: extra_feature_bounds has {len(bounds)} entries for "
+            f"{n_extra_features} descriptor columns")
+    for i, pair in enumerate(bounds):
+        if len(pair) != 2:
+            raise ValueError(
+                f"{owner}: extra_feature_bounds[{i}] = {pair!r} is not a "
+                "(lo, hi) pair")
+        lo, hi = pair
+        if lo is None or hi is None:
+            continue
+        if any(isinstance(v, bool) or not isinstance(v, (int, float))
+               or not math.isfinite(v) for v in (lo, hi)) or not lo < hi:
+            raise ValueError(
+                f"{owner}: extra_feature_bounds[{i}] = {pair!r} is not a "
+                "finite (lo, hi) pair with lo < hi")
+    return bounds
+
+
 def _siren_initialized(net, omega_0, key):
     """``net`` with SIREN's weight initialization (Sitzmann et al. 2020,
     section 3.2 and the reference implementation): layer 0 uniform in
@@ -89,11 +126,15 @@ def _siren_initialized(net, omega_0, key):
 
 
 def _mlp_apply(net, attention, activation, omega_0, netinp):
-    """The MLP's output for one input row. The GELU path without attention is
-    the library's own call, byte for byte the networks before the front-end
-    fields; otherwise the layer loop, with the attention block after the
-    first activation: GELU, or SIREN's sin(omega_0 (W x + b)) at every sine
-    layer."""
+    """The network's output for one input row. A Kolmogorov-Arnold network
+    is its own call (its activations are the tanh between its layers, and it
+    takes no attention block: ``config.check_front_end``). The MLP's GELU
+    path without attention is the library's own call, byte for byte the
+    networks before the front-end fields; otherwise the layer loop, with the
+    attention block after the first activation: GELU, or SIREN's
+    sin(omega_0 (W x + b)) at every sine layer."""
+    if isinstance(net, _kan.KAN):
+        return net(netinp)
     if activation == "gelu" and attention is None:
         return net(netinp)
     x = netinp
@@ -334,7 +375,13 @@ class AlecGGA_XNet(eqx.Module):
     fourier_scale: float = eqx.field(default=1.0, static=True)
     fourier_seed: int = eqx.field(default=0, static=True)
     fourier_b: tuple | None = eqx.field(default=None, static=True)
-    net: eqx.nn.MLP
+    # The network behind the front end: "mlp" or "kan" (a Kolmogorov-Arnold
+    # network of B-spline edge functions on fixed grids, kan_grid intervals
+    # of degree kan_order per edge; config states the fields).
+    network: str = eqx.field(default="mlp", static=True)
+    kan_grid: int = eqx.field(default=0, static=True)
+    kan_order: int = eqx.field(default=0, static=True)
+    net: eqx.Module
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
 
@@ -357,7 +404,11 @@ class AlecGGA_XNet(eqx.Module):
                  fourier_features: int = 0,
                  fourier_scale: float = 1.0,
                  fourier_seed: int = 0,
-                 extra_feature_ranges: tuple | None = None):
+                 extra_feature_ranges: tuple | None = None,
+                 network: str = "mlp",
+                 kan_grid: int = 0,
+                 kan_order: int = 0,
+                 extra_feature_bounds: tuple | None = None):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_XNet: use_self_attention=True requires "
@@ -431,17 +482,25 @@ class AlecGGA_XNet(eqx.Module):
         self.gea_mu = gea_mu
         ranges = _extra_ranges("AlecGGA_XNet", n_extra_features,
                                fourier_features, extra_feature_ranges)
+        bounds = _extra_bounds("AlecGGA_XNet", n_extra_features, network,
+                               extra_feature_bounds)
         check_front_end("AlecGGA_XNet", activation=activation, omega_0=omega_0,
                         fourier_features=fourier_features,
                         fourier_scale=fourier_scale, fourier_seed=fourier_seed,
                         descriptor_coordinates=descriptor_coordinates,
                         descriptor_log_transform=descriptor_log_transform,
-                        extra_feature_ranges=ranges)
+                        extra_feature_ranges=ranges, network=network,
+                        kan_grid=kan_grid, kan_order=kan_order,
+                        attention=use_self_attention,
+                        extra_feature_bounds=bounds)
         self.activation = activation
         self.omega_0 = float(omega_0)
         self.fourier_features = int(fourier_features)
         self.fourier_scale = float(fourier_scale)
         self.fourier_seed = int(fourier_seed)
+        self.network = str(network)
+        self.kan_grid = int(kan_grid)
+        self.kan_order = int(kan_order)
         self.ueg_gate = ueg_gate
         self.n_extra_features = n_extra_features
         self.lob_lim = lob_lim
@@ -473,24 +532,34 @@ class AlecGGA_XNet(eqx.Module):
 
         key = jax.random.PRNGKey(seed)
         keys = jax.random.split(key, 2)
-        self.net = eqx.nn.MLP(
-            in_size=in_size, out_size=1, depth=depth, width_size=nodes,
-            activation=jax.nn.gelu, key=keys[0],
-        )
-        if self.activation == "sine":
-            # SIREN's initialization from a key of its own, so the split
-            # above and every GELU network's draw are unchanged.
-            self.net = _siren_initialized(self.net, self.omega_0,
-                                          jax.random.fold_in(key, 1))
-        # Zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1 at init,
+        if self.network == "kan":
+            # The Kolmogorov-Arnold network on the row's bounds (kan.bounds_for
+            # states the row), from the same key the MLP would take.
+            self.net = _kan.KAN(
+                in_size, nodes, depth,
+                _kan.bounds_for("x", descriptor_coordinates,
+                                descriptor_log_transform, False, bounds),
+                self.kan_grid, self.kan_order, keys[0])
+        else:
+            self.net = eqx.nn.MLP(
+                in_size=in_size, out_size=1, depth=depth, width_size=nodes,
+                activation=jax.nn.gelu, key=keys[0],
+            )
+            if self.activation == "sine":
+                # SIREN's initialization from a key of its own, so the split
+                # above and every GELU network's draw are unchanged.
+                self.net = _siren_initialized(self.net, self.omega_0,
+                                              jax.random.fold_in(key, 1))
+        # Zero the final layer so 1 + LOB(tanh(s)² · net) ≈ 1 at init,
         # ensuring the untrained network returns F_x=1 -- Slater/LDA exchange (the
         # uniform-gas limit, since F multiplies lda_x in models.py), NOT PBE.
         if zero_init_final_layer:
-            self.net = eqx.tree_at(
+            self.net = (_kan.zeroed_last_layer(self.net)
+                        if self.network == "kan" else eqx.tree_at(
                 lambda m: (m.layers[-1].weight, m.layers[-1].bias),
                 self.net,
                 replace=(jnp.zeros_like(self.net.layers[-1].weight),
-                         jnp.zeros_like(self.net.layers[-1].bias)))
+                         jnp.zeros_like(self.net.layers[-1].bias))))
         self.attention = (
             _xnet.SelfAttentionBlock(hidden_size=nodes, num_heads=num_heads, key=keys[1])
             if use_self_attention else None
@@ -701,7 +770,13 @@ class AlecGGA_CNet(eqx.Module):
     fourier_scale: float = eqx.field(default=1.0, static=True)
     fourier_seed: int = eqx.field(default=0, static=True)
     fourier_b: tuple | None = eqx.field(default=None, static=True)
-    net: eqx.nn.MLP
+    # The network behind the front end: "mlp" or "kan" (a Kolmogorov-Arnold
+    # network of B-spline edge functions on fixed grids, kan_grid intervals
+    # of degree kan_order per edge; config states the fields).
+    network: str = eqx.field(default="mlp", static=True)
+    kan_grid: int = eqx.field(default=0, static=True)
+    kan_order: int = eqx.field(default=0, static=True)
+    net: eqx.Module
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
 
@@ -724,7 +799,11 @@ class AlecGGA_CNet(eqx.Module):
                  fourier_features: int = 0,
                  fourier_scale: float = 1.0,
                  fourier_seed: int = 0,
-                 extra_feature_ranges: tuple | None = None):
+                 extra_feature_ranges: tuple | None = None,
+                 network: str = "mlp",
+                 kan_grid: int = 0,
+                 kan_order: int = 0,
+                 extra_feature_bounds: tuple | None = None):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_CNet: use_self_attention=True requires "
@@ -796,17 +875,25 @@ class AlecGGA_CNet(eqx.Module):
         self.use_spin_polarization = use_spin_polarization
         ranges = _extra_ranges("AlecGGA_CNet", n_extra_features,
                                fourier_features, extra_feature_ranges)
+        bounds = _extra_bounds("AlecGGA_CNet", n_extra_features, network,
+                               extra_feature_bounds)
         check_front_end("AlecGGA_CNet", activation=activation, omega_0=omega_0,
                         fourier_features=fourier_features,
                         fourier_scale=fourier_scale, fourier_seed=fourier_seed,
                         descriptor_coordinates=descriptor_coordinates,
                         descriptor_log_transform=descriptor_log_transform,
-                        extra_feature_ranges=ranges)
+                        extra_feature_ranges=ranges, network=network,
+                        kan_grid=kan_grid, kan_order=kan_order,
+                        attention=use_self_attention,
+                        extra_feature_bounds=bounds)
         self.activation = activation
         self.omega_0 = float(omega_0)
         self.fourier_features = int(fourier_features)
         self.fourier_scale = float(fourier_scale)
         self.fourier_seed = int(fourier_seed)
+        self.network = str(network)
+        self.kan_grid = int(kan_grid)
+        self.kan_order = int(kan_order)
 
         in_size = 2 + (1 if use_spin_polarization else 0) + n_extra_features
         # The Fourier map, when on (the polarized row [x_0, x_1, x_s,
@@ -830,21 +917,32 @@ class AlecGGA_CNet(eqx.Module):
 
         key = jax.random.PRNGKey(seed)
         keys = jax.random.split(key, 2)
-        self.net = eqx.nn.MLP(
-            in_size=in_size, out_size=1, depth=depth, width_size=nodes,
-            activation=jax.nn.gelu, key=keys[0],
-        )
-        if self.activation == "sine":
-            self.net = _siren_initialized(self.net, self.omega_0,
-                                          jax.random.fold_in(key, 1))
-        # Zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1 at init
+        if self.network == "kan":
+            # The Kolmogorov-Arnold network on the row's bounds (kan.bounds_for
+            # states the row), from the same key the MLP would take.
+            self.net = _kan.KAN(
+                in_size, nodes, depth,
+                _kan.bounds_for("c", descriptor_coordinates,
+                                descriptor_log_transform,
+                                use_spin_polarization, bounds),
+                self.kan_grid, self.kan_order, keys[0])
+        else:
+            self.net = eqx.nn.MLP(
+                in_size=in_size, out_size=1, depth=depth, width_size=nodes,
+                activation=jax.nn.gelu, key=keys[0],
+            )
+            if self.activation == "sine":
+                self.net = _siren_initialized(self.net, self.omega_0,
+                                              jax.random.fold_in(key, 1))
+        # Zero the final layer so 1 + LOB(tanh(s)² · net) ≈ 1 at init
         # (Fc -> 1, the PW92/LDA-correlation limit, NOT PBE).
         if zero_init_final_layer:
-            self.net = eqx.tree_at(
+            self.net = (_kan.zeroed_last_layer(self.net)
+                        if self.network == "kan" else eqx.tree_at(
                 lambda m: (m.layers[-1].weight, m.layers[-1].bias),
                 self.net,
                 replace=(jnp.zeros_like(self.net.layers[-1].weight),
-                         jnp.zeros_like(self.net.layers[-1].bias)))
+                         jnp.zeros_like(self.net.layers[-1].bias))))
         self.attention = (
             _xnet.SelfAttentionBlock(hidden_size=nodes, num_heads=num_heads, key=keys[1])
             if use_self_attention else None
@@ -1059,11 +1157,18 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         omega_0=float(getattr(arch, "omega_0", 1.0)),
         fourier_features=int(getattr(arch, "fourier_features", 0)),
         fourier_scale=float(getattr(arch, "fourier_scale", 1.0)),
-        fourier_seed=int(getattr(arch, "fourier_seed", 0)))
-    # The descriptor columns' ranges the map divides by, read off the
-    # architecture's descriptors only where the map is on.
+        fourier_seed=int(getattr(arch, "fourier_seed", 0)),
+        network=str(getattr(arch, "network", "mlp")),
+        kan_grid=int(getattr(arch, "kan_grid", 0)),
+        kan_order=int(getattr(arch, "kan_order", 0)))
+    # The descriptor columns' ranges the map divides by and the bounds the
+    # spline network puts its grids on, read off the architecture's
+    # descriptors only where the map or the spline network is on.
     front_end["extra_feature_ranges"] = (
         tuple(arch.extra_feature_ranges) if front_end["fourier_features"]
+        else None)
+    front_end["extra_feature_bounds"] = (
+        tuple(arch.extra_feature_bounds) if front_end["network"] == "kan"
         else None)
     parent = None
     zero_init_final_layer = arch.zero_init_final_layer

@@ -57,7 +57,8 @@ _DEEP = dict(dm_entropy_intensive=True, descriptor_log_transform=True)
 _CAMPAIGN = dict(use_polarized_correlation=True,
                  descriptor_coordinates="paper", ueg_gate="x2")
 _MLP0 = {"activation": "gelu", "omega_0": 1.0, "fourier_features": 0,
-         "fourier_scale": 1.0, "fourier_seed": 0, "fourier_digest": None}
+         "fourier_scale": 1.0, "fourier_seed": 0, "fourier_digest": None,
+         "network": "mlp", "kan_grid": 0, "kan_order": 0, "kan_digest": None}
 #: The ranges each base coordinate is divided by before the map (the page;
 #: the spans over the campaign atoms' rho*w pretraining sample): x_s 4.76,
 #: x_0 8.78, the legacy transformed r_s 5.72; x_1 = ln(spinscale) up to
@@ -300,7 +301,7 @@ def test_the_plain_network_is_unchanged():
 
 
 def test_the_registry_entries_are_deep_3x16_with_one_front_end():
-    """deep_3x16 plus one front end (dataclass equality), 39 entries, own
+    """deep_3x16 plus one front end (dataclass equality), 41 entries, own
     shown name, GGA rung, expanded key naming it, describe() carrying it, both
     figure orders after deep_gea_3x16 in #9e9ac8, #9ecae1."""
     from xcquinox.pipeline import arch_names, rungs
@@ -319,9 +320,10 @@ def test_the_registry_entries_are_deep_3x16_with_one_front_end():
         others = {v.lower() for k, v in AS.ARCH_COLOR.items()
                   if not k.startswith(name[:-5])}
         assert colour not in others | accents, name
-    # the digest is the record's statement of the draw, not a field
+    # the digests are the record's statements of the draw and of the spline
+    # grids, not fields
     assert all(base.describe()[k] == v for k, v in _MLP0.items()
-               if k != "fourier_digest")
+               if not k.endswith("_digest"))
     for order in (AS._STORED_ORDER, AS._DISPLAY_ORDER, AS.ARCH_ORDER):
         g = order.index("deep_gea_3x16")
         assert order[g - 1:g + 3] == ("deep_attn_3x16", "deep_gea_3x16", *_NEW)
@@ -410,7 +412,7 @@ def test_the_fields_are_validated():
     for arch in map(C.get_architecture, _NEW):
         for out in (C.anchored(arch), C.apply_model_block(arch, block)):
             assert all(getattr(out, f) == getattr(arch, f)
-                       for f in _MLP0 if f != "fourier_digest")
+                       for f in _MLP0 if not f.endswith("_digest"))
 
 
 def test_the_class_record_and_the_loaders_state_the_front_end(

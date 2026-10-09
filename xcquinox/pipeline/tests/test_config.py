@@ -128,7 +128,7 @@ def test_architecture_config_field_validation(field, value, exc):
 # differ from deep_mgga_3x16 in shape alone.
 def test_architectures_registry_key_set():
     from xcquinox.pipeline.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 39
+    assert len(ARCHITECTURES) == 41
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -167,6 +167,9 @@ def test_architectures_registry_key_set():
         # network: the gradient-expansion coefficient fixed by construction,
         # the Fourier-feature front end, the sine activation.
         "deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16",
+        # The screen's Kolmogorov-Arnold pair: B-spline edge functions in
+        # place of the MLP at depth 2, width 6, plain and geometric.
+        "deep_kan_2x6", "deep_kan_geom_2x6",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
 
@@ -571,7 +574,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.pipeline.config import ARCHITECTURES
     from xcquinox.pipeline.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 39
+    assert len(ARCHITECTURES) == 41
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)

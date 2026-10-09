@@ -525,7 +525,7 @@ def identity_mismatches(cfg, cert) -> list:
 def model_class_mismatches(cfg, cert, arch_name=None) -> list:
     """``[(key, recorded, wanted), ...]`` for the model-class fields a
     certificate records -- ``parent_anchor``, ``descriptor_coordinates``,
-    ``ueg_gate``, ``descriptor_log_transform``, ``gea_mu`` and the six
+    ``ueg_gate``, ``descriptor_log_transform``, ``gea_mu`` and the ten
     front-end fields (``checkpoint_class.MLP_FIELDS``) -- that differ
     from the class this run builds. A certificate written before the first
     fields existed records none of them, which reads as the unanchored
@@ -610,15 +610,17 @@ def model_class_mismatches(cfg, cert, arch_name=None) -> list:
                 want_gea = getattr(built, "resolved_gea_mu", None)
                 if got_gea != want_gea:
                     out.append(("gea_mu", got_gea, want_gea))
-                # The MLP front end, six fields of the same kind; a
-                # certificate that states none certified the library MLP.
-                # The digest follows the resolved correlation row, so a row
-                # that cannot carry the map leaves it undefined.
+                # The front end, ten fields of the same kind; a certificate
+                # that states none certified the library MLP. The digests
+                # follow the resolved correlation row, so a row that cannot
+                # carry the map or the spline grids leaves the digest
+                # undefined, reported under its own name.
                 got_mlp = _normalize_mlp(cert)
                 try:
                     want_mlp = _mlp_class_of(built)
                 except ValueError as exc:
-                    out.append(("fourier_digest", got_mlp["fourier_digest"],
+                    field = getattr(exc, "field", "fourier_digest")
+                    out.append((field, got_mlp[field],
                                 f"unresolvable ({exc})"))
                 else:
                     out.extend(_mlp_mismatches(got_mlp, want_mlp))
@@ -1906,8 +1908,9 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         # transform; a certificate that states none certified networks
         # without the term.
         "gea_mu": getattr(arch, "resolved_gea_mu", None),
-        # The MLP front end (the activation, its frequency, the Fourier map
-        # and its digest), six fields of the same kind.
+        # The front end (the activation, its frequency, the Fourier map and
+        # its digest, the network kind, the spline grid and its digest), ten
+        # fields of the same kind.
         **_mlp_class_of(arch),
         "xcquinox_version": running_xcquinox_version(),
         "identity": run_identity(cfg),
