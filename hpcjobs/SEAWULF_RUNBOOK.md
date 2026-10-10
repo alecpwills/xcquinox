@@ -658,9 +658,11 @@ campaigns), `dfs_step7.dfs6311_grid3_v3.yaml` (the grid-3 lineage root) and the 
 `dfs_step7.dfs6311_grid3_v7g1_c25.yaml` and `dfs_step7.dfs6311_grid3_v7g1_dfsparity.yaml`
 (the 25-cycle and the dpyscf-parity arms), and the three files of campaign 1 of the v8
 program, `dfs_step8.v8_dfs_allsc.yaml`, `dfs_step8.v8_dfs_parity.yaml` and
-`dfs_step8.v8_dfs_coldstart.yaml` (the arms S, P and A of the seed-start campaign) and
+`dfs_step8.v8_dfs_coldstart.yaml` (the arms S, P and A of the seed-start campaign),
 `dfs_step8.v8_slim05_allsc.yaml` (the Slim05 pretraining arm at the published density identity; the
-submission commands are in `docs/getting_started.md`).
+submission commands are in `docs/getting_started.md`) and `dfs_step8.arch_screen.yaml`
+(the architecture screen: the seven new networks of the screen at the same cloning
+protocol, pretraining only, under the screen's own output and data roots).
 `xcquinox/pipeline/tests/test_cluster_grid_config.py` holds this set equal to the files on
 disk, the personal `*.local.yaml` copies excepted.
 

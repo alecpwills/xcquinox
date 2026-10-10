@@ -245,7 +245,9 @@ def test_the_fractional_charge_curve_of_the_pbe_parent_is_pyscfs():
 def test_h2_at_1p4_bohr_is_run_scf_and_the_references_are_pyscfs():
     """``dissociation_curve`` on a seed-0 deep_3x16 clone at 1.4 bohr under
     the manual configuration is ``run_scf`` on a record precomputed here
-    from ``h2_spec(1.4)`` with full integrals, exactly; ``ccsd_dissociation``
+    from ``h2_spec(1.4)`` with full integrals, to the configuration's
+    conv_tol (the record is recomputed, and a second SCF under threaded BLAS
+    need not be bit-identical); ``ccsd_dissociation``
     at 1.4 bohr is pyscf's CCSD converged tightly; ``comparator_dissociation``
     at 6.0 bohr is pyscf's restricted PBE. The geometry is 1.4 bohr in
     angstrom (relative 1e-9)."""
@@ -264,7 +266,10 @@ def test_h2_at_1p4_bohr_is_run_scf_and_the_references_are_pyscfs():
                                            descriptors=model.descriptors)
     direct = run_scf(config, model, record, forward_only=True)
     assert math.isfinite(float(direct.total_energy))
-    assert curve["E"] == [float(direct.total_energy)]
+    # the cache clear above forces an independent precompute, and a second
+    # SCF under threaded BLAS need not be bit-identical (1 ulp observed on
+    # CI); the bound is the configuration's conv_tol (1e-8)
+    assert curve["E"] == pytest.approx([float(direct.total_energy)], abs=1e-8)
     assert curve["converged"] == [bool(direct.converged)]
     assert curve["cycles"] == [int(direct.cycles_run)]
     mol = gto.M(atom="H 0 0 0; H 0 0 1.4", unit="bohr", basis=_BASIS, verbose=0)

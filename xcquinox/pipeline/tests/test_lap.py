@@ -613,14 +613,25 @@ def test_the_precompute_record_carries_the_column():
     _record(_OH, "def2-svp", 1, (d,))
     half = make_descriptor("lap", scale=0.5 * scale)
     md_half = _record(_OH, "def2-svp", 1, (half,))
-    oracle = np.tanh(2.0 * _q(rho_ref, lap_ref) / scale)
+    # the scale enters the precompute cache key, so this call re-runs the PBE
+    # SCF, and a second convergence under threaded BLAS need not land on the
+    # first record's iterate (rho differing at the 1e-2 level at four
+    # threads, run to run); the oracle is this record's own reference, which
+    # its column matches at the 1e-15 level
+    mol_half, coords_half = _grid(_OH, "def2-svp", 1, md_half)
+    rho_half, lap_half, _ao2 = _pyscf(mol_half, coords_half,
+                                      _total(jnp.asarray(md_half["dm_pbe"])))
+    valid_half = rho_half > _VALID
+    oracle = np.tanh(2.0 * _q(rho_half, lap_half) / scale)
     col_half = np.asarray(md_half["lap_features"])[:, 0]
-    assert float(np.abs(col_half[valid] - oracle[valid]).max()) <= _COL_TOL
+    assert float(np.abs(col_half[valid_half] - oracle[valid_half]).max()) \
+        <= _COL_TOL
     assert float(np.abs(col_half - col[:, 0]).max()) > 0.1
     model = SimpleNamespace(descriptors=(half,))
     _fa, _fb, ft_half = _uks_features_of(model, md_half)
     live = np.asarray(ft_half(jnp.asarray(md_half["dm_pbe"])))[:, 0]
-    assert float(np.abs(live[valid] - oracle[valid]).max()) <= _COL_TOL
+    assert float(np.abs(live[valid_half] - oracle[valid_half]).max()) \
+        <= _COL_TOL
 
 
 # ---------------------------------------------------------------------------
