@@ -4,8 +4,11 @@ Provides FeatureSpec, _FrozenDict, _FrozenTuple, _freeze, and the
 FeatureSpec.as_kwargs thaw round-trip, together with MoleculeSpec,
 PretrainSpec, TrainingSpec, and TestSpec.
 """
+import math
 import os
 from dataclasses import dataclass, field, fields, replace
+
+from xcquinox.pipeline import gradient_expansion
 
 
 def _freeze(value):
@@ -139,8 +142,8 @@ class ArchitectureConfig:
     # multiplies lda_x + PW92, NOT PBE). False keeps the default
     # initialization (gives Fx mean ~+2.65e-4 off 1). No registry entry sets
     # it: the published clone starts from the default initialization and so
-    # does every network here; only ``anchored()`` turns it on, as the parent
-    # anchor requires.
+    # does every network here (the sine network from SIREN's, ``activation``
+    # below); only ``anchored()`` turns it on, as the parent anchor requires.
     zero_init_final_layer: bool = False
     # meta_gga: DFS-faithful meta-GGA (PRB 104 L161109 Eq. 12-13). True switches the
     # X/C UEG gate to (x2 + tanh^2(x3)) (x3 = ln((alpha+1)/2)) and the exchange
@@ -180,6 +183,48 @@ class ArchitectureConfig:
     # beside the checkpoint states it. The meta-GGA rung keeps its own gate
     # and refuses "x2".
     ueg_gate: str = "tanh2"
+    # gea_mu: the second-order gradient-expansion coefficient the exchange
+    # network's curvature at s = 0 is fixed at, by construction: a name of
+    # gradient_expansion.COEFFICIENTS ("pbe", the parent's own on the GGA
+    # rung; "gea", the exact 10/81) or a positive number; None is every
+    # architecture without the term. The exchange network adds
+    # mu a/(a - 1) (1 - exp(-s^2)) in the pre-image of its bounded map
+    # (networks.AlecGGA_XNet), a term with no parameter, so a checkpoint's
+    # leaves do not reveal it and the class record beside the checkpoint
+    # states the resolved value. Requires the x2 gate (the network's own term
+    # is then O(s^3)), the GGA rung, no parent anchor (``anchored`` drops the
+    # field: the anchored pre-image carries the parent's curvature) and no
+    # ueg_limit or lieb_oxford exchange constraint (they wrap the forward and
+    # change the curvature).
+    gea_mu: str | float | None = None
+    # The MLP front end of both networks (networks.py states the forms):
+    # activation "gelu" (the library MLP, every architecture before the
+    # field) or "sine" (SIREN: sin(omega_0 (W x + b)) at every hidden layer
+    # with SIREN's initialization, omega_0 the frequency; 1.0 for the smooth
+    # O(1) inputs here, where SIREN's 30 is for image coordinates);
+    # fourier_features m > 0 feeds each MLP the sines and cosines of 2 pi B v
+    # of its input row v, B an (m, d) matrix of fourier_scale N(0, 1) draws
+    # from numpy's RandomState(fourier_seed) (fourier_seed + 1 for the
+    # correlation network), each column divided by its coordinate's range so
+    # that the scale counts frequencies per range; the matrix is part of the
+    # architecture (a static field, no parameter), and the class record
+    # states its digest. The map needs bounded inputs, the paper or dfs
+    # coordinates or the legacy ones under the descriptor log transform (the
+    # scales follow the set a run resolves); the two front ends are separate
+    # arms (config.check_front_end).
+    activation: str = "gelu"
+    omega_0: float = 1.0
+    fourier_features: int = 0
+    fourier_scale: float = 1.0
+    fourier_seed: int = 0
+    # The network behind the front end: "mlp" (the library MLP, every
+    # architecture before the field) or "kan", a Kolmogorov-Arnold network
+    # of B-spline edge functions on fixed grids (xcquinox.pipeline.kan),
+    # kan_grid intervals of degree kan_order per edge, both stated by a KAN
+    # and both 0 for the MLP (config.check_front_end).
+    network: str = "mlp"
+    kan_grid: int = 0
+    kan_order: int = 0
 
     def __post_init__(self):
         if not isinstance(self.name, str):
@@ -236,6 +281,56 @@ class ArchitectureConfig:
                 f"ArchitectureConfig.ueg_gate must be one of {UEG_GATES}, "
                 f"got {self.ueg_gate!r}"
             )
+        if self.gea_mu is not None:
+            try:
+                gradient_expansion.resolve(self.gea_mu)
+            except ValueError as exc:
+                raise ValueError(
+                    f"ArchitectureConfig {self.name!r}: {exc}") from None
+            if self.ueg_gate != "x2":
+                raise ValueError(
+                    f"ArchitectureConfig {self.name!r}: gea_mu="
+                    f"{self.gea_mu!r} fixes the s^2 coefficient only under "
+                    "the x2 gate, whose network term is O(s^3); under "
+                    f"ueg_gate={self.ueg_gate!r} the network adds its own "
+                    "s^2 term")
+            if self.meta_gga:
+                raise ValueError(
+                    f"ArchitectureConfig {self.name!r}: gea_mu="
+                    f"{self.gea_mu!r} is a GGA-rung construction; the "
+                    "meta-GGA gate carries the indicator")
+            if self.parent_anchor:
+                raise ValueError(
+                    f"ArchitectureConfig {self.name!r}: gea_mu="
+                    f"{self.gea_mu!r} cannot be combined with the parent "
+                    "anchor, whose pre-image already carries the parent's "
+                    "curvature (``anchored`` drops the field)")
+            wrapping = sorted({s.name for s in self.x_constraints
+                               if s.name in ("ueg_limit", "lieb_oxford")})
+            if wrapping:
+                raise ValueError(
+                    f"ArchitectureConfig {self.name!r}: gea_mu="
+                    f"{self.gea_mu!r} cannot be combined with the exchange "
+                    f"constraint(s) {wrapping}: they wrap the network's "
+                    "forward and change its curvature at s = 0 (ueg_limit "
+                    "zeroes it, lieb_oxford scales it by a second map's "
+                    "slope)")
+        check_front_end(f"ArchitectureConfig {self.name!r}",
+                        activation=self.activation, omega_0=self.omega_0,
+                        fourier_features=self.fourier_features,
+                        fourier_scale=self.fourier_scale,
+                        fourier_seed=self.fourier_seed,
+                        descriptor_coordinates=self.descriptor_coordinates,
+                        descriptor_log_transform=self.descriptor_log_transform,
+                        # the descriptor columns' ranges and bounds,
+                        # materialized only where the map or the spline
+                        # network reads them
+                        extra_feature_ranges=(self.extra_feature_ranges
+                                              if self.fourier_features else ()),
+                        network=self.network, kan_grid=self.kan_grid,
+                        kan_order=self.kan_order, attention=self.attention,
+                        extra_feature_bounds=(self.extra_feature_bounds
+                                              if self.network == "kan" else ()))
         if not isinstance(self.num_heads, int) or isinstance(self.num_heads, bool):
             raise TypeError(
                 f"ArchitectureConfig.num_heads must be a plain Python int, "
@@ -359,12 +454,40 @@ class ArchitectureConfig:
         return 2.0
 
     @property
+    def resolved_gea_mu(self) -> float | None:
+        """The gradient-expansion coefficient as a number (``gea_mu`` names
+        it or states it), ``None`` for an architecture without the term."""
+        if self.gea_mu is None:
+            return None
+        return gradient_expansion.resolve(self.gea_mu)
+
+    @property
     def n_extra_features(self) -> int:
         from xcquinox.pipeline.descriptors import make_descriptor
         return sum(
             make_descriptor(spec.name, **spec.as_kwargs()).n_features
             for spec in self.descriptors
         )
+
+    @property
+    def extra_feature_ranges(self) -> tuple:
+        """The range of each descriptor column, in the order the networks
+        read them (``Descriptor.column_ranges`` of each materialized
+        descriptor): the scale the Fourier map divides the column by, or
+        ``None`` for a column that is not bounded by construction, which the
+        map refuses (:func:`check_front_end`)."""
+        return tuple(r for d in self.materialize_descriptors()
+                     for r in d.column_ranges)
+
+    @property
+    def extra_feature_bounds(self) -> tuple:
+        """The (lo, hi) bounds of each descriptor column, in the order the
+        networks read them (``Descriptor.column_bounds`` of each
+        materialized descriptor), the grids a spline network puts on the
+        columns; ``(None, None)`` for a column not bounded by construction,
+        which the network refuses (:func:`check_front_end`)."""
+        return tuple(tuple(b) for d in self.materialize_descriptors()
+                     for b in d.column_bounds)
 
     @property
     def n_input_features(self) -> int:
@@ -412,7 +535,16 @@ class ArchitectureConfig:
                   zero_init_final_layer: bool = False,
                   parent_anchor: bool = False,
                   descriptor_coordinates: str = "legacy",
-                  ueg_gate: str = "tanh2"):
+                  ueg_gate: str = "tanh2",
+                  gea_mu=None,
+                  activation: str = "gelu",
+                  omega_0: float = 1.0,
+                  fourier_features: int = 0,
+                  fourier_scale: float = 1.0,
+                  fourier_seed: int = 0,
+                  network: str = "mlp",
+                  kan_grid: int = 0,
+                  kan_order: int = 0):
         """Factory that accepts str | (str, dict) | FeatureSpec for each entry.
 
         ``num_heads`` is required when ``attention=True`` (no silent default,
@@ -486,6 +618,11 @@ class ArchitectureConfig:
             parent_anchor=parent_anchor,
             descriptor_coordinates=descriptor_coordinates,
             ueg_gate=ueg_gate,
+            gea_mu=gea_mu,
+            activation=activation, omega_0=omega_0,
+            fourier_features=fourier_features, fourier_scale=fourier_scale,
+            fourier_seed=fourier_seed,
+            network=network, kan_grid=kan_grid, kan_order=kan_order,
         )
 
 
@@ -503,14 +640,157 @@ DESCRIPTOR_COORDINATES = ("legacy", "dfs", "paper")
 #: before the field; ``x2`` is the published clone's ``(1 - exp(-s^2)) ln(1 + s)``.
 UEG_GATES = ("tanh2", "x2")
 
+#: The activations of the networks' MLPs (``ArchitectureConfig.activation``):
+#: the library's GELU, or the sine of SIREN (Sitzmann et al. 2020).
+ACTIVATIONS = ("gelu", "sine")
+
+#: The networks behind the front end (``ArchitectureConfig.network``): the
+#: library MLP and the Kolmogorov-Arnold network of ``xcquinox.pipeline.kan``.
+NETWORKS = ("mlp", "kan")
+
+#: The bound on ``ArchitectureConfig.fourier_seed``: the correlation network
+#: draws its matrix from ``fourier_seed + 1``, which must still be a seed
+#: numpy's ``RandomState`` accepts (at most 2^32 - 1), as ``MAX_SEED`` keeps
+#: ``seed + 1`` within range for the networks' own seeds.
+MAX_FOURIER_SEED = 2 ** 32 - 2
+
+
+def check_front_end(owner: str, *, activation, omega_0, fourier_features,
+                    fourier_scale, fourier_seed, descriptor_coordinates,
+                    descriptor_log_transform, extra_feature_ranges=(),
+                    network="mlp", kan_grid=0, kan_order=0, attention=False,
+                    extra_feature_bounds=()):
+    """The rules of the front-end fields, applied by the architecture at
+    configuration time and by both networks at construction (``owner`` names
+    the caller in the message); ``extra_feature_ranges`` are the descriptor
+    columns' ranges and ``extra_feature_bounds`` their (lo, hi) bounds,
+    ``None`` where a column is not bounded by construction
+    (``Descriptor.column_bounds``). ``ValueError`` names the field."""
+    def _plain(name, value, integer):
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or (integer and not isinstance(value, int))):
+            raise ValueError(
+                f"{owner}: {name} must be a plain Python "
+                f"{'int' if integer else 'number'}, got {value!r}")
+        if not integer and not math.isfinite(float(value)):
+            raise ValueError(f"{owner}: {name} must be finite, got {value!r}")
+
+    if activation not in ACTIVATIONS:
+        raise ValueError(
+            f"{owner}: activation must be one of {ACTIVATIONS}, got "
+            f"{activation!r}")
+    _plain("omega_0", omega_0, False)
+    _plain("fourier_features", fourier_features, True)
+    _plain("fourier_scale", fourier_scale, False)
+    _plain("fourier_seed", fourier_seed, True)
+    if float(omega_0) <= 0.0:
+        raise ValueError(f"{owner}: omega_0 must be positive, got {omega_0!r}")
+    if activation != "sine" and float(omega_0) != 1.0:
+        raise ValueError(
+            f"{owner}: omega_0={omega_0!r} is the sine network's frequency; "
+            f"with activation={activation!r} it must be 1.0")
+    if fourier_features < 0:
+        raise ValueError(
+            f"{owner}: fourier_features must be >= 0, got {fourier_features!r}")
+    if float(fourier_scale) <= 0.0:
+        raise ValueError(
+            f"{owner}: fourier_scale must be positive, got {fourier_scale!r}")
+    if not 0 <= fourier_seed <= MAX_FOURIER_SEED:
+        raise ValueError(
+            f"{owner}: fourier_seed must lie in [0, {MAX_FOURIER_SEED}], got "
+            f"{fourier_seed!r}")
+    if fourier_features == 0 and (float(fourier_scale) != 1.0
+                                  or fourier_seed != 0):
+        raise ValueError(
+            f"{owner}: without a Fourier map (fourier_features=0) "
+            f"fourier_scale and fourier_seed stay at 1.0 and 0, got "
+            f"{fourier_scale!r} and {fourier_seed!r}")
+    if fourier_features > 0 and activation == "sine":
+        raise ValueError(
+            f"{owner}: fourier_features={fourier_features!r} with "
+            "activation='sine' is not a configuration this version builds; "
+            "the two front ends are separate arms")
+    if (fourier_features > 0 and descriptor_coordinates == "legacy"
+            and not descriptor_log_transform):
+        raise ValueError(
+            f"{owner}: fourier_features={fourier_features!r} needs bounded "
+            "inputs: the paper or dfs coordinates, or the legacy coordinates "
+            "under the descriptor log transform (descriptor_log_transform="
+            "True); the raw reduced gradient and r_s of the legacy "
+            "coordinates without it are not")
+    if fourier_features > 0:
+        unbounded = [i for i, r in enumerate(extra_feature_ranges) if r is None]
+        if unbounded:
+            raise ValueError(
+                f"{owner}: fourier_features={fourier_features!r} maps every "
+                f"input column, and descriptor column(s) {unbounded} are not "
+                "bounded by construction (Descriptor.column_ranges); the map "
+                "needs bounded inputs")
+        for i, r in enumerate(extra_feature_ranges):
+            if (isinstance(r, bool) or not isinstance(r, (int, float))
+                    or not math.isfinite(r) or r <= 0):
+                raise ValueError(
+                    f"{owner}: extra_feature_ranges[{i}] = {r!r} is not a "
+                    "positive finite range")
+    # The network behind the front end. The MLP states no spline grid; a
+    # Kolmogorov-Arnold network states its grid and order, takes no front
+    # end of the MLP's (the map, the sine activation) and no attention
+    # block, and puts a spline grid on every input column, so every column
+    # must be bounded.
+    if network not in NETWORKS:
+        raise ValueError(
+            f"{owner}: network must be one of {NETWORKS}, got {network!r}")
+    _plain("kan_grid", kan_grid, True)
+    _plain("kan_order", kan_order, True)
+    if network == "mlp":
+        if kan_grid != 0 or kan_order != 0:
+            raise ValueError(
+                f"{owner}: kan_grid and kan_order state a spline grid and are "
+                f"0 with network='mlp', got {kan_grid!r} and {kan_order!r}")
+        return
+    if kan_grid < 1 or kan_order < 1:
+        raise ValueError(
+            f"{owner}: network='kan' needs kan_grid (intervals) and kan_order "
+            f"(the spline degree) of at least 1, got {kan_grid!r} and "
+            f"{kan_order!r}")
+    if fourier_features > 0:
+        raise ValueError(
+            f"{owner}: network='kan' with fourier_features={fourier_features!r}"
+            " is not a configuration this version builds; the map is the "
+            "MLP's front end")
+    if activation != "gelu":
+        raise ValueError(
+            f"{owner}: network='kan' with activation={activation!r} is not a "
+            "configuration this version builds; the activation is the MLP's")
+    if attention:
+        raise ValueError(
+            f"{owner}: network='kan' with the attention block is not a "
+            "configuration this version builds")
+    if descriptor_coordinates == "legacy" and not descriptor_log_transform:
+        raise ValueError(
+            f"{owner}: network='kan' puts a spline grid on every input and "
+            "needs bounded inputs: the paper or dfs coordinates, or the "
+            "legacy coordinates under the descriptor log transform "
+            "(descriptor_log_transform=True)")
+    unbounded = [i for i, (lo, hi) in enumerate(extra_feature_bounds)
+                 if lo is None or hi is None]
+    if unbounded:
+        raise ValueError(
+            f"{owner}: network='kan' puts a spline grid on every input "
+            f"column, and descriptor column(s) {unbounded} are not bounded "
+            "by construction (Descriptor.column_bounds)")
+
 
 def anchored(arch: ArchitectureConfig) -> ArchitectureConfig:
     """``arch`` with the parent anchor on: ``parent_anchor=True`` and, as the
     anchor requires, ``zero_init_final_layer=True`` (no registry entry sets
-    it; every one is overridden here). Every other field is
-    the architecture's own; the parent itself is resolved by rung when the
+    it; every one is overridden here) and ``gea_mu=None`` (the anchored
+    pre-image carries the parent's own curvature, so the fixed term is
+    dropped; the class record states the drop). Every other field is the
+    architecture's own; the parent itself is resolved by rung when the
     networks are created (``networks.create_network_pair``)."""
-    return replace(arch, parent_anchor=True, zero_init_final_layer=True)
+    return replace(arch, parent_anchor=True, zero_init_final_layer=True,
+                   gea_mu=None)
 
 
 def apply_model_block(arch: ArchitectureConfig, model) -> ArchitectureConfig:
@@ -532,6 +812,25 @@ def apply_model_block(arch: ArchitectureConfig, model) -> ArchitectureConfig:
         out = replace(out, ueg_gate=gate)
     if getattr(model, "parent_anchor", False):
         out = anchored(out)
+    return out
+
+
+def apply_run_config(arch: ArchitectureConfig, cfg) -> ArchitectureConfig:
+    """Apply a run's configuration to a registry architecture: the run-level
+    polarized-correlation override (``cfg.use_polarized_correlation``, which
+    turns the flag on and never off), then the run's ``model:`` block
+    (:func:`apply_model_block`). ``cfg`` is duck-typed like the block. Every
+    point a run resolves an architecture -- the training specs, the pretrain
+    stage, the certificate and its readers, the run validator, the figure
+    tools -- resolves through here, so the resolved identity, the Fourier
+    matrices' digest among it (it follows the composition of the correlation
+    row), cannot differ between them."""
+    out = arch
+    if getattr(cfg, "use_polarized_correlation", False):
+        out = replace(out, use_polarized_correlation=True)
+    model_block = getattr(cfg, "model", None)
+    if model_block is not None:
+        out = apply_model_block(out, model_block)
     return out
 
 
@@ -632,6 +931,53 @@ ARCHITECTURES = {
     "deep_geom_attn_3x16":      ArchitectureConfig.from_spec("deep_geom_attn_3x16",     3, 16,
                               attention=True, num_heads=4,
                               descriptors=["cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True),
+    # The 3x16 network with the second-order gradient expansion fixed by
+    # construction: deep_3x16 field for field, plus the coefficient (PBE's
+    # own, the parent's on this rung) and the x2 gate the term requires (a
+    # run's model block must state that gate too; the submit-time check
+    # refuses one that does not).
+    "deep_gea_3x16":            ArchitectureConfig.from_spec("deep_gea_3x16",           3, 16,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              ueg_gate="x2", gea_mu="pbe"),
+    # The two MLP front ends on the 3x16 network, each deep_3x16 with one
+    # change: a fixed Fourier-feature map of m = 16 frequencies at sigma = 1
+    # per coordinate range (the scales follow the coordinate set a run
+    # resolves; the entry keeps the legacy coordinates like every entry), and
+    # the sine activation with SIREN's initialization at omega_0 = 1.
+    "deep_ff_3x16":             ArchitectureConfig.from_spec("deep_ff_3x16",            3, 16,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              fourier_features=16, fourier_scale=1.0),
+    "deep_sine_3x16":           ArchitectureConfig.from_spec("deep_sine_3x16",          3, 16,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              activation="sine", omega_0=1.0),
+    # The Kolmogorov-Arnold networks of the screen: B-spline edge functions
+    # of degree 3 on fixed grids of 5 intervals over the coordinates'
+    # measured bounds, two hidden layers of width six in place of the MLP
+    # (xcquinox.pipeline.kan), without and with the cusp pair.
+    "deep_kan_2x6":             ArchitectureConfig.from_spec("deep_kan_2x6",            2, 6,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              network="kan", kan_grid=5, kan_order=3),
+    "deep_kan_geom_2x6":        ArchitectureConfig.from_spec("deep_kan_geom_2x6",       2, 6,
+                              descriptors=["cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              network="kan", kan_grid=5, kan_order=3),
+    # The Laplacian rung of the screen: the plain and the geometric 3x16
+    # networks with the compressed reduced Laplacian as a column
+    # (descriptors.LaplacianDescriptor), the cusp pair first in the geometric
+    # entry as the rung-3.5 entries order theirs; PBE stays the parent.
+    "deep_lap_3x16":            ArchitectureConfig.from_spec("deep_lap_3x16",            3, 16,
+                              descriptors=["lap"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True),
+    "deep_lap_geom_3x16":       ArchitectureConfig.from_spec("deep_lap_geom_3x16",       3, 16,
+                              descriptors=["cusp", "lap"],
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True),
     # Rung-3.5 localized-DM archs (ADDITIVE). The leaky deep_dm/deep_combined

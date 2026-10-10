@@ -208,6 +208,7 @@ def _fake_columns(n=3, *, dtype=np.float64, polarized=True, descriptors=True,
         cols["dm"] = np.ones((n, 2), dtype=dtype)
         cols["rung35"] = np.ones((n, 2), dtype=dtype)
         cols["rung35ms"] = np.ones((n, 6), dtype=dtype)
+        cols["lap"] = np.ones((n, 1), dtype=dtype)
     if x_rows is not None:
         cols["x_rows"] = x_rows
     return cols
@@ -368,6 +369,7 @@ def test_spin_channel_footing_writes_an_exchange_block(tmp_path):
     assert got["dm_x"].shape[0] == n_x
     assert got["rung35_x"].shape == (n_x, 2)
     assert got["rung35ms_x"].shape == (n_x, 6)
+    assert got["lap_x"].shape == (n_x, 1)
     assert sorted(set(got["system_x"].tolist())) == [0, 1]
     assert np.all(np.diff(got["system_x"]) >= 0)
     # He is closed-shell: its exchange rows ARE its total-density rows. H is a
@@ -494,8 +496,9 @@ def test_loader_accepts_a_legacy_file(tmp_path):
     got = pdg.load_pretrain_data_npz(str(legacy))
     assert "system_all" not in got
     assert pdg.pretrain_npz_layout(set(got)) == {
-        "polarized": True, "descriptors": True, "exchange_footing": "total",
-        "system_table": False, "mesh": True}
+        "polarized": True, "descriptors": True,
+        "descriptor_stems": ("cusp", "dm", "rung35", "rung35ms"),
+        "exchange_footing": "total", "system_table": False, "mesh": True}
 
 
 # ---------------------------------------------------------------------------

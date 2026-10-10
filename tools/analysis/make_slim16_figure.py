@@ -24,7 +24,14 @@ networks of one group and one architecture draw alike. A network that draws
 no bar is named in the title with the reason: no evaluated channel, or a
 channel with no reaction that carries a reference and a reported energy. The
 row assembly is ``slim16_table``'s own, so the figure and the metrics CSV
-state one set of numbers.
+state one set of numbers. A run carrying the comparator tables
+(``functionals_df.json``, ``hpcjobs/slim16_eval.py comparators-df``) draws,
+after the PBE-DF bar, one grey bar per comparator (r2SCAN, B3LYP, wB97M-V in
+that order, the greys of ``COMPARATOR_COLORS``), each scored as PBE-DF is
+over every reaction its table covers and read in the legend as ``label
+(WTMAD-2)``; the title names the reactions a comparator's table leaves
+without an energy and a comparator whose table scores no reaction, which
+draws no bar and no legend line. Without the file the figure is as above.
 
 Usage::
 
@@ -62,6 +69,16 @@ OUT_NAME = "slim16_wtmad2.png"
 SETS_PER_ROW = 13
 PBE_LABEL = "PBE-DF"
 PBE_COLOR = "#7f7f7f"
+#: one grey per comparator, keyed by its libxc name (the job's COMPARATORS):
+#: the triple of the 256-level grey ramp with the largest worst-case CIEDE2000
+#: separation (9.68) from every architecture colour, the rung accents, PBE-DF's
+#: grey, white, the black converged-only mark and each other, above the
+#: palette's own closest pair (8.15)
+COMPARATOR_COLORS = {"r2scan": "#464646", "b3lyp": "#9b9b9b", "wb97m-v": "#282828"}
+if set(COMPARATOR_COLORS) != set(slim16_table.COMPARATOR_ORDER):
+    raise RuntimeError("the comparator greys and slim16_table.COMPARATOR_ORDER name "
+                       f"different functionals: {sorted(COMPARATOR_COLORS)} against "
+                       f"{sorted(slim16_table.COMPARATOR_ORDER)}")
 #: one hatch per network group, in order of first appearance; the first
 #: group is unhatched
 HATCHES = ("", "////", "xxxx", "....", "\\\\\\\\", "++++")
@@ -73,9 +90,20 @@ def _finite(value) -> bool:
     return isinstance(value, float) and math.isfinite(value)
 
 
+def _scored_summary(scored: dict) -> dict:
+    """The ``mae``, ``wtmad2`` (None when nothing contributes),
+    ``n_reactions`` and ``unscored`` of a table scored by
+    ``slim16_table.wtmad2_full_weights``."""
+    return {"mae": {name: e["MAD_all"] for name, e in scored["per_subset"].items()
+                    if e["MAD_all"] is not None},
+            "wtmad2": scored["all"] if _finite(scored["all"]) else None,
+            "n_reactions": scored["n_reactions"],
+            "unscored": scored["unscored"]}
+
+
 def collect_set_errors(run_dir) -> tuple:
-    """``(order, records, pbe)`` over a run: the network labels in manifest
-    order; per label ``mae`` (``{subset: MAD}`` over every scored reaction),
+    """``(order, records, pbe, comparators)`` over a run: the network labels
+    in manifest order; per label ``mae`` (``{subset: MAD}`` over every scored reaction),
     ``mae_converged`` (the same over the converged reactions, None for a
     subset with none), ``wtmad2_all`` (None when the network draws no bar),
     ``wtmad2_converged`` (None when no subset contributes), ``mixed`` (the
@@ -86,13 +114,18 @@ def collect_set_errors(run_dir) -> tuple:
     and ``reason`` (None, ``no evaluated channel``, or ``no reaction with a
     reference and a reported energy``); and ``pbe``, PBE-DF's ``mae``,
     ``wtmad2``, ``n_reactions`` and ``unscored`` over every reaction its
-    table covers. The networks that draw bars must carry one list of
-    referenced reactions, so that the weights in the legend are one set;
-    the collection refuses a run where they differ, naming the labels."""
+    table covers; and ``comparators``, one dict per comparator table of the
+    run (``slim16_table.comparator_tables``, the display order) with ``key``,
+    ``label``, ``color`` and the four PBE-DF fields scored the same way, empty
+    for a run without the file. The networks that draw bars must carry one
+    list of referenced reactions, so that the weights in the legend are one
+    set; the collection refuses a run where they differ, naming the labels."""
     run_dir = Path(run_dir)
     manifest, width, pbe_df, subsets, _n_not_df = slim16_table.run_context(run_dir)
+    tables = slim16_table.comparator_tables(run_dir)
     order, records = [], {}
     pbe = {"mae": {}, "wtmad2": None, "n_reactions": 0, "unscored": []}
+    comparators: list = []
     referenced: dict = {}
     for network in manifest["networks"]:
         label = network.get("label")
@@ -133,26 +166,34 @@ def collect_set_errors(run_dir) -> tuple:
         if pbe["wtmad2"] is None:
             scored_pbe = slim16_table.wtmad2_full_weights(rows_pbe)
             if _finite(scored_pbe["all"]):
-                pbe = {"mae": {name: e["MAD_all"]
-                               for name, e in scored_pbe["per_subset"].items()
-                               if e["MAD_all"] is not None},
-                       "wtmad2": scored_pbe["all"],
-                       "n_reactions": scored_pbe["n_reactions"],
-                       "unscored": scored_pbe["unscored"]}
+                pbe = _scored_summary(scored_pbe)
+        # the comparators are scored on the same channel's reactions as
+        # PBE-DF, once
+        if tables and not comparators:
+            for key, name, energies in tables:
+                rows = slim16_table.reference_rows_for(molecules, reactions, energies,
+                                                       subsets)
+                comparators.append({
+                    "key": key, "label": name,
+                    "color": COMPARATOR_COLORS[key],
+                    **_scored_summary(slim16_table.wtmad2_full_weights(rows))})
     lists = list(referenced.items())
     differing = [label for label, names in lists[1:] if names != lists[0][1]]
     if differing:
         raise ValueError(
             "the evaluated channels do not carry one list of referenced reactions: "
             f"{', '.join(differing)} differ from {lists[0][0]}")
-    return order, records, pbe
+    return order, records, pbe, comparators
 
 
-def _header_lines(evaluated: list, records: dict, absent: dict) -> list:
+def _header_lines(evaluated: list, records: dict, absent: dict,
+                  comparators=()) -> list:
     """The title lines: what a bar and a mark are, then per network the
     unconverged reactions with the subsets dropped from its converged total,
-    the reactions reported without an energy, the subsets without weight,
-    and the networks that draw no bar with the reason."""
+    the reactions reported without an energy (a comparator's too: the
+    reactions a species of which its table lacks), the subsets without
+    weight, and the networks and comparators that draw no bar with the
+    reason."""
     lines = ["Slim16: mean absolute error per held-out set over every reported "
              "reaction; a black mark is the converged-only error of a set "
              "holding converged and unconverged reactions both"]
@@ -162,8 +203,13 @@ def _header_lines(evaluated: list, records: dict, absent: dict) -> list:
                if records[label]["dropped"]}
     unscored = {label: records[label]["unscored"] for label in evaluated
                 if records[label]["unscored"]}
+    unscored.update({comp["label"]: comp["unscored"] for comp in comparators
+                     if comp["wtmad2"] is not None and comp["unscored"]})
     unweighted = {label: records[label]["unweighted"] for label in evaluated
                   if records[label]["unweighted"]}
+    absent = dict(absent)
+    absent.update({comp["label"]: "no reaction with an energy in its table"
+                   for comp in comparators if comp["wtmad2"] is None})
     if unconverged:
         lines.append("unconverged: " + "; ".join(
             f"{label}: {', '.join(names)}"
@@ -185,16 +231,21 @@ def _header_lines(evaluated: list, records: dict, absent: dict) -> list:
 
 
 def plot_slim16_set_errors(order: list, records: dict, pbe: dict,
-                           out_path, log: bool = False) -> dict:
+                           out_path, log: bool = False, comparators=()) -> dict:
     """Draw the grouped bars and return the render manifest: the output
     path, the network order, the subsets on the axis, one entry per bar
-    (label, subset, value, color, hatch; PBE-DF's under ``PBE-DF``), the
-    markers (label, subset, the converged-only value), the legend texts, the
-    reaction count the weights come from, the absent labels with their
-    reasons, the unconverged and unscored reactions, the dropped and
-    unweighted subsets per network, the y scale and the y cap. With ``log``
-    the y axis is logarithmic from half the smallest drawn value, so the
-    small bars read; a zero bar then draws nothing."""
+    (label, subset, value, color, hatch; PBE-DF's under ``PBE-DF``, a
+    comparator's under its label), the markers (label, subset, the
+    converged-only value), the legend texts, the reaction count the weights
+    come from, the absent labels with their reasons, the unconverged and
+    unscored reactions, the dropped and unweighted subsets per network, the
+    y scale and the y cap, and ``comparators`` (key, label, color, WTMAD-2,
+    reaction count and unscored reactions of each comparator drawn). Per
+    subset the comparators' bars follow the PBE-DF bar in the order given,
+    in their own greys, each with a legend line ``label (WTMAD-2)``. With
+    ``log`` the y axis is logarithmic from half the smallest drawn value, so
+    the small bars read; a zero bar then draws nothing."""
+    comparators = list(comparators)
     evaluated = [label for label in order if records[label]["wtmad2_all"] is not None]
     absent = {label: records[label]["reason"] for label in order
               if records[label]["wtmad2_all"] is None}
@@ -207,7 +258,8 @@ def plot_slim16_set_errors(order: list, records: dict, pbe: dict,
     unweighted = {label: records[label]["unweighted"] for label in evaluated
                   if records[label]["unweighted"]}
     subsets = sorted(set(pbe["mae"])
-                     | {name for label in evaluated for name in records[label]["mae"]})
+                     | {name for label in evaluated for name in records[label]["mae"]}
+                     | {name for comp in comparators for name in comp["mae"]})
     groups: list = []
     for label in evaluated:
         if records[label]["group"] not in groups:
@@ -217,6 +269,7 @@ def plot_slim16_set_errors(order: list, records: dict, pbe: dict,
     values += [records[label]["mae_converged"][name] for label in evaluated
                for name in records[label]["mixed"]]
     values += list(pbe["mae"].values())
+    values += [v for comp in comparators for v in comp["mae"].values()]
     y_cap = 1.1 * max(values, default=1.0)
     positive = [v for v in values if v > 0]
     y_floor = 0.5 * min(positive) if log and positive else 0.0
@@ -225,15 +278,18 @@ def plot_slim16_set_errors(order: list, records: dict, pbe: dict,
     n_reactions = (records[evaluated[0]]["n_reactions"] if evaluated
                    else pbe["n_reactions"])
 
-    n_bars = len(evaluated) + 1
+    # per subset: the networks, PBE-DF, then the comparators
+    n_bars = len(evaluated) + 1 + len(comparators)
     group_w = 0.8
     bar_w = group_w / n_bars
     per_row = min(SETS_PER_ROW, max(len(subsets), 1))
     n_rows = max(1, math.ceil(len(subsets) / SETS_PER_ROW))
     fig_w = max(10.0, per_row * n_bars * INCH_PER_BAR + 0.8)
-    n_handles = len(evaluated) + (1 if pbe["wtmad2"] is not None else 0)
+    with_total = [comp for comp in comparators if comp["wtmad2"] is not None]
+    n_handles = (len(evaluated) + (1 if pbe["wtmad2"] is not None else 0)
+                 + len(with_total))
     n_legend_rows = math.ceil(n_handles / 4) if n_handles else 0
-    lines = _header_lines(evaluated, records, absent)
+    lines = _header_lines(evaluated, records, absent, comparators)
     # the header's height in inches: the legend's title and rows, and the
     # title lines as they wrap at about 16 characters per inch of width
     chars_per_line = max(40, int(fig_w * 16))
@@ -268,11 +324,20 @@ def plot_slim16_set_errors(order: list, records: dict, pbe: dict,
                                     "value": converged})
             value = pbe["mae"].get(name)
             if value is not None:
-                x = i - group_w / 2 + (n_bars - 0.5) * bar_w
+                x = i - group_w / 2 + (len(evaluated) + 0.5) * bar_w
                 ax.bar(x, value, width=0.92 * bar_w, color=PBE_COLOR,
                        edgecolor="white", linewidth=0.4)
                 bars.append({"label": PBE_LABEL, "subset": name, "value": value,
                              "color": PBE_COLOR, "hatch": ""})
+            for k, comp in enumerate(comparators):
+                value = comp["mae"].get(name)
+                if value is None:
+                    continue
+                x = i - group_w / 2 + (len(evaluated) + 1 + k + 0.5) * bar_w
+                ax.bar(x, value, width=0.92 * bar_w, color=comp["color"],
+                       edgecolor="white", linewidth=0.4)
+                bars.append({"label": comp["label"], "subset": name, "value": value,
+                             "color": comp["color"], "hatch": ""})
         ax.set_xticks(range(len(names)))
         ax.set_xticklabels(names, rotation=30, ha="right", fontsize=8)
         ax.set_xlim(-0.6, per_row - 0.4)
@@ -297,6 +362,9 @@ def plot_slim16_set_errors(order: list, records: dict, pbe: dict,
     if pbe["wtmad2"] is not None:
         legend.append(f"{PBE_LABEL} ({pbe['wtmad2']:.2f})")
         handles.append(Patch(facecolor=PBE_COLOR, label=legend[-1]))
+    for comp in with_total:
+        legend.append(f"{comp['label']} ({comp['wtmad2']:.2f})")
+        handles.append(Patch(facecolor=comp["color"], label=legend[-1]))
     if handles:
         fig.legend(handles=handles, loc="upper center",
                    bbox_to_anchor=(0.5, 1.0 - 0.1 / fig_h), ncol=min(4, len(handles)),
@@ -320,7 +388,11 @@ def plot_slim16_set_errors(order: list, records: dict, pbe: dict,
             "n_reactions": n_reactions, "absent": absent,
             "unconverged": unconverged, "unscored": unscored, "dropped": dropped,
             "unweighted": unweighted, "yscale": "log" if log else "linear",
-            "y_floor": y_floor, "y_cap": y_cap}
+            "y_floor": y_floor, "y_cap": y_cap,
+            "comparators": [{"key": comp["key"], "label": comp["label"],
+                             "color": comp["color"], "wtmad2": comp["wtmad2"],
+                             "n_reactions": comp["n_reactions"],
+                             "unscored": comp["unscored"]} for comp in comparators]}
 
 
 def main(argv=None) -> int:
@@ -336,8 +408,9 @@ def main(argv=None) -> int:
     out = Path(args.out) if args.out else run_dir / OUT_NAME
     if args.log:
         out = out.with_name(out.stem + "_log" + out.suffix)
-    order, records, pbe = collect_set_errors(run_dir)
-    manifest = plot_slim16_set_errors(order, records, pbe, out, log=args.log)
+    order, records, pbe, comparators = collect_set_errors(run_dir)
+    manifest = plot_slim16_set_errors(order, records, pbe, out, log=args.log,
+                                      comparators=comparators)
     print(json.dumps(manifest, indent=2))
     print(f"written {out}")
     return 0

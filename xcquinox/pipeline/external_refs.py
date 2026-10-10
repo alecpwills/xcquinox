@@ -508,8 +508,10 @@ def run_scf_with_cache(
     pinned to the system size by the same module) and
     reference_small_rho_cutoff (the density threshold the grid was pruned
     with at the first cycle, held at 1e-7 by the same module where pyscf
-    2.14's class default is 0); all four are None when read from a cache
-    written before the stamps existed. The stamps are
+    2.14's class default is 0), and the two VV10 stamps reference_nlc_applied
+    (whether the mean field applied a VV10 term, its do_nlc()) and
+    reference_nlc_grid_level (the level of its VV10 grid); all six are None
+    when read from a cache written before the stamps existed. The stamps are
     metadata: they are not part of the cache identity, so an older cache is
     still a hit.
 
@@ -570,6 +572,12 @@ def run_scf_with_cache(
                 "reference_small_rho_cutoff": (
                     float(z["reference_small_rho_cutoff"])
                     if "reference_small_rho_cutoff" in z.files else None),
+                "reference_nlc_applied": (bool(z["reference_nlc_applied"])
+                                          if "reference_nlc_applied" in z.files
+                                          else None),
+                "reference_nlc_grid_level": (int(z["reference_nlc_grid_level"])
+                                             if "reference_nlc_grid_level" in z.files
+                                             else None),
             }
         _require_electron_count(payload["dm"], mol, cache_path)
         return payload
@@ -669,6 +677,11 @@ def run_scf_with_cache(
         "reference_blas_threads": int(reference_pins.threads),
         "reference_eri_path": str(reference_pins.eri_path),
         "reference_small_rho_cutoff": float(reference_pins.small_rho_cutoff),
+        # The VV10 stamps, from the mean field that converged: whether it
+        # applied a VV10 term (false for a functional without one) and the
+        # level of its VV10 grid. Metadata like the four above.
+        "reference_nlc_applied": bool(mf.do_nlc()),
+        "reference_nlc_grid_level": int(mf.nlcgrids.level),
     }
 
     # Atomic write: temp file + os.replace so an interrupted SCF cannot

@@ -140,12 +140,23 @@ def census_rows(spec, model=None):
 
 
 def _cell(spec_path, spec, rows=None, error=None):
+    """One cell of the census: the architecture, the spec, the counts, the
+    rows, and the solver's tolerance, budget and whether it froze on
+    convergence, which say what a row's ``cycles_run`` means (a solver that
+    does not freeze runs its whole budget on every species)."""
     rows = list(rows or [])
+    try:
+        sc = _solver_config_of(spec)
+    except Exception:  # noqa: BLE001 -- a cell is recorded whatever its spec lacks
+        sc = getattr(spec, "solver_config", None)
     return {
         "arch": spec.arch.name,
         "spec_path": spec_path,
         "n_species": len(spec.molecules),
         "n_converged": sum(1 for r in rows if r["converged"]),
+        "conv_tol": getattr(sc, "conv_tol", None),
+        "max_cycles": getattr(sc, "max_cycles", None),
+        "freeze_on_convergence": getattr(sc, "freeze_on_convergence", None),
         "error": error,
         "rows": rows,
     }

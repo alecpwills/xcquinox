@@ -351,3 +351,29 @@ def test_a_cell_that_cannot_be_read_is_recorded_and_the_next_measured(
     assert cells[0]["arch"] is None and cells[0]["rows"] == []
     assert "FileNotFoundError" in cells[0]["error"]
     assert [r["name"] for r in cells[1]["rows"]] == ["H2"]
+
+def test_a_cell_records_the_solvers_tolerance_budget_and_freeze():
+    """A cell carries the solver's conv_tol, max_cycles and
+    freeze_on_convergence (read where the training loop reads the solver),
+    which say what a row's cycles_run means: a solver that does not freeze
+    runs its whole budget on every species. A spec without a solver gives
+    None for the three."""
+    import types
+
+    from xcquinox.pipeline.cluster.coldstart_census import _cell
+    from xcquinox.pipeline.solver import (
+        FeaturePolicy, SolverBackend, SolverConfig, SolverMode,
+    )
+    sc = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=25,
+                      conv_tol=1e-6, feature_policy=FeaturePolicy.REASSEMBLE,
+                      freeze_on_convergence=False)
+    spec = types.SimpleNamespace(arch=types.SimpleNamespace(name="deep_3x16"),
+                                 molecules=(1, 2, 3), solver_config=sc, loss_kwargs_dict={})
+    cell = _cell("/runs/x.spec", spec, rows=[{"name": "H", "converged": True}])
+    assert (cell["conv_tol"], cell["max_cycles"], cell["freeze_on_convergence"]) == (
+        1e-6, 25, False)
+    assert (cell["n_species"], cell["n_converged"]) == (3, 1)
+    bare = types.SimpleNamespace(arch=types.SimpleNamespace(name="deep_3x16"), molecules=())
+    cell = _cell("/runs/y.spec", bare, error="refused")
+    assert (cell["conv_tol"], cell["max_cycles"], cell["freeze_on_convergence"]) == (
+        None, None, None)

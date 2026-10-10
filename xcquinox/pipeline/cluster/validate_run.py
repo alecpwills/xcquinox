@@ -122,7 +122,10 @@ def _check_solver(spec, named, inputs, arch_name, idx, failures):
 
 def validate_run(run_dir: str, config_path: str | None = None):
     """Return ``(failures, warnings, n_specs)`` for the run at ``run_dir``."""
-    from xcquinox.pipeline.config import apply_model_block, get_architecture
+    from xcquinox.pipeline.checkpoint_class import (mlp_class_of,
+                                                    mlp_mismatches,
+                                                    normalize_mlp)
+    from xcquinox.pipeline.config import apply_run_config, get_architecture
 
     failures: list[str] = []
     warnings: list[str] = []
@@ -185,15 +188,11 @@ def validate_run(run_dir: str, config_path: str | None = None):
         except KeyError:
             failures.append(f"spec {idx}: arch {arch.name!r} not in registry")
             continue
-        # One-directional, matching spec_builder: the sweep-level flag OVERRIDES
-        # to True but never forces False onto an arch that defaults polarized.
-        if cfg.use_polarized_correlation:
-            expected = dataclasses.replace(
-                expected, use_polarized_correlation=True)
-        # The run's model block, as spec_builder applied it.
-        model_block = getattr(cfg, "model", None)
-        if model_block is not None:
-            expected = apply_model_block(expected, model_block)
+        # The run's configuration as spec_builder applied it
+        # (config.apply_run_config): the sweep-level flag OVERRIDES to True
+        # but never forces False onto an arch that defaults polarized, then
+        # the model block.
+        expected = apply_run_config(expected, cfg)
         if arch != expected:
             diffs = [f.name for f in dataclasses.fields(arch)
                      if getattr(arch, f.name) != getattr(expected, f.name)]
@@ -500,6 +499,42 @@ def validate_run(run_dir: str, config_path: str | None = None):
                 failures.append(
                     f"pretrain/{arch_name}: metadata {key} = {got!r}, "
                     f"expected {want!r}")
+        # The gradient-expansion coefficient of the architecture the run
+        # builds: the registry entry under the run's configuration
+        # (config.apply_run_config; an anchored run drops the term), a static
+        # field of the networks. Metadata that states none states networks
+        # without the term, so the two are compared outright and an absent
+        # key is no warning.
+        try:
+            built = apply_run_config(reg, cfg)
+        except ValueError as exc:
+            failures.append(
+                f"pretrain/{arch_name}: the model block cannot be applied to "
+                f"the registry entry ({exc})")
+            continue
+        want_gea = getattr(built, "resolved_gea_mu", None)
+        got_gea = meta.get("gea_mu")
+        if got_gea != want_gea:
+            failures.append(
+                f"pretrain/{arch_name}: metadata gea_mu = {got_gea!r}, the "
+                f"architecture this run builds has {want_gea!r}")
+        # The front end, ten fields of the same kind: metadata that states
+        # none states the library MLP. The digests follow the resolved
+        # correlation row; a row that cannot carry the map or the spline
+        # grids leaves the digest undefined, which is a failure of the
+        # configuration, reported under the digest's own name.
+        try:
+            want_mlp = mlp_class_of(built)
+        except ValueError as exc:
+            failures.append(
+                f"pretrain/{arch_name}: the architecture this run builds "
+                f"has no {getattr(exc, 'field', 'fourier_digest')} ({exc})")
+            continue
+        for key, got_value, want_value in mlp_mismatches(
+                normalize_mlp(meta), want_mlp):
+            failures.append(
+                f"pretrain/{arch_name}: metadata {key} = {got_value!r}, the "
+                f"architecture this run builds has {want_value!r}")
 
     return failures, warnings, n_checked
 

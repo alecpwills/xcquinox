@@ -343,20 +343,12 @@ def arch_from_config(cfg, arch_name: str):
 
     The registry entry patched with the run-level polarized-correlation
     override and the run's ``model:`` block (the parent anchor, the descriptor
-    coordinates), exactly as ``cluster.fidelity.build_certified_model`` and the
-    training stage resolve it -- so the skeleton built here is the class the
-    checkpoint was trained as.
+    coordinates), through ``config.apply_run_config``, the resolver
+    ``cluster.fidelity.build_certified_model`` and the training stage use --
+    so the skeleton built here is the class the checkpoint was trained as.
     """
-    import dataclasses
-
-    from xcquinox.pipeline.config import apply_model_block, get_architecture
-    arch = get_architecture(arch_name)
-    if getattr(cfg, "use_polarized_correlation", False):
-        arch = dataclasses.replace(arch, use_polarized_correlation=True)
-    model_block = getattr(cfg, "model", None)
-    if model_block is not None:
-        arch = apply_model_block(arch, model_block)
-    return arch
+    from xcquinox.pipeline.config import apply_run_config, get_architecture
+    return apply_run_config(get_architecture(arch_name), cfg)
 
 
 def load_run_config(run_dir: Path):

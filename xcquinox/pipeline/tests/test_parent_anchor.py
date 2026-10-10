@@ -64,7 +64,8 @@ _RHO_FLOOR = 1e-10
 #: v8 geometric pair carries the same cusp block on both networks, with and
 #: without attention, and is anchored to PBE with the rest of the GGA rung.
 _GGA_ARCHS = ("deep_3x16", "deep_attn_3x16", "deep_cusp_3x16",
-              "deep_geom_3x16", "deep_geom_attn_3x16")
+              "deep_geom_3x16", "deep_geom_attn_3x16",
+              "deep_lap_3x16", "deep_lap_geom_3x16")
 _MGGA_ARCHS = ("deep_mgga_3x16", "deep_rung35_mgga_3x16")
 
 #: The descriptors any registered architecture can ask for, the meta-GGA
@@ -72,7 +73,7 @@ _MGGA_ARCHS = ("deep_mgga_3x16", "deep_rung35_mgga_3x16")
 #: architecture's feature block, so V3 costs one reference SCF per system
 #: rather than one per descriptor set.
 _ALL_DESCRIPTORS = ("cusp", "dm_statistics", "rung35", "rung35_multishell",
-                    "metagga")
+                    "metagga", "lap")
 
 _RECORDS = {}
 
@@ -806,7 +807,8 @@ def test_o4_anchored_h_atom_exchange_is_the_spin_scaled_evaluation():
         n_grid=int(np.asarray(md["grid_weights"]).shape[0]),
         cusp_features=md.get("cusp_features"),
         rung35_proj_ao=md.get("rung35_proj_ao"),
-        rung35ms_proj_ao=md.get("rung35ms_proj_ao"))
+        rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+        ao_lapl=md.get("ao_grid_lapl"))
     P0 = jnp.asarray(md["dm_pbe"])
     doubled = doubled_spin_dm(P0, 0)
     ex_uks = 0.5 * float(jnp.sum(w * (

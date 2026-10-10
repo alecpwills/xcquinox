@@ -169,7 +169,7 @@ def test_every_per_spin_grid_key_is_declared_and_padded():
     per_spin = {k for k in MoleculeData.__annotations__
                 if k.endswith(("_features_a", "_features_b"))
                 or k in ("tau_spin_a", "tau_spin_b")}
-    assert len(per_spin) == 10, sorted(per_spin)
+    assert len(per_spin) == 12, sorted(per_spin)
     missing = sorted(per_spin - set(_PAD_GRID_EDGE))
     assert not missing, f"padding._PAD_GRID_EDGE is missing {missing}"
 
@@ -210,6 +210,7 @@ def test_live_uks_feature_closures_reproduce_the_precomputed_blocks():
         cusp_features=md.get("cusp_features"),
         rung35_proj_ao=md.get("rung35_proj_ao"),
         rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+        ao_lapl=md.get("ao_grid_lapl"),
     )
     P0 = jnp.asarray(md["dm_pbe"])
     # Column layout: the iso-orbital indicator is the single trailing column,
@@ -276,6 +277,7 @@ def test_live_uks_feature_closures_collapse_at_a_closed_shell_density():
         cusp_features=md.get("cusp_features"),
         rung35_proj_ao=md.get("rung35_proj_ao"),
         rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+        ao_lapl=md.get("ao_grid_lapl"),
     )
     from xcquinox.pipeline.metagga import compute_tau_from_dm
     D = jnp.asarray(md["dm_pbe"])

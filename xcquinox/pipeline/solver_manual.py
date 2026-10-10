@@ -33,6 +33,11 @@ from xcquinox.pipeline.solver import (
 def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndarray:
     """Cholesky-transform Fock, eigh, rebuild DM. Restricted (factor of 2).
 
+    ``nocc`` may be a non-integer count (the fractional-charge diagnostics):
+    the mask ``clip(nocc - i, 0, 1)`` fills the orbitals in order and puts
+    the fraction in the orbital after the last full one, and is the integer
+    mask at every integer.
+
     Uses the occupation-mask form ``(C * occ) @ C.T`` rather than slicing
     ``C[:, :nocc] @ C[:, :nocc].T``. Both are algebraically equivalent
     but the slice form's reverse-mode gradient through multi-cycle
@@ -58,7 +63,7 @@ def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndar
     F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
     _, C_orth = jnp.linalg.eigh(F_orth)
     C = L_inv.T @ C_orth
-    occ = (jnp.arange(nao) < nocc).astype(F.dtype)
+    occ = jnp.clip(nocc - jnp.arange(nao), 0.0, 1.0).astype(F.dtype)
     return 2.0 * (C * occ) @ C.T
 
 
@@ -66,6 +71,11 @@ def _diagonalize_roothaan_unrestricted(
     F: jnp.ndarray, S: jnp.ndarray, nocc: int,
 ) -> jnp.ndarray:
     """Cholesky-transform Fock, eigh, rebuild one-spin DM. No factor of 2.
+
+    ``nocc`` may be a non-integer count (the fractional-charge diagnostics):
+    the mask ``clip(nocc - i, 0, 1)`` fills the orbitals in order and puts
+    the fraction in the orbital after the last full one, and is the integer
+    mask at every integer.
 
     When ``nocc == 0`` (beta channel of a UKS atom with one unpaired electron,
     e.g., H spin=1) we bypass eigh entirely and return a zero DM. Otherwise
@@ -99,8 +109,9 @@ def _diagonalize_roothaan_unrestricted(
     F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
     _, C_orth = jnp.linalg.eigh(F_orth)
     C = L_inv.T @ C_orth
-    # Occupation-mask rebuild (diag(occ) weights each orbital by 1 or 0).
-    occ = (jnp.arange(nao) < nocc).astype(F.dtype)
+    # Occupation-mask rebuild (diag(occ) weights each orbital by its
+    # occupation, 1 or 0 at an integer count).
+    occ = jnp.clip(nocc - jnp.arange(nao), 0.0, 1.0).astype(F.dtype)
     return (C * occ) @ C.T
 
 
@@ -350,6 +361,10 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
             ao_grad=ao_grid_deriv[1:4],
             rho=rho_d,
             sigma=sigma_d,
+            # the Laplacian column needs the AO values and the AO Laplacian
+            # table beside them (None without the column)
+            ao=ao_grid,
+            ao_lapl=mol_data.get("ao_grid_lapl"),
         )
         return feats, rho_d, sigma_d, nabla_rho_d
 
@@ -536,6 +551,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         cusp_features=cusp_cached,
         rung35_proj_ao=mol_data.get("rung35_proj_ao"),
         rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
+        ao_lapl=mol_data.get("ao_grid_lapl"),
     )
 
     def _spin_resolved_rho(D_ab):

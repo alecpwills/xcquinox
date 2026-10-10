@@ -22,6 +22,7 @@ CAPPED_SCRIPTS = (
     "dfs6311_scan_pool.sbatch",
     "dfs6311_pretrained_holdout.sbatch",
     "slim16_eval.sbatch",
+    "slim16_tables.sbatch",
     "nonempirical_pool.sbatch",
 )
 

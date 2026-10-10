@@ -48,7 +48,7 @@ import os
 import warnings
 
 from xcquinox.pipeline.config import (MoleculeSpec, TrainingSpec, TestSpec,
-                                  apply_model_block)
+                                  apply_run_config)
 from xcquinox.pipeline.training_points import (
     species_union_from_points,
     _atom_anchor_atoms,
@@ -621,19 +621,15 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             "density_per_electron": hp.density_per_electron,
         }
 
-        # Run-level spin-polarized-correlation toggle: rebuild the named arch
-        # spin-polarization-aware so training+eval use the zeta-dependent PW92c
-        # baseline. Default False -> the registry arch is used unchanged.
-        arch_cfg = get_architecture(cell.arch)
-        if getattr(cfg, "use_polarized_correlation", False):
-            arch_cfg = dataclasses.replace(arch_cfg, use_polarized_correlation=True)
-        # The run's model block -- the parent anchor and the descriptor
-        # coordinates -- through the one helper every resolver of a run's
-        # architecture uses (the pretrain stage, the certificate, the run
-        # validator), so the spec's arch is the identity those stages build.
-        model_block = getattr(cfg, "model", None)
-        if model_block is not None:
-            arch_cfg = apply_model_block(arch_cfg, model_block)
+        # The run's configuration on the named arch -- the run-level
+        # spin-polarized-correlation toggle (the zeta-dependent PW92c baseline
+        # for training and evaluation; default False leaves the registry arch
+        # unchanged) and the model block (the parent anchor, the descriptor
+        # coordinates, the gate) -- through the one resolver every reader of
+        # a run's architecture uses (the pretrain stage, the certificate and
+        # its readers, the run validator), so the spec's arch is the identity
+        # those stages build.
+        arch_cfg = apply_run_config(get_architecture(cell.arch), cfg)
 
         spec = TrainingSpec.from_dicts(
             arch=arch_cfg,

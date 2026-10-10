@@ -97,6 +97,9 @@ def test_main_polarized_svp_covers_all_archs(monkeypatch, tmp_path):
     assert data_dir == "/d/svp"
     assert kw == {"basis": "def2-svp", "grid_level": 2, "density_fit": False,
                   "auxbasis": None, "polarized": True, "descriptors": True,
+                  # the stems the eight architectures read: the cusp pair
+                  # and the density-matrix statistics
+                  "descriptor_stems": ("cusp", "dm"),
                   # The run's own orientation lock is part of the data's
                   # identity and is always stated (see the lock tests below).
                   "orientation_lock_strength": 0.0}

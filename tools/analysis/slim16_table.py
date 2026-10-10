@@ -9,8 +9,13 @@ GMTKN55 references for the network, PBE-DF and full-integral PBE, the paper's
 WTMAD-2 form against the GMTKN55 references with the full set's weights (the
 network over every reaction it reports and over the converged ones alone,
 PBE-DF over every reaction its table covers; the scale is the full set's own
-mean absolute reference, not the GMTKN55 constant), and the size of the
-density-fitting footing (the two PBE energies). Energies in kcal/mol.
+mean absolute reference, not the GMTKN55 constant), the size of the
+density-fitting footing (the two PBE energies) and, for a run carrying the
+comparator tables (``functionals_df.json``, ``hpcjobs/slim16_eval.py
+comparators-df``), the reaction MAE and the full-weights WTMAD-2 of each
+comparator (r2SCAN, B3LYP, wB97M-V) over every reaction its table covers,
+columns that stay present and empty for a run without the file. Energies in
+kcal/mol.
 
 Usage::
 
@@ -25,6 +30,7 @@ import csv
 import json
 import math
 import sys
+import warnings
 from pathlib import Path
 
 from xcquinox.pipeline.eval_holdout import KCAL_PER_HA, paper_wtmad2
@@ -32,7 +38,23 @@ from xcquinox.pipeline.gmtkn55_sets import load_full_slim
 
 HOLDOUT_SUBDIR = "eval_holdout_converged"
 PBE_DF_FILE = "pbe_df.json"
+FUNCTIONALS_DF_FILE = "functionals_df.json"
+#: the comparators in display order (the job's COMPARATORS); a key the file
+#: carries beyond them is warned about and left out
+COMPARATOR_ORDER = ("r2scan", "b3lyp", "wb97m-v")
+#: the one entry of the file that is never a comparator: the sanity pin of
+#: the job's generic loop against pbe_df.json
+PBE_XC = "pbe"
 
+
+def comparator_column(key: str) -> str:
+    """The column stem of a comparator: its key without the hyphen
+    (``wb97m-v`` -> ``wb97mv``)."""
+    return key.replace("-", "")
+
+
+COMPARATOR_COLUMNS = tuple(f"{prefix}_{comparator_column(key)}" for key in COMPARATOR_ORDER
+                           for prefix in ("mae_rxn_ref", "wtmad2_ref"))
 COLUMNS = (
     "label", "arch_name", "kind", "certificate", "n_species", "n_converged",
     "n_species_not_df",
@@ -42,7 +64,7 @@ COLUMNS = (
     "mae_rxn_ref_nn", "mae_rxn_ref_pbe_df", "mae_rxn_ref_pbe_exact",
     "df_footing_mean", "df_footing_max",
     "wtmad2_ref_nn_all", "wtmad2_ref_nn_converged", "wtmad2_ref_pbe_df",
-)
+) + COMPARATOR_COLUMNS
 
 
 def _finite(value) -> bool:
@@ -98,6 +120,23 @@ def _species_of(record: dict) -> list:
     return list(record.get("reactants", [])) + list(record.get("products", []))
 
 
+def reference_rows_for(molecules: list, reactions: list, table: dict,
+                       subsets: dict) -> list:
+    """One row per reaction of the channel, for :func:`wtmad2_full_weights`,
+    against the GMTKN55 reference of the reaction, the reaction energy taken
+    from ``table`` (species -> total energy in Hartree: PBE-DF's or a
+    comparator's); ``converged`` is always true, a table carrying no
+    convergence. A reaction a species of which the table lacks carries a
+    non-finite energy, which the scorer names under ``unscored``."""
+    rows = []
+    for record in reactions:
+        name = record["name"]
+        rows.append({"name": name, "subset": subsets.get(name, "?"),
+                     "de_ref": record.get("reaction_energy_ref_kcalmol"),
+                     "de_nn": reaction_energy(record, table), "converged": True})
+    return rows
+
+
 def reference_rows(molecules: list, reactions: list, pbe_df: dict,
                    subsets: dict) -> tuple:
     """``(rows_nn, rows_pbe_df)``: one row per reaction of the channel, for
@@ -108,21 +147,18 @@ def reference_rows(molecules: list, reactions: list, pbe_df: dict,
     ``scf_converged``; always true for PBE-DF, whose table carries no
     convergence). Nothing is filtered here: a reaction without a reference
     or without an energy carries a non-finite value, and the scorer names
-    the second kind under ``unscored``.
+    the second kind under ``unscored``. The second list is
+    :func:`reference_rows_for` over the PBE-DF table.
     """
     converged = {m["molecule"] for m in molecules if m.get("scf_converged")}
-    rows_nn, rows_pbe = [], []
+    rows_nn = []
     for record in reactions:
         name = record["name"]
-        subset = subsets.get(name, "?")
-        reference = record.get("reaction_energy_ref_kcalmol")
-        rows_nn.append({"name": name, "subset": subset, "de_ref": reference,
+        rows_nn.append({"name": name, "subset": subsets.get(name, "?"),
+                        "de_ref": record.get("reaction_energy_ref_kcalmol"),
                         "de_nn": record.get("de_nn_kcalmol"),
                         "converged": all(n in converged for n in _species_of(record))})
-        rows_pbe.append({"name": name, "subset": subset, "de_ref": reference,
-                         "de_nn": reaction_energy(record, pbe_df),
-                         "converged": True})
-    return rows_nn, rows_pbe
+    return rows_nn, reference_rows_for(molecules, reactions, pbe_df, subsets)
 
 
 def wtmad2_full_weights(rows: list) -> dict:
@@ -191,9 +227,12 @@ def wtmad2_full_weights(rows: list) -> dict:
 
 
 def network_metrics(molecules: list, reactions: list, pbe_df: dict,
-                    subsets: dict) -> dict:
+                    subsets: dict, comparators=()) -> dict:
     """The metrics of one network from its channel outputs, the PBE-DF table
-    (name -> energy in Hartree) and the reaction -> subset map."""
+    (name -> energy in Hartree) and the reaction -> subset map; with
+    ``comparators`` (:func:`comparator_tables`), the reaction MAE and the
+    full-weights WTMAD-2 of each comparator over the channel's reactions
+    under ``mae_rxn_ref_<column>`` and ``wtmad2_ref_<column>``."""
     e_nn = {m["molecule"]: m.get("E_total_nn") for m in molecules}
     e_pbe = {m["molecule"]: m.get("E_pbe") for m in molecules}
     converged = {m["molecule"] for m in molecules if m.get("scf_converged")}
@@ -215,7 +254,7 @@ def network_metrics(molecules: list, reactions: list, pbe_df: dict,
     ref_rows_nn, ref_rows_pbe = reference_rows(molecules, reactions, pbe_df, subsets)
     scored_nn = wtmad2_full_weights(ref_rows_nn)
     scored_pbe = wtmad2_full_weights(ref_rows_pbe)
-    return {
+    out = {
         "n_species": len(molecules),
         "n_converged": len(converged),
         "mae_te_df_all": _mean(abs(v) for v in te_df.values()),
@@ -238,6 +277,42 @@ def network_metrics(molecules: list, reactions: list, pbe_df: dict,
         "wtmad2_ref_nn_converged": scored_nn["converged"],
         "wtmad2_ref_pbe_df": scored_pbe["all"],
     }
+    for key, _label, energies in comparators:
+        column = comparator_column(key)
+        rows = reference_rows_for(molecules, reactions, energies, subsets)
+        out[f"mae_rxn_ref_{column}"] = _mean(abs(r["de_nn"] - r["de_ref"]) for r in rows
+                                             if _finite(r["de_nn"]) and _finite(r["de_ref"]))
+        out[f"wtmad2_ref_{column}"] = wtmad2_full_weights(rows)["all"]
+    return out
+
+
+def comparator_tables(run_dir) -> list:
+    """``[(key, label, {name: E}), ...]`` from the run's comparator file
+    (``functionals_df.json``, ``hpcjobs/slim16_eval.py comparators-df``):
+    the comparators of ``COMPARATOR_ORDER`` the file carries, in that order,
+    each table mapping a species to its total energy in Hartree (None where
+    the species failed); empty when the file is absent. A ``pbe`` entry, the
+    sanity pin against ``pbe_df.json``, is never a comparator, and a key
+    beyond the order has no column and no bar: it is named in a warning and
+    left out, so the table and the figure state one set of numbers."""
+    path = Path(run_dir) / FUNCTIONALS_DF_FILE
+    if not path.is_file():
+        return []
+    functionals = json.loads(path.read_text(encoding="utf-8")).get("functionals", {})
+    functionals.pop(PBE_XC, None)
+    beyond = sorted(key for key in functionals if key not in COMPARATOR_ORDER)
+    if beyond:
+        warnings.warn(f"{FUNCTIONALS_DF_FILE} carries functionals beyond the comparators, "
+                      f"left out of the table and the figure: {', '.join(beyond)}",
+                      stacklevel=2)
+    keys = [key for key in COMPARATOR_ORDER if key in functionals]
+    out = []
+    for key in keys:
+        entry = functionals[key]
+        out.append((key, entry.get("label", key),
+                    {name: value.get("E_df")
+                     for name, value in entry.get("species", {}).items()}))
+    return out
 
 
 def run_context(run_dir: Path) -> tuple:
@@ -275,6 +350,7 @@ def channel_records(run_dir: Path, width: int, idx: int):
 
 def build_table(run_dir: Path) -> list:
     manifest, width, pbe_df, subsets, n_not_df = run_context(run_dir)
+    comparators = comparator_tables(run_dir)
     rows = []
     for network in manifest["networks"]:
         idx = int(network["index"])
@@ -286,7 +362,8 @@ def build_table(run_dir: Path) -> list:
             rows.append(row)
             continue
         molecules, reactions = records
-        row.update(network_metrics(molecules, reactions, pbe_df, subsets))
+        row.update(network_metrics(molecules, reactions, pbe_df, subsets,
+                                   comparators=comparators))
         row["n_species_not_df"] = n_not_df
         rows.append(row)
     return rows
@@ -314,7 +391,7 @@ def main(argv=None) -> int:
     shown = ("label", "n_converged", "mae_te_df_all", "mae_te_df_converged",
              "wtmad2_paper_converged", "wtmad2_ref_nn_all",
              "wtmad2_ref_nn_converged", "wtmad2_ref_pbe_df",
-             "mae_rxn_ref_nn", "df_footing_mean")
+             "mae_rxn_ref_nn", "df_footing_mean") + COMPARATOR_COLUMNS
     print("  ".join(f"{key:>22s}" for key in shown))
     for row in rows:
         print("  ".join(f"{_fmt(row.get(key)):>22s}" for key in shown))

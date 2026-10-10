@@ -33,8 +33,10 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from xcquinox.pipeline.checkpoint_class import (ModelClassMismatch,
+from xcquinox.pipeline.checkpoint_class import (DEFAULT_MLP,
+                                            ModelClassMismatch,
                                             class_record_path,
+                                            mlp_class_of, normalize_mlp,
                                             commit_class_record,
                                             discard_staged_record,
                                             discard_temporaries,
@@ -506,7 +508,10 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
 
     The uniform-gas gate (``ueg_gate``) is the third such field: a record
     that states it is held to it, and a record written before the field is
-    read at ``tanh2``, the gate every model before it carried. The registry's
+    read at ``tanh2``, the gate every model before it carried. The
+    gradient-expansion coefficient (``gea_mu``) is the fourth: a record that
+    states none describes networks without the term, and is refused by an
+    architecture that carries it. The registry's
     ``double_lob_clamp_allowed`` is the same class of static field (a Lieb-
     Oxford ceiling without it is refused at construction, networks.py) and is
     read the same way: a record written before the key existed is read at the
@@ -535,21 +540,31 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
     want_gate = str(getattr(arch, "ueg_gate", "tanh2"))
     want_lob = bool(getattr(arch, "double_lob_clamp_allowed", False))
+    # The gradient-expansion coefficient (resolved; None without the term),
+    # a static field like the gate: a record that states none states
+    # networks without the term.
+    want_gea = getattr(arch, "resolved_gea_mu", None)
+    # The MLP front end, the same kind of field: a record that states none
+    # describes the library MLP.
+    want_mlp = mlp_class_of(arch)
     md_path = os.path.join(pretrain_checkpoint, "pretrain_metadata.json")
     if not os.path.isfile(md_path):
         if (want_anchor or want_coords != "legacy" or want_gate != "tanh2"
-                or want_lob):
+                or want_lob or want_gea is not None
+                or want_mlp != DEFAULT_MLP):
             raise ValueError(
                 f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r} "
                 f"into a model with parent_anchor={want_anchor}, "
                 f"descriptor_coordinates={want_coords!r}, "
-                f"ueg_gate={want_gate!r} and "
+                f"ueg_gate={want_gate!r}, gea_mu={want_gea!r}, "
+                f"mlp={want_mlp!r} and "
                 f"double_lob_clamp_allowed={want_lob}: the directory "
                 "carries no pretrain_metadata.json recording the model class "
                 "its networks were written as, and the checkpoint's leaves "
                 "do not reveal it (the anchor, the coordinates, the "
-                "uniform-gas gate and the clamp permission are "
-                "static fields with no parameters of their own)")
+                "uniform-gas gate, the gradient-expansion coefficient, the "
+                "MLP front end and the clamp permission are static fields "
+                "with no parameters of their own)")
         return
     try:
         with open(md_path) as f:
@@ -566,13 +581,17 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     # The clamp permission likewise reads at its default (False) in a record
     # written before the key existed.
     got_lob = bool(md.get("double_lob_clamp_allowed", False))
+    got_gea = md.get("gea_mu")
+    got_mlp = normalize_mlp(md)
     if (got_anchor != want_anchor or got_coords != want_coords
             or got_gate != want_gate
-            or got_lob != want_lob):
+            or got_lob != want_lob or got_gea != want_gea
+            or got_mlp != want_mlp):
         raise ValueError(
             f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r}: "
             f"its networks were written as parent_anchor={got_anchor}, "
             f"descriptor_coordinates={got_coords!r}, ueg_gate={got_gate!r}, "
+            f"gea_mu={got_gea!r}, mlp={got_mlp!r}, "
             f"double_lob_clamp_allowed={got_lob} "
             "(pretrain_metadata.json"
             + ("" if "parent_anchor" in md else
@@ -580,10 +599,12 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
                "legacy class")
             + f"), but the model being built is parent_anchor={want_anchor}, "
             f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}, "
+            f"gea_mu={want_gea!r}, mlp={want_mlp!r}, "
             f"double_lob_clamp_allowed={want_lob}. "
-            "The two are different "
-            "model classes with identical parameter shapes; loading across "
-            "them would silently produce a model that is neither.")
+            "The two are different model classes (identical parameter "
+            "shapes, or shapes that differ through the front end alone); "
+            "loading across them would silently produce a model that is "
+            "neither.")
     # The descriptor log transform, compared where the record states it. A
     # value of ``None`` -- the key absent, or present and null -- is not a
     # statement about the networks and is not treated as one.

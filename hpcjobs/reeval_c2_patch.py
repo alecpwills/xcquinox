@@ -774,17 +774,12 @@ def _load_cfg(run_dir):
 
 def _arch_for_cell(cfg, cell):
     """The cell's architecture, rebuilt exactly as
-    cluster/spec_builder.build_training_specs does (registry arch +
-    run-level polarized-correlation toggle + model block). The class
-    record beside each checkpoint verifies the rebuild on load."""
-    from xcquinox.pipeline.config import apply_model_block, get_architecture
-    arch = get_architecture(cell["arch"])
-    if getattr(cfg, "use_polarized_correlation", False):
-        arch = dataclasses.replace(arch, use_polarized_correlation=True)
-    model_block = getattr(cfg, "model", None)
-    if model_block is not None:
-        arch = apply_model_block(arch, model_block)
-    return arch
+    cluster/spec_builder.build_training_specs does (the registry arch under
+    the run's configuration, ``config.apply_run_config``: the run-level
+    polarized-correlation toggle, then the model block). The class record
+    beside each checkpoint verifies the rebuild on load."""
+    from xcquinox.pipeline.config import apply_run_config, get_architecture
+    return apply_run_config(get_architecture(cell["arch"]), cfg)
 
 
 def channel_solver_config(sc, channel):

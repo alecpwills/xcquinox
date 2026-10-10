@@ -32,8 +32,8 @@ import matplotlib.pyplot as plt
 # map a stored key through ``display_name``. The places that hold a stored key
 # (a manifest cell, a pretrain directory) convert before anything is drawn.
 from xcquinox.pipeline.arch_names import (  # noqa: E402
-    DISPLAY_NAME, STORED_KEY, display_name, expanded_key, key_line, split_tag,
-    stored_key)
+    _SIZE_SUFFIX, DISPLAY_NAME, STORED_KEY, display_name, expanded_key,
+    key_line, split_tag, stored_key)
 
 # --------------------------------------------------------------------------- #
 # The palette order, in STORED keys. Moved VERBATIM from
@@ -54,9 +54,17 @@ _STORED_ORDER: Tuple[str, ...] = (
     # the pairs test reproducibility at the registry names, not an ablation.
     # Attention twin after its base.
     "shallow", "shallow_attn", "medium", "medium_attn",
-    "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16", "deep_dm_3x16",
+    # the 3x16 family; deep_gea_3x16, deep_ff_3x16 and deep_sine_3x16 are the
+    # plain network with one change each (the gradient-expansion coefficient
+    # fixed by construction, the Fourier-feature map, the sine activation; no
+    # 4x32 sibling; the base colours are set below), and the 2x6 pair the
+    # Kolmogorov-Arnold network in place of the MLP, plain and geometric
+    "deep_3x16", "deep_attn_3x16", "deep_gea_3x16", "deep_ff_3x16",
+    "deep_sine_3x16", "deep_kan_2x6", "deep_kan_geom_2x6", "deep_cusp_3x16",
+    "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
+    "deep_lap_3x16", "deep_lap_geom_3x16",
     "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
     "deep_rung35ms_3x16",
     "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
@@ -74,11 +82,13 @@ _STORED_ORDER: Tuple[str, ...] = (
 # --------------------------------------------------------------------------- #
 _DISPLAY_ORDER: Tuple[str, ...] = (
     "shallow", "shallow_attn", "medium", "medium_attn",
-    "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16",
+    "deep_3x16", "deep_attn_3x16", "deep_gea_3x16", "deep_ff_3x16",
+    "deep_sine_3x16", "deep_kan_2x6", "deep_kan_geom_2x6", "deep_cusp_3x16",
     "deep_geom_3x16", "deep_geom_attn_3x16",
     "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
+    "deep_lap_3x16", "deep_lap_geom_3x16",
     "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
     "deep_rung35ms_3x16",
     "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
@@ -134,14 +144,37 @@ ARCH_COLOR["medium_attn"] = "#c7e9c0"
 # tab10's pink); base-twin separation 13.57.
 ARCH_COLOR["deep_geom"] = "#d6616b"
 ARCH_COLOR["deep_geom_attn"] = "#e7969c"
+# The gradient-expansion architecture: tab20c's #fdd0a2, the colour no
+# architecture carries with the largest worst-case CIEDE2000 separation
+# (19.17, against deep_cusp_mgga's #bd9e39) when the GGA rung band and white
+# are in the compared set as well (23.63 and 20.35).
+ARCH_COLOR["deep_gea"] = "#fdd0a2"
+# The two MLP front ends, by the same criterion with the gradient-expansion
+# colour carried: tab20c's #9e9ac8 (worst case 16.52, against tab10's purple)
+# for the Fourier features and, with it carried too, tab20c's #9ecae1
+# (13.97, against tab10's cyan) for the sine network.
+ARCH_COLOR["deep_ff"] = "#9e9ac8"
+ARCH_COLOR["deep_sine"] = "#9ecae1"
+# The Kolmogorov-Arnold pair, by the same criterion with the two front-end
+# colours carried: tab20c's #e6550d (worst case 12.49, against tab10's
+# orange) for the plain network and, with it carried too, tab20c's #bdbdbd
+# (12.40, against the GGA rung band) for the geometric one.
+ARCH_COLOR["deep_kan"] = "#e6550d"
+ARCH_COLOR["deep_kan_geom"] = "#bdbdbd"
+# The Laplacian pair, by the same criterion with every colour above carried:
+# #636363 (worst case 11.04) for the plain network and, with it carried too,
+# tab20c's #bcbddc (10.37) for the geometric one.
+ARCH_COLOR["deep_lap"] = "#636363"
+ARCH_COLOR["deep_lap_geom"] = "#bcbddc"
 for _small in _STORED_ORDER[8:]:
-    # Only width-twin names inherit by suffix-strip; a base name in the tail
-    # (the size ladder) keeps its explicit entry above -- the unguarded strip
-    # would resolve "medium" via ARCH_COLOR.get("m") and clobber it with the
-    # unknown-base default.
-    if not _small.endswith("_3x16"):
+    # Only sized names (the width twins, the 2x6 pair) inherit by stripping
+    # their size suffix; a base name in the tail (the size ladder) keeps its
+    # explicit entry above -- an unguarded strip would resolve "medium" via
+    # ARCH_COLOR.get("m") and clobber it with the unknown-base default.
+    _base = _SIZE_SUFFIX.sub("", _small)
+    if _base == _small:
         continue
-    _STORED_COLOR[_small] = _STORED_COLOR.get(_small[: -len("_3x16")], "#333333")
+    _STORED_COLOR[_small] = _STORED_COLOR.get(_base, "#333333")
 # re-keyed by the shown name; the colour-only base names (deep_rung35,
 # deep_mgga, ...: never registry keys) keep their stored spelling
 ARCH_COLOR: Dict[str, str] = {display_name(k): v for k, v in _STORED_COLOR.items()}
@@ -156,22 +189,29 @@ SUBSET_SIZES: Tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18)
 # localized-DM occupancy).
 # --------------------------------------------------------------------------- #
 from xcquinox.pipeline.rungs import (  # noqa: E402
-    RUNG_GGA, RUNG_MGGA, RUNG_R35, RUNG_R35_MGGA, RUNG_ORDER,
+    RUNG_GGA, RUNG_LAP, RUNG_MGGA, RUNG_R35, RUNG_R35_MGGA, RUNG_ORDER,
     RUNG_RANK as _RUNG_RANK,
     arch_ingredients as _registry_ingredients,
     rung_from_ingredients as _rung_from_ingredients,
 )
 
 # Saturated accent per rung (per-rung summary bars, legend section swatches) and a
-# light background tint (axvspan rung bands behind per-arch bars).
+# light background tint (axvspan rung bands behind per-arch bars). The
+# Laplacian accent is tab20c's #fdae6b, the colour no architecture carries
+# with the largest worst-case CIEDE2000 separation (10.13) from every
+# architecture colour and accent in use; its band is that accent at 15
+# percent over white, 6.5 from white and 3.7 from the nearest band (the
+# meta-GGA one), 10.1 or more from the other bands.
 RUNG_ACCENT: Dict[str, str] = {
     RUNG_GGA: "#1f77b4",       # blue
+    RUNG_LAP: "#fdae6b",       # orange (the density Laplacian)
     RUNG_MGGA: "#8c564b",      # brown  (meta-GGA family)
     RUNG_R35: "#2ca02c",       # green
     RUNG_R35_MGGA: "#9467bd",  # purple (both ingredients)
 }
 RUNG_BAND: Dict[str, str] = {
     RUNG_GGA: "#e8f0f7",
+    RUNG_LAP: "#fff3e9",
     RUNG_MGGA: "#f3ebe8",
     RUNG_R35: "#e9f5e9",
     RUNG_R35_MGGA: "#f0eaf5",
@@ -226,17 +266,21 @@ def order_known(archs) -> List[str]:
     return [a for a in order_present(archs) if in_order(a)]
 
 
-def _arch_ingredients(arch: str) -> Tuple[bool, bool]:
-    """``(has_meta_gga, has_rung35)`` for ``arch`` (a shown name, a tagged shown
-    name or a stored key), from the registry if possible.
+def _arch_ingredients(arch: str) -> Tuple[bool, bool, bool]:
+    """``(has_meta_gga, has_rung35, has_laplacian)`` for ``arch`` (a shown
+    name, a tagged shown name or a stored key), from the registry if possible.
 
     Falls back to name tokens for archs not in the registry (e.g. the legacy 4x32
-    base names ``deep_rung35`` / ``deep_mgga`` that only exist as ARCH_COLOR keys).
+    base names ``deep_rung35`` / ``deep_mgga`` that only exist as ARCH_COLOR
+    keys, and the ``deep_lap`` base names); the Laplacian token is the
+    ``lap`` segment of the key.
     """
     try:
         return _registry_ingredients(stored_key(as_shown(arch)))
     except Exception:
-        return (("mgga" in arch) or ("metagga" in arch)), ("rung35" in arch)
+        tokens = set(split_tag(arch)[0].split("_"))
+        return ((("mgga" in arch) or ("metagga" in arch)), ("rung35" in arch),
+                "lap" in tokens)
 
 
 def rung_of(arch: str) -> str:
@@ -259,6 +303,10 @@ def arch_color(arch: str) -> str:
     key = stored_key(name)
     if key in _STORED_COLOR:              # a tagged shown name: its architecture's colour
         return _STORED_COLOR[key]
+    # Only a width twin inherits its base's colour here; a sized name outside
+    # the orders (the capacity probes deep_mgga_3x32, deep_mgga_4x16 and
+    # deep_mgga_4x32) keeps the rung accent, as it has since the probes were
+    # registered.
     if key.endswith("_3x16") and key[: -len("_3x16")] in _STORED_COLOR:
         return _STORED_COLOR[key[: -len("_3x16")]]
     return RUNG_ACCENT.get(rung_of(arch), "#333333")

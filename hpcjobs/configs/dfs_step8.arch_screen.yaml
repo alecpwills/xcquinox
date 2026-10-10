@@ -1,0 +1,168 @@
+# =============================================================================
+# dfs_step8.arch_screen.yaml -- THE ARCHITECTURE SCREEN'S PRETRAINING RUN.
+#
+# Identical to dfs_step8.v8_slim05_allsc.yaml (the published cloning protocol:
+# the slim05 pretraining set, def2-TZVP / grid 4 / no density fitting, the
+# published pretraining schedule and objective, the fidelity certificate
+# enforced at the same tolerances) except:
+#   sweep.arch -- the screen's seven new architectures (the gradient-expansion
+#     term, the Fourier and sine front ends, the two KAN widths-of-grid pair,
+#     the two Laplacian rung entries). The slim05 arm's four clones at this
+#     identity are the screen's baseline; they are not re-pretrained here.
+#   the output root and the pretraining data root are the screen's own. The
+#     Laplacian sweep carries the fifth data stem (ao_laplacian, lap), so the
+#     currency rule would regenerate a shared file: a root of its own leaves
+#     the campaign's four-stem file untouched. The datagen writes the
+#     five-stem file once and every architecture of the sweep reads it.
+#
+# The screen is a pretraining suite: --stages pretrain submits datagen ->
+# pretrain and nothing downstream is rendered or queued. The screen's readout
+# is the fidelity certificate beside each pretrain checkpoint, read against
+# the slim05 arm's four, and the pretraining losses.
+# =============================================================================
+
+sweep:
+  arch:
+    - deep_gea_3x16
+    - deep_ff_3x16
+    - deep_sine_3x16
+    - deep_kan_2x6
+    - deep_kan_geom_2x6
+    - deep_lap_3x16
+    - deep_lap_geom_3x16
+  loss: [L5_gradnorm_vxc_step7]
+  metric: [jsd]
+  subset_size: [26]
+  solver: [full_25]
+
+solvers:
+  full_25:
+    mode: FULL
+    max_cycles: 25
+    feature_policy: REASSEMBLE
+    scf_grad_checkpoint: true
+    mixer_name: decaying_linear
+    mixer_kwargs: {base: 0.3, floor: 0.3, step_offset: 1}
+    scf_loss_use_tail: true
+    scf_loss_tail: 10
+    scf_loss_weight_power: 2.0
+    freeze_on_convergence: false
+
+hyperparams:
+  n_steps: 100
+  lr_start: 1.0e-4
+  lr_end: 1.0e-7
+  lr_decay_start: 0.5
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  density_per_electron: true
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  seed: 42
+  weight_decay: 1.0e-6
+  val_frac: 0.2
+  validate_every: 10
+  patience: 5
+  early_stop_min_delta: 0.1
+  checkpoint_every: 10
+  pad_group_to_common_shape: true
+  update_scheme: per_molecule
+  optimizer: adam_plateau
+  plateau_patience: 10
+  plateau_factor: 0.1
+  # the seed axis of the arm
+  seed_mix_atomic: true
+  respect_sc_flag: false
+  nonsc_weight: 1.0
+  channel_weights: {loss_vxc: 0.0, loss_BH76: 0.01, loss_IP13: 0.01}
+
+inputs:
+  basis: def2-TZVP
+  grid_level: 4
+  density_fit: false
+  orientation_lock_strength: 3.0e-5
+  # the rung's parent density (PBE for every architecture here), mixed with
+  # the atomic guess per update
+  seed_xc: auto
+  seed_cache_dir: /gpfs/scratch/awills/seed_cache_scan_def2tzvp_g4
+  subset_ledger_path: /gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/alpha_on/subset_index_log.json
+  external_refs_dir: /gpfs/scratch/awills/external_refs_dfs_def2tzvp_g4
+  benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_def2tzvp_g4
+  val_refs_dir: /gpfs/scratch/awills/external_refs_val_def2tzvp_g4
+  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/arch_screen
+
+pretrain:
+  # the screen's own root: the lap sweep's fifth stem forces a fresh file
+  data_dir: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/arch_screen/pretrain_data_slim05_def2tzvp_g4_screen
+  # the published cloning schedule and objective
+  n_steps: 20000
+  lr_start: 1.0e-3
+  lr_end: 1.0e-5
+  lr_decay_start: 0.5
+  lr_decay_end: 0.9
+  grad_clip: 0
+  seed: 42
+  loss_weighting: rho_w_sampled
+  points_per_system: 800
+  sampling_seed: 42
+  dfs_set: false
+  pool_atoms: false
+  slim_set: slim05
+  parent_density: auto
+  exchange_footing: paper
+  mesh_fraction: 0.3
+  energy_term_weight: 0.0
+  validation_fraction: 0.0
+  validation_seed: 0
+  validate_every: 50
+  patience: 0
+
+cluster:
+  partition: ""
+  time: "96:00:00"
+  cpus_per_task: 24
+  array_throttle: 4
+  eval_array_throttle: 4
+  max_concurrent_tasks: 8
+  max_array_size: 1000
+  device: cpu
+  oom_retry_partition: extended-96core
+  timeout_retry_partition: extended-96core
+  timeout_retry_time: "168:00:00"
+  conda_env: /gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j0102
+  conda_profile: /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+  mail_user: alec.wills@stonybrook.edu
+  mail_type: BEGIN,END,FAIL
+  account: ""
+  preflight_time: "12:00:00"
+  preflight_compile_smoke: true
+  preflight_coldstart_census: true
+  eval_time: "12:00:00"
+  pretrain_time: "48:00:00"
+  pretrain_throttle: 4
+  datagen_time: "04:00:00"
+  benchmark_refs_time: "24:00:00"
+
+domain_profile: dfs_step7
+on_precompute_failure: abort
+bh76_mode: barrier_height
+ae_as_reactions: true
+use_polarized_correlation: true
+inline_eval: true
+eval_coldstart: true
+defer_eval: false
+
+model:
+  parent_anchor: false
+  descriptor_coordinates: paper
+  ueg_gate: x2
+
+fidelity:
+  tol_AE: 1.0
+  tol_atom: 1.0
+  tol_AE_aggregate: mae
+  tol_AE_max_backstop: 2.0
+  override_reason: null
+  enforce: true

@@ -163,6 +163,7 @@ NEW_OUTPUTS: Tuple[str, ...] = ("insample_by_pool_3x3", "training_loss_channels"
 # long for a heatmap gutter or a 1-arch-tall rung span).
 _RUNG_SHORT: Dict[str, str] = {
     arch_style.RUNG_GGA: "GGA",
+    arch_style.RUNG_LAP: "Lap",
     arch_style.RUNG_MGGA: "mGGA",
     arch_style.RUNG_R35: "r3.5",
     arch_style.RUNG_R35_MGGA: "r3.5+m",
@@ -1937,16 +1938,20 @@ def _report_scan_coverage(scan_baseline: Optional[Dict[str, Any]],
 
 
 def arch_reference_kinds(archs) -> Dict[str, str]:
-    """``"pbe"`` for pure-GGA architectures, ``"scan"`` for any architecture
-    carrying beyond-GGA information (meta-GGA, rung-3.5, and their stacks).
+    """``"pbe"`` for the GGA and Laplacian rungs, ``"scan"`` for any
+    architecture carrying orbital-dependent information (meta-GGA, rung-3.5,
+    and their stacks).
 
     The green beats marker claims improvement over the arch's OWN-RUNG
     nonempirical reference; crediting a beyond-GGA architecture for merely
-    beating PBE overstates it. The rung-3.5 families have no same-rung
-    nonempirical reference (nonlocal DM information but no tau, so neither
-    PBE's nor SCAN's input set contains theirs); they are held to SCAN, the
+    beating PBE overstates it. The Laplacian rung has no nonempirical
+    Laplacian-level reference in the pipeline and its parent is PBE, so it is
+    held to PBE. The rung-3.5 families have no same-rung nonempirical
+    reference (nonlocal DM information but no tau, so neither PBE's nor
+    SCAN's input set contains theirs); they are held to SCAN, the
     conservative assignment."""
-    return {a: ("pbe" if arch_style.rung_of(a) == arch_style.RUNG_GGA
+    return {a: ("pbe" if arch_style.rung_of(a) in (arch_style.RUNG_GGA,
+                                                  arch_style.RUNG_LAP)
                 else "scan") for a in archs}
 
 
@@ -2991,9 +2996,11 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
 # Figure D (bonus) -- MAE vs subset_size, one line per arch
 # ---------------------------------------------------------------------------
 
-_RUNG_LS: Dict[str, str] = {
+_RUNG_LS: Dict[str, object] = {
     arch_style.RUNG_GGA: "-", arch_style.RUNG_MGGA: "--",
     arch_style.RUNG_R35: "-.", arch_style.RUNG_R35_MGGA: ":",
+    # the Laplacian rung: dash-dot-dot, the fifth pattern the four above leave
+    arch_style.RUNG_LAP: (0, (3, 1, 1, 1, 1, 1)),
 }
 
 

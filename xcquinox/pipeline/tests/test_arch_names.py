@@ -74,6 +74,13 @@ EXPECTED_DISPLAY = {
     "deep_cusp_3x16":              "deep_cusp_3x16",
     "deep_geom_3x16":              "deep_geom_3x16",
     "deep_geom_attn_3x16":         "deep_geom_attn_3x16",
+    "deep_gea_3x16":               "deep_gea_3x16",
+    "deep_ff_3x16":                "deep_ff_3x16",
+    "deep_sine_3x16":              "deep_sine_3x16",
+    "deep_kan_2x6":                "deep_kan_2x6",
+    "deep_kan_geom_2x6":           "deep_kan_geom_2x6",
+    "deep_lap_3x16":               "deep_lap_3x16",
+    "deep_lap_geom_3x16":          "deep_lap_geom_3x16",
     "deep_dm_3x16":                "deep_dm_3x16",
     "deep_combined_3x16":          "deep_combined_3x16",
     "deep_combined_attn_3x16":     "deep_combined_attn_3x16",
@@ -176,10 +183,12 @@ def test_the_expanded_key_states_the_architecture_and_no_initialization():
     """The expanded key spells out the size, the attention heads, the
     descriptors and the rung, and states no initialization.
 
-    Every network of the registry starts from the same initialization, so a
-    legend that named it would state a difference that does not exist; the
-    zeroed final layer is a run-time setting and is spelled out by the protocol
-    tag that carries it, where it belongs.
+    Every network of the registry starts from the library's initialization
+    but the sine network, whose SIREN draw the expanded key names with its
+    activation, so a legend that named the initialization elsewhere would
+    state a difference that does not exist; the zeroed final layer is a
+    run-time setting and is spelled out by the protocol tag that carries it,
+    where it belongs.
 
     Kills m3 (the initialization clause kept in ``expanded_key``): the sweep
     over the registry finds the phrase on every entry.
