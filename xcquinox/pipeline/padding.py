@@ -32,8 +32,8 @@ for any of three reasons; the pass neutralizes the first two and leaves the thir
 3. **Occupation** (``nocc`` / ``nocc_a`` / ``nocc_b`` -- Python ints baked into the
    kernel) -> traced to 0-d arrays so their VALUES stop keying the compile. This is
    the one field whose consumption needs a paired change: the manual SCF drops its
-   ``int()`` casts so the ``arange(nao) < nocc`` occupation mask accepts a traced
-   value (``solver_manual.py``; ``oneshot.py`` already reads it raw). Molecules then
+   ``int()`` casts so the occupation mask (``clip(nocc - i, 0, 1)``) accepts a
+   traced value (``solver_manual.py``; ``oneshot.py`` already reads it raw). Molecules then
    collapse to one kernel per SPIN-TYPE -> two total (RKS + UKS, genuinely different
    code paths).
 
@@ -150,7 +150,7 @@ _STRIP_KEYS = ("_pyscfad_mol", "name", "atom_composition", "reference_xc",
 _TRACE_SCALARS = ("E_pbe", "E_xc_pbe", "E_non_xc", "e_nuc")
 # Occupation counts (Python ints -> the kernel is keyed by electron count). Traced
 # so molecules of one spin-type share a kernel; paired with dropping int(nocc) in
-# solver_manual.py (the arange<nocc mask already accepts a traced value).
+# solver_manual.py (the occupation mask clip(nocc - i, 0, 1) accepts a traced value).
 _TRACE_OCCUPATION = ("nocc", "nocc_a", "nocc_b")
 # The only mol_metadata entry the SCF consumes as data (an AO matrix, padded).
 _META_KEEP = ("orientation_lock_bias",)
