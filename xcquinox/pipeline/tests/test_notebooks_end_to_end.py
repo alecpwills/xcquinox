@@ -41,7 +41,7 @@ def _client(nb, *, timeout: int, cwd: Path | None = None):
     """An nbclient client whose kernel command launches the running interpreter."""
     import nbclient
 
-    resources = {"metadata": {"path": str(cwd)}} if cwd is not None else None
+    resources = {"metadata": {"path": str(cwd)}} if cwd is not None else {}
     client = nbclient.NotebookClient(nb, timeout=timeout, kernel_name="python3",
                                      resources=resources)
     # The launch command, not the raw spec: ipykernel's own spec names a bare ``python``,
