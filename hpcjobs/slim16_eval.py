@@ -20,15 +20,34 @@ full integrals, so a PBE-DF total energy per species is written beside the run
 basis) and the metrics compare the networks with PBE on one footing; the difference
 between the two PBE energies measures the footing.
 
+The comparators of the paper's tables, r2SCAN, B3LYP and wB97M-V, are computed on the
+same footing through the same call and written beside the run as
+``functionals_df.json``: libxc's r2SCAN (the meta-GGA rung), libxc's B3LYP (functional
+402, the VWN-RPA correlation of the Gaussian form; ``b3lyp5`` is the VWN5 form) and
+wB97M-V with its VV10 term, which PySCF applies by itself on a grid of its own (level
+3, recorded in the file's identity block); the exchange of the two hybrids is density
+fitted like the Coulomb term. Each entry records libxc's classification of the
+functional (``vv10``, ``hybrid``, ``meta_gga``) and the libxc component names. A shard
+whose mean field would not apply the VV10 term writes an error per species, never an
+energy without the term. PBE is admitted to the comparator mode for the sanity pin
+against ``pbe_df.json``; the readers never draw it as a comparator. A refused record stays
+in the cache and is refused again at every rerun; the error names the cache file to remove.
+The comparator file's ``species_slice`` is the union of the slices run; a functional's
+coverage is its own species table.
+
 Modes::
 
     python hpcjobs/slim16_eval.py prepare [--networks LEDGER] [--run-root ROOT]
     python hpcjobs/slim16_eval.py evaluate RUN_DIR IDX [--workers N]
     python hpcjobs/slim16_eval.py pbe-df RUN_DIR [--workers N]
+    python hpcjobs/slim16_eval.py comparators-df RUN_DIR [--workers N] [--functionals LIST]
 
 ``prepare`` runs on the login node once every source checkpoint exists and prints the
-run directory; the job script runs ``evaluate`` per array task and ``pbe-df`` after
-task 0. ``pbe-df-shard RUN_DIR NAMES_FILE OUT_FILE`` is the worker ``pbe-df`` launches.
+run directory; the job script runs ``evaluate`` per array task and ``pbe-df`` then
+``comparators-df`` after task 0, and ``slim16_tables.sbatch`` runs the two tables alone
+on a run already evaluated. ``df-shard RUN_DIR NAMES_FILE OUT_FILE XC CACHE KEY`` is the
+worker both tables launch; ``pbe-df-shard RUN_DIR NAMES_FILE OUT_FILE`` is its PBE
+spelling.
 """
 from __future__ import annotations
 
@@ -52,6 +71,12 @@ WIDTH = 4
 LOSS_NAME = "slim16_eval"
 PBE_DF_FILE = "pbe_df.json"
 PBE_DF_CACHE = "pbe_df_cache"
+FUNCTIONALS_DF_FILE = "functionals_df.json"
+FUNCTIONALS_DF_CACHE = "functionals_df_cache"
+#: the comparators of the paper's tables, (libxc name, label), in the readers'
+#: display order; b3lyp is libxc's functional 402, the VWN-RPA (Gaussian) form
+COMPARATORS = (("r2scan", "r2SCAN"), ("b3lyp", "B3LYP"), ("wb97m-v", "wB97M-V"))
+PBE_XC = "pbe"
 HERE = Path(__file__).resolve().parent
 DEFAULT_LEDGER = HERE / "ledgers" / "slim16_eval_networks.json"
 DEFAULT_RUN_ROOT = "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/slim16_eval"
@@ -293,15 +318,21 @@ def evaluate(args) -> int:
     return 0
 
 
-def pbe_df(args) -> int:
-    """The PBE total energy of every species at the run's own footing (density
-    fitting, the same auxiliary basis), sharded over the node."""
+def _df_table(run_dir: str, xc: str, workers, cache_name: str, energy_key: str,
+              nlc_grid_level=None) -> tuple:
+    """The density-fitted total energy under ``xc`` of every species of the
+    pool (or of the harness's species slice) at the run's footing, sharded
+    over the node: ``(species, names, species_slice, not_df, missing)``,
+    ``species`` mapping each name to ``{energy_key, n_ao, reference_eri_path}``
+    or ``{error}``. The shard files of the PBE table keep their unprefixed
+    names under its own cache; the comparators share one cache and prefix
+    theirs with the functional. ``nlc_grid_level``, when given, is the level
+    the shards hold every record's VV10 stamp to."""
     from xcquinox.pipeline import parallel
     from xcquinox.pipeline.full_benchmark_pools import (
         load_held_out_pools, resolve_species_slice,
     )
 
-    run_dir = os.path.abspath(args.run_dir)
     specs, _reactions = load_held_out_pools((POOL,), basis=BASIS, grid_level=GRID_LEVEL)
     # the harness's species-slice variable restricts the table the way it
     # restricts an evaluation (a smoke, or a rerun of a few species)
@@ -311,27 +342,29 @@ def pbe_df(args) -> int:
     if unknown:
         raise KeyError(f"the {POOL} pool carries none of {unknown}")
     total_cpus = parallel.detect_available_cpus()
-    ladder = parallel.eval_worker_ladder(total_cpus, top=args.workers)
+    ladder = parallel.eval_worker_ladder(total_cpus, top=workers)
     n_workers, threads = ladder[0] if ladder else (1, max(1, total_cpus))
     n_workers = max(1, min(n_workers, len(names)))
     # the module rule the job script applies: a PySCF pool at min(allocation, 8)
     threads = min(threads, parallel.PYSCF_POOL_THREADS_MAX)
-    shard_dir = Path(run_dir) / PBE_DF_CACHE / "_shards"
+    shard_dir = Path(run_dir) / cache_name / "_shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
+    prefix = "" if cache_name == PBE_DF_CACHE else f"{xc}_"
     jobs, out_files = [], []
     for si in range(n_workers):
-        names_file = shard_dir / f"names_s{si}.json"
-        out_file = shard_dir / f"shard_s{si}.json"
+        names_file = shard_dir / f"{prefix}names_s{si}.json"
+        out_file = shard_dir / f"{prefix}shard_s{si}.json"
         names_file.write_text(json.dumps(names[si::n_workers]), encoding="utf-8")
         jobs.append(parallel.WorkerJob(
-            name=f"pbe_df_s{si}",
-            cmd=[sys.executable, str(Path(__file__).resolve()), "pbe-df-shard",
-                 run_dir, str(names_file), str(out_file)],
+            name=f"{xc}_df_s{si}",
+            cmd=[sys.executable, str(Path(__file__).resolve()), "df-shard",
+                 run_dir, str(names_file), str(out_file), xc, cache_name, energy_key]
+            + ([] if nlc_grid_level is None else ["--nlc-grid-level", str(int(nlc_grid_level))]),
             progress_file=None,
             thread_env=parallel._thread_env(threads, bound_worker=False),
-            log_file=str(shard_dir / f"worker_s{si}.log")))
+            log_file=str(shard_dir / f"{prefix}worker_s{si}.log")))
         out_files.append(out_file)
-    _log(f"PBE-DF over {len(names)} species: {n_workers} workers x {threads} threads")
+    _log(f"{xc} (DF) over {len(names)} species: {n_workers} workers x {threads} threads")
     results = parallel.run_workers(jobs, max_parallel=n_workers)
     species = {}
     for result, out_file in zip(results, out_files):
@@ -340,13 +373,22 @@ def pbe_df(args) -> int:
             continue
         species.update(json.loads(out_file.read_text(encoding="utf-8")))
     missing = sorted(set(names) - set(species))
-    not_df = sorted(name for name, value in species.items() if "E_pbe_df" in value
+    not_df = sorted(name for name, value in species.items() if energy_key in value
                     and not str(value.get("reference_eri_path", "")).startswith("df"))
     if not_df:
         _log(f"WARNING: {len(not_df)} species built without density fitting: "
              f"{not_df[:5]}{' ...' if len(not_df) > 5 else ''}")
     for name in missing:
         species[name] = {"error": "the shard did not return"}
+    return species, names, species_slice, not_df, missing
+
+
+def pbe_df(args) -> int:
+    """The PBE total energy of every species at the run's own footing (density
+    fitting, the same auxiliary basis), sharded over the node."""
+    run_dir = os.path.abspath(args.run_dir)
+    species, names, species_slice, not_df, missing = _df_table(
+        run_dir, PBE_XC, args.workers, PBE_DF_CACHE, "E_pbe_df")
     n_converged = sum(1 for value in species.values() if "E_pbe_df" in value)
     payload = {"identity": identity(), "n_species": len(names),
                "species_slice": list(species_slice) if species_slice else None,
@@ -359,16 +401,192 @@ def pbe_df(args) -> int:
     return 1 if missing else 0
 
 
-def pbe_df_shard(args) -> int:
+def _default_nlc_grid_level() -> int:
+    """The level of the VV10 grid a pyscf Kohn-Sham mean field carries by
+    default, which the cached SCF helper's mean fields inherit; the shard
+    holds the stamp of every record to it, so the level the comparator file
+    states is the level the SCFs ran with."""
+    from pyscf import dft, gto
+    return int(dft.RKS(gto.M(atom="He 0 0 0", basis="sto-3g", verbose=0)).nlcgrids.level)
+
+
+def _libxc_components(xc: str) -> list:
+    """The libxc functionals behind ``xc``, ``[{"id", "name"}, ...]``:
+    ``parse_xc``'s ids, each with libxc's own identifier for it (the longest
+    family-prefixed name of libxc's table, its aliases being the same name
+    with an underscore dropped): ``HYB_GGA_XC_B3LYP`` (402) for b3lyp,
+    ``HYB_MGGA_XC_WB97M_V`` (531) for wb97m-v. The table maps the names to
+    numpy integers, hence the integral match."""
+    import numbers
+
+    from pyscf.dft import libxc
+    _hyb, facs = libxc.parse_xc(xc)
+    out = []
+    for fid, _fac in facs:
+        fid = int(fid)
+        full = [name for name, value in libxc.XC.items()
+                if isinstance(value, numbers.Integral) and int(value) == fid
+                and name.startswith(("LDA_", "GGA_", "MGGA_", "HYB_"))]
+        out.append({"id": fid, "name": max(full, key=lambda n: (len(n), n)) if full else None})
+    return out
+
+
+def _read_earlier_tables(path: Path):
+    """The comparator file already beside the run, or None when there is
+    none, when it cannot be read or when it is not of the form written
+    here; the log says which."""
+    if not path.is_file():
+        return None
+    try:
+        earlier = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        _log(f"replaced {FUNCTIONALS_DF_FILE}: the earlier file is unreadable "
+             f"({type(exc).__name__}: {exc})")
+        return None
+    functionals = earlier.get("functionals") if isinstance(earlier, dict) else None
+    if not isinstance(functionals, dict) or not all(
+            isinstance(entry, dict) and isinstance(entry.get("species"), dict)
+            and all(isinstance(value, dict) for value in entry["species"].values())
+            for entry in functionals.values()):
+        _log(f"replaced {FUNCTIONALS_DF_FILE}: the earlier file is not of the form "
+             "written here")
+        return None
+    return earlier
+
+
+def _merge_species(kept: dict, fresh: dict) -> dict:
+    """The functional entry ``kept`` with the species of ``fresh`` added or
+    refreshed, the counts recomputed over the union. A species whose rerun
+    failed keeps the energy on record: a failure of the rerun (a lost shard,
+    an SCF that did not converge this time) erases nothing."""
+    species = dict(kept.get("species", {}))
+    for name, value in fresh["species"].items():
+        if "E_df" in value or "E_df" not in species.get(name, {}):
+            species[name] = value
+    with_energy = [value for value in species.values() if "E_df" in value]
+    return {**fresh, "species": species, "n_species": len(species),
+            "n_converged": len(with_energy),
+            "n_species_not_df": sum(
+                1 for value in with_energy
+                if not str(value.get("reference_eri_path", "")).startswith("df"))}
+
+
+def _pool_digest(names) -> str:
+    """The sha256 of the pool's sorted species names: a pool that changes
+    its members, with or without its size, changes the identity block."""
+    return hashlib.sha256("\n".join(sorted(names)).encode("utf-8")).hexdigest()
+
+
+def comparators_df(args) -> int:
+    """The comparator tables beside the run: one density-fitted total energy
+    per species under each functional of ``COMPARATORS`` (or of
+    ``--functionals``, which may name pbe for the sanity pin), through the
+    call the PBE-DF table runs through, written as ``FUNCTIONALS_DF_FILE``
+    with an identity block: the run's identity, the level of the VV10 grid
+    and the size of the pool. An earlier file of the same identity block is
+    merged into at the species level: a functional not run again is kept,
+    a functional run again has the species of this run added or refreshed
+    (a repair of a few species through the harness's slice), and the file's
+    slice is the union, or None once either side covers the pool. An earlier
+    file of another identity block, or one that cannot be read, is replaced.
+    The file is written through a temporary name, so an interrupted run
+    leaves the earlier file in place."""
+    from pyscf.dft import libxc
+
+    from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
+
+    run_dir = os.path.abspath(args.run_dir)
+    labels = dict(COMPARATORS)
+    labels[PBE_XC] = "PBE"
+    asked = ([k.strip() for k in args.functionals.split(",") if k.strip()]
+             if args.functionals else [k for k, _label in COMPARATORS])
+    asked = list(dict.fromkeys(asked))
+    if not asked:
+        _log(f"FATAL: no functional named (the job's: {', '.join(labels)})")
+        return 2
+    unknown = [k for k in asked if k not in labels]
+    if unknown:
+        _log(f"FATAL: not a functional of this job: {', '.join(unknown)} "
+             f"(the job's: {', '.join(labels)})")
+        return 2
+    nlc_level = _default_nlc_grid_level()
+    pool, _reactions = load_held_out_pools((POOL,), basis=BASIS, grid_level=GRID_LEVEL)
+    identity_block = {**identity(), "nlc_grid_level": nlc_level,
+                      "n_pool_species": len(pool), "pool_species_sha256": _pool_digest(pool)}
+    functionals, failed, species_slice = {}, False, None
+    for xc in asked:
+        species, names, species_slice, not_df, missing = _df_table(
+            run_dir, xc, args.workers, FUNCTIONALS_DF_CACHE, "E_df",
+            nlc_grid_level=nlc_level)
+        failed = failed or bool(missing)
+        n_converged = sum(1 for value in species.values() if "E_df" in value)
+        functionals[xc] = {
+            "label": labels[xc], "xc": xc, "libxc": _libxc_components(xc),
+            "vv10": bool(libxc.is_nlc(xc)), "hybrid": bool(libxc.is_hybrid_xc(xc)),
+            "meta_gga": bool(libxc.is_meta_gga(xc)),
+            "n_species": len(names), "n_converged": n_converged,
+            "n_species_not_df": len(not_df), "species": species}
+        _log(f"{labels[xc]}: {n_converged}/{len(names)} species converged, "
+             f"{len(missing)} not returned")
+    slice_list = sorted(species_slice) if species_slice else None
+    path = Path(run_dir, FUNCTIONALS_DF_FILE)
+    earlier = _read_earlier_tables(path)
+    merged = dict(functionals)
+    if earlier is not None:
+        if earlier.get("identity") == identity_block:
+            kept = {k: v for k, v in earlier["functionals"].items() if k not in functionals}
+            merged = {**kept, **{xc: (_merge_species(earlier["functionals"][xc], entry)
+                                      if xc in earlier["functionals"] else entry)
+                                 for xc, entry in functionals.items()}}
+            earlier_slice = earlier.get("species_slice")
+            slice_list = (None if earlier_slice is None or slice_list is None
+                          else sorted(set(earlier_slice) | set(slice_list)))
+            _log(f"merged into {FUNCTIONALS_DF_FILE}: kept {', '.join(sorted(kept)) or 'nothing'}"
+                 f"; added or refreshed {', '.join(asked)} on {len(names)} species")
+        else:
+            _log(f"replaced {FUNCTIONALS_DF_FILE}: its identity block differs")
+    payload = {"identity": identity_block, "species_slice": slice_list,
+               "functionals": merged}
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    _log(f"wrote {FUNCTIONALS_DF_FILE}: {', '.join(asked)}")
+    return 1 if failed else 0
+
+
+def df_shard(args) -> int:
+    """The worker of both tables: the density-fitted total energy under
+    ``xc`` of each species of ``names_file`` through the cached SCF helper
+    (the cache under ``cache`` beside the run), written to ``out_file`` as
+    ``{name: {key: E, n_ao, reference_eri_path}}`` or ``{name: {error}}``.
+    The helper stamps each record with whether its mean field applied a
+    VV10 term and with the level of its VV10 grid: a functional with a VV10
+    term whose record is not stamped as applied gets an error, never an
+    energy without the term, and so does a record whose level is not the
+    one the table states (``--nlc-grid-level``)."""
+    from pyscf.dft import libxc
+
     from xcquinox.pipeline.benchmark_refs import _mol_spec_to_atoms
     from xcquinox.pipeline.df_jk import default_auxbasis
-    from xcquinox.pipeline.external_refs import SpeciesEntry, run_scf_with_cache
+    from xcquinox.pipeline.external_refs import (
+        SpeciesEntry, _intermediate_cache_name, run_scf_with_cache,
+    )
     from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
 
     run_dir = os.path.abspath(args.run_dir)
     names = json.loads(Path(args.names_file).read_text(encoding="utf-8"))
+    xc, key = args.xc, args.key
+    needs_vv10 = bool(libxc.is_nlc(xc))
+    level_stated = getattr(args, "nlc_grid_level", None)
+
+    def _cached_record(name):
+        """The cache file a refused record lives in: removing it recomputes
+        the species at the next run, the only way past a refusal."""
+        return os.path.join(cache_dir, "_intermediates", _intermediate_cache_name(
+            name, grid_level=GRID_LEVEL, basis=BASIS, density_fit=True, kind="scf",
+            orientation_lock_strength=ORIENTATION_LOCK_STRENGTH, xc=xc))
     specs, _reactions = load_held_out_pools((POOL,), basis=BASIS, grid_level=GRID_LEVEL)
-    cache_dir = os.path.join(run_dir, PBE_DF_CACHE)
+    cache_dir = os.path.join(run_dir, args.cache)
     auxbasis = default_auxbasis(BASIS)
     out = {}
     for i, name in enumerate(names, start=1):
@@ -378,22 +596,44 @@ def pbe_df_shard(args) -> int:
             record = run_scf_with_cache(
                 entry, _mol_spec_to_atoms(ms), cache_dir=cache_dir, basis=BASIS,
                 grid_level=GRID_LEVEL, density_fit=True, auxbasis=auxbasis,
-                orientation_lock_strength=ORIENTATION_LOCK_STRENGTH, xc="pbe",
+                orientation_lock_strength=ORIENTATION_LOCK_STRENGTH, xc=xc,
                 # the network SCF applies density fitting to every species
                 density_fit_empty_channel=True)
         except Exception as exc:  # noqa: BLE001 -- recorded per species, not fatal
             out[name] = {"error": f"{type(exc).__name__}: {exc}"}
             _log(f"[{i}/{len(names)}] {name}: FAILED {type(exc).__name__}: {exc}")
             continue
-        out[name] = {"E_pbe_df": float(record["e_tot"]), "n_ao": int(record["n_ao"]),
+        applied = record.get("reference_nlc_applied")
+        level = record.get("reference_nlc_grid_level")
+        if needs_vv10 and applied is not True:
+            out[name] = {"error": f"the mean field did not apply the VV10 (nlc) term of {xc}"
+                         + (" (the record carries no VV10 stamp)" if applied is None else "")
+                         + f"; remove {_cached_record(name)} to recompute"}
+            _log(f"[{i}/{len(names)}] {name}: REFUSED {out[name]['error']}")
+            continue
+        # the level matters to a functional with a VV10 term alone
+        if (needs_vv10 and level_stated is not None and level is not None
+                and int(level) != int(level_stated)):
+            out[name] = {"error": f"the VV10 grid level of the record ({int(level)}) is "
+                                  f"not the table's ({int(level_stated)}); remove "
+                                  f"{_cached_record(name)} to recompute"}
+            _log(f"[{i}/{len(names)}] {name}: REFUSED {out[name]['error']}")
+            continue
+        out[name] = {key: float(record["e_tot"]), "n_ao": int(record["n_ao"]),
                      "reference_eri_path": record.get("reference_eri_path")}
-        _log(f"[{i}/{len(names)}] {name}: E_pbe_df = {record['e_tot']:.8f} Ha")
+        _log(f"[{i}/{len(names)}] {name}: {key} = {record['e_tot']:.8f} Ha ({xc})")
     Path(args.out_file).write_text(json.dumps(out, indent=1, sort_keys=True),
                                    encoding="utf-8")
     # the last stdout line is the result run_workers reads
     print(json.dumps({"status": "success", "n": len(out), "out_file": args.out_file}),
           flush=True)
     return 0
+
+
+def pbe_df_shard(args) -> int:
+    """``df-shard`` with PBE, the PBE-DF cache and the PBE-DF energy key."""
+    args.xc, args.cache, args.key = PBE_XC, PBE_DF_CACHE, "E_pbe_df"
+    return df_shard(args)
 
 
 def main(argv=None) -> int:
@@ -412,16 +652,31 @@ def main(argv=None) -> int:
     d.add_argument("--workers", type=int, default=24,
                    help="shard workers; 24 keeps the density-fitted SCFs of the "
                         "largest species inside the node memory")
+    c = modes.add_parser("comparators-df",
+                         help="the comparator tables of the set (r2SCAN, B3LYP, wB97M-V)")
+    c.add_argument("run_dir")
+    c.add_argument("--workers", type=int, default=24,
+                   help="shard workers, the PBE-DF table's rule")
+    c.add_argument("--functionals", default=None,
+                   help="comma-separated functionals of the job's list to run "
+                        "(default: all three); pbe is admitted for the sanity pin")
     s = modes.add_parser("pbe-df-shard")
     s.add_argument("run_dir")
     s.add_argument("names_file")
     s.add_argument("out_file")
+    g = modes.add_parser("df-shard")
+    for name in ("run_dir", "names_file", "out_file", "xc", "cache", "key"):
+        g.add_argument(name)
+    g.add_argument("--nlc-grid-level", type=int, default=None,
+                   help="the VV10 grid level the table states; a record stamped "
+                        "with another level is refused")
     args = parser.parse_args(argv)
     # before any import that pulls jax in
     from xcquinox.pipeline.cluster._eval_one_spec import _route_jax_env
     _route_jax_env()
     handlers = {"prepare": prepare, "evaluate": evaluate,
-                "pbe-df": pbe_df, "pbe-df-shard": pbe_df_shard}
+                "pbe-df": pbe_df, "comparators-df": comparators_df,
+                "pbe-df-shard": pbe_df_shard, "df-shard": df_shard}
     return handlers[args.mode](args)
 
 

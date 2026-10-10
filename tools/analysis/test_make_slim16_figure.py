@@ -265,8 +265,10 @@ def test_collect_set_errors_against_the_references(tmp_path):
     covers. A subset whose references average to zero carries no weight and
     is named. The table's rows give the same numbers."""
     run = _run(tmp_path)
-    order, records, pbe = figure.collect_set_errors(run)
+    order, records, pbe, comparators = figure.collect_set_errors(run)
     assert order == ["S_a", "slim05_b", "S_e", "S_g", "slim05_c", "v7_d"]
+    # the run carries no comparator table
+    assert comparators == []
 
     expected = {
         "S_a": (_MAE_S_A, _MAE_S_A_CONV, _WT_S_A, ["rse43_033"], [], [],
@@ -366,7 +368,7 @@ def test_the_drawn_figure_reads_back_the_set_errors(tmp_path, monkeypatch):
     closed = []
     monkeypatch.setattr(figure.plt, "close",
                         lambda fig=None, *a, **k: closed.append(fig))
-    order, records, pbe = figure.collect_set_errors(_run(tmp_path))
+    order, records, pbe, _comparators = figure.collect_set_errors(_run(tmp_path))
     manifest = figure.plot_slim16_set_errors(order, records, pbe,
                                              tmp_path / "fig.png")
     fig = closed[-1] if closed and closed[-1] is not None else figure.plt.gcf()
@@ -547,8 +549,10 @@ def test_build_table_matches_the_hand_values_after_the_rewiring(tmp_path):
         assert row["wtmad2_ref_pbe_df"] == pytest.approx(_WT_PBE)
     assert by_label["S_g"]["wtmad2_ref_nn_all"] == pytest.approx(_WT_S_G_ALL)
     assert math.isnan(by_label["S_g"]["wtmad2_ref_nn_converged"])
-    assert table.COLUMNS[-3:] == ("wtmad2_ref_nn_all", "wtmad2_ref_nn_converged",
-                                  "wtmad2_ref_pbe_df")
+    # the three WTMAD-2 columns, then the comparators' six (empty here)
+    assert table.COLUMNS[-9:] == ("wtmad2_ref_nn_all", "wtmad2_ref_nn_converged",
+                                  "wtmad2_ref_pbe_df") + table.COMPARATOR_COLUMNS
+    assert all(a.get(c) is None for c in table.COMPARATOR_COLUMNS)
     # slim05_c has no channel: its row carries the identity fields only
     assert "n_converged" not in by_label["slim05_c"]
     assert by_label["slim05_c"]["kind"] == "pretrain"
@@ -572,3 +576,154 @@ def test_main_writes_the_png_beside_the_run(tmp_path):
     out = run / "slim16_wtmad2.png"
     assert out.is_file()
     assert out.stat().st_size > 0
+
+# The comparator tables beside PBE-DF: hand reaction energies (kcal/mol) of
+# the run's four referenced reactions and of F; the per-species energies
+# realize them on the fixture's stoichiometry. References: A 40, B 120, E 80,
+# H 60; the scale of the full-weights WTMAD-2 is (40 + 120 + 2 * 70) / 4 / 4
+# = 18.75 and a subset's term is N_i MAD_i / m_i (RSE43: N_i 2, m_i 70).
+# r2SCAN: errors 0.6, 3.6, 1.4, 0.7 -> 18.75 (0.6/40 + 3.6/120 + 2 (1.05)/70)
+#   = 1.40625; reaction MAE 1.575; its RC21 bar (3.6) is the figure's tallest.
+# B3LYP: errors 1.2, -, 2.6, 0.4 (rc21_me carries no energy: rc21_010 is
+#   unscored, its weight kept) -> 18.75 (1.2/40 + 2 (1.5)/70) = 1.3661; MAE 1.4.
+# wB97M-V: errors 0.2, 0.9, 0.5, 1.1 -> 18.75 (0.2/40 + 0.9/120 + 2 (0.8)/70)
+#   = 0.6629; MAE 0.675.
+_CMP_RXN = {"r2scan": {"A": 40.6, "B": 116.4, "E": 81.4, "H": 59.3, "F": 6.0},
+            "b3lyp": {"A": 38.8, "B": None, "E": 82.6, "H": 60.4, "F": 9.0},
+            "wb97m-v": {"A": 40.2, "B": 120.9, "E": 79.5, "H": 61.1, "F": 4.0}}
+_CMP_LABEL = {"r2scan": "r2SCAN", "b3lyp": "B3LYP", "wb97m-v": "wB97M-V"}
+_CMP_WT = {"r2scan": 18.75 * (0.6 / 40 + 3.6 / 120 + 2 * 1.05 / 70),
+           "b3lyp": 18.75 * (1.2 / 40 + 2 * 1.5 / 70),
+           "wb97m-v": 18.75 * (0.2 / 40 + 0.9 / 120 + 2 * 0.8 / 70)}
+_CMP_MAE = {"r2scan": 1.575, "b3lyp": 1.4, "wb97m-v": 0.675}
+_CMP_SET_MAE = {"r2scan": {"ALKBDE10": 0.6, "RC21": 3.6, "RSE43": 1.05},
+                "b3lyp": {"ALKBDE10": 1.2, "RSE43": 1.5},
+                "wb97m-v": {"ALKBDE10": 0.2, "RC21": 0.9, "RSE43": 0.8}}
+
+
+def _comparator_species(rxn: dict) -> dict:
+    """Per-species energies (Hartree) whose reaction energies are ``rxn``
+    on the stoichiometry of the fixture's reactions; None for a species
+    that failed."""
+    a, b, e, h, f = (rxn[k] for k in "ABEHF")
+    return {"slim16@alkbde10_lif": -1.0, "slim16@alkbde10_li": -0.5,
+            "slim16@alkbde10_f": -0.5 + a / _KCAL,
+            "slim16@rc21_4e": -2.0, "slim16@rc21_4p": -1.0,
+            "slim16@rc21_me": None if b is None else -1.0 + b / _KCAL,
+            "slim16@rse43_E35": -1.0, "slim16@rse43_P1": -0.5,
+            "slim16@rse43_P35": -1.2, "slim16@rse43_E1": -0.3 + e / _KCAL,
+            "slim16@rse43_E21": -1.0, "slim16@rse43_P21": -1.2 + (h - e) / _KCAL,
+            "slim16@adim6_AD2": -2.0, "slim16@adim6_AM2": -1.0 + f / (2.0 * _KCAL)}
+
+
+def _functionals_df_json() -> dict:
+    """The comparator file of the job (``comparators-df``), its functionals
+    in the reverse of the display order and a ``pbe`` entry, the job's
+    sanity pin, which is never a comparator."""
+    functionals = {}
+    for key in ("pbe", "wb97m-v", "b3lyp", "r2scan"):
+        rxn = _CMP_RXN.get(key, _CMP_RXN["r2scan"])
+        species = {name: ({"error": "RuntimeError: the SCF did not converge"}
+                          if energy is None else
+                          {"E_df": energy, "n_ao": 1, "reference_eri_path": "df-aux240"})
+                   for name, energy in _comparator_species(rxn).items()}
+        functionals[key] = {"label": _CMP_LABEL.get(key, "PBE"), "xc": key,
+                            "vv10": key == "wb97m-v", "hybrid": key != "r2scan",
+                            "meta_gga": key != "b3lyp", "n_species": len(species),
+                            "n_converged": sum(1 for v in species.values() if "E_df" in v),
+                            "n_species_not_df": 0, "species": species}
+    return {"identity": {"pool": "slim16", "nlc_grid_level": 3},
+            "species_slice": None, "functionals": functionals}
+
+
+def test_the_comparator_tables_draw_grey_bars_after_pbe_df(tmp_path, monkeypatch):
+    """A run carrying the comparator file: the reader returns the tables in
+    the display order (r2SCAN, B3LYP, wB97M-V) without the pbe entry, the
+    failed species without an energy; the table's six comparator columns
+    equal the hand WTMAD-2 and reaction MAE on every evaluated network's
+    row; and the figure, read off the axes, draws per subset the networks,
+    PBE-DF and then one bar per comparator as tall as the subset's hand
+    error (B3LYP none in RC21), no two bars overlapping, every bar inside
+    the y range (the tallest is r2SCAN's), the legend reading the tracked
+    five lines and then ``label (WTMAD-2)`` per comparator in its grey, the
+    three greys distinct from each other, from PBE-DF's and from the
+    architecture colours of the drawn networks."""
+    run = _run(tmp_path)
+    (run / "functionals_df.json").write_text(json.dumps(_functionals_df_json()))
+
+    found = table.comparator_tables(run)
+    assert [(k, label) for k, label, _t in found] == [
+        ("r2scan", "r2SCAN"), ("b3lyp", "B3LYP"), ("wb97m-v", "wB97M-V")]
+    assert dict(found[1][2])["slim16@rc21_me"] is None
+    rows = {row["label"]: row for row in table.build_table(run)}
+    for label in ("S_a", "slim05_b", "S_e", "S_g"):
+        for key, column in (("r2scan", "r2scan"), ("b3lyp", "b3lyp"), ("wb97m-v", "wb97mv")):
+            assert rows[label][f"wtmad2_ref_{column}"] == pytest.approx(_CMP_WT[key])
+            assert rows[label][f"mae_rxn_ref_{column}"] == pytest.approx(_CMP_MAE[key])
+    assert rows["S_a"]["wtmad2_ref_pbe_df"] == pytest.approx(_WT_PBE)
+
+    closed = []
+    monkeypatch.setattr(figure.plt, "close",
+                        lambda fig=None, *a, **k: closed.append(fig))
+    order, records, pbe, comparators = figure.collect_set_errors(run)
+    assert [c["key"] for c in comparators] == ["r2scan", "b3lyp", "wb97m-v"]
+    for c in comparators:
+        assert c["mae"] == _approx_map(_CMP_SET_MAE[c["key"]])
+        assert c["wtmad2"] == pytest.approx(_CMP_WT[c["key"]]) and c["n_reactions"] == 4
+    manifest = figure.plot_slim16_set_errors(order, records, pbe, tmp_path / "fig.png",
+                                             comparators=comparators)
+    fig = closed[-1]
+    try:
+        subsets = ["ALKBDE10", "RC21", "RSE43"]
+        bars = sorted((p for ax in fig.axes for p in ax.patches if p.get_width() > 0),
+                      key=lambda p: p.get_x() + p.get_width() / 2)
+        expected = []
+        for i, name in enumerate(subsets):
+            for label, mae in (("S_a", _MAE_S_A), ("slim05_b", _MAE_SLIM05_B),
+                               ("S_e", _MAE_S_E), ("S_g", _MAE_S_E)):
+                expected.append((label, i, mae[name]))
+            expected.append(("PBE-DF", i, _MAE_PBE[name]))
+            for key in ("r2scan", "b3lyp", "wb97m-v"):
+                if name in _CMP_SET_MAE[key]:
+                    expected.append((_CMP_LABEL[key], i, _CMP_SET_MAE[key][name]))
+        assert len(bars) == len(expected)
+        assert [p.get_height() for p in bars] == pytest.approx([v for _l, _i, v in expected])
+        centres = [p.get_x() + p.get_width() / 2 for p in bars]
+        assert all(abs(c - i) < 0.5 for c, (_l, i, _v) in zip(centres, expected))
+        edges = sorted((p.get_x(), p.get_x() + p.get_width()) for p in bars)
+        assert all(right <= left + 1e-12 for (_a, right), (left, _b) in zip(edges, edges[1:]))
+        low, high = next(ax.get_ylim() for ax in fig.axes if ax.patches)
+        tallest = max(p.get_height() for p in bars)
+        assert low <= 0.0 and tallest == pytest.approx(3.6) and tallest <= high
+
+        colour = {}
+        for (label, _i, _v), patch in zip(expected, bars):
+            colour.setdefault(label, set()).add(
+                mcolors.to_hex(patch.get_facecolor(), keep_alpha=False))
+        assert all(len(found_) == 1 for found_ in colour.values()), colour
+        greys = [next(iter(colour[_CMP_LABEL[k]])) for k in ("r2scan", "b3lyp", "wb97m-v")]
+        assert len(set(greys)) == 3
+        assert all(mcolors.to_rgb(g)[0] == mcolors.to_rgb(g)[1] == mcolors.to_rgb(g)[2]
+                   for g in greys)
+        others = {next(iter(colour[label])) for label in ("S_a", "S_e", "PBE-DF")}
+        assert not set(greys) & others
+
+        legends = list(fig.legends) + [ax.get_legend() for ax in fig.axes
+                                       if ax.get_legend() is not None]
+        assert len(legends) == 1
+        texts = [t.get_text() for t in legends[0].get_texts()]
+        assert texts == [f"S_a ({_WT_S_A[0]:.2f} / {_WT_S_A[1]:.2f})",
+                         f"slim05_b ({_WT_SLIM05_B[0]:.2f} / {_WT_SLIM05_B[1]:.2f})",
+                         f"S_e ({_WT_S_E[0]:.2f} / {_WT_S_E[1]:.2f})",
+                         f"S_g ({_WT_S_G_ALL:.2f} / n/a)",
+                         f"PBE-DF ({_WT_PBE:.2f})"] + [
+                             f"{_CMP_LABEL[k]} ({_CMP_WT[k]:.2f})"
+                             for k in ("r2scan", "b3lyp", "wb97m-v")]
+        handles = list(legends[0].legend_handles)
+        assert [mcolors.to_hex(h.get_facecolor(), keep_alpha=False)
+                for h in handles[-3:]] == greys
+        assert [c["key"] for c in manifest["comparators"]] == ["r2scan", "b3lyp", "wb97m-v"]
+        assert sum(1 for b in manifest["bars"] if b["label"] in _CMP_LABEL.values()) == 8
+    finally:
+        monkeypatch.undo()
+        figure.plt.close(fig)

@@ -15,9 +15,11 @@
 # one array task per network, on the run directory `slim16_eval.py prepare` wrote
 # (the first argument). Each task runs the harness's converged channel over the
 # Slim16 set at def2-TZVP / grid level 4 with density fitting (hpcjobs/slim16_eval.py);
-# task 0 then writes the PBE-DF table of the set beside the run. The outputs land
-# under <run>/checkpoints/spec_NNNN/eval_holdout_converged/ and <run>/pbe_df.json,
-# which the summaries pull carries.
+# task 0 then writes the PBE-DF table of the set beside the run and the comparator
+# tables of r2SCAN, B3LYP and wB97M-V on the same footing (functionals_df.json;
+# slim16_tables.sbatch writes the two tables alone on a run already evaluated). The
+# outputs land under <run>/checkpoints/spec_NNNN/eval_holdout_converged/,
+# <run>/pbe_df.json and <run>/functionals_df.json, which the summaries pull carries.
 #
 # Shell discipline: no `set -e` -- conda activation can return non-zero on
 # success; -uo pipefail, activation verified by its effect, an explicit rc gate.
@@ -86,6 +88,9 @@ if [ "$IDX" -eq 0 ]; then
   python -u hpcjobs/slim16_eval.py pbe-df "$RUN"
   RC2=$?
   [ "$RC" -ne 0 ] || RC=$RC2
+  python -u hpcjobs/slim16_eval.py comparators-df "$RUN"
+  RC3=$?
+  [ "$RC" -ne 0 ] || RC=$RC3
 fi
 T_END="$(date +%s)"
 echo "[slim16-eval] END $(date '+%Y-%m-%d %H:%M:%S %Z') rc=$RC elapsed $((T_END - T_START)) s"

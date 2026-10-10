@@ -35,6 +35,9 @@
 # the reference energies on the run's own density-fitting footing, read by
 # tools/analysis/slim16_table.py beside the channel outputs.
 + /pbe_df.json
+# The comparator tables beside it (hpcjobs/slim16_eval.py comparators-df: r2SCAN,
+# B3LYP and wB97M-V on the same footing), read by the same tool and the figure.
++ /functionals_df.json
 # The run-level representative-subset ledger: names every cell's selected
 # training points; the figures and the exclusion layer both key on it.
 + /subset_ledger.json
