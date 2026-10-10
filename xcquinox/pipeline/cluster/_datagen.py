@@ -21,9 +21,12 @@ patch exactly as ``spec_builder`` does), each named through
 file carries the zeta column; the parent (``pretrain.parent_density``) decides
 which functional's self-consistent density its rows sit on, so under ``auto`` a
 sweep that mixes GGA-rung and meta-GGA-rung architectures needs two files.
-``descriptors=True`` writes the ``cusp_all`` / ``dm_all`` columns the descriptor
-archs (deep_cusp / deep_dm / deep_combined*) need, so one file serves base,
-attn, cusp, dm, combined, and notransform archs.
+``descriptors=True`` writes every descriptor stem (``cusp_all``, ``dm_all``,
+``rung35_all``, ``rung35ms_all``, ``lap_all``), so one file serves base, attn,
+cusp, dm, combined, notransform, rung-3.5 and Laplacian archs; the stems the
+sweep's architectures read are stated on the call (``descriptor_stems``), so
+the currency check regenerates a file written before a stem the sweep needs
+and serves one that carries more than it needs.
 
 The remaining pretraining-protocol knobs (``dfs_set``, ``pool_atoms``,
 ``exchange_footing``, ``mesh_fraction``, ``atoms``) change the file's CONTENT
@@ -267,6 +270,13 @@ def datagen_call(cfg, polarized, reference_xc):
     # generator's own default).
     if bool(getattr(cfg.inputs, "allow_irreproducible_degenerate", False)):
         keywords["allow_irreproducible_degenerate"] = True
+    # The descriptor stems the swept architectures read, so the currency
+    # check holds the file to the columns this run needs and no more: a file
+    # written before the Laplacian column stays current for a sweep without
+    # a Laplacian architecture and regenerates for one with it (the
+    # iso-orbital indicator is a core column and is not a stem).
+    from xcquinox.pipeline.pretrain_data_gen import descriptor_stems_for
+    keywords["descriptor_stems"] = descriptor_stems_for(_swept_architectures(cfg))
     duplicate = sorted(set(keywords) & set(call))
     if duplicate:
         raise TypeError(

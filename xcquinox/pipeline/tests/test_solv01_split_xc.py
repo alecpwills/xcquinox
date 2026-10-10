@@ -502,6 +502,7 @@ def _live_uks_features_fns(model, md):
         cusp_features=md.get("cusp_features"),
         rung35_proj_ao=md.get("rung35_proj_ao"),
         rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+        ao_lapl=md.get("ao_grid_lapl"),
     )
 
 

@@ -57,7 +57,9 @@ except Exception:  # pragma: no cover - only if arch_style is missing/broken
 _FALLBACK_CMAP = plt.get_cmap("tab10")
 # Linestyle by rung so GGA / meta-GGA / rung-3.5 / combined read apart even in
 # grayscale (pretraining has no solver axis to map to linestyle).
-_RUNG_LS = {"GGA": "-", "meta-GGA": "--", "rung-3.5": ":", "rung-3.5+meta-GGA": "-."}
+_RUNG_LS = {"GGA": "-", "meta-GGA": "--", "rung-3.5": ":", "rung-3.5+meta-GGA": "-.",
+            # the Laplacian rung: dash-dot-dot, the fifth pattern
+            "Laplacian": (0, (3, 1, 1, 1, 1, 1))}
 
 
 def _shown(arch: str) -> str:

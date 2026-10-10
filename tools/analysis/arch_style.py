@@ -64,6 +64,7 @@ _STORED_ORDER: Tuple[str, ...] = (
     "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
+    "deep_lap_3x16", "deep_lap_geom_3x16",
     "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
     "deep_rung35ms_3x16",
     "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
@@ -87,6 +88,7 @@ _DISPLAY_ORDER: Tuple[str, ...] = (
     "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
+    "deep_lap_3x16", "deep_lap_geom_3x16",
     "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
     "deep_rung35ms_3x16",
     "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
@@ -159,6 +161,11 @@ ARCH_COLOR["deep_sine"] = "#9ecae1"
 # (12.40, against the GGA rung band) for the geometric one.
 ARCH_COLOR["deep_kan"] = "#e6550d"
 ARCH_COLOR["deep_kan_geom"] = "#bdbdbd"
+# The Laplacian pair, by the same criterion with every colour above carried:
+# #636363 (worst case 11.04) for the plain network and, with it carried too,
+# tab20c's #bcbddc (10.37) for the geometric one.
+ARCH_COLOR["deep_lap"] = "#636363"
+ARCH_COLOR["deep_lap_geom"] = "#bcbddc"
 for _small in _STORED_ORDER[8:]:
     # Only sized names (the width twins, the 2x6 pair) inherit by stripping
     # their size suffix; a base name in the tail (the size ladder) keeps its
@@ -182,22 +189,29 @@ SUBSET_SIZES: Tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18)
 # localized-DM occupancy).
 # --------------------------------------------------------------------------- #
 from xcquinox.pipeline.rungs import (  # noqa: E402
-    RUNG_GGA, RUNG_MGGA, RUNG_R35, RUNG_R35_MGGA, RUNG_ORDER,
+    RUNG_GGA, RUNG_LAP, RUNG_MGGA, RUNG_R35, RUNG_R35_MGGA, RUNG_ORDER,
     RUNG_RANK as _RUNG_RANK,
     arch_ingredients as _registry_ingredients,
     rung_from_ingredients as _rung_from_ingredients,
 )
 
 # Saturated accent per rung (per-rung summary bars, legend section swatches) and a
-# light background tint (axvspan rung bands behind per-arch bars).
+# light background tint (axvspan rung bands behind per-arch bars). The
+# Laplacian accent is tab20c's #fdae6b, the colour no architecture carries
+# with the largest worst-case CIEDE2000 separation (10.13) from every
+# architecture colour and accent in use; its band is that accent at 15
+# percent over white, 6.5 from white and 3.7 from the nearest band (the
+# meta-GGA one), 10.1 or more from the other bands.
 RUNG_ACCENT: Dict[str, str] = {
     RUNG_GGA: "#1f77b4",       # blue
+    RUNG_LAP: "#fdae6b",       # orange (the density Laplacian)
     RUNG_MGGA: "#8c564b",      # brown  (meta-GGA family)
     RUNG_R35: "#2ca02c",       # green
     RUNG_R35_MGGA: "#9467bd",  # purple (both ingredients)
 }
 RUNG_BAND: Dict[str, str] = {
     RUNG_GGA: "#e8f0f7",
+    RUNG_LAP: "#fff3e9",
     RUNG_MGGA: "#f3ebe8",
     RUNG_R35: "#e9f5e9",
     RUNG_R35_MGGA: "#f0eaf5",
@@ -252,17 +266,21 @@ def order_known(archs) -> List[str]:
     return [a for a in order_present(archs) if in_order(a)]
 
 
-def _arch_ingredients(arch: str) -> Tuple[bool, bool]:
-    """``(has_meta_gga, has_rung35)`` for ``arch`` (a shown name, a tagged shown
-    name or a stored key), from the registry if possible.
+def _arch_ingredients(arch: str) -> Tuple[bool, bool, bool]:
+    """``(has_meta_gga, has_rung35, has_laplacian)`` for ``arch`` (a shown
+    name, a tagged shown name or a stored key), from the registry if possible.
 
     Falls back to name tokens for archs not in the registry (e.g. the legacy 4x32
-    base names ``deep_rung35`` / ``deep_mgga`` that only exist as ARCH_COLOR keys).
+    base names ``deep_rung35`` / ``deep_mgga`` that only exist as ARCH_COLOR
+    keys, and the ``deep_lap`` base names); the Laplacian token is the
+    ``lap`` segment of the key.
     """
     try:
         return _registry_ingredients(stored_key(as_shown(arch)))
     except Exception:
-        return (("mgga" in arch) or ("metagga" in arch)), ("rung35" in arch)
+        tokens = set(split_tag(arch)[0].split("_"))
+        return ((("mgga" in arch) or ("metagga" in arch)), ("rung35" in arch),
+                "lap" in tokens)
 
 
 def rung_of(arch: str) -> str:

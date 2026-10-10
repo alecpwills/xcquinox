@@ -1291,7 +1291,9 @@ def evaluate_potential(model, mol_data) -> dict:
         s_matrix=mol_data["s_matrix"], n_grid=n_grid,
         cusp_features=mol_data.get("cusp_features"),
         rung35_proj_ao=mol_data.get("rung35_proj_ao"),
-        rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"))
+        rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
+        # the Laplacian column's AO table (None without the column)
+        ao_lapl=mol_data.get("ao_grid_lapl"))
     if unrestricted:
         features_a = assemble_descriptor_features(model.descriptors, mol_data,
                                                   spin_channel=0)
@@ -1350,7 +1352,7 @@ def evaluate_potential(model, mol_data) -> dict:
                 return _reassemble_features(
                     descriptors=model.descriptors, dm=dm_live,
                     ao_grad=ao_deriv[1:4], rho=rho_d, sigma=sigma_d,
-                    **closure_kwargs)
+                    ao=ao_grid, **closure_kwargs)
             dedf = feature_energy_derivative(
                 model, mol_data["rho_grid"], mol_data["sigma_grid"], features)
             v_total = v_total + feature_response_vxc(

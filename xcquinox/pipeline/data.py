@@ -311,6 +311,15 @@ class MoleculeData(TypedDict, total=True):
     rung35ms_features_b: jnp.ndarray | None
     metagga_features_a: jnp.ndarray | None
     metagga_features_b: jnp.ndarray | None
+    # The Laplacian column (descriptors.LaplacianDescriptor): the AO Laplacian
+    # table (n_grid, n_ao), a constant the live kernel contracts the density
+    # matrix with (beside ao_grid and ao_grid_deriv), stored only when the
+    # column is requested; the one-shot column of the reference matrix
+    # (n_grid, 1) and its two per-channel blocks of diag(P_sigma, P_sigma).
+    ao_grid_lapl: jnp.ndarray | None
+    lap_features: jnp.ndarray | None
+    lap_features_a: jnp.ndarray | None
+    lap_features_b: jnp.ndarray | None
     # Per-spin positive kinetic-energy density tau_sigma on the grid, (n_grid,).
     # The doubled system's tau is 2 tau_sigma. Stored alongside the meta-GGA
     # blocks so the open-shell exchange ingredients are inspectable without
@@ -839,7 +848,9 @@ def _precompute_cache_key(
          # rung-3.5 projector width: distinct alpha -> distinct projected-AO A,
          # so DMRung35Descriptor(alpha=...) variants must not collide in cache.
          getattr(d, "alpha", None),
-         getattr(d, "alphas", None))
+         getattr(d, "alphas", None),
+         # the Laplacian column's tanh scale: two scales are two columns
+         getattr(d, "scale", None))
         for d in descriptors
     )
     ext_path = getattr(mol_spec, "external_data_path", None)
@@ -868,6 +879,22 @@ def _precompute_cache_key(
             (str(seed_source), seed_cache_dir, bool(seed_density_fit),
              bool(with_minao_seed)),
             canonical_reference_xc(reference_xc))
+
+
+def ao_laplacian_on_grid(mol, coords, block: int = 8192) -> np.ndarray:
+    """The AO Laplacian ``lap chi_mu(r_g)`` on ``coords``, shape (n_grid,
+    n_ao): the sum of the xx, yy and zz components (indices 4, 7 and 9) of
+    pyscf's ``eval_ao(deriv=2)``, evaluated in blocks of ``block`` grid points
+    so the ten-component table of the whole grid never exists at once (it is
+    two and a half times the first-derivative table the record stores)."""
+    from pyscf import dft
+    pts = np.asarray(coords, dtype=float)
+    out = np.empty((pts.shape[0], int(mol.nao)), dtype=float)
+    step = max(int(block), 1)
+    for start in range(0, pts.shape[0], step):
+        ao2 = dft.numint.eval_ao(mol, pts[start:start + step], deriv=2)
+        out[start:start + step] = ao2[4] + ao2[7] + ao2[9]
+    return out
 
 
 def seed_geometry_tag(atom: str, charge: int, spin: int) -> str:
@@ -1440,6 +1467,24 @@ def precompute_fixed_density_data(
         metagga_features = compute_alpha(
             jnp.array(rho_pbe), jnp.array(sigma_pbe), _tau_pbe).reshape(-1, 1)
 
+    ao_grid_lapl = None
+    lap_features = None
+    lap_descriptor = None
+    if "lap_features" in all_needed:
+        from xcquinox.pipeline.descriptors import LaplacianDescriptor
+        # The scale from the descriptor instance, as the rung-3.5 width is
+        # pulled from its descriptor: the record's column is the consumer's
+        # (and the cache key carries the scale).
+        lap_descriptor = next(
+            (d for d in descriptors if isinstance(d, LaplacianDescriptor)),
+            LaplacianDescriptor())
+        # The AO Laplacian table, a constant beside the AO values and
+        # gradients; the live SCF contracts the live matrix with the three.
+        ao_grid_lapl = jnp.array(ao_laplacian_on_grid(mol, coords))
+        lap_features = lap_descriptor.compute_from_dm(
+            jnp.array(ao[0]), jnp.array(ao[1:4]), ao_grid_lapl,
+            jnp.array(rho_pbe), jnp.array(dm_pbe))
+
     # --- Per-spin-channel descriptor blocks (open shells only) --------------
     # Every UKS exchange evaluation is posed on the symmetric doubled density
     # diag(P_sigma, P_sigma) (Oliver and Perdew, Phys. Rev. A 20, 397 (1979)):
@@ -1457,6 +1502,8 @@ def precompute_fixed_density_data(
     rung35ms_features_b = None
     metagga_features_a = None
     metagga_features_b = None
+    lap_features_a = None
+    lap_features_b = None
     tau_spin_a = None
     tau_spin_b = None
     if is_unrestricted:
@@ -1521,6 +1568,20 @@ def precompute_fixed_density_data(
                               jnp.array(sigma_doubled[s]),
                               compute_tau_from_dm(ao_grad_j, doubled[s])
                               ).reshape(-1, 1)
+                for s in (0, 1)
+            ]
+        if lap_features is not None:
+            # The column of the doubled density diag(P_sigma, P_sigma): the
+            # kernel on the doubled matrix with the doubled channel's density
+            # 2 rho_sigma, the contraction the solver's per-channel closures
+            # use.
+            _ao0 = jnp.array(ao[0])
+            lap_features_a, lap_features_b = [
+                lap_descriptor.compute_from_dm(
+                    _ao0, jnp.array(ao[1:4]), ao_grid_lapl,
+                    2.0 * jnp.einsum("gi,ij,gj->g", _ao0,
+                                     jnp.array(dm_pbe[s]), _ao0),
+                    doubled[s])
                 for s in (0, 1)
             ]
 
@@ -1648,6 +1709,10 @@ def precompute_fixed_density_data(
         rung35ms_features_b=rung35ms_features_b,
         metagga_features_a=metagga_features_a,
         metagga_features_b=metagga_features_b,
+        ao_grid_lapl=ao_grid_lapl,
+        lap_features=lap_features,
+        lap_features_a=lap_features_a,
+        lap_features_b=lap_features_b,
         tau_spin_a=tau_spin_a,
         tau_spin_b=tau_spin_b,
         reference_xc=reference_xc,

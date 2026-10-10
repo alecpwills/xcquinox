@@ -5,6 +5,7 @@ network input features beyond (rho, sigma).
 """
 import abc
 import dataclasses
+import math
 import numbers
 
 import equinox as eqx
@@ -501,6 +502,118 @@ class MetaGGAAlphaDescriptor(Descriptor):
 
     def compute(self, mol_data):
         return mol_data["metagga_features"]
+
+
+#: The tanh scale of the Laplacian column: the 90th percentile of |q| over
+#: the rows of the campaign atoms' pretraining draw (800 points per system
+#: drawn by rho*w at 6-311++G(3df,2pd), grid level 3) is 1.98, so that
+#: percentile sits at tanh(1); over all grid rows weighted by rho*w the 90th
+#: percentile is 1.40, the column's weighted standard deviation at this
+#: scale 0.28 with 1.7 percent of the measure saturated beyond 0.99 (at a
+#: scale of 5: 0.17 and 0.6 percent, with 96 percent of the measure below
+#: 0.5).
+LAP_SCALE = 2.0
+#: The column's definition as the pretraining manifest records it: a file
+#: written under another definition carries other values in the column and
+#: is stale for a request that names it (``pretrain_data_gen``).
+LAP_DEFINITION = (f"tanh(q / {LAP_SCALE:g}); q = lap rho / (4 k_F^2 rho), "
+                  "rho floored at 1e-12")
+
+
+def lap_rho_from_dm(ao, ao_grad, ao_lapl, dm) -> jnp.ndarray:
+    """The density Laplacian on the grid from the density matrix, with the
+    product rule on ``rho = sum_{mu nu} P_{mu nu} chi_mu chi_nu`` and ``P``
+    symmetric::
+
+        lap rho(g) = 2 sum_{mu nu} P_{mu nu} chi_mu(g) lap chi_nu(g)
+                   + 2 sum_{mu nu} P_{mu nu} grad chi_mu(g) . grad chi_nu(g)
+
+    (the second sum is four times the positive kinetic-energy density). Linear
+    in ``P`` with three constant tables: the AO values ``ao`` (n_grid, n_ao),
+    the AO gradients ``ao_grad`` (3, n_grid, n_ao) and the AO Laplacian
+    ``ao_lapl`` (n_grid, n_ao), the sum of the xx, yy and zz components of
+    pyscf's ``eval_ao(deriv=2)`` (``data.ao_laplacian_on_grid``). A
+    spin-resolved (2, n_ao, n_ao) matrix is summed to the total, so the
+    doubled matrix ``diag(P_sigma, P_sigma)`` gives the Laplacian of
+    ``2 rho_sigma``. Returns shape (n_grid,)."""
+    p = jnp.asarray(dm)
+    p = p if p.ndim == 2 else p[0] + p[1]
+    chi = jnp.asarray(ao)
+    grad = jnp.asarray(ao_grad)
+    lapl = jnp.asarray(ao_lapl)
+    return 2.0 * (jnp.einsum("gi,ij,gj->g", chi, p, lapl)
+                  + jnp.einsum("dgi,ij,dgj->g", grad, p, grad))
+
+
+@register_descriptor("lap")
+class LaplacianDescriptor(Descriptor):
+    """The reduced density Laplacian, compressed: one feature
+    ``tanh(q / scale)`` with ``q = lap rho / (4 k_F^2 rho)``,
+    ``k_F = (3 pi^2 rho)^(1/3)`` (``features.compute_reduced_laplacian``,
+    rho floored at 1e-12). The semilocal ingredient between the gradient and
+    the kinetic-energy density: no orbital dependence, computed from the
+    density matrix through the AO second derivatives (:func:`lap_rho_from_dm`),
+    linear in the matrix with constant tables, so it is self-consistent (a
+    functional of the LIVE matrix, recomputed each SCF cycle under
+    REASSEMBLE), differentiable through the SCF and exact in the potential
+    through the feature-response term (``oneshot.feature_response_vxc``),
+    like the iso-orbital indicator. A learned Laplacian-level functional
+    reaches meta-GGA accuracy without orbitals (Paul, Kanungo, Das, Gavini,
+    arXiv:2609.34194 (2026)).
+
+    ``q`` is invariant under uniform coordinate scaling ``lambda^3 rho(lambda
+    r)`` and scales as ``rho^(-2/3)`` under an amplitude change, so the
+    exchange channel's column is the column of the doubled density
+    ``diag(P_sigma, P_sigma)``: ``q[2 rho_sigma] = 2^(-2/3) q[rho_sigma]``,
+    which the kernel on the doubled matrix gives directly. The uniform gas has
+    ``q = 0`` and the column 0. At the nuclei of a Gaussian basis ``q`` is
+    moderately negative (-2.6 at def2-svp, -7.7 at 6-311++G(3df,2pd)); in the
+    density tail it is large (positive where the tail decays exponentially,
+    negative in some open-shell tails), so the column saturates at +-1 there
+    with a vanishing derivative. Where the floor binds, q is the Laplacian
+    over the floored denominator, large wherever the Laplacian is not itself
+    vanishing (the column read 1.0 on every such row of the pruned grids
+    measured) and small only where both vanish together, so the column is
+    not identically +-1 there and its derivative in the matrix is finite.
+    The column lies in [-1, 1] (the bounds are reached on saturated rows),
+    so the Fourier map and the spline network accept it. ``scale`` is
+    :data:`LAP_SCALE` (the measured choice); a pretraining file carries the
+    column at that scale only, and the pretraining loader refuses another
+    (``pretrain``).
+    """
+    n_features: int = eqx.field(default=1, static=True)
+    scale: float = eqx.field(default=LAP_SCALE, static=True)
+    required_mol_keys: ClassVar[tuple[str, ...]] = ("lap_features",)
+    spin_mol_keys: ClassVar[tuple[str, ...]] = ("lap_features_a",
+                                                "lap_features_b")
+    density_matrix_dependent: ClassVar[bool] = True
+
+    def __post_init__(self):
+        super().__post_init__()
+        if (isinstance(self.scale, bool)
+                or not isinstance(self.scale, numbers.Real)
+                or not math.isfinite(float(self.scale)) or self.scale <= 0):
+            raise ValueError(
+                f"LaplacianDescriptor: scale must be a positive finite number, "
+                f"got {self.scale!r}")
+
+    @property
+    def column_bounds(self) -> tuple:
+        """tanh(q / scale) in (-1, 1)."""
+        return ((-1.0, 1.0),)
+
+    def compute_from_dm(self, ao, ao_grad, ao_lapl, rho, dm):
+        """Reassemble kernel: the density Laplacian from the live matrix and
+        the three constant AO tables, the reduced Laplacian from it and
+        ``rho`` (the density of the same matrix, as the solver has it), and
+        the compressed column, shape (n_grid, 1)."""
+        from xcquinox.features import compute_reduced_laplacian
+        q = compute_reduced_laplacian(
+            jnp.asarray(rho), lap_rho_from_dm(ao, ao_grad, ao_lapl, dm))
+        return jnp.tanh(q / float(self.scale)).reshape(-1, 1)
+
+    def compute(self, mol_data):
+        return mol_data["lap_features"]
 
 
 def assemble_descriptor_features(descriptors: tuple[Descriptor, ...],

@@ -44,6 +44,7 @@ _DESCRIPTOR_TEXT = {
     "dm_statistics": "density-matrix descriptors",
     "rung35": "rung-3.5 occupancy",
     "rung35_multishell": "rung-3.5 multishell occupancy",
+    "lap": "reduced density Laplacian (tanh-compressed)",
     "metagga": "meta-GGA (SCAN parent)",
 }
 

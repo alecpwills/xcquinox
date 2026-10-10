@@ -350,6 +350,10 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
             ao_grad=ao_grid_deriv[1:4],
             rho=rho_d,
             sigma=sigma_d,
+            # the Laplacian column needs the AO values and the AO Laplacian
+            # table beside them (None without the column)
+            ao=ao_grid,
+            ao_lapl=mol_data.get("ao_grid_lapl"),
         )
         return feats, rho_d, sigma_d, nabla_rho_d
 
@@ -536,6 +540,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         cusp_features=cusp_cached,
         rung35_proj_ao=mol_data.get("rung35_proj_ao"),
         rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
+        ao_lapl=mol_data.get("ao_grid_lapl"),
     )
 
     def _spin_resolved_rho(D_ab):

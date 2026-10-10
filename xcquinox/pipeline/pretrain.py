@@ -1038,18 +1038,31 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
         if zeta_all is None:
             zeta_all = jnp.zeros_like(pretrain_data["rho_all"])
         cols.append(zeta_all)
-    # Map descriptor.name -> the pretrain_data column STEM; the block suffix
-    # is appended, so one map serves both row blocks.
-    _key_map = {"dm_statistics": "dm", "cusp": "cusp", "rung35": "rung35",
-                "rung35_multishell": "rung35ms", "metagga": "metagga"}
+    # Map descriptor.name -> the pretrain_data column STEM (the generator's
+    # own map); the block suffix is appended, so one map serves both row
+    # blocks.
+    from xcquinox.pipeline.descriptors import LAP_SCALE
+    from xcquinox.pipeline.pretrain_data_gen import DESCRIPTOR_STEM_OF
     for spec in arch.descriptors:
-        stem = _key_map.get(spec.name)
+        stem = DESCRIPTOR_STEM_OF.get(spec.name)
         if stem is None:
             raise KeyError(
                 f"_assemble_pretrain_descriptors: no pretrain_data key "
                 f"mapping registered for descriptor {spec.name!r}; update "
-                f"_key_map in pretrain.py"
+                f"DESCRIPTOR_STEM_OF in pretrain_data_gen.py"
             )
+        if spec.name == "lap":
+            # A pretraining file carries the Laplacian column at the module's
+            # scale only (descriptors.LAP_SCALE, recorded in its manifest as
+            # lap_definition); a descriptor at another scale would read a
+            # column the SCF does not feed it.
+            scale = float(spec.as_kwargs().get("scale", LAP_SCALE))
+            if scale != float(LAP_SCALE):
+                raise ValueError(
+                    "_assemble_pretrain_descriptors: the pretraining file "
+                    f"carries the Laplacian column at scale {LAP_SCALE!r}, "
+                    f"and descriptor 'lap' asks for scale {scale!r}; a "
+                    "pretraining at another scale needs a column written at it")
         key = stem + suffix
         arr = pretrain_data[key]
         # Width gate. A stale .npz written before a descriptor's feature count
@@ -1447,6 +1460,22 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             "footing. Regenerate the file with "
             "pretrain_data_gen.ensure_pretrain_data."
         )
+    # The Laplacian column's definition: a file written under another
+    # definition (another scale, another compression) carries other values
+    # in the column, so an architecture reading it is held to the manifest's
+    # statement, as the certificate holds the file to its parent.
+    if any(getattr(s, "name", None) == "lap" for s in spec.arch.descriptors):
+        from xcquinox.pipeline.descriptors import LAP_DEFINITION
+        stated = (_manifest or {}).get("lap_definition")
+        if stated != LAP_DEFINITION:
+            raise ValueError(
+                f"run_pretrain: architecture {spec.arch.name!r} reads the "
+                f"Laplacian column, and {npz_path!r} states its definition as "
+                f"{stated!r} where this version computes {LAP_DEFINITION!r} "
+                "(a file without the statement was written before the "
+                "column). Regenerate the file with "
+                "pretrain_data_gen.ensure_pretrain_data."
+            )
     energy_weight = float(getattr(spec, "energy_term_weight", 0.0))
     # The footing the run records: the manifest's where there is one (the
     # published footing shares the total block layout, so the block alone

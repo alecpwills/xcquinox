@@ -459,8 +459,16 @@ def _reassemble_features(
     rho: jnp.ndarray | None = None,
     sigma: jnp.ndarray | None = None,
     spin_channel: int | None = None,
+    ao: jnp.ndarray | None = None,
+    ao_lapl: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Recompute descriptor features from the live (dm, S) + cached cusp.
+
+    ``ao`` (the AO values, (n_grid, n_ao)) and ``ao_lapl`` (the AO Laplacian
+    table, ``mol_data['ao_grid_lapl']``) are the constant tables the
+    Laplacian column (``LaplacianDescriptor``) contracts the live matrix
+    with, beside ``ao_grad`` and ``rho``; required when that descriptor is
+    present, unused otherwise.
 
     Used by REASSEMBLE policy. CuspDescriptor features are geometry-only
     (not DM-dependent) so they are passed in as the frozen precompute value.
@@ -482,7 +490,8 @@ def _reassemble_features(
     """
     from xcquinox.pipeline.descriptors import (
         CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
-        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor, doubled_spin_dm)
+        DMRung35MultishellDescriptor, LaplacianDescriptor,
+        MetaGGAAlphaDescriptor, doubled_spin_dm)
     if not descriptors:
         _ng = cusp_features.shape[0] if cusp_features is not None else (n_grid or 0)
         return jnp.zeros((_ng, 0))
@@ -527,6 +536,13 @@ def _reassemble_features(
                     "include MetaGGAAlphaDescriptor (the live tau contraction)"
                 )
             cols.append(d.compute_from_dm(ao_grad=ao_grad, rho=rho, sigma=sigma, dm=dm))
+        elif isinstance(d, LaplacianDescriptor):
+            if ao is None or ao_grad is None or ao_lapl is None or rho is None:
+                raise ValueError(
+                    "ao, ao_grad, ao_lapl (mol_data['ao_grid_lapl']) and rho "
+                    "must be provided when descriptors include "
+                    "LaplacianDescriptor (the live density Laplacian)")
+            cols.append(d.compute_from_dm(ao, ao_grad, ao_lapl, rho, dm))
         else:
             raise NotImplementedError(
                 f"_reassemble_features does not yet know how to recompute {type(d).__name__}"
@@ -540,7 +556,8 @@ def make_uks_feature_fns(descriptors: tuple,
                          n_grid: int,
                          cusp_features: jnp.ndarray | None = None,
                          rung35_proj_ao: jnp.ndarray | None = None,
-                         rung35ms_proj_ao: jnp.ndarray | None = None):
+                         rung35ms_proj_ao: jnp.ndarray | None = None,
+                         ao_lapl: jnp.ndarray | None = None):
     """Three closures ``P_ab -> (n_grid, n_features)``: alpha block, beta block,
     total block.
 
@@ -585,12 +602,17 @@ def make_uks_feature_fns(descriptors: tuple,
 
         return _empty, _empty, _empty
 
-    from xcquinox.pipeline.descriptors import MetaGGAAlphaDescriptor
-    # rho / sigma are consumed only by the meta-GGA iso-orbital indicator; the
-    # contraction is skipped for every other architecture, matching the cost of
-    # the pre-existing UKS feature assembly.
-    needs_rho = any(isinstance(d, MetaGGAAlphaDescriptor) for d in descriptors)
+    from xcquinox.pipeline.descriptors import (LaplacianDescriptor,
+                                               MetaGGAAlphaDescriptor)
+    # rho / sigma are consumed only by the meta-GGA iso-orbital indicator and
+    # the Laplacian column; the contraction is skipped for every other
+    # architecture, matching the cost of the pre-existing UKS feature assembly.
+    needs_rho = any(isinstance(d, (MetaGGAAlphaDescriptor, LaplacianDescriptor))
+                    for d in descriptors)
     ao_grad = ao_deriv[1:4]
+    # The AO values, the first slice of the derivative table: the Laplacian
+    # kernel's third constant beside the gradients and ``ao_lapl``.
+    ao_values = ao_deriv[0]
 
     def _rho_sigma(D):
         # The kernel the manual solvers contract with (the total block of
@@ -618,6 +640,8 @@ def make_uks_feature_fns(descriptors: tuple,
             rho=rho,
             sigma=sigma,
             spin_channel=spin_channel,
+            ao=ao_values,
+            ao_lapl=ao_lapl,
         )
 
     def _features_spin(P_ab, spin_channel):

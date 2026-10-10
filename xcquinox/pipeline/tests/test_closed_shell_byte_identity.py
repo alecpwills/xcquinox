@@ -681,7 +681,8 @@ _POST_ARCHIVE_ARCH = "deep_mgga_3x32"
 _POST_ARCHIVE_ARCHS = ("deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32",
                        "deep_geom_3x16", "deep_geom_attn_3x16",
                        "deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16",
-                       "deep_kan_2x6", "deep_kan_geom_2x6")
+                       "deep_kan_2x6", "deep_kan_geom_2x6",
+                       "deep_lap_3x16", "deep_lap_geom_3x16")
 
 #: Architectures registered after the live fixture was last recorded, awaiting
 #: their records (the recorder command is in the skip message): the
@@ -690,7 +691,8 @@ _POST_ARCHIVE_ARCHS = ("deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32",
 #: jax0102 recording. A name listed here that the fixture DOES carry fails
 #: the coverage test: remove it from this tuple once its record is merged.
 _AWAITING_RECORD = ("deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16",
-                    "deep_kan_2x6", "deep_kan_geom_2x6")
+                    "deep_kan_2x6", "deep_kan_geom_2x6",
+                    "deep_lap_3x16", "deep_lap_geom_3x16")
 
 
 def _record_pending(arch_name):

@@ -127,10 +127,14 @@ _PAD_GRID_EDGE = ("rho_grid", "sigma_grid", "nabla_rho_grid", "rho_ref_grid",
                   "rung35_features_a", "rung35_features_b",
                   "rung35ms_features_a", "rung35ms_features_b",
                   "metagga_features_a", "metagga_features_b",
+                  # The Laplacian column and its per-channel blocks, (n_grid, 1).
+                  "lap_features", "lap_features_a", "lap_features_b",
                   # Per-spin kinetic-energy density, (n_grid,).
                   "tau_spin_a", "tau_spin_b")
-# (n_grid, n_ao): edge-pad grid axis 0, zero-pad AO axis 1
-_PAD_AO_ON_GRID = ("ao_grid", "rung35_proj_ao")
+# (n_grid, n_ao): edge-pad grid axis 0, zero-pad AO axis 1 (the AO Laplacian
+# table beside the AO values: a padded row repeats the last real row, a
+# padded AO column is zero, so the padded contraction adds nothing)
+_PAD_AO_ON_GRID = ("ao_grid", "rung35_proj_ao", "ao_grid_lapl")
 
 # Molecule-identifying leaves the manual-backend energy never reads (verified
 # energy-neutral); stripping them stops them keying the per-molecule compile.

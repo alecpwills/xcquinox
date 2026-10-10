@@ -728,8 +728,9 @@ def test_the_derivative_is_continuous_across_a_knot():
 def test_the_registry_entries_are_the_stated_ones():
     """Each entry is its 3x16 base at depth 2, width 6 with network "kan",
     grid 5, order 3 (dataclass equality: deep_3x16 and deep_geom_3x16, so
-    dm_entropy_intensive, the log transform and the cusp pair as there); 41
-    entries; its own shown name; the GGA rung; the expanded key naming the
+    dm_entropy_intensive, the log transform and the cusp pair as there); 43
+    entries once the Laplacian pair joins; its own shown name; the GGA
+    rung; the expanded key naming the
     network; describe() carrying the three fields (the MLP entries the
     configuration's defaults, "mlp", 0, 0); both figure orders with the two
     after deep_sine_3x16; the stated colours, each carried by no other
@@ -743,7 +744,7 @@ def test_the_registry_entries_are_the_stated_ones():
         assert rungs.rung_of(name) == rungs.RUNG_GGA == AS.rung_of(name)
         assert _EXPANDED in arch_names.expanded_key(name), arch_names.expanded_key(name)
         assert all(entry.describe()[k] == v for k, v in _KAN.items())
-    assert len(C.ARCHITECTURES) == 41
+    assert len(C.ARCHITECTURES) == 43
     assert all(C.ARCHITECTURES["deep_3x16"].describe()[k] == v
                for k, v in dict(network="mlp", kan_grid=0, kan_order=0).items())
     accents = {v.lower() for v in AS.RUNG_ACCENT.values()}

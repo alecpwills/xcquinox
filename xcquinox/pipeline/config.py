@@ -968,6 +968,18 @@ ARCHITECTURES = {
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True,
                               network="kan", kan_grid=5, kan_order=3),
+    # The Laplacian rung of the screen: the plain and the geometric 3x16
+    # networks with the compressed reduced Laplacian as a column
+    # (descriptors.LaplacianDescriptor), the cusp pair first in the geometric
+    # entry as the rung-3.5 entries order theirs; PBE stays the parent.
+    "deep_lap_3x16":            ArchitectureConfig.from_spec("deep_lap_3x16",            3, 16,
+                              descriptors=["lap"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True),
+    "deep_lap_geom_3x16":       ArchitectureConfig.from_spec("deep_lap_geom_3x16",       3, 16,
+                              descriptors=["cusp", "lap"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True),
     # Rung-3.5 localized-DM archs (ADDITIVE). The leaky deep_dm/deep_combined
     # entries above are KEPT so a pending in-flight array task still resolves
     # them. deep_rung35_3x16 (cusp + localized rung-3.5 DM occupancy) replaces

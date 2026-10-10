@@ -63,6 +63,7 @@ import xcquinox.features as _features
 from xcquinox.pipeline.df_jk import default_auxbasis
 from xcquinox.pipeline.orientation_lock import DEFAULT_STRENGTH as _LOCK_STRENGTH
 from xcquinox.pipeline.metagga import ALPHA_DEFINITION as _ALPHA_DEFINITION
+from xcquinox.pipeline.descriptors import LAP_DEFINITION as _LAP_DEFINITION
 from xcquinox.pipeline.pyscf_determinism import pin_small_rho_cutoff
 
 #: The indicator definition a manifest WITHOUT an ``alpha_definition`` key was
@@ -398,7 +399,8 @@ def pretrain_data_filename(polarized, reference_xc="pbe"):
 
 
 def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
-                               cusp_log_transform=True, rho_floor=_RHO_FLOOR):
+                               cusp_log_transform=True, rho_floor=_RHO_FLOOR,
+                               ao_lapl=None):
     """Open-shell exchange rows on the exact-spin-scaling footing.
 
     The production UKS exchange evaluates, per spin channel, the symmetric
@@ -445,7 +447,19 @@ def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
 
     names = ["rho", "sigma", "Fx", "Fx_scan", "metagga", "weights"]
     if descriptors:
-        names += ["cusp", "dm", "rung35", "rung35ms"]
+        names += ["cusp", "dm", "rung35", "rung35ms", "lap"]
+        # The Laplacian column's kernel and its constant AO table on the
+        # parent grid (``ao_lapl``, built here only when the caller did not
+        # hand over the one it built for the total-density rows): the column
+        # of the doubled density per channel, as the live solver's
+        # per-channel closures compute it.
+        from xcquinox.pipeline.descriptors import LaplacianDescriptor
+        lap_descriptor = LaplacianDescriptor()
+        ao_values = jnp.asarray(ao[0])
+        if ao_lapl is None:
+            from xcquinox.pipeline.data import ao_laplacian_on_grid
+            ao_lapl = ao_laplacian_on_grid(mol, mf.grids.coords)
+        ao_lapl = jnp.asarray(ao_lapl)
     parts = {k: [] for k in names}
 
     for s in (0, 1):
@@ -496,6 +510,9 @@ def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
             parts["rung35ms"].append(np.asarray(
                 compute_rung35_multishell_occupancy(jnp.asarray(proj_ms),
                                                     dm_doubled)))
+            parts["lap"].append(np.asarray(lap_descriptor.compute_from_dm(
+                ao_values, ao_grad, ao_lapl, jnp.asarray(rho_d),
+                dm_doubled))[keep])
 
     return {k: np.concatenate(v, axis=0) for k, v in parts.items()}
 
@@ -975,11 +992,23 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
             mol, coords_v, DEFAULT_RUNG35_MULTISHELL_ALPHAS)
         cols["rung35ms"] = np.asarray(compute_rung35_multishell_occupancy(
             jnp.asarray(proj_ao_ms), dm_for_features))
+        # The Laplacian column of the parent's total density through the one
+        # kernel the precompute and the live solver use, on the parent grid
+        # with its AO Laplacian table (built once here and handed to the
+        # per-channel rows below), then the valid rows.
+        from xcquinox.pipeline.data import ao_laplacian_on_grid
+        from xcquinox.pipeline.descriptors import LaplacianDescriptor
+        ao_lapl = ao_laplacian_on_grid(mol, coords)
+        cols["lap"] = np.asarray(LaplacianDescriptor().compute_from_dm(
+            jnp.asarray(ao[0]), jnp.asarray(ao[1:4]), jnp.asarray(ao_lapl),
+            jnp.asarray(rho), jnp.asarray(dm_total)))[valid]
+    else:
+        ao_lapl = None
     if exchange_footing == "spin_channel":
         cols["x_rows"] = (
             spin_channel_exchange_rows(
                 mol, mf, ao, dm_ab, descriptors=bool(descriptors),
-                cusp_log_transform=cusp_log_transform)
+                cusp_log_transform=cusp_log_transform, ao_lapl=ao_lapl)
             if is_uks else None
         )
     return cols
@@ -1205,7 +1234,8 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
                              exchange_footing="total",
                              mesh_fraction=MESH_WEIGHT_FRACTION,
                              orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
-                             allow_irreproducible_degenerate=False):
+                             allow_irreproducible_degenerate=False,
+                             descriptor_stems=()):
     """Record the identity a pretrain ``.npz`` was built at.
 
     Written as a sidecar so the ``.npz`` array payload stays byte-identical to
@@ -1264,6 +1294,18 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
       default set's H atom and on the mesh's alpha = 0 nodes) without
       changing any other key; a file written under another definition is
       therefore stale, exactly as one built at another lock is.
+    - ``descriptor_stems``: the descriptor column stems the file carries
+      (every stem of ``_DESCRIPTOR_STEMS`` for a file written with
+      descriptors, none otherwise). A run states the stems its architectures
+      read, and a file is current when it carries them all: one written
+      before a stem was added regenerates for a sweep that needs it and
+      serves a sweep that does not. A legacy manifest without the key is
+      read through the file's own keys.
+    - ``lap_definition``: the definition of the Laplacian column when the
+      file carries it (``descriptors.LAP_DEFINITION``: the compression and
+      its scale). A stored column, so another definition is other values in
+      every row; a file written under another definition is stale for a
+      request that names the stem, exactly as the indicator's definition is.
 
     The writer's defaults are the PRODUCTION identity the generator and
     :func:`ensure_pretrain_data` use; a manifest key absent from a legacy file
@@ -1284,9 +1326,12 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
                 bool(allow_irreproducible_degenerate),
             "x64": bool(jax.config.jax_enable_x64),
             "alpha_definition": str(_ALPHA_DEFINITION),
+            "descriptor_stems": [str(s) for s in descriptor_stems],
             "mesh": {"rs": list(MESH_RS), "s": list(MESH_S),
                      "alpha": list(MESH_ALPHA),
                      "weight_fraction": float(mesh_fraction)}}
+    if "lap" in set(descriptor_stems):
+        meta["lap_definition"] = str(_LAP_DEFINITION)
     # Atomic for the same shared-dir reason as the npz write above.
     mpath = _pretrain_manifest_path(npz_path)
     tmp = f"{mpath}.tmp.{os.getpid()}"
@@ -1342,9 +1387,16 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
                              reference_xc="pbe", exchange_footing="total",
                              mesh_fraction=MESH_WEIGHT_FRACTION,
                              orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
-                             x64=True):
+                             x64=True, descriptor_stems=()):
     """True iff ``npz_path`` exists AND its manifest matches the requested
     identity.
+
+    ``descriptor_stems`` are the descriptor column stems the caller's
+    architectures read: the file is current when its stems INCLUDE them (a
+    file carrying more columns than a sweep needs serves it; one written
+    before a stem the sweep needs regenerates), and a request naming ``lap``
+    also holds the file to the column's definition (``lap_definition``). A
+    manifest without the stems key is read through the file's own keys.
 
     A missing file OR a missing/mismatched manifest returns ``False`` so the
     harness regenerates rather than silently reusing data built at a different
@@ -1458,6 +1510,30 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
     if "Fx_all" in _keys and (
             "metagga_mesh" not in _keys or "Fx_scan_mesh" not in _keys):
         return False
+    # The descriptor stems the file carries against the ones requested: the
+    # manifest's statement, or the file's own keys for a manifest written
+    # before the key (a legacy file without descriptors then reads as
+    # carrying none). A request that names the Laplacian column also holds
+    # the file to the column's definition.
+    requested = tuple(descriptor_stems)
+    unknown = sorted(set(requested) - set(_DESCRIPTOR_STEMS))
+    if unknown:
+        # A core column (the iso-orbital indicator among them) is carried by
+        # every file and is never a requested stem; a request naming one is
+        # a caller's error, not a stale file (it would otherwise regenerate
+        # the file on every call).
+        raise ValueError(
+            f"pretrain_data_is_current: descriptor_stems names {unknown}, "
+            f"which are not descriptor column stems {_DESCRIPTOR_STEMS}; "
+            "state the stems through descriptor_stems_for")
+    carried = meta.get("descriptor_stems")
+    if carried is None:
+        carried = [s for s in _DESCRIPTOR_STEMS if f"{s}_all" in _keys]
+    if not set(requested) <= set(carried):
+        return False
+    if "lap" in requested and str(meta.get("lap_definition")) != str(
+            _LAP_DEFINITION):
+        return False
     return True
 
 
@@ -1484,7 +1560,8 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
                          mesh_fraction=MESH_WEIGHT_FRACTION,
                          orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
                          allow_irreproducible_degenerate=False,
-                         on_stale="regenerate", slim_set=""):
+                         on_stale="regenerate", slim_set="",
+                         descriptor_stems=()):
     """Skip-if-current driver for staged pretrain data.
 
     Returns the canonical ``.npz`` path, (re)generating it ONLY when the file
@@ -1505,6 +1582,11 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
     :class:`PretrainDataStale`, for a caller that expects the file another
     stage wrote and must read a mismatch as a parity defect rather than pay
     for a rebuild it never asked for. An absent file generates under either.
+
+    ``descriptor_stems`` are the descriptor columns the caller's
+    architectures read (``DESCRIPTOR_STEM_OF``); a present file is current
+    when it carries them all (:func:`pretrain_data_is_current`), whatever
+    else it carries. The generator writes every stem.
     """
     if on_stale not in ("regenerate", "refuse"):
         raise ValueError(
@@ -1525,7 +1607,8 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
                                 reference_xc=reference_xc,
                                 exchange_footing=exchange_footing,
                                 mesh_fraction=mesh_fraction,
-                                orientation_lock_strength=orientation_lock_strength):
+                                orientation_lock_strength=orientation_lock_strength,
+                                descriptor_stems=descriptor_stems):
         return out_path
     if on_stale == "refuse" and os.path.isfile(out_path):
         raise PretrainDataStale(
@@ -1533,7 +1616,8 @@ def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
             f"(basis {basis!r}, grid {grid_level}, auxbasis {eff_aux!r}, "
             f"reference_xc {reference_xc!r}, footing {exchange_footing!r}, "
             f"mesh {mesh_fraction}, lock {orientation_lock_strength}, "
-            f"{len(systems)} systems); regeneration refused: the caller "
+            f"{len(systems)} systems, descriptor stems "
+            f"{tuple(descriptor_stems)!r}); regeneration refused: the caller "
             "expects the file another stage wrote, and a mismatch is a parity "
             "defect to be read, not a file to be rebuilt")
     # ``systems`` alone: the generator takes the resolved tuple whenever it is
@@ -1566,8 +1650,30 @@ _ALL_CORE = ("rho", "sigma", "Fx", "Fc", "Fx_scan", "Fc_scan", "metagga",
 #: ... and the columns the pretraining protocol added beside them (the
 #: per-row system index and the LDA energy densities of the energy term).
 _ALL_PROTOCOL = ("system", "e_lda_x", "e_lda_c")
-#: Descriptor columns, present iff the file was written with ``descriptors``.
-_DESCRIPTOR_STEMS = ("cusp", "dm", "rung35", "rung35ms")
+#: Descriptor columns, present iff the file was written with ``descriptors``;
+#: a file written before a stem was added carries the earlier prefix of this
+#: tuple, which the layout reads off the keys (:func:`pretrain_npz_layout`)
+#: and the currency check compares with the stems a run requests
+#: (:func:`pretrain_data_is_current`).
+_DESCRIPTOR_STEMS = ("cusp", "dm", "rung35", "rung35ms", "lap")
+#: Descriptor name -> column stem: the one map the generator and the
+#: pretraining loader (``pretrain._assemble_pretrain_descriptors``) share.
+DESCRIPTOR_STEM_OF = {"dm_statistics": "dm", "cusp": "cusp", "rung35": "rung35",
+                      "rung35_multishell": "rung35ms", "metagga": "metagga",
+                      "lap": "lap"}
+
+
+def descriptor_stems_for(archs) -> tuple:
+    """The descriptor column stems the architectures ``archs`` read, sorted:
+    the stems a run states to the currency check
+    (:func:`pretrain_data_is_current`). Only the descriptor block's stems
+    (:data:`_DESCRIPTOR_STEMS`) are stated; the iso-orbital indicator's
+    column is a core column every file carries, so a meta-GGA architecture
+    adds nothing here. The one derivation for the datagen stage, the
+    preflight, the energy-weight probe and the pretraining board."""
+    stems = {DESCRIPTOR_STEM_OF[spec.name] for arch in archs
+             for spec in getattr(arch, "descriptors", ())}
+    return tuple(sorted(stems & set(_DESCRIPTOR_STEMS)))
 #: The exchange block (``<stem>_x``), present iff the file was written on the
 #: ``spin_channel`` footing: the per-channel rows of every open shell and the
 #: total-density rows of every closed shell, with their own system index and
@@ -1586,35 +1692,48 @@ _INT_KEYS = frozenset({"system_all", "system_x", "system_natoms"})
 #: Trailing shape of the 2-D columns (the leading axis is the block's rows);
 #: ``dm`` is 2-D with a width the descriptor defines.
 _COLUMN_WIDTHS = {"metagga": (1,), "cusp": (2,), "rung35": (2,),
-                  "rung35ms": (6,)}
+                  "rung35ms": (6,), "lap": (1,)}
 _TWO_D_STEMS = ("metagga",) + _DESCRIPTOR_STEMS
 
 
-def _stems_all(polarized, descriptors):
+def _descriptor_stems(descriptor_stems):
+    """The descriptor stems of a layout: every stem (the writer's set) when
+    ``None``, else the given ones in the tuple's order."""
+    if descriptor_stems is None:
+        return _DESCRIPTOR_STEMS
+    wanted = set(descriptor_stems)
+    return tuple(s for s in _DESCRIPTOR_STEMS if s in wanted)
+
+
+def _stems_all(polarized, descriptors, descriptor_stems=None):
     stems = _ALL_CORE + _ALL_PROTOCOL
     if polarized:
         stems += ("zeta",)
     if descriptors:
-        stems += _DESCRIPTOR_STEMS
+        stems += _descriptor_stems(descriptor_stems)
     return stems
 
 
-def _stems_x(descriptors):
-    return _X_CORE + (_DESCRIPTOR_STEMS if descriptors else ())
+def _stems_x(descriptors, descriptor_stems=None):
+    return _X_CORE + (_descriptor_stems(descriptor_stems) if descriptors else ())
 
 
 def _stems_mesh(polarized):
     return _MESH_CORE + (("zeta",) if polarized else ())
 
 
-def pretrain_npz_keys(*, polarized, descriptors, exchange_footing):
+def pretrain_npz_keys(*, polarized, descriptors, exchange_footing,
+                      descriptor_stems=None):
     """The exact key set a pretrain ``.npz`` written at this configuration
-    carries."""
-    keys = {f"{s}_all" for s in _stems_all(polarized, descriptors)}
+    carries. ``descriptor_stems`` names the descriptor stems of a file written
+    before the full tuple existed (the writer always writes every stem; a
+    reader takes the stems off the file's keys)."""
+    keys = {f"{s}_all" for s in _stems_all(polarized, descriptors,
+                                           descriptor_stems)}
     keys |= {f"{s}_mesh" for s in _stems_mesh(polarized)}
     keys |= set(_SYSTEM_TABLE) | set(_SCALARS)
     if exchange_footing == "spin_channel":
-        keys |= {f"{s}_x" for s in _stems_x(descriptors)}
+        keys |= {f"{s}_x" for s in _stems_x(descriptors, descriptor_stems)}
     return keys
 
 
@@ -1692,9 +1811,15 @@ def pretrain_npz_layout(keys):
             f"{declares}, so without it the file reads as one written without "
             "that configuration and the columns above have no slot in the "
             "layout. The missing key is the defect, not the columns")
+    # The descriptor stems the file carries, read off its keys: a file written
+    # before a stem was added carries the earlier prefix of the tuple and is
+    # a consistent layout of its own generation (the currency check, not the
+    # layout, decides whether a run can use it).
+    present = tuple(s for s in _DESCRIPTOR_STEMS if f"{s}_all" in keys)
     layout = {
         "polarized": "zeta_all" in keys,
         "descriptors": "cusp_all" in keys,
+        "descriptor_stems": present,
         "exchange_footing": ("spin_channel" if "rho_x" in keys else "total"),
         "system_table": "system_all" in keys,
         "mesh": "rho_mesh" in keys,
@@ -1702,7 +1827,8 @@ def pretrain_npz_layout(keys):
     if layout["system_table"]:
         want = pretrain_npz_keys(polarized=layout["polarized"],
                                  descriptors=layout["descriptors"],
-                                 exchange_footing=layout["exchange_footing"])
+                                 exchange_footing=layout["exchange_footing"],
+                                 descriptor_stems=present)
         missing = sorted(want - keys)
         if missing:
             raise ValueError(
@@ -2216,5 +2342,6 @@ def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
         reference_xc=reference_xc, exchange_footing=exchange_footing,
         mesh_fraction=mesh_fraction,
         orientation_lock_strength=orientation_lock_strength,
-        allow_irreproducible_degenerate=irreproducible_degenerate)
+        allow_irreproducible_degenerate=irreproducible_degenerate,
+        descriptor_stems=(_DESCRIPTOR_STEMS if descriptors else ()))
     return out_path
