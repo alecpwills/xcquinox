@@ -300,10 +300,10 @@ def test_collect_set_errors_against_the_references(tmp_path):
     assert "ADIM6" not in records["S_a"]["mae"]
 
     absent_c = records["slim05_c"]
-    assert absent_c["reason"] == "no evaluated channel"
+    assert absent_c["reason"] == "no completed evaluation"
     assert absent_c["mae"] == {} and absent_c["wtmad2_all"] is None
     absent_d = records["v7_d"]
-    assert absent_d["reason"] and absent_d["reason"] != "no evaluated channel"
+    assert absent_d["reason"] and absent_d["reason"] != "no completed evaluation"
     assert absent_d["mae"] == {} and absent_d["wtmad2_all"] is None
     assert absent_d["group"] == "v7"
 
@@ -449,7 +449,7 @@ def test_the_drawn_figure_reads_back_the_set_errors(tmp_path, monkeypatch):
             "S_a": ["rse43_033"], "slim05_b": ["rse43_033"],
             "S_g": ["alkbde10_006", "rc21_010", "rse43_019", "rse43_033"]}
         assert manifest["unscored"] == {"slim05_b": ["rse43_019"], "S_e": ["rse43_019"]}
-        assert "reported without an energy" in titles and "slim05_b: rse43_019" in titles
+        assert "No finite energy reported" in titles and "rse43_019: slim05_b" in titles
         assert manifest["dropped"] == {"slim05_b": ["RSE43"],
                                        "S_g": ["ALKBDE10", "RC21", "RSE43"]}
     finally:
