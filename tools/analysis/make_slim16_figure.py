@@ -14,15 +14,17 @@ as ``n/a``. The legend reads ``label (all / converged)``; PBE-DF, whose table
 carries no convergence, has one number. The scale of the number is the full
 set's own mean absolute reference, not the GMTKN55 constant. Where a subset
 holds both converged and unconverged reactions, the converged-only error is
-marked on the bar; the title names each network's unconverged reactions, the
-subsets dropped from its converged total, the reactions it reports without an
-energy (kept in the weights, in no mean) and the subsets whose references
+marked on the bar; the title states what a bar and a mark are, then lists
+the exceptions one indented line per distinct case -- the reactions scored
+without convergence with the subsets that have none, the reactions reported
+without a finite energy, and the subsets whose references
 average to zero (no weight in either total). Bars are coloured by
 architecture (``arch_style.arch_color``) and hatched by network group, the
 group being the label's leading token (``S``, ``slim05``, ``v7``); two
 networks of one group and one architecture draw alike. A network that draws
-no bar is named in the title with the reason: no evaluated channel, or a
-channel with no reaction that carries a reference and a reported energy. The
+no bar in any set is named in the title with the reason: no completed
+evaluation, or a channel with no reaction that carries a reference and a
+reported energy. The
 row assembly is ``slim16_table``'s own, so the figure and the metrics CSV
 state one set of numbers. A run carrying the comparator tables
 (``functionals_df.json``, ``hpcjobs/slim16_eval.py comparators-df``) draws,
@@ -111,7 +113,7 @@ def collect_set_errors(run_dir) -> tuple:
     ``unconverged`` and ``unscored`` (reaction names), ``dropped`` (subsets
     out of the converged total), ``unweighted`` (subsets whose references
     average to zero), ``arch_name``, ``group`` (the label's leading token)
-    and ``reason`` (None, ``no evaluated channel``, or ``no reaction with a
+    and ``reason`` (None, ``no completed evaluation``, or ``no reaction with a
     reference and a reported energy``); and ``pbe``, PBE-DF's ``mae``,
     ``wtmad2``, ``n_reactions`` and ``unscored`` over every reaction its
     table covers; and ``comparators``, one dict per comparator table of the
@@ -138,7 +140,7 @@ def collect_set_errors(run_dir) -> tuple:
         records[label] = entry
         found = slim16_table.channel_records(run_dir, width, int(network["index"]))
         if found is None:
-            entry["reason"] = "no evaluated channel"
+            entry["reason"] = "no completed evaluation"
             continue
         molecules, reactions = found
         rows_nn, rows_pbe = slim16_table.reference_rows(
@@ -186,47 +188,69 @@ def collect_set_errors(run_dir) -> tuple:
     return order, records, pbe, comparators
 
 
+def _append_grouped(lines: list, per_label: dict) -> None:
+    """One indented line per distinct value: the value's items, then every
+    label that carries exactly them."""
+    groups: dict = {}
+    for label, items in per_label.items():
+        groups.setdefault(tuple(items), []).append(label)
+    for items, labels in groups.items():
+        lines.append("  " + ", ".join(items) + ": " + ", ".join(labels))
+
+
 def _header_lines(evaluated: list, records: dict, absent: dict,
                   comparators=()) -> list:
-    """The title lines: what a bar and a mark are, then per network the
-    unconverged reactions with the subsets dropped from its converged total,
-    the reactions reported without an energy (a comparator's too: the
-    reactions a species of which its table lacks), the subsets without
-    weight, and the networks and comparators that draw no bar with the
-    reason."""
-    lines = ["Slim16: mean absolute error per held-out set over every reported "
-             "reaction; a black mark is the converged-only error of a set "
-             "holding converged and unconverged reactions both"]
-    unconverged = {label: records[label]["unconverged"] for label in evaluated
-                   if records[label]["unconverged"]}
-    dropped = {label: records[label]["dropped"] for label in evaluated
-               if records[label]["dropped"]}
+    """The title lines: one line saying what a bar and a black mark are and
+    when a reaction counts as converged, then the exceptions, one indented
+    line per distinct case -- the reactions scored without convergence (with
+    the subsets that have no converged reaction), the reactions reported
+    without a finite energy (a comparator's too: the reactions a species of
+    which its table lacks), the subsets without weight, and the networks and
+    comparators that draw no bar with the reason -- each line naming every
+    network it holds, so a reader scans the cases instead of every
+    network."""
+    lines = ["Bars: mean absolute error per set over every reported reaction. "
+             "A black dash is the converged-only error of a set holding "
+             "converged and unconverged reactions both; a reaction is "
+             "converged only when every species of it reports a converged "
+             "SCF."]
+    exceptions: dict = {}
+    for label in evaluated:
+        record = records[label]
+        key = (tuple(record["unconverged"]), tuple(record["dropped"]))
+        if key != ((), ()):
+            exceptions.setdefault(key, []).append(label)
+    if exceptions:
+        lines.append("Scored without convergence, in the bars and out of "
+                     "every converged-only number (a parenthesized subset has "
+                     "no converged reaction and is out of the converged "
+                     "total):")
+        for (names, dropped), labels in exceptions.items():
+            clause = ", ".join(names)
+            if dropped:
+                clause += " (" + ", ".join(dropped) + ")"
+            lines.append("  " + clause + ": " + ", ".join(labels))
     unscored = {label: records[label]["unscored"] for label in evaluated
                 if records[label]["unscored"]}
     unscored.update({comp["label"]: comp["unscored"] for comp in comparators
                      if comp["wtmad2"] is not None and comp["unscored"]})
+    if unscored:
+        lines.append("No finite energy reported (kept in the weights, in no "
+                     "mean):")
+        _append_grouped(lines, unscored)
     unweighted = {label: records[label]["unweighted"] for label in evaluated
                   if records[label]["unweighted"]}
+    if unweighted:
+        lines.append("References averaging to zero, no weight in either "
+                     "total:")
+        _append_grouped(lines, unweighted)
     absent = dict(absent)
     absent.update({comp["label"]: "no reaction with an energy in its table"
                    for comp in comparators if comp["wtmad2"] is None})
-    if unconverged:
-        lines.append("unconverged: " + "; ".join(
-            f"{label}: {', '.join(names)}"
-            + (f" (dropped from its converged total: {', '.join(dropped[label])})"
-               if label in dropped else "")
-            for label, names in unconverged.items()))
-    if unscored:
-        lines.append("reported without an energy (kept in the weights, in no "
-                     "mean): " + "; ".join(f"{label}: {', '.join(names)}"
-                                          for label, names in unscored.items()))
-    if unweighted:
-        lines.append("references averaging to zero, no weight in either total: "
-                     + "; ".join(f"{label}: {', '.join(names)}"
-                                 for label, names in unweighted.items()))
     if absent:
-        lines.append("no bar for " + ", ".join(
-            f"{label} ({reason})" for label, reason in absent.items()))
+        lines.append("Not in the figure, no bars in any set:")
+        _append_grouped(lines, {label: [reason] for label, reason
+                                in absent.items()})
     return lines
 
 
