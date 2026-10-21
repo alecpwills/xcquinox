@@ -215,6 +215,10 @@ def main(argv=None) -> int:
         return 0
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
+    # pytest deletes and re-creates --basetemp itself but never creates its parents, so on
+    # a fresh machine every tmp_path fixture errors with FileNotFoundError until it exists.
+    # The chunks run from --root, which is where pytest resolves a relative --basetemp.
+    (Path(args.root) / args.basetemp).parent.mkdir(parents=True, exist_ok=True)
     failed = []
     for chunk, line in zip(CHUNKS, lines):
         log = log_dir / f"{chunk.name}.log"
