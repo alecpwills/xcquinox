@@ -71,7 +71,8 @@ def _pipeline(*names: str) -> tuple[str, ...]:
 CHUNKS: tuple[Chunk, ...] = (
     Chunk("A", ("xcquinox/tests", "tools", "notebooks", "hpcjobs"), peak=2223),
     Chunk("B", _pipeline(
-        "test_arch_names.py", "test_balancing.py", "test_benchmark_refs.py",
+        "test_arch_names.py", "test_atom_context.py", "test_balancing.py",
+        "test_benchmark_refs.py",
         "test_bh76w411_pool.py", "test_certificate_two_tier_gate.py",
         "test_checkpoint_class.py", "test_closed_shell_byte_identity.py",
         "test_cluster_analyze.py", "test_cluster_cli.py", "test_cluster_datagen.py",

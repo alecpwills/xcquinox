@@ -99,6 +99,8 @@ EXPECTED_DISPLAY = {
     "deep_mgga_3x32":              "deep_mgga_3x32",
     "deep_mgga_4x16":              "deep_mgga_4x16",
     "deep_mgga_4x32":              "deep_mgga_4x32",
+    # 2026-10-21: the atom-context screen arm, a size-stating key
+    "deep_atomctx_3x16":           "deep_atomctx_3x16",
 }
 
 #: The shown names that are not themselves registry keys: the fourteen keys

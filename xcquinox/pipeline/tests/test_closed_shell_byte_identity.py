@@ -532,8 +532,8 @@ def announce(report, capsys):
 @pytest.mark.parametrize("fixture", _FIXTURES, ids=_FIXTURE_IDS)
 def test_the_reference_covers_every_architecture(fixture):
     """The live fixture carries every registered architecture except the
-    names still awaiting their record (``_AWAITING_RECORD``, empty since the
-    jax0102 recording), and a name listed there that the fixture DOES carry
+    names still awaiting their record (``_AWAITING_RECORD``), and a name
+    listed there that the fixture DOES carry
     fails here, so the list expires on its own. The two historical fixtures
     carry every architecture that existed in their trees: the registry minus
     the ones registered afterwards (``_POST_ARCHIVE_ARCHS``), which those
@@ -682,17 +682,20 @@ _POST_ARCHIVE_ARCHS = ("deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32",
                        "deep_geom_3x16", "deep_geom_attn_3x16",
                        "deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16",
                        "deep_kan_2x6", "deep_kan_geom_2x6",
-                       "deep_lap_3x16", "deep_lap_geom_3x16")
+                       "deep_lap_3x16", "deep_lap_geom_3x16",
+                       "deep_atomctx_3x16")
 
 #: Architectures registered after the live fixture was last recorded, awaiting
 #: their records (the recorder command is in the skip message): the
 #: architecture screen's entries, the three single-change entries of the
-#: plain 3x16 network and the Kolmogorov-Arnold pair, registered after the
-#: jax0102 recording. A name listed here that the fixture DOES carry fails
+#: plain 3x16 network, the Kolmogorov-Arnold pair and the atom-context arm,
+#: registered after the jax0102 recording. A name listed here that the
+#: fixture DOES carry fails
 #: the coverage test: remove it from this tuple once its record is merged.
 _AWAITING_RECORD = ("deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16",
                     "deep_kan_2x6", "deep_kan_geom_2x6",
-                    "deep_lap_3x16", "deep_lap_geom_3x16")
+                    "deep_lap_3x16", "deep_lap_geom_3x16",
+                    "deep_atomctx_3x16")
 
 
 def _record_pending(arch_name):

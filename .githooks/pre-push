@@ -1,0 +1,25 @@
+#!/bin/sh
+# The registry fan-out guards, run before every push: the pinned mirrors a
+# registry or tracked-file change must reach, so a missed one fails the push
+# instead of CI hours later.
+# Install once per clone: git config core.hooksPath .githooks
+root=$(git rev-parse --show-toplevel) || {
+    echo "pre-push: cannot find the repository root" >&2
+    exit 1
+}
+cd "$root" || exit 1
+PYTHON=${PYTHON:-python3}
+if ! "$PYTHON" -m pytest --version >/dev/null 2>&1; then
+    echo "pre-push: '$PYTHON -m pytest' does not run; set PYTHON=<interpreter with pytest> or install pytest" >&2
+    exit 1
+fi
+log=$(mktemp) || exit 1
+trap 'rm -f "$log"' EXIT
+# one invocation, one line: a targetless pytest would run the whole suite
+if "$PYTHON" -m pytest -q xcquinox/pipeline/tests/test_arch_names.py xcquinox/pipeline/tests/test_config.py::test_architectures_registry_key_set "xcquinox/pipeline/tests/test_cluster_grid_config.py::test_tracked_configs_carry_valid_walltimes" hpcjobs/test_thread_caps.py >"$log" 2>&1
+then
+    exit 0
+fi
+echo "pre-push: a mirror guard FAILED; push refused" >&2
+grep -E '^(FAILED|ERROR)' "$log" >&2
+exit 1

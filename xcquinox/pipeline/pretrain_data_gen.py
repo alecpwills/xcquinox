@@ -1011,11 +1011,26 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
         # with its AO Laplacian table (built once here and handed to the
         # per-channel rows below), then the valid rows.
         from xcquinox.pipeline.data import ao_laplacian_on_grid
-        from xcquinox.pipeline.descriptors import LaplacianDescriptor
+        from xcquinox.pipeline.descriptors import (AtomContextDescriptor,
+                                                   LaplacianDescriptor)
         ao_lapl = ao_laplacian_on_grid(mol, coords)
         cols["lap"] = np.asarray(LaplacianDescriptor().compute_from_dm(
             jnp.asarray(ao[0]), jnp.asarray(ao[1:4]), jnp.asarray(ao_lapl),
             jnp.asarray(rho), jnp.asarray(dm_total)))[valid]
+        # The atom-context environment columns: geometry-only, the same
+        # kernel and the same (cutoff, seed) parameterization the per-channel
+        # exchange rows and the training-side precompute run, on the kept
+        # parent-grid rows. The stem is unconditional in _DESCRIPTOR_STEMS,
+        # so the writer's column check refuses every descriptors=True system
+        # without this column.
+        atom_ctx_descriptor = AtomContextDescriptor()
+        cols["atom_context"] = np.asarray(
+            _features.compute_atom_context_descriptor(
+                jnp.asarray(coords_v),
+                jnp.asarray(mol.atom_coords()),
+                jnp.asarray(mol.atom_charges()),
+                cutoff=atom_ctx_descriptor.cutoff,
+                seed=atom_ctx_descriptor.seed))
     else:
         ao_lapl = None
     if exchange_footing == "spin_channel":

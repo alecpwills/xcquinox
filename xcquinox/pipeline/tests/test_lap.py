@@ -1258,7 +1258,7 @@ def test_the_registry_entries_are_the_stated_ones():
         want = dataclasses.replace(C.ARCHITECTURES[base], name=name,
                                    descriptors=tuple(FeatureSpec.of(x) for x in descriptors))
         assert C.ARCHITECTURES[name] == want, name
-    assert len(C.ARCHITECTURES) == 43
+    assert len(C.ARCHITECTURES) == 44
     text = AN._DESCRIPTOR_TEXT["lap"]
     assert isinstance(text, str) and text
     for name, tokens in (("deep_lap_3x16", "lap"), ("deep_lap_geom_3x16", "lap_geom")):
@@ -1336,7 +1336,7 @@ def test_the_registry_entries_are_the_stated_ones():
         assert tuple(order[i:i + 4]) == want, order[i:i + 4]
 
     archs = sorted(C.ARCHITECTURES)
-    assert sorted(wm.ARCHITECTURES) == archs and len(archs) == 43
+    assert sorted(wm.ARCHITECTURES) == archs and len(archs) == 44
 
 
 # ---------------------------------------------------------------------------

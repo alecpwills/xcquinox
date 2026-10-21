@@ -144,7 +144,8 @@ def test_generator_writes_are_atomic(tmp_path, monkeypatch):
                                         "e_lda_x", "e_lda_c")} | {
             "cusp": np.ones((2, 2)), "dm": np.ones((2, 2)),
             "rung35": np.ones((2, 2)), "rung35ms": np.ones((2, 6)),
-            "lap": np.ones((2, 1)), "metagga": np.ones((2, 1))}
+            "lap": np.ones((2, 1)), "atom_context": np.ones((2, 4)),
+            "metagga": np.ones((2, 1))}
 
     monkeypatch.setattr(pdg, "_system_columns", fake_cols)
     replaces = []

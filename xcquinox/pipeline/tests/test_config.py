@@ -128,7 +128,7 @@ def test_architecture_config_field_validation(field, value, exc):
 # differ from deep_mgga_3x16 in shape alone.
 def test_architectures_registry_key_set():
     from xcquinox.pipeline.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 43
+    assert len(ARCHITECTURES) == 44
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -173,6 +173,10 @@ def test_architectures_registry_key_set():
         # The Laplacian rung: the compressed reduced Laplacian as a column
         # on the plain and the geometric 3x16 networks.
         "deep_lap_3x16", "deep_lap_geom_3x16",
+        # 2026-10-21: the atom-context arm of the screen -- the sixth
+        # descriptor stem (atom_context, geometry-only) on the plain 3x16
+        # GGA network.
+        "deep_atomctx_3x16",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
 
@@ -577,7 +581,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.pipeline.config import ARCHITECTURES
     from xcquinox.pipeline.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 43
+    assert len(ARCHITECTURES) == 44
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)
