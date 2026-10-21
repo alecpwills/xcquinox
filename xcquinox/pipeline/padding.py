@@ -118,6 +118,7 @@ _PAD_AO_ZERO_BLOCK = ("dm_pbe", "dm_seed", "dm_minao", "j_matrix", "vxc_pbe", "d
 _PAD_GRID_EDGE = ("rho_grid", "sigma_grid", "nabla_rho_grid", "rho_ref_grid",
                   "rho_pbe_ref_grid",
                   "cusp_features", "dm_features", "rung35_features",
+                  "atom_context_features",
                   "rung35ms_features", "metagga_features",
                   # Per-spin-channel blocks of diag(P_sigma, P_sigma). Same
                   # (n_grid, k) grid-major layout as their total-density twins,

@@ -1290,6 +1290,7 @@ def evaluate_potential(model, mol_data) -> dict:
     closure_kwargs = dict(
         s_matrix=mol_data["s_matrix"], n_grid=n_grid,
         cusp_features=mol_data.get("cusp_features"),
+        atom_context_features=mol_data.get("atom_context_features"),
         rung35_proj_ao=mol_data.get("rung35_proj_ao"),
         rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
         # the Laplacian column's AO table (None without the column)

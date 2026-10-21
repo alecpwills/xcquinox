@@ -282,6 +282,38 @@ class CuspDescriptor(Descriptor):
         return ((0.0, 1.0), (-1.0, 1.0))
 
 
+@register_descriptor("atom_context")
+class AtomContextDescriptor(Descriptor):
+    """Frozen per-atom environment attention (4 features per grid point).
+
+    Each atom's frozen embedding ``tanh(W[:, Z_A])`` (seeded, never trained)
+    is mixed with its neighbors inside ``cutoff`` under distance-decay
+    attention with a ``cos^2`` taper, and each grid point reads the
+    inverse-distance-charged convex combination of those environment vectors,
+    cut at the same radius. See ``xcquinox.features.compute_atom_context_descriptor``
+    for the kernel, the lambda = 4 Bohr decay-length anchor and the invariance
+    argument (permutation / translation / rotation invariant by construction,
+    size-consistent by the cutoff, geometry-only so frozen through the SCF).
+
+    One parameterization per architecture: mol_data keys are per class (the
+    precompute stores one ``atom_context_features`` array), so a second
+    instance of this class in one architecture is refused by
+    ``ArchitectureConfig.materialize_descriptors``.
+    """
+    n_features: int = eqx.field(default=4, static=True)
+    cutoff: float = eqx.field(default=10.0, static=True)
+    seed: int = eqx.field(default=42, static=True)
+    required_mol_keys: ClassVar[tuple[str, ...]] = ("atom_context_features",)
+
+    def compute(self, mol_data):
+        return mol_data["atom_context_features"]
+
+    @property
+    def column_bounds(self) -> tuple:
+        """Every column is a convex combination of tanh entries: (-1, 1)."""
+        return ((-1.0, 1.0),) * self.n_features
+
+
 @register_descriptor("dm_statistics")
 class DMStatisticsDescriptor(Descriptor):
     """Density-matrix correlation indicators. 2 features.

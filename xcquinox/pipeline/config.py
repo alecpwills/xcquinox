@@ -463,11 +463,10 @@ class ArchitectureConfig:
 
     @property
     def n_extra_features(self) -> int:
-        from xcquinox.pipeline.descriptors import make_descriptor
-        return sum(
-            make_descriptor(spec.name, **spec.as_kwargs()).n_features
-            for spec in self.descriptors
-        )
+        # The one materialization choke point: materialize_descriptors also
+        # refuses a duplicated descriptor name, so every derived width
+        # (this, extra_feature_ranges/bounds) is guarded identically.
+        return sum(d.n_features for d in self.materialize_descriptors())
 
     @property
     def extra_feature_ranges(self) -> tuple:
@@ -502,7 +501,18 @@ class ArchitectureConfig:
         # descriptors ignore the unknown kwargs (filtered by make_descriptor
         # via FeatureSpec.as_kwargs: known kwargs only).
         out = []
+        seen = set()
         for s in self.descriptors:
+            if s.name in seen:
+                raise ValueError(
+                    f"ArchitectureConfig.materialize_descriptors: descriptor "
+                    f"{s.name!r} appears twice in one architecture. mol_data "
+                    "keys are per descriptor class (the precompute stores one "
+                    "array under the first instance's key) while the pyscfad "
+                    "dispatch recomputes per instance, so two "
+                    "parameterizations would silently disagree between the "
+                    "training and eval routes.")
+            seen.add(s.name)
             kwargs = dict(s.as_kwargs())
             # dm_statistics no longer takes `intensive`: it only ever
             # normalized dm_entropy, which was removed 2026-08-06. The
@@ -931,6 +941,13 @@ ARCHITECTURES = {
     "deep_geom_attn_3x16":      ArchitectureConfig.from_spec("deep_geom_attn_3x16",     3, 16,
                               attention=True, num_heads=4,
                               descriptors=["cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True),
+    # Stage 1a environment attention: frozen per-atom embeddings mixed by
+    # distance-decay attention inside the cutoff (the atom_context
+    # descriptor), geometry-only, on the 3x16 network.
+    "deep_atomctx_3x16":        ArchitectureConfig.from_spec("deep_atomctx_3x16",       3, 16,
+                              descriptors=["atom_context"],
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True),
     # The 3x16 network with the second-order gradient expansion fixed by

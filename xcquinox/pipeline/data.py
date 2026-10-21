@@ -282,6 +282,9 @@ class MoleculeData(TypedDict, total=True):
     ao_grid_deriv: jnp.ndarray
     cusp_features: jnp.ndarray | None
     dm_features: jnp.ndarray | None
+    # Frozen atom-context environment attention (AtomContextDescriptor),
+    # geometry-only like cusp_features: (N, 4), each column in (-1, 1).
+    atom_context_features: jnp.ndarray | None
     # Rung-3.5 localized DM descriptor (gated on a DMRung35Descriptor being
     # present). rung35_proj_ao is the constant projected-AO matrix A (N, nao);
     # rung35_features is the one-shot per-spin occupancy A^T P_pbe A (N, 2).
@@ -850,7 +853,11 @@ def _precompute_cache_key(
          getattr(d, "alpha", None),
          getattr(d, "alphas", None),
          # the Laplacian column's tanh scale: two scales are two columns
-         getattr(d, "scale", None))
+         getattr(d, "scale", None),
+         # the atom-context kernel's radius and embedding seed: two
+         # parameterizations of the class are two feature blocks
+         getattr(d, "cutoff", None),
+         getattr(d, "seed", None))
         for d in descriptors
     )
     ext_path = getattr(mol_spec, "external_data_path", None)
@@ -1052,6 +1059,26 @@ def set_precompute_cache_enabled(enabled: bool) -> None:
     """
     global _PRECOMPUTE_CACHE_ENABLED
     _PRECOMPUTE_CACHE_ENABLED = bool(enabled)
+
+
+def _atom_context_features_on_demand(mol, coords, descriptors):
+    """The atom-context columns for one molecule's grid, with (cutoff, seed)
+    pulled from the FIRST AtomContextDescriptor of the architecture (one
+    parameterization per class; materialize_descriptors refuses a second
+    instance), so the stored array matches the instance the networks read."""
+    from xcquinox.features import compute_atom_context_descriptor
+    cutoff, seed = 10.0, 42
+    for d in descriptors:
+        if type(d).__name__ == "AtomContextDescriptor":
+            cutoff = float(getattr(d, "cutoff", 10.0))
+            seed = int(getattr(d, "seed", 42))
+            break
+    return compute_atom_context_descriptor(
+        jnp.array(coords),
+        jnp.array(mol.atom_coords()),
+        jnp.array([mol.atom_charge(i) for i in range(mol.natm)]),
+        cutoff=cutoff, seed=seed,
+    )
 
 
 def precompute_fixed_density_data(
@@ -1378,6 +1405,7 @@ def precompute_fixed_density_data(
     # Descriptor features (on-demand)
     cusp_features = None
     dm_features = None
+    atom_context_features = None
     rung35_proj_ao = None
     rung35_features = None
     rung35ms_proj_ao = None
@@ -1399,6 +1427,10 @@ def precompute_fixed_density_data(
             jnp.array(coords), nuclear_coords, nuclear_charges,
             log_transform=cusp_log_transform,
         )
+
+    if "atom_context_features" in all_needed:
+        atom_context_features = _atom_context_features_on_demand(
+            mol, coords, descriptors)
 
     if "dm_features" in all_needed:
         from xcquinox.features import compute_dm_features_array
@@ -1695,6 +1727,7 @@ def precompute_fixed_density_data(
         ao_grid=jnp.array(ao_no_deriv),
         ao_grid_deriv=jnp.array(ao),
         cusp_features=cusp_features,
+        atom_context_features=atom_context_features,
         dm_features=dm_features,
         rung35_proj_ao=rung35_proj_ao,
         rung35_features=rung35_features,

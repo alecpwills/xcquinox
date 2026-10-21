@@ -452,6 +452,7 @@ def _reassemble_features(
     dm: jnp.ndarray,
     s_matrix: jnp.ndarray,
     cusp_features: jnp.ndarray | None = None,
+    atom_context_features: jnp.ndarray | None = None,
     n_grid: int | None = None,
     rung35_proj_ao: jnp.ndarray | None = None,
     rung35ms_proj_ao: jnp.ndarray | None = None,
@@ -489,8 +490,8 @@ def _reassemble_features(
     forms them, so callers should go through it rather than doubling by hand.
     """
     from xcquinox.pipeline.descriptors import (
-        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
-        DMRung35MultishellDescriptor, LaplacianDescriptor,
+        AtomContextDescriptor, CuspDescriptor, DMStatisticsDescriptor,
+        DMRung35Descriptor, DMRung35MultishellDescriptor, LaplacianDescriptor,
         MetaGGAAlphaDescriptor, doubled_spin_dm)
     if not descriptors:
         _ng = cusp_features.shape[0] if cusp_features is not None else (n_grid or 0)
@@ -507,6 +508,13 @@ def _reassemble_features(
                 )
             cols.append(cusp_features)
             n_grid_hint = cusp_features.shape[0]
+        elif isinstance(d, AtomContextDescriptor):
+            if atom_context_features is None:
+                raise ValueError(
+                    "atom_context_features must be provided when descriptors "
+                    "include AtomContextDescriptor"
+                )
+            cols.append(atom_context_features)
         elif isinstance(d, DMStatisticsDescriptor):
             if n_grid_hint is None:
                 raise ValueError(
@@ -555,6 +563,7 @@ def make_uks_feature_fns(descriptors: tuple,
                          s_matrix: jnp.ndarray,
                          n_grid: int,
                          cusp_features: jnp.ndarray | None = None,
+                         atom_context_features: jnp.ndarray | None = None,
                          rung35_proj_ao: jnp.ndarray | None = None,
                          rung35ms_proj_ao: jnp.ndarray | None = None,
                          ao_lapl: jnp.ndarray | None = None):
@@ -633,6 +642,7 @@ def make_uks_feature_fns(descriptors: tuple,
             dm=dm,
             s_matrix=s_matrix,
             cusp_features=cusp_features,
+            atom_context_features=atom_context_features,
             n_grid=n_grid,
             rung35_proj_ao=rung35_proj_ao,
             rung35ms_proj_ao=rung35ms_proj_ao,
