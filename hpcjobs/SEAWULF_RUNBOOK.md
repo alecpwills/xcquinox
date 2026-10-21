@@ -662,7 +662,10 @@ program, `dfs_step8.v8_dfs_allsc.yaml`, `dfs_step8.v8_dfs_parity.yaml` and
 `dfs_step8.v8_slim05_allsc.yaml` (the Slim05 pretraining arm at the published density identity; the
 submission commands are in `docs/getting_started.md`) and `dfs_step8.arch_screen.yaml`
 (the architecture screen: the seven new networks of the screen at the same cloning
-protocol, pretraining only, under the screen's own output and data roots).
+protocol, pretraining only, under the screen's own output and data roots), and
+`dfs_step8.atomctx_pretrain.yaml` (the atom-context arm: `deep_atomctx_3x16` alone at
+the same cloning protocol, pretraining only, under its own output and data roots; the
+arm's sixth data stem, which the screen's shared five-stem file predates).
 `xcquinox/pipeline/tests/test_cluster_grid_config.py` holds this set equal to the files on
 disk, the personal `*.local.yaml` copies excepted.
 

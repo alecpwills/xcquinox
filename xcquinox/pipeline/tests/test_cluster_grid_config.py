@@ -860,6 +860,7 @@ _TRACKED_CONFIGS = (
     "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml",
     "dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml",
     "dfs_step8.arch_screen.yaml",
+    "dfs_step8.atomctx_pretrain.yaml",
     "dfs_step8.v8_dfs_allsc.yaml",
     "dfs_step8.v8_dfs_coldstart.yaml",
     "dfs_step8.v8_dfs_parity.yaml",
