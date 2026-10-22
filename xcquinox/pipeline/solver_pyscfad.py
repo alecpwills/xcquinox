@@ -212,9 +212,11 @@ def _reassemble_features_on_grid(
     scaling evaluates; correlation keeps ``spin_channel=None``.
     """
     from xcquinox.pipeline.descriptors import (
-        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
-        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor)
-    from xcquinox.features import compute_cusp_descriptor
+        AtomContextDescriptor, CuspDescriptor, DMStatisticsDescriptor,
+        DMRung35Descriptor, DMRung35MultishellDescriptor,
+        MetaGGAAlphaDescriptor)
+    from xcquinox.features import (compute_atom_context_descriptor,
+                                   compute_cusp_descriptor)
 
     dm_arr = jnp.asarray(dm)
     if spin_channel is not None:
@@ -244,6 +246,16 @@ def _reassemble_features_on_grid(
             cols.append(compute_cusp_descriptor(
                 grid_coords, nuclear_coords, nuclear_charges,
                 log_transform=bool(getattr(d, "log_transform", False)),
+            ))
+        elif isinstance(d, AtomContextDescriptor):
+            # Same kernel, same instance kwargs as the data.py precompute:
+            # the environment is geometry-only, so recomputing it on the
+            # pyscfad grid reproduces the training columns (one
+            # parameterization per architecture; the kernel is pure).
+            cols.append(compute_atom_context_descriptor(
+                grid_coords, nuclear_coords, nuclear_charges,
+                cutoff=float(getattr(d, "cutoff", 10.0)),
+                seed=int(getattr(d, "seed", 42)),
             ))
         elif isinstance(d, DMStatisticsDescriptor):
             cols.append(d.compute_from_dm(

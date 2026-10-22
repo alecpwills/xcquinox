@@ -46,6 +46,7 @@ _DESCRIPTOR_TEXT = {
     "rung35_multishell": "rung-3.5 multishell occupancy",
     "lap": "reduced density Laplacian (tanh-compressed)",
     "metagga": "meta-GGA (SCAN parent)",
+    "atom_context": "frozen atom-context environment",
 }
 
 #: the protocol tags with a spelled-out form; an unknown tag is echoed as written

@@ -209,6 +209,7 @@ def _fake_columns(n=3, *, dtype=np.float64, polarized=True, descriptors=True,
         cols["rung35"] = np.ones((n, 2), dtype=dtype)
         cols["rung35ms"] = np.ones((n, 6), dtype=dtype)
         cols["lap"] = np.ones((n, 1), dtype=dtype)
+        cols["atom_context"] = np.ones((n, 4), dtype=dtype)
     if x_rows is not None:
         cols["x_rows"] = x_rows
     return cols

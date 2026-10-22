@@ -329,6 +329,7 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
     e_nuc = jnp.asarray(mol_data["e_nuc"])
     J_pinned = mol_data["j_matrix"]
     cusp_cached = mol_data.get("cusp_features")
+    atom_context_cached = mol_data.get("atom_context_features")
     s_matrix = mol_data["s_matrix"]
 
     features_initial = assemble_descriptor_features(model.descriptors, mol_data)
@@ -353,6 +354,7 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
             dm=D,
             s_matrix=s_matrix,
             cusp_features=cusp_cached,
+            atom_context_features=atom_context_cached,
             n_grid=grid_weights.shape[0],
             rung35_proj_ao=mol_data.get("rung35_proj_ao"),
             rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
@@ -516,6 +518,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
     j_pbe = mol_data["j_matrix"]  # UKS: (2, nao, nao)
     J_pinned_total = j_pbe[0] + j_pbe[1]
     cusp_cached = mol_data.get("cusp_features")
+    atom_context_cached = mol_data.get("atom_context_features")
     s_matrix = mol_data["s_matrix"]
 
     features_initial = assemble_descriptor_features(model.descriptors, mol_data)
@@ -549,6 +552,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         s_matrix=s_matrix,
         n_grid=grid_weights.shape[0],
         cusp_features=cusp_cached,
+        atom_context_features=atom_context_cached,
         rung35_proj_ao=mol_data.get("rung35_proj_ao"),
         rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
         ao_lapl=mol_data.get("ao_grid_lapl"),

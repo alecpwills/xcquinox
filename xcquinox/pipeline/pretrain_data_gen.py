@@ -447,14 +447,18 @@ def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
 
     names = ["rho", "sigma", "Fx", "Fx_scan", "metagga", "weights"]
     if descriptors:
-        names += ["cusp", "dm", "rung35", "rung35ms", "lap"]
+        names += ["cusp", "dm", "rung35", "rung35ms", "lap", "atom_context"]
         # The Laplacian column's kernel and its constant AO table on the
         # parent grid (``ao_lapl``, built here only when the caller did not
         # hand over the one it built for the total-density rows): the column
         # of the doubled density per channel, as the live solver's
         # per-channel closures compute it.
-        from xcquinox.pipeline.descriptors import LaplacianDescriptor
+        from xcquinox.pipeline.descriptors import (AtomContextDescriptor,
+                                                   LaplacianDescriptor)
         lap_descriptor = LaplacianDescriptor()
+        # Geometry-only columns need only the coordinates; the descriptor
+        # instance carries the parameterization the archs pretrain with.
+        atom_ctx_descriptor = AtomContextDescriptor()
         ao_values = jnp.asarray(ao[0])
         if ao_lapl is None:
             from xcquinox.pipeline.data import ao_laplacian_on_grid
@@ -513,6 +517,16 @@ def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
             parts["lap"].append(np.asarray(lap_descriptor.compute_from_dm(
                 ao_values, ao_grad, ao_lapl, jnp.asarray(rho_d),
                 dm_doubled))[keep])
+            # The environment columns are geometry-only: the same kernel and
+            # the same (cutoff, seed) the data.py precompute and the pyscfad
+            # dispatch run, evaluated on the kept parent-grid rows.
+            parts["atom_context"].append(np.asarray(
+                _features.compute_atom_context_descriptor(
+                    jnp.asarray(coords_v),
+                    jnp.asarray(mol.atom_coords()),
+                    jnp.asarray(mol.atom_charges()),
+                    cutoff=atom_ctx_descriptor.cutoff,
+                    seed=atom_ctx_descriptor.seed)))
 
     return {k: np.concatenate(v, axis=0) for k, v in parts.items()}
 
@@ -997,11 +1011,26 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
         # with its AO Laplacian table (built once here and handed to the
         # per-channel rows below), then the valid rows.
         from xcquinox.pipeline.data import ao_laplacian_on_grid
-        from xcquinox.pipeline.descriptors import LaplacianDescriptor
+        from xcquinox.pipeline.descriptors import (AtomContextDescriptor,
+                                                   LaplacianDescriptor)
         ao_lapl = ao_laplacian_on_grid(mol, coords)
         cols["lap"] = np.asarray(LaplacianDescriptor().compute_from_dm(
             jnp.asarray(ao[0]), jnp.asarray(ao[1:4]), jnp.asarray(ao_lapl),
             jnp.asarray(rho), jnp.asarray(dm_total)))[valid]
+        # The atom-context environment columns: geometry-only, the same
+        # kernel and the same (cutoff, seed) parameterization the per-channel
+        # exchange rows and the training-side precompute run, on the kept
+        # parent-grid rows. The stem is unconditional in _DESCRIPTOR_STEMS,
+        # so the writer's column check refuses every descriptors=True system
+        # without this column.
+        atom_ctx_descriptor = AtomContextDescriptor()
+        cols["atom_context"] = np.asarray(
+            _features.compute_atom_context_descriptor(
+                jnp.asarray(coords_v),
+                jnp.asarray(mol.atom_coords()),
+                jnp.asarray(mol.atom_charges()),
+                cutoff=atom_ctx_descriptor.cutoff,
+                seed=atom_ctx_descriptor.seed))
     else:
         ao_lapl = None
     if exchange_footing == "spin_channel":
@@ -1655,12 +1684,12 @@ _ALL_PROTOCOL = ("system", "e_lda_x", "e_lda_c")
 #: tuple, which the layout reads off the keys (:func:`pretrain_npz_layout`)
 #: and the currency check compares with the stems a run requests
 #: (:func:`pretrain_data_is_current`).
-_DESCRIPTOR_STEMS = ("cusp", "dm", "rung35", "rung35ms", "lap")
+_DESCRIPTOR_STEMS = ("cusp", "dm", "rung35", "rung35ms", "lap", "atom_context")
 #: Descriptor name -> column stem: the one map the generator and the
 #: pretraining loader (``pretrain._assemble_pretrain_descriptors``) share.
 DESCRIPTOR_STEM_OF = {"dm_statistics": "dm", "cusp": "cusp", "rung35": "rung35",
                       "rung35_multishell": "rung35ms", "metagga": "metagga",
-                      "lap": "lap"}
+                      "lap": "lap", "atom_context": "atom_context"}
 
 
 def descriptor_stems_for(archs) -> tuple:

@@ -57,11 +57,12 @@ _STORED_ORDER: Tuple[str, ...] = (
     # the 3x16 family; deep_gea_3x16, deep_ff_3x16 and deep_sine_3x16 are the
     # plain network with one change each (the gradient-expansion coefficient
     # fixed by construction, the Fourier-feature map, the sine activation; no
-    # 4x32 sibling; the base colours are set below), and the 2x6 pair the
-    # Kolmogorov-Arnold network in place of the MLP, plain and geometric
+    # 4x32 sibling; the base colours are set below), the 2x6 pair the
+    # Kolmogorov-Arnold network in place of the MLP, plain and geometric, and
+    # deep_atomctx_3x16 the atom-context descriptor arm
     "deep_3x16", "deep_attn_3x16", "deep_gea_3x16", "deep_ff_3x16",
-    "deep_sine_3x16", "deep_kan_2x6", "deep_kan_geom_2x6", "deep_cusp_3x16",
-    "deep_dm_3x16",
+    "deep_sine_3x16", "deep_kan_2x6", "deep_kan_geom_2x6", "deep_atomctx_3x16",
+    "deep_cusp_3x16", "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
     "deep_lap_3x16", "deep_lap_geom_3x16",
@@ -83,7 +84,8 @@ _STORED_ORDER: Tuple[str, ...] = (
 _DISPLAY_ORDER: Tuple[str, ...] = (
     "shallow", "shallow_attn", "medium", "medium_attn",
     "deep_3x16", "deep_attn_3x16", "deep_gea_3x16", "deep_ff_3x16",
-    "deep_sine_3x16", "deep_kan_2x6", "deep_kan_geom_2x6", "deep_cusp_3x16",
+    "deep_sine_3x16", "deep_kan_2x6", "deep_kan_geom_2x6", "deep_atomctx_3x16",
+    "deep_cusp_3x16",
     "deep_geom_3x16", "deep_geom_attn_3x16",
     "deep_dm_3x16",
     "deep_combined_3x16", "deep_combined_attn_3x16",
@@ -166,6 +168,10 @@ ARCH_COLOR["deep_kan_geom"] = "#bdbdbd"
 # tab20c's #bcbddc (10.37) for the geometric one.
 ARCH_COLOR["deep_lap"] = "#636363"
 ARCH_COLOR["deep_lap_geom"] = "#bcbddc"
+# The atom-context arm, by the same criterion with every colour above
+# carried: tab20's #dbdb8d (worst case 12.20, against deep_rung35's tab10
+# olive #bcbd22).
+ARCH_COLOR["deep_atomctx"] = "#dbdb8d"
 for _small in _STORED_ORDER[8:]:
     # Only sized names (the width twins, the 2x6 pair) inherit by stripping
     # their size suffix; a base name in the tail (the size ladder) keeps its

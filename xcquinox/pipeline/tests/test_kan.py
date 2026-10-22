@@ -744,7 +744,7 @@ def test_the_registry_entries_are_the_stated_ones():
         assert rungs.rung_of(name) == rungs.RUNG_GGA == AS.rung_of(name)
         assert _EXPANDED in arch_names.expanded_key(name), arch_names.expanded_key(name)
         assert all(entry.describe()[k] == v for k, v in _KAN.items())
-    assert len(C.ARCHITECTURES) == 43
+    assert len(C.ARCHITECTURES) == 44
     assert all(C.ARCHITECTURES["deep_3x16"].describe()[k] == v
                for k, v in dict(network="mlp", kan_grid=0, kan_order=0).items())
     accents = {v.lower() for v in AS.RUNG_ACCENT.values()}
