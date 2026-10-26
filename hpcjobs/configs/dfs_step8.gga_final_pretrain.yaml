@@ -1,29 +1,36 @@
 # =============================================================================
-# dfs_step8.atomctx_pretrain.yaml -- THE ATOM-CONTEXT ARM'S PRETRAINING RUN.
+# dfs_step8.gga_final_pretrain.yaml -- THE GGA-FINAL ARM'S PRETRAINING RUN.
 #
 # Identical to dfs_step8.arch_screen.yaml (the published cloning protocol:
 # the slim05 pretraining set, def2-TZVP / grid 4 / no density fitting, the
 # published pretraining schedule and objective, the fidelity certificate
 # enforced at the same tolerances) except:
-#   sweep.arch -- the single deep_atomctx_3x16 (the atom-context descriptor's
-#     attention architecture); the screen's seven networks are not
-#     re-pretrained here.
+#   sweep.arch -- the four GGA-level architectures the pretraining record
+#     has never trained: deep_atomctx_3x16 (atom-context descriptors),
+#     deep_rung35only_3x16 (rung-3.5 descriptors alone), deep_cusp_attn and
+#     deep_dm_attn (the cusp and density-matrix descriptor sets on the 4x32
+#     attention body). The screen's seven networks are not re-pretrained
+#     here, and the three SCAN-parent meta-GGA architectures stay out: a
+#     GGA protocol cannot clone SCAN's alpha-dependence.
 #   the output root and the pretraining data root are the arm's own. The
-#     architecture reads the sixth data stem (atom_context), which the
-#     screen's shared five-stem file predates: the currency rule would
-#     regenerate that file in place, the exact hazard the lap sweep's own
-#     root was cut for. The datagen writes the six-stem file once and the
-#     arm reads it.
+#     atom-context stem alone forces a fresh file (the screen's shared
+#     five-stem file predates it); the rung-3.5, cusp and density-matrix
+#     stems ride along in the same fresh write. The currency rule would
+#     otherwise regenerate the screen's file in place, the exact hazard the
+#     lap sweep's own root was cut for.
 #
 # The arm is a pretraining run: --stages pretrain submits datagen -> pretrain
 # and nothing downstream is rendered or queued. The arm's readout is the
-# fidelity certificate beside its pretrain checkpoint, read against the
+# fidelity certificate beside each pretrain checkpoint, read against the
 # screen's seven, and the pretraining loss.
 # =============================================================================
 
 sweep:
   arch:
     - deep_atomctx_3x16
+    - deep_rung35only_3x16
+    - deep_cusp_attn
+    - deep_dm_attn
   loss: [L5_gradnorm_vxc_step7]
   metric: [jsd]
   subset_size: [26]
@@ -85,11 +92,11 @@ inputs:
   external_refs_dir: /gpfs/scratch/awills/external_refs_dfs_def2tzvp_g4
   benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_def2tzvp_g4
   val_refs_dir: /gpfs/scratch/awills/external_refs_val_def2tzvp_g4
-  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/atomctx_pretrain
+  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/gga_final
 
 pretrain:
-  # the arm's own root: the atom-context stem (the sixth) forces a fresh file
-  data_dir: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/atomctx_pretrain/pretrain_data_slim05_def2tzvp_g4_atomctx
+  # the arm's own root: the atom-context stem forces a fresh file
+  data_dir: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/gga_final/pretrain_data_slim05_def2tzvp_g4_ggafinal
   # the published cloning schedule and objective
   n_steps: 20000
   lr_start: 1.0e-3
