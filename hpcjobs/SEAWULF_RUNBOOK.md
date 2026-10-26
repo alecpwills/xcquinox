@@ -663,9 +663,11 @@ program, `dfs_step8.v8_dfs_allsc.yaml`, `dfs_step8.v8_dfs_parity.yaml` and
 submission commands are in `docs/getting_started.md`) and `dfs_step8.arch_screen.yaml`
 (the architecture screen: the seven new networks of the screen at the same cloning
 protocol, pretraining only, under the screen's own output and data roots), and
-`dfs_step8.atomctx_pretrain.yaml` (the atom-context arm: `deep_atomctx_3x16` alone at
-the same cloning protocol, pretraining only, under its own output and data roots; the
-arm's sixth data stem, which the screen's shared five-stem file predates).
+`dfs_step8.gga_final_pretrain.yaml` (the GGA-final arm: the four GGA-level architectures
+the pretraining record has never trained -- `deep_atomctx_3x16`, `deep_rung35only_3x16`,
+`deep_cusp_attn` and `deep_dm_attn` -- at the same cloning protocol, pretraining only,
+under its own output and data roots, whose datagen writes the union of the atom-context,
+rung-3.5, cusp and density-matrix stems).
 `xcquinox/pipeline/tests/test_cluster_grid_config.py` holds this set equal to the files on
 disk, the personal `*.local.yaml` copies excepted.
 

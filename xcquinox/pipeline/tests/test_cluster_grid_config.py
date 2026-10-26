@@ -844,8 +844,8 @@ def test_walltime_bad_shapes_refused(tmp_path, key, literal):
 #: campaigns the user guide walks through, the grid-3 lineage root the loss
 #: primer cites line by line, the six v7 files (the three group files, the
 #: reaction-energy control and the two arms), the three campaign-1 files of
-#: the v8 program (one per seed arm) and the architecture screen's
-#: pretraining sweep. ``hpcjobs/.gitignore`` excludes
+#: the v8 program (one per seed arm), the architecture screen's pretraining
+#: sweep and the GGA-final pretraining arm. ``hpcjobs/.gitignore`` excludes
 #: ``configs/*.local.yaml`` (personal cluster-filled copies), so a fresh clone,
 #: a git worktree and the cluster checkout carry only these, and the test
 #: below holds the list equal to the directory's other ``*.yaml`` files.
@@ -860,7 +860,7 @@ _TRACKED_CONFIGS = (
     "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml",
     "dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml",
     "dfs_step8.arch_screen.yaml",
-    "dfs_step8.atomctx_pretrain.yaml",
+    "dfs_step8.gga_final_pretrain.yaml",
     "dfs_step8.v8_dfs_allsc.yaml",
     "dfs_step8.v8_dfs_coldstart.yaml",
     "dfs_step8.v8_dfs_parity.yaml",

@@ -24,6 +24,7 @@ CAPPED_SCRIPTS = (
     "slim16_eval.sbatch",
     "slim16_eval_rerun.sbatch",
     "slim16_tables.sbatch",
+    "gga_final_slim16_prepare.sbatch",
     "nonempirical_pool.sbatch",
 )
 
