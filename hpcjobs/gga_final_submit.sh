@@ -62,12 +62,14 @@ python3 hpcjobs/gga_final_slim16_ledger.py "$RUN_DIR" "$ARM/slim16_ledger.json"
 [ $? -eq 0 ] || { echo "[gf-submit] FATAL: ledger write failed"; exit 1; }
 
 # --- 3) prepare, afterok on the whole pretrain array ------------------------
-PREP_ID="$(sbatch --dependency=afterok:"$PRETRAIN_ID" hpcjobs/gga_final_slim16_prepare.sbatch)"
+# --parsable: sbatch otherwise prints "Submitted batch job <id>", and the
+# sentence (not the id) would land in the next call's --dependency
+PREP_ID="$(sbatch --parsable --dependency=afterok:"$PRETRAIN_ID" hpcjobs/gga_final_slim16_prepare.sbatch)"
 [ -n "$PREP_ID" ] || { echo "[gf-submit] FATAL: prepare sbatch returned nothing"; exit 1; }
 echo "[gf-submit] prepare: $PREP_ID (afterok:$PRETRAIN_ID)"
 
 # --- 4) the evaluation array, afterok on prepare ----------------------------
-EVAL_ID="$(sbatch --dependency=afterok:"$PREP_ID" hpcjobs/gga_final_slim16_eval.sbatch)"
+EVAL_ID="$(sbatch --parsable --dependency=afterok:"$PREP_ID" hpcjobs/gga_final_slim16_eval.sbatch)"
 [ -n "$EVAL_ID" ] || { echo "[gf-submit] FATAL: eval sbatch returned nothing"; exit 1; }
 echo "[gf-submit] eval array: $EVAL_ID (afterok:$PREP_ID)"
 
