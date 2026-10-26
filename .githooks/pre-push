@@ -16,7 +16,7 @@ fi
 log=$(mktemp) || exit 1
 trap 'rm -f "$log"' EXIT
 # one invocation, one line: a targetless pytest would run the whole suite
-if "$PYTHON" -m pytest -q xcquinox/pipeline/tests/test_arch_names.py xcquinox/pipeline/tests/test_config.py::test_architectures_registry_key_set "xcquinox/pipeline/tests/test_cluster_grid_config.py::test_tracked_configs_carry_valid_walltimes" hpcjobs/test_thread_caps.py >"$log" 2>&1
+if "$PYTHON" -m pytest -q xcquinox/pipeline/tests/test_arch_names.py xcquinox/pipeline/tests/test_config.py::test_architectures_registry_key_set "xcquinox/pipeline/tests/test_cluster_grid_config.py::test_tracked_configs_carry_valid_walltimes" hpcjobs/test_thread_caps.py hpcjobs/test_standalone_sbatch_activation.py >"$log" 2>&1
 then
     exit 0
 fi
