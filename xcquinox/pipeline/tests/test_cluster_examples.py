@@ -19,6 +19,9 @@ complaint and is invisible in a result.
 
 The last section pins the three arms of campaign 1 of the v8 program, which
 differ from one another in the seed axis alone.
+The final section pins the two v9 Letter-parity fine-tuning arms, which
+mirror the executed Dick & Fernandez-Serra protocol and differ from one
+another in the arm keys alone.
 """
 import dataclasses
 import os
@@ -651,6 +654,158 @@ def test_v8_arms_retry_walls_fit_the_queue_caps():
         assert references <= extended_cap, (
             f"{name}: cluster.benchmark_refs_time {cl.benchmark_refs_time!r} "
             f"exceeds the {extended_cap} h cap")
+        assert cl.mail_user == "alec.wills@stonybrook.edu", (
+            f"{name}: cluster.mail_user is {cl.mail_user!r}; job mail goes "
+            "to the institutional address")
+        assert cl.mail_type == "BEGIN,END,FAIL", (
+            f"{name}: cluster.mail_type is {cl.mail_type!r}; submission, "
+            "completion and failure each have to reach the inbox")
+
+
+_V9_ARMI = "dfs_step8.v9_dfs_letter_parity.yaml"
+_V9_ARMII = "dfs_step8.v9_dfs_letter_allsc.yaml"
+_V9_ARMS = (_V9_ARMI, _V9_ARMII)
+
+_V9_SOLVER_VALUES = (
+    ("mode", "FULL"),
+    ("max_cycles", 25),
+    ("scf_loss_use_tail", True),
+    ("scf_loss_tail", 25),
+    ("scf_loss_weight_power", 2.0),
+    ("freeze_on_convergence", False),
+    ("fock_noise_std", 1.0e-5),
+    ("fock_noise_seed", 0),
+)
+_V9_MIXER_VALUES = (("base", 0.3), ("floor", 0.3), ("step_offset", 1))
+_V9_CHANNEL_WEIGHTS = {
+    "loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0,
+    "loss_rho": 20.0, "loss_vxc": 0.0, "loss_Eatom": 0.01,
+}
+_V9_HP_VALUES = (
+    ("nonsc_weight", 0.01),
+    ("seed_mix_atomic", True),
+    ("validate_every", 10),
+    ("patience", 8),
+    ("validation_density_weight", 20.0),
+    ("optimizer", "adam_plateau"),
+)
+_V9_RESPECT_SC = {_V9_ARMI: True, _V9_ARMII: False}
+_V9_ARCHS = {_V9_ARMI: ("deep_3x16",), _V9_ARMII: _V8_ARCHS}
+
+
+def _require_v9_files():
+    cfg_dir = _campaign_configs_dir()
+    if cfg_dir is None:
+        pytest.skip("cluster config tree not present in this checkout")
+    paths = {name: os.path.join(cfg_dir, name) for name in _V9_ARMS}
+    for name, path in paths.items():
+        assert os.path.isfile(path), (
+            f"v9 configuration missing: {path}; the two Letter-parity arms "
+            "are tracked files, not local copies"
+        )
+    return paths
+
+
+def test_v9_letter_arms_pin_the_executed_protocol():
+    pytest.importorskip("yaml")
+    from xcquinox.pipeline.cluster.domain import DFS_POOL_SIZE
+    from xcquinox.pipeline.cluster.grid_config import validate_grid_semantics
+
+    class _PoolStub:
+        pool_size = DFS_POOL_SIZE
+
+    for name, path in _require_v9_files().items():
+        cfg = load_grid_config(path)
+        cells = expand_grid(cfg)
+        archs = _V9_ARCHS[name]
+        assert [c.arch for c in cells] == list(archs), (
+            f"{name}: arch axis expanded to {[c.arch for c in cells]}, "
+            f"expected {list(archs)}")
+        assert list(_raw_yaml(path)["sweep"]["arch"]) == list(archs)
+        for cell in cells:
+            assert cell.loss == "L6_letter_parity", (
+                f"{name}: cell {cell.arch} runs loss {cell.loss!r}")
+            assert cell.solver == "full_25" and cell.metric == "jsd"
+            assert cell.subset_size == 26, (
+                f"{name}: the arms train on the whole pool, got subset size "
+                f"{cell.subset_size}")
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            validate_grid_semantics(cfg, _PoolStub())
+
+        named = cfg.solvers["full_25"]
+        for key, value in _V9_SOLVER_VALUES:
+            got = getattr(named, key)
+            assert got is value if isinstance(value, bool) else got == value, (
+                f"{name}: solvers.full_25.{key} is {got!r}, expected "
+                f"{value!r}")
+        assert named.scf_loss_tail == named.max_cycles == 25, (
+            f"{name}: the trajectory weight must cover every cycle "
+            f"(tail {named.scf_loss_tail} vs cycles {named.max_cycles})")
+        assert named.mixer_name == "decaying_linear"
+        assert dict(named.mixer_kwargs) == dict(_V9_MIXER_VALUES), (
+            f"{name}: mixer_kwargs is {dict(named.mixer_kwargs)}")
+
+        hp = cfg.hyperparams
+        for key, value in _V9_HP_VALUES:
+            got = getattr(hp, key)
+            assert got is value if isinstance(value, bool) else got == value, (
+                f"{name}: hyperparams.{key} is {got!r}, expected {value!r}")
+        assert hp.respect_sc_flag is _V9_RESPECT_SC[name], (
+            f"{name}: respect_sc_flag is {hp.respect_sc_flag!r}, expected "
+            f"{_V9_RESPECT_SC[name]!r}")
+        assert dict(hp.channel_weights) == _V9_CHANNEL_WEIGHTS, (
+            f"{name}: channel_weights is {dict(hp.channel_weights)}")
+        assert hp.density_per_electron is True, (
+            f"{name}: the Letter's density channel is per-electron")
+
+        inputs = cfg.inputs
+        assert os.path.basename(inputs.validation_manifest or "") == \
+            "si_letter_validation.json", (
+                f"{name}: validation_manifest is "
+                f"{inputs.validation_manifest!r}")
+        assert (inputs.val_refs_dir or "").endswith(
+            "external_refs_letter_val_6311ppg3df2pd_g3"), (
+                f"{name}: val_refs_dir is {inputs.val_refs_dir!r}; the "
+                "manifest references have a directory of their own")
+        assert inputs.basis == "6-311++G(3df,2pd)" and \
+            inputs.grid_level == 3 and inputs.density_fit is True
+
+        donors = dict(getattr(cfg.pretrain, "donor_checkpoints", {}) or {})
+        assert set(donors) == set(archs), (
+            f"{name}: donors {sorted(donors)} do not cover the arch axis "
+            f"{sorted(archs)}; the pretrain stage self-omits only when "
+            "every architecture is donated")
+        for arch, donor in donors.items():
+            assert donor == (
+                "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/"
+                f"v8_dfs_allsc/pretrain/{arch}"), (
+                    f"{name}: donor for {arch} is {donor!r}; both arms "
+                    "warm-start from the v8 arm-S PRETRAIN-stage output")
+
+
+def test_v9_letter_arms_differ_in_the_arm_keys_alone_and_mail_reaches_the_inbox():
+    pytest.importorskip("yaml")
+    paths = _require_v9_files()
+    base = _flat_yaml(paths[_V9_ARMI])
+    other = _flat_yaml(paths[_V9_ARMII])
+    absent = object()
+    differing = {
+        key for key in set(base) | set(other)
+        if base.get(key, absent) != other.get(key, absent)
+    }
+    expected = {
+        "sweep.arch", "hyperparams.respect_sc_flag", "inputs.output_root",
+        *(f"pretrain.donor_checkpoints.{a}" for a in _V8_ARCHS[1:]),
+    }
+    assert differing == expected, (
+        f"{_V9_ARMII} differs from {_V9_ARMI} in {sorted(differing)}, "
+        f"expected exactly {sorted(expected)}")
+    assert base["inputs.output_root"] != other["inputs.output_root"], (
+        "the two arms share an output root; two runs writing into one root "
+        "interleave their run directories")
+    for name, path in paths.items():
+        cl = load_grid_config(path).cluster
         assert cl.mail_user == "alec.wills@stonybrook.edu", (
             f"{name}: cluster.mail_user is {cl.mail_user!r}; job mail goes "
             "to the institutional address")

@@ -117,6 +117,14 @@ from ase.io import read
 DFS_NONSC_AE_HILLS = ("NO2", "HN", "O3", "N2O", "CH3", "CH2", "H2O", "H3N",
                       "O2")
 
+# The pool's open-shell (radical) AE hills: self-consistent training points
+# whose DENSITY is trained at the radical weight, not the compound weight
+# (executed absolutes: molecule rho x20, radical rho x0.01). Stamped as
+# ``info["radical"]`` beside ``info["sc"]`` and propagated as
+# ``metadata["radical"]``; the L6 loss consumes it through
+# ``radical_species``.
+DFS_RADICAL_HILLS = ("CH", "HO")
+
 DFS_AE_DATA = [
     # --- 10 linear closed-shell ---
     {"hill": "H2",   "name": "Dihydrogen",
@@ -446,8 +454,10 @@ DFS_BH76_REACTIONS = [
 DFS_IP13_PAIRS = [
     {
         "name": "Li_IP",
-        # the IP entries are self-consistent in the published training
-        "sc": True,
+        # staged non-self-consistent: the v9 arms' enumeration (8 AE + 3
+        # BH76 + 2 IP13 non-SC) trains the IP entries in one pass at the
+        # parent density, energy channels at nonsc_weight
+        "sc": False,
         "neutral": "Li",      # MoleculeSpec.name (Hill formula, charge=0)
         "cation":  "Li+",     # MoleculeSpec.name (charge=+1, separate spec)
         "neutral_spin": 1,    # NIST ASD Li I (²S)
@@ -467,7 +477,8 @@ DFS_IP13_PAIRS = [
     },
     {
         "name": "C_IP",
-        "sc": True,
+        # staged non-self-consistent with Li_IP (see above)
+        "sc": False,
         "neutral": "C",       # MoleculeSpec.name (Hill formula, charge=0)
         "cation":  "C+",      # MoleculeSpec.name (charge=+1, separate spec)
         "neutral_spin": 2,    # NIST ASD C I (³P)
@@ -628,6 +639,9 @@ def build_dfs_pool() -> dict:
             a.info["spin_source"] = entry.get("spin_source", "")
             # the published training's self-consistency flag for this entry
             a.info["sc"] = hill not in DFS_NONSC_AE_HILLS
+            # the radical (open-shell hill) flag consumed by L6's
+            # radical_species rho weighting
+            a.info["radical"] = hill in DFS_RADICAL_HILLS
             ae_atoms.append(a)
         else:
             missing.append(hill)

@@ -98,12 +98,28 @@ class SolverConfig:
     # None -> the XCQUINOX_SEED_CACHE_DIR environment fallback; "scan" with
     # both unset fails loud at supply time.
     seed_cache_dir: str | None = None
+    # Fock degeneracy noise (the executed xc-diff protocol, Dick &
+    # Fernandez-Serra 2021: |N(0,1)| * 1e-5 added to the assembled effective
+    # potential every training SCF cycle, symmetrized). Here: when std > 0,
+    # each RKS/UKS scan cycle on the DIFFERENTIABLE path (never the
+    # forward_only readout) draws n = std*|N(0,1)| of the Fock's shape from
+    # PRNGKey(fock_noise_seed) folded with the cycle counter and adds the
+    # symmetrized perturbation n + n.T between Fock assembly and the
+    # Roothaan diagonalization -- breaking exact degeneracy ties in the
+    # occupied manifold the way the published training did. Default 0.0 ->
+    # off -> byte-identical SCF (the deterministic SYM_BREAK_SHIFT stays).
+    fock_noise_std: float = 0.0
+    fock_noise_seed: int = 0
 
     def __post_init__(self):
         if self.max_cycles < 0:
             raise ValueError(f"max_cycles must be >= 0, got {self.max_cycles}")
         if self.conv_tol <= 0:
             raise ValueError(f"conv_tol must be > 0, got {self.conv_tol}")
+        if self.fock_noise_std < 0:
+            raise ValueError(
+                f"fock_noise_std must be >= 0, got {self.fock_noise_std}"
+            )
         if self.scf_loss_tail < 1:
             raise ValueError(
                 f"scf_loss_tail must be >= 1, got {self.scf_loss_tail}"
@@ -188,6 +204,8 @@ class SolverConfig:
             "orientation_lock_strength": self.orientation_lock_strength,
             "seed_source": self.seed_source,
             "seed_cache_dir": self.seed_cache_dir,
+            "fock_noise_std": self.fock_noise_std,
+            "fock_noise_seed": self.fock_noise_seed,
         }
 
 

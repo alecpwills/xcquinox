@@ -81,8 +81,12 @@ cd "$REPO" || { echo "[slim16-eval] FATAL: cannot cd $REPO"; exit 1; }
 T_START="$(date +%s)"
 echo "[slim16-eval] START $(date '+%Y-%m-%d %H:%M:%S %Z') job=${SLURM_JOB_ID:-none} run=$RUN idx=$IDX"
 # -u: unbuffered, so the digest's log tail carries the last real progress line
-# even when the job dies by signal.
-python -u hpcjobs/slim16_eval.py evaluate "$RUN" "$IDX"
+# even when the job dies by signal. XCQ_EVAL_EXTRA_ARGS forwards evaluate-stage
+# flags (the v9 arms pass --dump-densities for the CCSD density comparison);
+# word-splitting is the point, and the default keeps every existing readout
+# byte-identical.
+# shellcheck disable=SC2086
+python -u hpcjobs/slim16_eval.py evaluate "$RUN" "$IDX" ${XCQ_EVAL_EXTRA_ARGS:-}
 RC=$?
 if [ "$IDX" -eq 0 ]; then
   python -u hpcjobs/slim16_eval.py pbe-df "$RUN"

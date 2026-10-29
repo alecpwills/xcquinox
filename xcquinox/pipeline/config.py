@@ -1598,6 +1598,14 @@ class TrainingSpec:
     validate_every: int = 0
     patience: int = 0
     early_stop_min_delta: float = 0.0
+    # Weight of the density term in the in-loop validation metric (the
+    # executed Letter protocol: MAE over the validation reactions +
+    # sqrt(w) * mean predicted-norm-relative density deviation over the
+    # species carrying a density reference). 0.0 (default) keeps the plain
+    # reaction MAE, so existing specs stay byte-identical; 20.0 matches
+    # the training density weight. Only the per_molecule loop honors it,
+    # and only when validation species carry ``rho_ref_grid``.
+    validation_density_weight: float = 0.0
     # Periodic-resume checkpoint cadence (WS5, 2026-06-20): every
     # ``checkpoint_every`` completed EPOCHS the per_molecule loop writes a
     # ``resume_*`` checkpoint set (model + opt_state + RNG + trackers) so a run

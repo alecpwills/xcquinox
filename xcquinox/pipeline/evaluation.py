@@ -8,6 +8,8 @@ import struct
 import time
 from typing import ClassVar
 
+import numpy as np
+
 import jax.numpy as jnp
 import equinox as eqx
 
@@ -254,7 +256,7 @@ class DensityRMSEMetric(Metric):
         "is_unrestricted", "atom_composition",
     )
 
-    def compute(self, model, mol_data, solver_config=None):
+    def compute(self, model, mol_data, solver_config=None, keep_rho=False):
         comp = mol_data["atom_composition"]
         total_atoms = sum(n for _, n in comp)
         if total_atoms == 1:
@@ -277,6 +279,11 @@ class DensityRMSEMetric(Metric):
         # accepts ``solver_config=None`` for the back-compat oneshot path.
         rho_nn = oneshot_grid_density(model, mol_data, solver_config=solver_config,
                                       forward_only=True)
+        # keep_rho (the slim16 density saving): hand the converged NN grid
+        # density back as a numpy array under "rho_nn_grid" so the caller can
+        # write it to disk. Off by default -- every historical caller gets the
+        # scalar-only dict and no array ever enters a JSON payload.
+        rho_arr = np.asarray(rho_nn) if keep_rho else None
         rho_ref = mol_data["rho_ref_grid"]
         if rho_ref is None:
             # External CCSD reference density not loaded for this species
@@ -284,7 +291,7 @@ class DensityRMSEMetric(Metric):
             # didn't carry rho_ref_grid).  Skip gracefully, matches the
             # existing pattern in losses._grid_term which skips when
             # rho_ref is None.
-            return {
+            out = {
                 "density_rmse": None,
                 "density_l1": None,
                 "density_rmse_pbe": None,
@@ -297,6 +304,9 @@ class DensityRMSEMetric(Metric):
                 "skip_reason": "no_rho_ref_grid",
                 "ref_density_method": mol_data.get("ref_density_method"),
             }
+            if keep_rho:
+                out["rho_nn_grid"] = rho_arr
+            return out
         if rho_nn.shape != rho_ref.shape:
             raise ValueError(
                 f"density shape mismatch: rho_nn {rho_nn.shape} vs "
@@ -317,7 +327,7 @@ class DensityRMSEMetric(Metric):
         rmse_pbe, l1_pbe = pbe_density_errors(mol_data)
         eps_nn, n_e, wsum = density_eps_terms(rho_nn, rho_ref, w)
         eps_pbe, _, _ = pbe_density_eps(mol_data)
-        return {
+        out = {
             "density_rmse": rmse,
             "density_l1": l1,
             # model-free PBE-vs-CCSD baseline on the same grid/weights, so
@@ -330,6 +340,9 @@ class DensityRMSEMetric(Metric):
             "grid_weight_sum": wsum,
             "ref_density_method": mol_data.get("ref_density_method"),
         }
+        if keep_rho:
+            out["rho_nn_grid"] = rho_arr
+        return out
 
 
 # ---------------------------------------------------------------------------

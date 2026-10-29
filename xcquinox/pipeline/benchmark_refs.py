@@ -228,6 +228,29 @@ def load_benchmark_species(pool: str = "all", *, basis: str = "def2-svp",
     return dict(sorted(mol_specs.items()))
 
 
+def load_manifest_species(manifest_path: str, *, basis: str,
+                          grid_level: int) -> Dict[str, MoleculeSpec]:
+    """Sorted ``{name: MoleculeSpec}`` for every species of a VALIDATION
+    MANIFEST (the ``pipeline/data/si_letter_validation.json`` form), built
+    by the same geometry-source resolver the spec builder's validation
+    attach uses (``cluster.spec_builder._manifest_val_mol_spec``).
+
+    The Letter's validation compounds (BeH, PF3 among them) appear in no
+    held-out pool, so pool mode cannot reach this set; ``--manifest`` reads
+    the geometry sources -- g2_97 frames by xyz_idx, unit atoms, named
+    held-out-pool species -- straight from the tracked manifest."""
+    import json
+    from xcquinox.pipeline.cluster.spec_builder import _manifest_val_mol_spec
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    mol_specs = {
+        str(sp["name"]): _manifest_val_mol_spec(
+            sp, basis=basis, grid_level=grid_level, val_refs_dir=None)
+        for sp in manifest["species"]
+    }
+    return dict(sorted(mol_specs.items()))
+
+
 def species_listing(mol_specs: Dict[str, MoleculeSpec]) -> str:
     """One line per species -- name, atom count, charge, 2S -- and a count
     line, the sizing of a reference build before it is submitted."""
@@ -473,6 +496,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="orientation-lock h_core bias strength (orientation_lock.py); "
                         "MUST match the run's inputs.orientation_lock_strength so the "
                         "held-out refs lock the same degenerate component as training")
+    p.add_argument("--manifest", default=None, metavar="MANIFEST.json",
+                   help="generate references for the SPECIES of a validation "
+                        "manifest (Letter-parity arms: geometry sources are "
+                        "read from the manifest itself) instead of a held-out "
+                        "pool; mutually exclusive with --pool")
     p.add_argument("--shard", default=None,
                    help="i/N: run the i-th of N disjoint slices (1-based)")
     p.add_argument("--species-slice", default=None,
@@ -493,10 +521,28 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.auxbasis and not args.density_fit:
         p.error("--auxbasis only makes sense with --density-fit")
+    if args.manifest and args.pool != "all":
+        raise ValueError(
+            "--manifest and --pool are mutually exclusive: --manifest reads "
+            "the species from the manifest itself, --pool from the held-out "
+            "pools")
 
-    mol_specs = load_benchmark_species(args.pool, basis=args.basis,
-                                       grid_level=args.grid_level,
-                                       max_atoms=args.max_atoms)
+    if args.manifest:
+        mol_specs = load_manifest_species(args.manifest, basis=args.basis,
+                                          grid_level=args.grid_level)
+        if args.max_atoms is not None:
+            dropped = sorted(n for n, ms in mol_specs.items()
+                             if n_atoms_of(ms) > int(args.max_atoms))
+            if dropped:
+                print(f"benchmark_refs: {len(dropped)} species above the cap "
+                      f"of {int(args.max_atoms)} atoms get no reference: "
+                      f"{', '.join(dropped)}", flush=True)
+            mol_specs = {n: ms for n, ms in mol_specs.items()
+                         if n not in dropped}
+    else:
+        mol_specs = load_benchmark_species(args.pool, basis=args.basis,
+                                           grid_level=args.grid_level,
+                                           max_atoms=args.max_atoms)
     if args.list_species:
         print(species_listing(mol_specs), flush=True)
         return 0
@@ -505,7 +551,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                        species_slice=args.species_slice)
     names = all_names[sl]
     shard_label = args.shard or "1/1"
-    print(f"benchmark_refs: pool={args.pool} ({len(all_names)} species), "
+    src_label = (f"manifest={args.manifest}" if args.manifest
+                 else f"pool={args.pool}")
+    print(f"benchmark_refs: {src_label} ({len(all_names)} species), "
           f"slice [{sl.start}:{sl.stop}] -> {len(names)} this task, "
           f"basis={args.basis} grid_level={args.grid_level} "
           f"density_fit={args.density_fit} auxbasis={args.auxbasis} "

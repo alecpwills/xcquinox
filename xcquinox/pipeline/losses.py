@@ -244,6 +244,29 @@ def _atomic_reg(E_nn, atom_mol_idx_dict, atom_energies, step_w2=None):
     return jnp.mean(jnp.stack(terms))
 
 
+def _atomic_reg_abs(E_nn, atom_mol_idx_dict, atom_energies, step_w2=None):
+    """Absolute Ha^2 atomic-total residual toward the anchor dict.
+
+    Same reduction structure as `_atomic_reg` (mean over anchored atoms of
+    the step-weighted squared error) WITHOUT the relative anchor^2
+    division: the executed Letter objective (Dick & Fernandez-Serra 2021,
+    L_E term) anchors atomic totals as absolute (E_atom - E_ref)^2 at
+    lambda_E = 0.01, so the emitted channel is raw Ha^2 and the 0.01 lives
+    entirely in the channel weights. The relative form would down-weight
+    heavy atoms by ~Z^4 (a 0.1 Ha miss on H vs Hg differs by ~10^5 in
+    relative units), which is not the published weighting.
+    """
+    if not atom_mol_idx_dict:
+        return jnp.array(0.0)
+    terms = []
+    for Z in atom_mol_idx_dict:
+        diff_sq = (E_nn[atom_mol_idx_dict[Z]] - atom_energies[Z]) ** 2
+        if step_w2 is not None:
+            diff_sq = jnp.mean(step_w2 * diff_sq)
+        terms.append(diff_sq)
+    return jnp.mean(jnp.stack(terms))
+
+
 def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies,
                step_w2=None):
     """A-family: relative squared AE error per compound.
@@ -1439,6 +1462,424 @@ class L5GradnormVxcStep7(AlecLoss):
             if n in aux_set
         )
         return tuple(sorted(set(self.compound_idx) | set(aux_idx)))
+
+    def __call__(self, model, batch):
+        components = self.compute_components(model, batch)
+        total = sum(components.values())
+        return total, components
+
+
+# Relative weight of a radical species' record inside the L6 rho channel:
+# the executed protocol trains closed-shell compound densities at lambda_n
+# = 20 (channel weight) and radical densities (CH, HO) at 0.01 absolute,
+# 0.01/20 = 5e-4 relative to the compound records of the same channel.
+L6_RADICAL_RHO_RELATIVE = 5.0e-4
+
+
+@register_loss("L6_letter_parity")
+class L6LetterParity(AlecLoss):
+    """Six-channel Letter-parity loss (dfs_step8 v9 fine-tuning arms).
+
+    Channels (all residuals ABSOLUTE Ha^2, the executed Letter objective;
+    the ``relative`` flag of compute_components is accepted for the
+    AlecLoss interface and deliberately ignored):
+      loss_AE    - atomization residual in the NN-species-totals form only:
+                   AE = sum_Z n_Z E_NN[atom_Z] - E_NN[compound] vs the AE
+                   target. The fixed anchor dict is never read here (a
+                   calculation involving the NN uses only NN quantities).
+      loss_BH76  - reaction / barrier residual via _rxn_residual_term
+      loss_IP13  - ionization-potential residual via _ip_residual_term
+      loss_vxc   - V_xc residual (the v9 yaml zero-weights this channel)
+      loss_rho   - per-electron^2 grid-density residual; records = compounds
+                   + aux at 1.0, NEUTRAL single atoms whose symbol is in
+                   ``h_species`` at 1.0 (cations excluded on the same ground
+                   train.py excludes them from anchor groups), and members
+                   of ``radical_species`` at L6_RADICAL_RHO_RELATIVE
+      loss_Eatom - RAW atomic-total anchor residual (_atomic_reg_abs) toward
+                   the Chakravorty anchors: lambda_E = 0.01 lives ONLY in
+                   the channel weights, so the channel is emitted unscaled
+                   (w_atomic is not applied; a pre-scaled channel with the
+                   channel weight on top would execute 0.01*0.01 = 1e-4)
+
+    ``emits_eatom_channel`` marks the class for train.py: the nonsc
+    ``w_atomic /= nonsc_weight`` compensation must NOT fire for this loss
+    (the channel weight already carries the 0.01).
+    """
+    registry_name: ClassVar[str] = "L6_letter_parity"
+    required_mol_keys: ClassVar[tuple[str, ...]] = ()
+    required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
+    target_kinds: ClassVar[tuple[str, ...]] = (
+        "AE", "BH76", "IP13", "vxc", "rho", "Eatom")
+    # Consumed by train._build_group_loss_and_batch: the nonsc w_atomic
+    # compensation is skipped for a loss carrying this marker.
+    emits_eatom_channel: ClassVar[bool] = True
+
+    bh76_reactions: tuple = eqx.field(default=(), static=True)
+    ip13_pairs: tuple = eqx.field(default=(), static=True)
+    aux_only_names: tuple = eqx.field(default=(), static=True)
+    molecules_only: bool = eqx.field(default=True, static=True)
+    solver_config: object | None = eqx.field(default=None, static=True)
+    # The Letter weights (lambda_RE = 1, lambda_n = 20, lambda_E = 0.01)
+    # live in the channel weights; these pre-scales default to 1.0 so the
+    # yaml carries each factor exactly once.
+    vxc_weight: float = eqx.field(default=1.0, static=True)
+    density_weight: float = eqx.field(default=1.0, static=True)
+    density_per_electron: bool = eqx.field(default=True, static=True)
+    # Neutral single-atom symbols whose density is trained at 1.0 (the
+    # SI sec. II atomic-density set: H and Li).
+    h_species: tuple = eqx.field(default=("H", "Li"), static=True)
+    # Species names whose rho records train at L6_RADICAL_RHO_RELATIVE.
+    radical_species: tuple = eqx.field(default=(), static=True)
+    # Atom-symbol allowlist for the loss_Eatom anchor residual. None
+    # (default) anchors every single-atom MoleculeSpec in the spec -- the
+    # Letter anchors all pool atoms at lambda_E = 0.01.
+    regularize_atom_syms: tuple | None = eqx.field(default=None, static=True)
+    # (record index, factor) pairs for the rho channel, fixed at
+    # construction (all static; cations and non-h_species atoms excluded).
+    rho_records: tuple = eqx.field(default=(), static=True)
+
+    def __init__(
+        self,
+        *,
+        molecules=None,
+        bh76_reactions=None,
+        ip13_pairs=None,
+        aux_only_names=(),
+        w_atomic: float = 1.0,
+        molecules_only: bool = True,
+        solver_config=None,
+        vxc_weight: float = 1.0,
+        density_weight: float = 1.0,
+        density_per_electron: bool = True,
+        h_species=("H", "Li"),
+        radical_species=(),
+        regularize_atom_syms=None,
+        _smoke_test: bool = False,
+        **_unused_kwargs,
+    ):
+        bh76_frozen = _freeze_rxn_specs(bh76_reactions or ())
+        ip13_frozen = _freeze_ip_specs(ip13_pairs or ())
+        reg_syms_frozen = (
+            tuple(regularize_atom_syms) if regularize_atom_syms is not None else None
+        )
+        h_species_frozen = tuple(h_species)
+        radical_frozen = tuple(radical_species)
+
+        if _smoke_test:
+            self.atom_mol_idx = ()
+            self.compound_idx = ()
+            self.mol_names = ()
+            self.compositions = ()
+            self.w_atomic = w_atomic
+            self.bh76_reactions = bh76_frozen
+            self.ip13_pairs = ip13_frozen
+            self.aux_only_names = tuple(aux_only_names)
+            self.molecules_only = molecules_only
+            self.solver_config = solver_config
+            self.vxc_weight = vxc_weight
+            self.density_weight = density_weight
+            self.density_per_electron = density_per_electron
+            self.h_species = h_species_frozen
+            self.radical_species = radical_frozen
+            self.regularize_atom_syms = reg_syms_frozen
+            self.rho_records = ()
+            return
+
+        if molecules is None:
+            raise ValueError(
+                "L6LetterParity requires `molecules` (or use _smoke_test=True "
+                "for registry/contract tests)."
+            )
+        self._validate_static_float("w_atomic", w_atomic)
+        self._validate_static_bool("molecules_only", molecules_only)
+        self._validate_static_float("vxc_weight", vxc_weight)
+        self._validate_static_float("density_weight", density_weight)
+        self._validate_static_bool("density_per_electron", density_per_electron)
+        # require_compound=False: a BH76-only or IP13-only subset (no
+        # polyatomic species) is a legitimate L6 configuration; the AE
+        # channel returns 0 in compute_components and the BH76/IP13
+        # channels carry the loss.  Aux filter applied below.
+        ami, ci, mn, comp = self.build_indices(
+            molecules, require_compound=False)
+        self.atom_mol_idx = ami
+        self.compound_idx = ci
+        self.mol_names = mn
+        self.compositions = comp
+        self.aux_only_names = tuple(aux_only_names)
+        aux_set = set(self.aux_only_names)
+        self.compound_idx = tuple(
+            i for i in self.compound_idx
+            if self.mol_names[i] not in aux_set
+        )
+        self.w_atomic = w_atomic
+        self.bh76_reactions = bh76_frozen
+        self.ip13_pairs = ip13_frozen
+        self.molecules_only = molecules_only
+        self.solver_config = solver_config
+        self.vxc_weight = vxc_weight
+        self.density_weight = density_weight
+        self.density_per_electron = density_per_electron
+        self.h_species = h_species_frozen
+        self.radical_species = radical_frozen
+        self.regularize_atom_syms = reg_syms_frozen
+
+        # Validate that regularize_atom_syms is a subset of the
+        # single-atom anchors actually present in atom_mol_idx (an
+        # unmatched symbol would be silently dropped, mirroring the L5
+        # guard).
+        if reg_syms_frozen is not None:
+            atom_map_keys = set(dict(ami).keys())
+            missing = set(reg_syms_frozen) - atom_map_keys
+            if missing:
+                raise ValueError(
+                    f"regularize_atom_syms contains symbols not present as "
+                    f"single-atom MoleculeSpecs in `molecules`: "
+                    f"{sorted(missing)}.  "
+                    f"Available single-atom symbols: {sorted(atom_map_keys)}"
+                )
+
+        # Validate that every BH76 / IP13 species is present in the
+        # `molecules` set (a missing species would give silent zeros at
+        # compute time).
+        mol_name_set = set(self.mol_names)
+        for (rname, reactants, products, coeffs, _eref) in self.bh76_reactions:
+            for s in (*reactants, *products):
+                if s not in mol_name_set:
+                    raise ValueError(
+                        f"BH76 reaction {rname!r}: species {s!r} not in "
+                        f"`molecules` (have {sorted(mol_name_set)})"
+                    )
+            if len(coeffs) != len(reactants) + len(products):
+                raise ValueError(
+                    f"BH76 reaction {rname!r}: len(coeffs)={len(coeffs)} "
+                    f"!= len(reactants)+len(products)="
+                    f"{len(reactants) + len(products)}"
+                )
+        for (pname, neutral, cation, _ipref) in self.ip13_pairs:
+            for s in (neutral, cation):
+                if s not in mol_name_set:
+                    raise ValueError(
+                        f"IP13 pair {pname!r}: species {s!r} not in "
+                        f"`molecules` (have {sorted(mol_name_set)})"
+                    )
+
+        # The AE channel scores a compound only when every element of its
+        # composition has a single-atom record in `molecules` (the skip is
+        # computed there); a separate construction-time check is deliberately
+        # absent because a compound-only species set is legitimate: the
+        # per-molecule scheme builds ae:<name> groups from the compound
+        # alone (train.py _training_groups), and reaction-form AE compounds
+        # are aux-excluded here, training through their bh76 group instead.
+
+        # Validate radical_species against the species set (a typo would
+        # silently train the radical at full weight).
+        missing_radicals = set(radical_frozen) - mol_name_set
+        if missing_radicals:
+            raise ValueError(
+                f"radical_species contains names not in `molecules`: "
+                f"{sorted(missing_radicals)}"
+            )
+
+        # Rho records: compounds (aux included) at 1.0 or the radical
+        # factor, plus NEUTRAL single atoms whose symbol is in h_species
+        # at 1.0.  Cations are excluded on the same ground train.py
+        # excludes them from anchor groups: the Li+ IP13 entry shares the
+        # Li symbol but is not a neutral-atom density target.
+        records: dict[int, float] = {}
+        radical_set = set(radical_frozen)
+        for i, comp_t in enumerate(self.compositions):
+            if sum(dict(comp_t).values()) > 1:
+                records[i] = (
+                    L6_RADICAL_RHO_RELATIVE
+                    if self.mol_names[i] in radical_set else 1.0
+                )
+        h_set = set(h_species_frozen)
+        for i, m in enumerate(molecules):
+            m_comp = dict(m.atom_composition)
+            if sum(m_comp.values()) != 1 or int(m.charge) != 0:
+                continue
+            if next(iter(m_comp)) in h_set and i not in records:
+                records[i] = 1.0
+        self.rho_records = tuple(sorted(records.items()))
+
+    def _ae_channel(self, E_nn, targets, step_w2=None) -> jnp.ndarray:
+        """Mean squared AE residual, NN-species-totals form.
+
+        AE_NN = sum_Z n_Z E_NN[atom_Z] - E_NN[compound] against the AE
+        target, so the channel moves only when NN energies move. The fixed
+        Chakravorty anchors are never read (contrast _ae_losses, which
+        builds AE from the anchor dict); evaluation's
+        AtomizationEnergyMetric under FULL measures the same NN-minus-NN
+        quantity. ``step_w2`` carries the DFS tail-weighted form.
+
+        A compound whose composition lacks a single-atom record in the
+        spec is skipped: the per-molecule scheme scopes ae:<name> groups
+        to the compound alone, and such a compound's energy supervision
+        comes from its reaction group (or its own group's rho/Eatom
+        channels), never from an anchor-dict AE it cannot form.
+        """
+        if not self.compound_idx:
+            return jnp.array(0.0)
+        atom_idx = dict(self.atom_mol_idx)
+        terms = []
+        for i in self.compound_idx:
+            comp = dict(self.compositions[i])
+            if not set(comp) <= set(atom_idx):
+                continue
+            e_atoms = sum(n * E_nn[atom_idx[Z]] for Z, n in comp.items())
+            resid = e_atoms - E_nn[i] - targets[self.mol_names[i]]
+            if step_w2 is not None:
+                terms.append(jnp.mean(step_w2 * resid ** 2))
+            else:
+                terms.append(resid ** 2)
+        return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
+
+    def _bh76_channel(self, E_nn, step_w2=None) -> jnp.ndarray:
+        """Mean of squared (absolute) reaction-energy residuals."""
+        if not self.bh76_reactions:
+            return jnp.array(0.0)
+        name_to_idx = {n: i for i, n in enumerate(self.mol_names)}
+        terms = []
+        for (_rname, reactants, products, coeffs, e_ref) in self.bh76_reactions:
+            if e_ref is None:
+                continue
+            species = (*reactants, *products)
+            idx = jnp.array([name_to_idx[s] for s in species])
+            e_species = E_nn[idx]
+            coeffs_arr = jnp.array(coeffs)
+            terms.append(_rxn_residual_term(
+                e_species, coeffs_arr, jnp.array(e_ref), step_w2=step_w2,
+            ))
+        if not terms:
+            return jnp.array(0.0)
+        return jnp.mean(jnp.stack(terms))
+
+    def _ip13_channel(self, E_nn, step_w2=None) -> jnp.ndarray:
+        """Mean of squared (absolute) IP residuals."""
+        if not self.ip13_pairs:
+            return jnp.array(0.0)
+        name_to_idx = {n: i for i, n in enumerate(self.mol_names)}
+        terms = []
+        for (_pname, neutral, cation, ip_ref) in self.ip13_pairs:
+            if ip_ref is None:
+                continue
+            e_neutral = E_nn[name_to_idx[neutral]]
+            e_cation = E_nn[name_to_idx[cation]]
+            terms.append(_ip_residual_term(
+                e_cation, e_neutral, jnp.array(ip_ref), step_w2=step_w2,
+            ))
+        if not terms:
+            return jnp.array(0.0)
+        return jnp.mean(jnp.stack(terms))
+
+    def _rho_channel(self, model, mol_data) -> jnp.ndarray:
+        """Per-record density residual with per-record factors.
+
+        Same skip/warn behavior as `_grid_term` (non-self-consistent
+        records carry no per-record loss; missing rho refs warn), with the
+        per-electron^2 normalization of ``_grid_term(per_electron=True)``
+        and the per-record factors fixed at construction.
+        """
+        terms = []
+        n_skipped = 0
+        n_total = 0
+        for i, factor in self.rho_records:
+            if mol_data[i].get(ONESHOT_AT_REFERENCE_KEY, False):
+                # a non-self-consistent entry carries no per-molecule loss
+                continue
+            n_total += 1
+            rho_ref = mol_data[i]["rho_ref_grid"]
+            if rho_ref is None:
+                n_skipped += 1
+                continue
+            rho_nn = grid_density_for_loss(
+                model, mol_data[i], self.solver_config)
+            w = mol_data[i]["grid_weights"]
+            err = jnp.sum(w * (rho_nn - rho_ref) ** 2)
+            if self.density_per_electron:
+                n_e = jnp.sum(w * rho_ref)
+                err = err / (n_e ** 2 + 1e-8)
+            terms.append(factor * err)
+        if n_skipped:
+            warnings.warn(
+                f"L6LetterParity._rho_channel: {n_skipped} of {n_total} "
+                f"record(s) had rho_ref_grid=None and were skipped; the "
+                f"rho channel may be zero.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
+
+    def _iter_idx_for_aux_channels(self) -> tuple:
+        """Indices used by the V_xc channel (compounds + aux fixtures)."""
+        N = len(self.mol_names)
+        if not self.molecules_only:
+            return tuple(range(N))
+        aux_set = set(self.aux_only_names)
+        aux_idx = tuple(
+            i for i, n in enumerate(self.mol_names)
+            if n in aux_set
+        )
+        return tuple(sorted(set(self.compound_idx) | set(aux_idx)))
+
+    def compute_components(self, model, batch, relative=False):
+        """Return the 6 Letter-parity channels as a dict.
+
+        Keys: loss_AE, loss_BH76, loss_IP13, loss_vxc, loss_rho,
+        loss_Eatom. All residuals are absolute Ha^2 (the executed Letter
+        objective); ``relative`` is accepted for the AlecLoss interface and
+        deliberately not forwarded.
+        """
+        if not self.mol_names:
+            raise RuntimeError(
+                "L6LetterParity was constructed in smoke-test mode; "
+                "compute_components requires a real `molecules` set."
+            )
+        atom_idx = dict(self.atom_mol_idx)
+        # Restrict the anchor residual to the configured atom set when
+        # regularize_atom_syms is given (None anchors every atom).
+        if self.regularize_atom_syms is not None:
+            allowed = set(self.regularize_atom_syms)
+            atom_idx = {sym: i for sym, i in atom_idx.items() if sym in allowed}
+        mol_data = batch["mol_data"]
+        targets = batch["targets"]
+        atom_energies = batch["atom_energies"]
+        N = len(self.mol_names)
+        # DFS tail loss (the v9 solver enables it): score a quadratic-
+        # weighted window of the SCF-energy TAIL so the energy channels
+        # penalize a non-converging SCF. step_w2 is None when disabled ->
+        # the scalar (N,) path.
+        step_w = scf_loss_tail_weights(self.solver_config)
+        if step_w is not None:
+            E_nn = _compute_energy_trajectories(
+                model, mol_data, N, solver_config=self.solver_config
+            )
+            step_w2 = step_w ** 2
+        else:
+            E_nn = _compute_energies(
+                model, mol_data, N, solver_config=self.solver_config
+            )
+            step_w2 = None
+
+        loss_ae = self._ae_channel(E_nn, targets, step_w2=step_w2)
+        # RAW anchor residual: lambda_E lives in channel_weights only.
+        loss_eatom = _atomic_reg_abs(
+            E_nn, atom_idx, atom_energies, step_w2=step_w2)
+        loss_bh76 = self._bh76_channel(E_nn, step_w2=step_w2)
+        loss_ip13 = self._ip13_channel(E_nn, step_w2=step_w2)
+        loss_vxc = self.vxc_weight * _vxc_term(
+            model, mol_data, self._iter_idx_for_aux_channels(),
+        )
+        loss_rho = self.density_weight * self._rho_channel(model, mol_data)
+
+        return {
+            "loss_AE": loss_ae,
+            "loss_BH76": loss_bh76,
+            "loss_IP13": loss_ip13,
+            "loss_vxc": loss_vxc,
+            "loss_rho": loss_rho,
+            "loss_Eatom": loss_eatom,
+        }
 
     def __call__(self, model, batch):
         components = self.compute_components(model, batch)

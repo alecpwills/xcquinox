@@ -20,7 +20,8 @@ import traceback
 
 def compute_shard(run_dir, spec_idx, names, basis, grid_level,
                   model_name="model.eqx",
-                  channel=None, pools=("bh76", "w411")):
+                  channel=None, pools=("bh76", "w411"),
+                  dump_densities=None):
     """Evaluate ``names`` (a held-out molecule subset) for spec ``spec_idx`` of
     ``run_dir``. Returns ``{energies, pbe_energies, mol_records}``. ``pools``
     names the held-out pools whose union the shard's species are drawn from.
@@ -33,7 +34,11 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
     so a best-checkpoint pass shards the BEST weights, not the final ones.
     ``channel`` (``"coldstart"`` / ``"converged"`` / None) applies the named
     solver override from ``eval_holdout.CHANNEL_OVERRIDES`` to the reloaded
-    spec, the same helper the orchestrator applied before dispatch."""
+    spec, the same helper the orchestrator applied before dispatch.
+    ``dump_densities`` (a directory, the slim16 density saving) is threaded to
+    ``compute_holdout_per_molecule``: each molecule's converged NN + PBE grid
+    densities land in ``<dump_densities>/<name>.npz`` IN THIS PROCESS; the
+    arrays never enter the JSON payload the parent merges."""
     from pathlib import Path
 
     from xcquinox.pipeline.cluster._eval_one_spec import (
@@ -77,7 +82,8 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
             "driver disagree about the pool")
     subset = {n: full_specs[n] for n in names}
 
-    per = compute_holdout_per_molecule(training_spec, model, subset)
+    per = compute_holdout_per_molecule(training_spec, model, subset,
+                                       dump_densities=dump_densities)
     return {
         "energies": per["energies"],
         "pbe_energies": per["pbe_energies"],
@@ -113,6 +119,11 @@ def main(args=None):
                         help="comma-separated held-out pools whose union the "
                              "shard's species come from (default: the "
                              "benchmark pair)")
+    parser.add_argument("--dump-densities", default=None, metavar="DIR",
+                        help="write each molecule's converged NN + PBE grid "
+                             "densities to <DIR>/<name>.npz in-process (the "
+                             "slim16 density saving); the JSON payload stays "
+                             "scalar-only")
     parsed = parser.parse_args(args)
     channel = parsed.channel or ("coldstart" if parsed.coldstart else None)
     pools = tuple(p.strip() for p in parsed.pools.split(",") if p.strip())
@@ -171,7 +182,8 @@ def main(args=None):
         shard = compute_shard(parsed.run_dir, parsed.spec_idx, names,
                               parsed.basis, parsed.grid_level,
                               model_name=parsed.model_name,
-                              channel=channel, pools=pools)
+                              channel=channel, pools=pools,
+                              dump_densities=parsed.dump_densities)
         with open(parsed.out_shard, "w") as f:
             json.dump(shard, f)
 

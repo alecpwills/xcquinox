@@ -273,7 +273,7 @@ def test_density_errors_for_record_pbe_closed_form(monkeypatch):
     import xcquinox.pipeline.evaluation as ev_mod
 
     class FakeMetric:
-        def compute(self, model, md, solver_config=None):
+        def compute(self, model, md, solver_config=None, keep_rho=False):
             return {"density_rmse": 0.123, "density_l1": 0.045,
                     "density_eps_l1": 0.011,
                     "ref_density_method": "ccsd"}
@@ -327,7 +327,7 @@ def test_the_record_keeps_its_quadrature_bookkeeping_without_a_pbe_baseline(
         density (``evaluation.density_eps_terms``) and does not read the PBE
         baseline at all."""
 
-        def compute(self, model, md, solver_config=None):
+        def compute(self, model, md, solver_config=None, keep_rho=False):
             return {"density_rmse": 0.123, "density_l1": 0.045,
                     "density_eps_l1": 0.011, "n_electrons": 7.0,
                     "grid_weight_sum": 4.0, "ref_density_method": "ccsd"}

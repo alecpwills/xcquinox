@@ -271,6 +271,21 @@ class SCFCycleState(NamedTuple):
     cycles_run: jnp.ndarray
 
 
+def _fock_noise(config, cycle, shape, channel: int = 0):
+    """The executed xc-diff protocol's degeneracy noise (Dick & Fernandez-Serra
+    2021): a symmetrized half-normal perturbation of the ASSEMBLED Fock,
+    |N(0,1)| * fock_noise_std with noise + noise.T, drawn per cycle from
+    PRNGKey(fock_noise_seed) folded with the cycle counter (and the spin
+    channel under UKS), applied between Fock assembly and the Roothaan
+    diagonalization on the differentiable path only -- the forward-only
+    readout stays exact. Byte-identical SCF at std 0 (never called then)."""
+    key = jax.random.fold_in(
+        jax.random.PRNGKey(config.fock_noise_seed), cycle)
+    key = jax.random.fold_in(key, channel)
+    n = config.fock_noise_std * jnp.abs(jax.random.normal(key, shape))
+    return n + n.T
+
+
 def _iterate_scf(config: SolverConfig, body, init_state, forward_only: bool):
     """Drive the per-cycle SCF ``body`` for ``config.max_cycles`` cycles.
 
@@ -425,6 +440,8 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
             D_cur, rho_cur, sigma_cur, features, nabla_rho_cur)
         J_cycle = _j_for_cycle(D_cur)
         F = h_core + J_cycle + vxc_nn
+        if config.fock_noise_std > 0 and not forward_only:
+            F = F + _fock_noise(config, state.cycles_run, F.shape)
         D_new = _diagonalize_roothaan(F, S, nocc)
         new_mixer_state, D_mixed = mixer.step(state.mixer_state, D_cur, D_new)
         # Compute E_new as a consistent functional of D_mixed: recompute
@@ -784,6 +801,11 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         j_total = _j_total_for_cycle(D_cur)
         fock_a = h_core + j_total + vxc_nn_a
         fock_b = h_core + j_total + vxc_nn_b
+        if config.fock_noise_std > 0 and not forward_only:
+            fock_a = fock_a + _fock_noise(config, state.cycles_run,
+                                          fock_a.shape, channel=0)
+            fock_b = fock_b + _fock_noise(config, state.cycles_run,
+                                          fock_b.shape, channel=1)
         dm_new_a = _diagonalize_roothaan_unrestricted(fock_a, S, nocc_a)
         dm_new_b = _diagonalize_roothaan_unrestricted(fock_b, S, nocc_b)
         D_new = jnp.stack([dm_new_a, dm_new_b], axis=0)

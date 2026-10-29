@@ -77,8 +77,11 @@ def test_the_pool_records_the_published_self_consistency_split():
 
     Oracle: the published reference trajectory, whose nine AE entries NO2, NH,
     O3, N2O, CH3, CH2, H2O, NH3 and O2 and whose every reaction species carry
-    ``sc=False``, while the remaining AE molecules, the atom references and the
-    IP entries carry no flag and are therefore self-consistent. O2 is not one
+    ``sc=False``, while the remaining AE molecules and the atom references
+    carry no flag and are therefore self-consistent; the IP entries are staged
+    non-self-consistent with the reactions (one pass at the parent density),
+    which departs from the trajectory's flag-less default and is recorded at
+    ``DFS_IP13_PAIRS``. O2 is not one
     of this pool's entries, so the stamping is compared over the constant's
     members the pool holds. The flag is a Python bool, so identity comparison
     is used throughout.
@@ -86,12 +89,15 @@ def test_the_pool_records_the_published_self_consistency_split():
     Asserted: ``DFS_NONSC_AE_HILLS`` equals that list of Hill formulas;
     ``build_dfs_pool`` stamps ``info['sc']`` on every AE Atoms (False on
     exactly the eight the pool holds), ``'sc': False`` on every reaction dict,
-    ``'sc': True`` on every IP dict and ``info['sc'] True`` on every atom
-    reference; ``build_dfs_pool_points`` records ``metadata['sc']`` on every
-    point (the compound's flag for an AE point, False for a reaction, True for
-    an IP pair) and stamps ``info['sc']`` on every species Atoms, the reactants
-    and products of a reaction carrying False and an AE point's atom anchors
-    carrying True, in the reaction form of the AE points as well.
+    ``'sc': False`` on every IP dict (the IP entries are staged
+    non-self-consistent: one pass at the parent density, energy channels at
+    ``nonsc_weight``) and ``info['sc'] True`` on every atom reference;
+    ``build_dfs_pool_points`` records ``metadata['sc']`` on every point (the
+    compound's flag for an AE point, False for a reaction, False for an IP
+    pair) and stamps ``info['sc']`` on every species Atoms, the reactants and
+    products of a reaction carrying False, an IP pair's neutral and cation
+    carrying False, and an AE point's atom anchors carrying True, in the
+    reaction form of the AE points as well.
     """
     from xcquinox.pipeline.dfs_pool import DFS_NONSC_AE_HILLS, build_dfs_pool
     from xcquinox.pipeline.training_points import build_dfs_pool_points
@@ -110,7 +116,7 @@ def test_the_pool_records_the_published_self_consistency_split():
     for rxn in pool["bh76_reactions"]:
         assert rxn["sc"] is False, rxn["name"]
     for pair in pool["ip13_pairs"]:
-        assert pair["sc"] is True, pair["name"]
+        assert pair["sc"] is False, pair["name"]
     for atom in pool["atom_refs"]:
         assert atom.info["sc"] is True, atom.info["name"]
 
@@ -138,9 +144,9 @@ def test_the_pool_records_the_published_self_consistency_split():
         for s in (s for s in p.species if s.info["name"] in reacting):
             assert s.info["sc"] is False, (p.name, s.info["name"])
     for p in (q for q in points if q.kind == "ip13"):
-        assert p.metadata["sc"] is True, p.name
+        assert p.metadata["sc"] is False, p.name
         for s in p.species:
-            assert s.info["sc"] is True, (p.name, s.info["name"])
+            assert s.info["sc"] is False, (p.name, s.info["name"])
 
     # The reaction-form AE points (ae_as_reactions) carry the compound's flag
     # as the fixed-anchor form does: a run in that mode keeps the split. The
