@@ -378,8 +378,9 @@ def _manifest_val_mol_spec(sp, *, basis, grid_level, val_refs_dir):
     ``unit_atom`` -- the neutral ground-state single atom of ``symbol``,
                     the same builder the training anchors use.
     ``bh76_pool`` -- a named held-out-pool species (the barrier rows),
-                    loaded through the pool seam and re-issued under the
-                    manifest's qualified name.
+                    loaded through the pool seam (which keys species by
+                    their qualified pool@system name) and re-issued under
+                    the manifest's qualified name.
 
     The manifest's charge/spin are authoritative (stamped over whatever the
     source geometry carries), and ``external_data_path`` resolves to
@@ -404,7 +405,11 @@ def _manifest_val_mol_spec(sp, *, basis, grid_level, val_refs_dir):
         pool = str(geom.get("pool", "bh76"))
         pool_mols, _ = _load_full_held_out_pools(
             (pool,), basis=basis, grid_level=grid_level)
-        key = str(geom["species"])
+        # the seam keys every species as its qualified pool@system name;
+        # the manifest carries the bare system name
+        from xcquinox.pipeline.full_benchmark_pools import (
+            qualified_species_name)
+        key = qualified_species_name(pool, str(geom["species"]))
         if key not in pool_mols:
             raise ValueError(
                 f"validation-manifest species {name!r} names {pool!r}-pool "
