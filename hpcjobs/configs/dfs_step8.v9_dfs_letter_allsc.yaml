@@ -133,13 +133,14 @@ pretrain:
   validation_seed: 0
   validate_every: 50
   patience: 0
-  # every architecture warm-starts from arm S's PRETRAIN-stage output, so
-  # both v9 arms share parentage and differ in protocol alone
+  # every architecture warm-starts from arm S's PRETRAIN-stage output
+  # (run_20260924T143620Z, the arm-S training run's own pretrain products),
+  # so both v9 arms share parentage and differ in protocol alone
   donor_checkpoints:
-    deep_3x16: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/pretrain/deep_3x16
-    deep_attn_3x16: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/pretrain/deep_attn_3x16
-    deep_geom_3x16: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/pretrain/deep_geom_3x16
-    deep_geom_attn_3x16: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/pretrain/deep_geom_attn_3x16
+    deep_3x16: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z/pretrain/deep_3x16
+    deep_attn_3x16: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z/pretrain/deep_attn_3x16
+    deep_geom_3x16: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z/pretrain/deep_geom_3x16
+    deep_geom_attn_3x16: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z/pretrain/deep_geom_attn_3x16
 
 cluster:
   partition: ""
