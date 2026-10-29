@@ -115,6 +115,44 @@ def converged_solver_config(sc):
         scf_loss_use_tail=False)
 
 
+def readout_solver_config(sc, *, density_fit, auxbasis,
+                          orientation_lock_strength):
+    """The inline readout's Coulomb-footing override of a trained solver
+    config: density fitting, its auxbasis and the orientation-lock strength,
+    and NOTHING else (the converged protocol rides on top through
+    :func:`converged_solver_config`, whose replace set is disjoint from this
+    triple, so each cell is read out on the readout's own footing -- e.g.
+    slim16 at def2-TZVP/DF even when training ran def2-SVP -- while every
+    other trained knob is preserved). One shared helper for the orchestrator
+    and the shard workers (``--solver-footing``), like the channel overrides;
+    applied before the channel override so the composed end state stays the
+    footing triple + the converged protocol whichever side grows a field."""
+    import dataclasses
+
+    return dataclasses.replace(
+        sc, density_fit=bool(density_fit), auxbasis=auxbasis,
+        orientation_lock_strength=float(orientation_lock_strength))
+
+
+#: The DFS Letter's Eq. 21 regression constant (kcal/mol): the zero-intercept
+#: fit over the six non-empirical density functionals of its Table I, fixed
+#: by the published (WTMAD-2, eps, ED) triples -- PBE (10.5, 0.0100) -> 10.7,
+#: SCAN (8.0, 0.0062) -> 7.3, xc-diff (7.3, 0.0052) -> 6.4, each reproduced
+#: to one decimal by this constant.
+DFS_LETTER_GAMMA = 1084.87
+
+
+def dfs_letter_ed(wtmad2, eps):
+    """The Letter's Eq. 21 combined energy-density score: the harmonic mean
+    of WTMAD-2 (kcal/mol) and gamma * eps, so a model must be good at BOTH
+    energies and densities to score well. NaN for a non-finite or non-positive
+    input (an empty readout has no score, not a zero one)."""
+    if not (math.isfinite(wtmad2) and wtmad2 > 0
+            and math.isfinite(eps) and eps > 0):
+        return float("nan")
+    return float(2.0 / (1.0 / wtmad2 + 1.0 / (DFS_LETTER_GAMMA * eps)))
+
+
 # One table from an override name (``holdout_channels.CHANNEL_OVERRIDE``) to
 # its solver override, shared by the orchestrator, the shard workers and the
 # retroactive tool.
@@ -579,6 +617,118 @@ def dump_density_arrays(out_dir, name, md: Dict[str, Any], rho_nn) -> str:
         ref_density_method=md.get("ref_density_method"),
     )
     return path
+
+
+def write_readout_metrics(out_dir, pool_reactions, *, pool, footing,
+                          channel, model) -> Optional[dict]:
+    """Recompute the readout's paper tables from the written channel
+    artifacts and stamp them beside the channel's own outputs.
+
+    Reads back ``<out_dir>/per_reaction.json`` + ``<out_dir>/per_molecule.json``
+    (the serial/parallel driver's tables; an absent or empty artifact yields
+    no score, not a zero one), joins each reaction's ``subset`` BY NAME from
+    ``pool_reactions`` (the per-reaction records carry no subset of their
+    own), and writes ``<out_dir>/readout_metrics.json`` with the paper
+    WTMAD-2 (NN and its de_pbe twin), the finite-only eps means, the Eq. 21
+    ED pair and the readout's own identity (footing/channel/model, so a
+    number can never be read without the footing that produced it). Also
+    appends ``test_set_<pool>_wtmad2_paper(_pbe)`` rows to
+    ``<out_dir>/test_set.csv`` in the existing schema so the readout's
+    headline rides with the channel's MAE rows. Returns the metrics dict."""
+    out_dir = Path(out_dir)
+
+    def _read_json(name):
+        p = out_dir / name
+        if not p.is_file():
+            return []
+        with open(p) as f:
+            return json.load(f)
+
+    rxn_records = _read_json("per_reaction.json")
+    mol_records = _read_json("per_molecule.json")
+    subset_by_name = {str(r["name"]): str(r["subset"])
+                      for r in pool_reactions
+                      if r.get("name") is not None
+                      and r.get("subset") is not None}
+
+    def _wtmad2_rows(nn_key):
+        rows = []
+        for rec in rxn_records:
+            subset = subset_by_name.get(str(rec.get("name")))
+            if subset is None:
+                continue
+            rows.append({"subset": subset,
+                         "de_nn": rec.get(nn_key),
+                         "de_ref": rec.get("reaction_energy_ref_kcalmol")})
+        return rows
+
+    wtmad2, per_subset = paper_wtmad2(_wtmad2_rows("de_nn_kcalmol"))
+    wtmad2_pbe, _ = paper_wtmad2(_wtmad2_rows("de_pbe_kcalmol"))
+    n_reactions = int(sum(t["N_i"] for t in per_subset.values()))
+
+    def _eps_mean(key):
+        vals = [r[key] for r in mol_records
+                if isinstance(r.get(key), (int, float))
+                and math.isfinite(r[key])]
+        return (float(sum(vals) / len(vals)) if vals else float("nan"))
+
+    eps_mean = _eps_mean("density_eps_l1")
+    eps_mean_pbe = _eps_mean("density_eps_l1_pbe")
+    metrics = {
+        "pool": pool,
+        "basis": footing.get("basis"),
+        "grid_level": footing.get("grid_level"),
+        "orientation_lock": footing.get("orientation_lock"),
+        "density_fit": footing.get("density_fit"),
+        "auxbasis": footing.get("auxbasis"),
+        "refs_dir": footing.get("refs_dir"),
+        "channel": channel,
+        "model": model,
+        "wtmad2_paper": wtmad2,
+        "wtmad2_paper_pbe": wtmad2_pbe,
+        "wtmad2_per_subset": per_subset,
+        "eps_l1_mean": eps_mean,
+        "eps_l1_mean_pbe": eps_mean_pbe,
+        "gamma": DFS_LETTER_GAMMA,
+        "ed": dfs_letter_ed(wtmad2, eps_mean),
+        "ed_pbe": dfs_letter_ed(wtmad2_pbe, eps_mean_pbe),
+        "n_species": len(mol_records),
+        "n_species_with_refs": sum(
+            1 for r in mol_records if r.get("ref_density_method")),
+        "n_reactions": n_reactions,
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "readout_metrics.json", "w") as f:
+        json.dump(metrics, f, indent=2, sort_keys=True)
+
+    csv_path = out_dir / "test_set.csv"
+    if csv_path.is_file() and math.isfinite(wtmad2):
+        # the schema write_test_set_csv pins; appended so the readout's
+        # headline rides with the channel's own MAE rows in one file
+        fieldnames = ["set", "mae_nn_kcalmol", "mae_pbe_kcalmol",
+                      "delta_nn_minus_pbe", "n_reactions",
+                      "n_dropped_overlap", "n_dropped_nan", "note"]
+        with csv_path.open("a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            for set_name, nn_v, pbe_v in (
+                    (f"{pool}_wtmad2_paper", wtmad2,
+                     wtmad2_pbe if math.isfinite(wtmad2_pbe) else float("nan")),
+                    (f"{pool}_wtmad2_paper_pbe",
+                     wtmad2_pbe, float("nan"))):
+                w.writerow({
+                    "set": set_name,
+                    "mae_nn_kcalmol": f"{nn_v:.6f}"
+                                      if math.isfinite(nn_v) else "",
+                    "mae_pbe_kcalmol": f"{pbe_v:.6f}"
+                                       if math.isfinite(pbe_v) else "",
+                    "delta_nn_minus_pbe": "",
+                    "n_reactions": n_reactions,
+                    "n_dropped_overlap": 0,
+                    "n_dropped_nan": 0,
+                    "note": ("paper WTMAD-2 of the inline readout; "
+                             "eps/ED in readout_metrics.json"),
+                })
+    return metrics
 
 
 def make_per_molecule_record(

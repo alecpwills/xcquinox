@@ -150,7 +150,7 @@ pretrain:
 
 cluster:
   partition: ""
-  time: "96:00:00"
+  time: "168:00:00"
   cpus_per_task: 24
   array_throttle: 4
   eval_array_throttle: 4
@@ -180,7 +180,23 @@ bh76_mode: barrier_height
 ae_as_reactions: true
 use_polarized_correlation: true
 inline_eval: true
-eval_coldstart: true
+# Inline readout (2026-10-29): eval_pool REPLACES the inline eval's channel
+# set -- slim16 at its canonical footing (def2-TZVP, grid 4, DF on its jkfit
+# mesh, unlocked) under the converged channel only, final + val-best
+# checkpoints, densities dumped per channel. eval_coldstart/eval_converged
+# are inert in readout mode. The refs dir is built by
+# hpcjobs/slim16_refs.sbatch; the readout's guard refuses any pass whose
+# species lack a complete, footing-matching npz there.
+eval_pool: slim16
+eval_basis: def2-TZVP
+eval_grid_level: 4
+eval_orientation_lock: 0.0
+eval_density_fit: true
+eval_auxbasis: def2-tzvp-jkfit
+eval_refs_dir: /gpfs/scratch/awills/external_refs_slim16_tzvp_g4
+eval_dump_densities: true
+eval_coldstart: false
+eval_converged: true
 defer_eval: false
 
 model:

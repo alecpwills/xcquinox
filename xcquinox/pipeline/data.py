@@ -80,6 +80,10 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     # DF reference is never silently reused by a non-DF run or vice versa);
     # informational in this loader.
     "density_fit_used",
+    # The auxbasis of that density fitting (the jkfit mesh the CCSD density
+    # resolved on). Identity guard consumed by the same checker exactly as
+    # density_fit_used is; informational in this loader.
+    "auxbasis_used",
 })
 
 

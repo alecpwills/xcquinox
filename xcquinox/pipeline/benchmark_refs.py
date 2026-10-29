@@ -73,7 +73,7 @@ POOL_CHOICES: Tuple[str, ...] = ("bh76", "w411", "all")
 _DENSITY_NPZ_KEYS: frozenset = frozenset(
     {"rho_ref_grid", "rho_pbe_grid", "grid_weights",
      "ref_density_method", "grid_level_used", "basis_used",
-     "orientation_lock_strength", "density_fit_used"})
+     "orientation_lock_strength", "density_fit_used", "auxbasis_used"})
 
 #: Every key a final reference npz may carry: the density block above plus
 #: the two optional stamps (the CCSD-convergence provenance and the T1
@@ -141,17 +141,22 @@ def _atomic_savez(path, **arrays) -> None:
 
 def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int,
                                orientation_lock_strength: float = 0.0,
-                               density_fit: bool = False) -> bool:
+                               density_fit: bool = False,
+                               auxbasis: Optional[str] = None) -> bool:
     """True iff ``path`` is a readable density-only reference matching this
-    run's basis + grid_level + orientation-lock strength + DF setting.
-    Deliberately NOT ``external_refs._npz_is_complete`` (that demands the OEP
-    keys vxc_ref/dm_target). A corrupt or partial file reads as incomplete ->
-    regenerated. A legacy file with no stored strength is treated as
-    strength 0.0, so an unlocked cache matches only an unlocked request and
-    turning the lock on (or changing its strength) forces regeneration. A
-    legacy file with no ``density_fit_used`` stamp matches either DF setting
-    (the stamp post-dates the existing caches); once stamped, a DF reference
-    is never silently reused by a non-DF run or vice versa."""
+    run's basis + grid_level + orientation-lock strength + DF setting (+
+    auxbasis under DF). Deliberately NOT ``external_refs._npz_is_complete``
+    (that demands the OEP keys vxc_ref/dm_target). A corrupt or partial file
+    reads as incomplete -> regenerated. A legacy file with no stored
+    strength is treated as strength 0.0, so an unlocked cache matches only
+    an unlocked request and turning the lock on (or changing its strength)
+    forces regeneration. A legacy file with no ``density_fit_used`` stamp
+    matches either DF setting (the stamp post-dates the existing caches);
+    once stamped, a DF reference is never silently reused by a non-DF run
+    or vice versa. ``auxbasis_used`` follows the same rule: absent from
+    legacy files, compared when present, so a def2-tzvp-jkfit reference is
+    never silently reused by a readout running another jkfit mesh (the DF
+    density resolves on the auxbasis's Coulomb mesh)."""
     p = Path(path)
     if not p.is_file():
         return False
@@ -173,6 +178,9 @@ def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int,
                 return False
             if ("density_fit_used" in files
                     and bool(z["density_fit_used"]) != bool(density_fit)):
+                return False
+            if ("auxbasis_used" in files
+                    and str(z["auxbasis_used"]) != str(auxbasis or "")):
                 return False
     except Exception:
         return False
@@ -309,7 +317,8 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
                         spin=int(ms.spin), source="benchmark")
     if _benchmark_npz_is_complete(final, basis=basis, grid_level=grid_level,
                                   orientation_lock_strength=orientation_lock_strength,
-                                  density_fit=density_fit):
+                                  density_fit=density_fit,
+                                  auxbasis=auxbasis):
         if not t1_backfill:
             return "SKIP"
         with np.load(final, allow_pickle=False) as z:
@@ -370,6 +379,9 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
         basis_used=np.array(str(basis)),
         orientation_lock_strength=np.array(float(orientation_lock_strength)),
         density_fit_used=np.array(bool(density_fit)),
+        # the jkfit mesh the DF density resolved on; compared by
+        # _benchmark_npz_is_complete when present (legacy files match any)
+        auxbasis_used=np.array(str(auxbasis or "")),
         # Optional provenance stamp (True by construction: an unconverged
         # CCSD refuses in external_refs._require_ccsd_converged). NOT in
         # _DENSITY_NPZ_KEYS: files written before the check stay valid.

@@ -1900,6 +1900,52 @@ def test_a_zero_weight_drops_the_non_sc_group(training_batch_info,
         assert not any(m["has_mark"] for m in rec["molecules"])
 
 
+def test_a_group_slices_radical_species_to_its_own_members():
+    """Under per-molecule updates every group's sub-loss is built from the
+    run-level loss kwargs, so run-level radical_species naming radicals that
+    sit outside a group used to refuse that group's build outright (the v9
+    parity preflight: ['CH', 'HO'] refused in the loss's own pool check).
+    The builder slices the tuple to the species the group actually carries
+    -- the aux_only_names idiom -- so an empty scope stays empty, while a
+    name absent from the whole pool is still refused at the loss level and
+    the run-level typo guard keeps its teeth."""
+    from types import SimpleNamespace
+
+    from xcquinox.pipeline.losses import make_loss
+    from xcquinox.pipeline.train import _build_group_loss_and_batch
+
+    ch = MoleculeSpec(name="CH", atom="C 0 0 0; H 0 0 1.1",
+                      atom_composition=(("C", 1), ("H", 1)))
+    ho = MoleculeSpec(name="HO", atom="O 0 0 0; H 0 0 0.97",
+                      atom_composition=(("O", 1), ("H", 1)))
+    pool = (h2o_molecule(), h_atom(), o_atom(), ch, ho)
+    spec = SimpleNamespace(
+        molecules=pool, loss_name="L6_letter_parity",
+        loss_kwargs_dict={"radical_species": ("CH", "HO")},
+        solver_config=None, respect_sc_flag=False, nonsc_weight=1.0)
+    batch = {"mol_data": tuple({"name": m.name} for m in pool),
+             "targets": {}, "atom_energies": {}}
+
+    # the reaction group carries CH but not HO
+    group = {"label": "bh76:r1", "sc": True,
+             "species": (h2o_molecule(), h_atom(), o_atom(), ch),
+             "bh76": [], "ip13": []}
+    loss, _ = _build_group_loss_and_batch(spec, group, batch)
+    assert loss.radical_species == ("CH",)
+
+    # a group carrying neither radical slices to the empty tuple
+    atoms_only = {"label": "bh76:r1", "sc": True,
+                  "species": (h2o_molecule(), h_atom(), o_atom()),
+                  "bh76": [], "ip13": []}
+    loss_none, _ = _build_group_loss_and_batch(spec, atoms_only, batch)
+    assert loss_none.radical_species == ()
+
+    # a name in no group is still refused by the loss's own validation
+    with pytest.raises(ValueError, match="radical_species"):
+        make_loss("L6_letter_parity", molecules=pool,
+                  radical_species=("CH", "XXNOPE"))
+
+
 def test_a_marked_group_scopes_its_regularizer_and_keeps_its_weight(
         training_batch_info):
     """The group builder marks only the species the spec lists for a

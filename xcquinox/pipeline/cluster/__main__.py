@@ -204,6 +204,20 @@ def _config_to_raw_dict(cfg) -> dict:
         "eval_coldstart": cfg.eval_coldstart,
         # eval_converged MUST round-trip for the same reason.
         "eval_converged": cfg.eval_converged,
+        # The eval_pool readout block MUST round-trip for the same reason and
+        # worse: this hand enumeration is the ONLY bridge between the source
+        # yaml's readout and the cluster's, so a knob dropped here means the
+        # readout silently never fires (or fires at the training footing for
+        # every knob that inherits) while the source yaml states it. Found
+        # as a class of defect against ae_as_reactions (2026-08-10).
+        "eval_pool": cfg.eval_pool,
+        "eval_basis": cfg.eval_basis,
+        "eval_grid_level": cfg.eval_grid_level,
+        "eval_orientation_lock": cfg.eval_orientation_lock,
+        "eval_density_fit": cfg.eval_density_fit,
+        "eval_auxbasis": cfg.eval_auxbasis,
+        "eval_refs_dir": cfg.eval_refs_dir,
+        "eval_dump_densities": cfg.eval_dump_densities,
     }
     return raw
 

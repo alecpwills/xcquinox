@@ -405,3 +405,175 @@ def _mk_run(tmp_path, n=3, width=4):
     return run, dirs
 
 
+
+
+# ---------------------------------------------------------------------------
+# C3b: the configurable readout mode (eval_pool) -- the two-pass replace and
+# the reference-file guard
+# ---------------------------------------------------------------------------
+
+def _readout_cfg(refs_dir, dump=True):
+    """A readout cfg carrying ONLY the knobs: no inputs block at all, so
+    every read in the readout path resolves through getattr-with-default
+    (the slim16_eval.py SimpleNamespace cfg keeps working)."""
+    return SimpleNamespace(
+        eval_pool="slim16",
+        eval_basis="def2-TZVP",
+        eval_grid_level=4,
+        eval_orientation_lock=0.0,
+        eval_density_fit=True,
+        eval_auxbasis="def2-tzvp-jkfit",
+        eval_refs_dir=refs_dir,
+        eval_dump_densities=dump,
+        domain_profile="dfs_step7",
+        eval_coldstart=True,
+        eval_converged=True,
+        cluster=SimpleNamespace(eval_workers=1),
+    )
+
+
+def _capture_readout_passes(monkeypatch, calls):
+    monkeypatch.setattr(
+        ev, "_run_held_out_eval",
+        lambda rd, idx, cfg, ck, mp, ts, holdout_subdir="eval_holdout",
+        channel=None, dump_densities=None:
+            calls.append({
+                "model": os.path.basename(mp), "subdir": holdout_subdir,
+                "channel": channel, "spec": ts, "dump": dump_densities,
+                "refs_env": os.environ.get("XCQUINOX_BENCH_REFS_DIR")}))
+
+
+def test_main_readout_mode_runs_two_converged_passes_and_skips_the_rest(
+        tmp_path, monkeypatch):
+    """With eval_pool set the inline eval is REPLACED: no warm and no
+    cold-start pass runs (eval_coldstart and eval_converged are inert in
+    readout mode), exactly the final and the validation-best checkpoints are
+    evaluated under the converged channel, each at the readout footing
+    composed with the converged protocol, each with its own densities
+    directory, and XCQUINOX_BENCH_REFS_DIR points at the readout references
+    for the duration of the branch and is restored afterwards."""
+    from xcquinox.pipeline.cluster import grid_config as gc
+
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    refs = str(tmp_path / "refs")
+    os.makedirs(refs)
+    monkeypatch.setattr(gc, "load_grid_config",
+                        lambda path: _readout_cfg(refs))
+    _write_manifest(run_dir)
+    _write_spec(run_dir, 0, obj=_full_mode_spec())
+    ckpt_dir = _write_model(run_dir, 0)
+    open(os.path.join(ckpt_dir, "model_val_best.eqx"), "wb").close()
+    _stub_insample(monkeypatch, os.path.join(ckpt_dir, "eval"))
+
+    calls = []
+    _capture_readout_passes(monkeypatch, calls)
+    prior = os.environ.get("XCQUINOX_BENCH_REFS_DIR")
+    assert ev.main([run_dir, "0"]) == 0
+
+    assert [(c["model"], c["subdir"], c["dump"]) for c in calls] == [
+        ("model.eqx", "eval_holdout_converged",
+         os.path.join(ckpt_dir, "eval_holdout_converged", "densities")),
+        ("model_val_best.eqx", "eval_holdout_converged_val_best",
+         os.path.join(ckpt_dir, "eval_holdout_converged_val_best",
+                      "densities"))]
+    assert [c["channel"] for c in calls] == ["converged", "converged"]
+    for c in calls:
+        sc = c["spec"].solver_config
+        # the converged protocol
+        assert sc.backend == SolverBackend.PYSCFAD
+        assert sc.mode == SolverMode.FULL
+        assert sc.seed_source == "pbe"
+        assert sc.max_cycles == 100
+        assert sc.conv_tol == 1e-8
+        assert sc.scf_loss_use_tail is False
+        # the readout footing: the training spec carries DF off and no
+        # auxbasis, so both moves are observable
+        assert sc.density_fit is True
+        assert sc.auxbasis == "def2-tzvp-jkfit"
+        assert sc.orientation_lock_strength == 0.0
+        assert c["refs_env"] == refs
+    assert os.environ.get("XCQUINOX_BENCH_REFS_DIR") == prior
+
+
+def _write_ref_npz(path, *, basis, auxbasis=None):
+    """A synthetic benchmark reference npz stamped for
+    benchmark_refs._benchmark_npz_is_complete; auxbasis writes the
+    auxbasis_used stamp, None leaves the legacy unstamped shape."""
+    import numpy as np
+
+    os.makedirs(os.path.dirname(str(path)), exist_ok=True)
+    arrays = dict(
+        rho_ref_grid=np.zeros((3, 3)), ref_density_method="ccsd",
+        basis_used=str(basis), grid_level_used=4,
+        orientation_lock_strength=0.0, density_fit_used=True)
+    if auxbasis is not None:
+        arrays["auxbasis_used"] = str(auxbasis)
+    np.savez(str(path), **arrays)
+
+
+def test_readout_refs_guard_refuses_incomplete_or_mismatched_refs(
+        tmp_path, monkeypatch):
+    """With eval_refs_dir configured, every pool species needs a complete
+    reference npz at the readout stamps: a missing file, a wrong basis stamp
+    or a wrong auxbasis stamp stops the channel before any energy is
+    computed (a RuntimeError in the channel's failure.json naming the count
+    and the species), and a fully stamped directory lets the same call
+    through. The eval-time loader checks only file existence, so this guard
+    is the only completeness check on the read side."""
+    import xcquinox.pipeline.full_benchmark_pools as fbp
+
+    refs = str(tmp_path / "refs")
+    os.makedirs(refs)
+    cfg = _readout_cfg(refs)
+    spec = SimpleNamespace(solver_config=None, validate_every=0)
+    ckpt = str(tmp_path / "ck")
+    run_dir = str(tmp_path / "run")
+    model_path = os.path.join(ckpt, "model.eqx")
+
+    monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
+    specs = {"slim16@a": "specA", "slim16@b": "specB",
+             "slim16@c": "specC", "slim16@d": "specD"}
+    rxns = [{"name": "r1", "reactants": ["slim16@a"],
+             "products": ["slim16@b"], "coeffs": [-1.0, 1.0],
+             "reaction_energy_ref": 1.0, "source_pool": "slim16"}]
+    monkeypatch.setattr(
+        fbp, "load_held_out_pools",
+        lambda names, basis=None, grid_level=None: (specs, rxns))
+    n_serial = {"n": 0}
+
+    def _fake_serial(**kw):
+        n_serial["n"] += 1
+        return {"n_reactions": 0, "n_species": 0, "n_dropped_nan": 0,
+                "n_dropped_overlap": 0}
+
+    monkeypatch.setattr(eh, "run_full_holdout_eval", _fake_serial)
+
+    # a: complete at the readout stamps; b: wrong basis stamp; c: missing;
+    # d: complete but generated under another auxbasis
+    _write_ref_npz(os.path.join(refs, "slim16@a.npz"), basis="def2-TZVP",
+                   auxbasis="def2-tzvp-jkfit")
+    _write_ref_npz(os.path.join(refs, "slim16@b.npz"), basis="def2-svp",
+                   auxbasis="def2-tzvp-jkfit")
+    _write_ref_npz(os.path.join(refs, "slim16@d.npz"), basis="def2-TZVP",
+                   auxbasis="def2-svp-jkfit")
+
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt, model_path, spec)
+    failure = os.path.join(ckpt, "eval_holdout", "failure.json")
+    assert os.path.isfile(failure)
+    with open(failure) as f:
+        payload = json.load(f)
+    assert payload["exception_type"] == "RuntimeError"
+    message = payload["exception_message"]
+    for name in ("slim16@b", "slim16@c", "slim16@d"):
+        assert name in message
+    assert "3" in message
+    assert n_serial["n"] == 0
+
+    # a healed directory passes the same call through the guard
+    for name in ("slim16@b", "slim16@c", "slim16@d"):
+        _write_ref_npz(os.path.join(refs, f"{name}.npz"), basis="def2-TZVP",
+                       auxbasis="def2-tzvp-jkfit")
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt, model_path, spec)
+    assert not os.path.isfile(failure)
+    assert n_serial["n"] == 1

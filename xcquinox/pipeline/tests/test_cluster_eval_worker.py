@@ -475,7 +475,8 @@ def test_the_shard_worker_loads_the_pools_its_command_names(run_dir, monkeypatch
 
     def _fake_compute_shard(run_dir_, spec_idx, names, basis, grid_level,
                             model_name="model.eqx", channel=None,
-                            pools=("bh76", "w411"), dump_densities=None):
+                            pools=("bh76", "w411"), dump_densities=None,
+                            solver_footing=None):
         seen["pools"] = tuple(pools)
         return {"energies": {}, "pbe_energies": {}, "mol_records": []}
 
@@ -543,3 +544,74 @@ def test_the_eval_stage_marks_the_validation_slice_and_drops_nothing():
     assert [r["in_validation_slice"] for r in marked] == [False, False,
                                                           True, False]
     assert "in_validation_slice" not in reactions[0]
+
+
+# ---------------------------------------------------------------------------
+# The readout footing on the shard path
+# ---------------------------------------------------------------------------
+
+def test_shard_command_carries_the_solver_footing(tmp_path, monkeypatch):
+    """The shard workers reload the spec pickle themselves, so the readout
+    footing reaches them the way --channel does: on the command line, as
+    canonical JSON."""
+    import json as _json
+
+    from xcquinox.pipeline.cluster import _holdout_parallel as hp
+
+    commands = []
+
+    class _Recorded(RuntimeError):
+        """Raised by the launcher stand-in once the commands are recorded."""
+
+    def _fake_run_workers(jobs, max_parallel=1):
+        commands.extend(list(job.cmd) for job in jobs)
+        raise _Recorded()
+
+    monkeypatch.setattr(hp.parallel, "run_workers", _fake_run_workers)
+    monkeypatch.setattr(hp.parallel, "eval_worker_ladder",
+                        lambda total_cpus, top=1: [(1, 1)])
+    footing = {"density_fit": True, "auxbasis": "def2-tzvp-jkfit",
+               "orientation_lock_strength": 0.0}
+    with pytest.raises(_Recorded):
+        hp.run_holdout_with_escalation(
+            str(tmp_path), 0, "SPEC", "MODEL", [], {"h2": "spec_h2"},
+            str(tmp_path / "out"), basis="def2-TZVP", grid_level=4,
+            n_workers_top=1, total_cpus=1, pools=("slim16",),
+            solver_footing=footing)
+    assert commands, "the driver rendered no worker command"
+    for cmd in commands:
+        assert "--solver-footing" in cmd
+        assert _json.loads(
+            cmd[cmd.index("--solver-footing") + 1]) == footing
+
+
+def test_worker_applies_footing_before_the_channel_override(monkeypatch):
+    """An END-STATE pin: one reloaded spec carries BOTH the readout footing
+    (DF off, the readout auxbasis, lock 0.25 -- all distinct from the trained
+    values) and the converged protocol (pyscfad, PBE seed, 100 cycles at
+    1e-8). The two override sets are disjoint today, so footing-before-
+    channel is a regression guard against a future overlap; the test holds
+    the composed solver to both triples and fails whichever override the
+    implementation drops."""
+    from xcquinox.pipeline.solver import SolverBackend, SolverMode
+    from xcquinox.pipeline.tests.test_converged_channel import (
+        _worker_seams, _worker_spec)
+    from xcquinox.pipeline.workers import eval_holdout_worker as ehw
+
+    captured = {}
+    _worker_seams(monkeypatch, _worker_spec(), captured)
+    footing = {"density_fit": False, "auxbasis": "def2-tzvp-jkfit",
+               "orientation_lock_strength": 0.25}
+    ehw.compute_shard("/run", 0, ["bh76@h2"], "def2-svp", 1,
+                      channel="converged", solver_footing=footing)
+    sc = captured["sc"]
+    # the footing landed
+    assert sc.density_fit is False
+    assert sc.auxbasis == "def2-tzvp-jkfit"
+    assert sc.orientation_lock_strength == 0.25
+    # and so did the converged protocol, on the same solver
+    assert sc.backend == SolverBackend.PYSCFAD
+    assert sc.mode == SolverMode.FULL
+    assert sc.seed_source == "pbe"
+    assert sc.max_cycles == 100
+    assert sc.conv_tol == 1e-8

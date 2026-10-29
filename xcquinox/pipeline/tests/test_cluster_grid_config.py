@@ -1425,3 +1425,96 @@ def test_the_retired_strict_key_warns_and_changes_nothing(tmp_path):
     assert "held_out_strict" not in {f.name for f in dataclasses.fields(cfg)}
     from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
     assert "held_out_strict" not in _config_to_raw_dict(cfg)
+
+
+# ---------------------------------------------------------------------------
+# The inline readout knobs (eval_pool and its footing keys)
+# ---------------------------------------------------------------------------
+
+def test_eval_readout_knobs_validate(tmp_path):
+    """The readout block is a closed contract: the pool must name a held-out
+    pool, the footing keys are refused as dead text without eval_pool, and
+    the orientation lock is a stated non-negative float -- never silently
+    inherited from the training footing. The v9 parity yaml, which carries
+    the block natively, loads onto the same fields."""
+    readout = {
+        "eval_pool": "slim16",
+        "eval_basis": "def2-TZVP",
+        "eval_grid_level": 4,
+        "eval_orientation_lock": 0.0,
+        "eval_density_fit": True,
+        "eval_auxbasis": "def2-tzvp-jkfit",
+        "eval_refs_dir": str(tmp_path / "refs"),
+        "eval_dump_densities": True,
+    }
+
+    raw = _base_config_dict()
+    raw["eval_basis"] = "def2-TZVP"
+    with pytest.raises(ValueError):
+        load_grid_config(_write(tmp_path, "dead_text.yaml", raw))
+
+    raw = _base_config_dict()
+    raw.update({"eval_pool": "w4-11", "eval_orientation_lock": 0.0})
+    with pytest.raises(ValueError):
+        load_grid_config(_write(tmp_path, "unknown_pool.yaml", raw))
+
+    raw = _base_config_dict()
+    raw["eval_pool"] = "slim16"
+    with pytest.raises(ValueError):
+        load_grid_config(_write(tmp_path, "no_lock.yaml", raw))
+
+    raw = _base_config_dict()
+    raw.update({"eval_pool": "slim16", "eval_orientation_lock": -1.0})
+    with pytest.raises(ValueError):
+        load_grid_config(_write(tmp_path, "negative_lock.yaml", raw))
+
+    raw = _base_config_dict()
+    raw.update(readout)
+    cfg = load_grid_config(_write(tmp_path, "readout.yaml", raw))
+    _assert_well_formed(cfg)
+    assert cfg.eval_pool == "slim16"
+    assert cfg.eval_basis == "def2-TZVP"
+    assert cfg.eval_grid_level == 4
+    assert cfg.eval_orientation_lock == 0.0
+    assert cfg.eval_density_fit is True
+    assert cfg.eval_auxbasis == "def2-tzvp-jkfit"
+    assert cfg.eval_refs_dir == str(tmp_path / "refs")
+    assert cfg.eval_dump_densities is True
+
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    parity = load_grid_config(str(
+        root / "hpcjobs" / "configs" / "dfs_step8.v9_dfs_letter_parity.yaml"))
+    assert parity.eval_pool == "slim16"
+    assert parity.eval_converged is True
+
+
+def test_resolved_config_round_trips_the_readout_knobs(tmp_path):
+    """The submit-time round trip hand-enumerates root keys, so a knob
+    missing from _config_to_raw_dict is silently dropped at submit and the
+    cluster run loses the readout the source yaml states. Every knob must
+    survive GridConfig -> raw dict -> GridConfig unchanged."""
+    import dataclasses
+
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+
+    knobs = {
+        "eval_pool": "slim16",
+        "eval_basis": "def2-TZVP",
+        "eval_grid_level": 4,
+        "eval_orientation_lock": 0.0,
+        "eval_density_fit": True,
+        "eval_auxbasis": "def2-tzvp-jkfit",
+        "eval_refs_dir": str(tmp_path / "refs"),
+        "eval_dump_densities": True,
+    }
+    cfg = load_grid_config(_write(tmp_path, "base.yaml", _base_config_dict()))
+    cfg = dataclasses.replace(cfg, **knobs)
+
+    raw = _config_to_raw_dict(cfg)
+    for key, value in knobs.items():
+        assert raw[key] == value, key
+    loaded = load_grid_config(_write(tmp_path, "resolved.yaml", raw))
+    for key, value in knobs.items():
+        assert getattr(loaded, key) == value, key

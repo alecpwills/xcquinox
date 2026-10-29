@@ -273,6 +273,23 @@ _V8_ARMS = (
     "dfs_step8.v8_dfs_coldstart.yaml",
 )
 
+#: The inline readout block both v9 arms state identically: the slim16 pool
+#: at its canonical footing (def2-TZVP, grid 4, DF on its jkfit mesh,
+#: unlocked), under the converged channel only, densities dumped per
+#: channel. The reference npz's are built by hpcjobs/slim16_refs.sbatch into
+#: the pinned refs dir; the readout guard refuses any pass whose species
+#: lack a complete, footing-matching npz there.
+_V9_READOUT_KNOBS = {
+    "eval_pool": "slim16",
+    "eval_basis": "def2-TZVP",
+    "eval_grid_level": 4,
+    "eval_orientation_lock": 0.0,
+    "eval_density_fit": True,
+    "eval_auxbasis": "def2-tzvp-jkfit",
+    "eval_refs_dir": "/gpfs/scratch/awills/external_refs_slim16_tzvp_g4",
+    "eval_dump_densities": True,
+}
+
 #: The campaign's architecture axis, written in the order ``expand_grid``
 #: canonicalizes to (``_canon_axis`` = ``sorted(set(...))``), so a cell's index
 #: in the expansion is its SLURM array task id and the files read in task
@@ -778,10 +795,29 @@ def test_v9_letter_arms_pin_the_executed_protocol():
             "every architecture is donated")
         for arch, donor in donors.items():
             assert donor == (
-                "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/"
-                f"v8_dfs_allsc/pretrain/{arch}"), (
+                "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/"
+                f"runs/run_20260924T143620Z/pretrain/{arch}"), (
                     f"{name}: donor for {arch} is {donor!r}; both arms "
-                    "warm-start from the v8 arm-S PRETRAIN-stage output")
+                    "warm-start from the v8 arm-S PRETRAIN-stage output "
+                    "(the arm-S training run's own pretrain products)")
+
+        # the inline readout replaces the channel set: both arms state the
+        # identical slim16 footing, the warm/coldstart channels are inert,
+        # and the optimize stage's wall carries the readout's two passes
+        for key, value in _V9_READOUT_KNOBS.items():
+            got = getattr(cfg, key)
+            assert got == value, (
+                f"{name}: readout knob {key} is {got!r}, expected "
+                f"{value!r}")
+        assert cfg.eval_coldstart is False, (
+            f"{name}: eval_coldstart is {cfg.eval_coldstart!r}; the "
+            "warm/coldstart channels are inert in readout mode")
+        assert cfg.eval_converged is True, name
+        assert cfg.cluster.time == "168:00:00", (
+            f"{name}: cluster.time is {cfg.cluster.time!r}; the readout's "
+            "two slim16 passes ride the optimize stage's wall")
+        assert cfg.cluster.timeout_retry_time == "168:00:00", name
+        assert cfg.cluster.timeout_retry_partition == "extended-96core", name
 
 
 def test_v9_letter_arms_differ_in_the_arm_keys_alone_and_mail_reaches_the_inbox():

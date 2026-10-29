@@ -704,6 +704,32 @@ class GridConfig:
     # DIIS, max_cycles=100, conv_tol=1e-8; mode stays FULL). Default False ->
     # byte-identical (the channel set as before).
     eval_converged: bool = False
+    # ``eval_pool`` (2026-10-29): when set, each spec's inline eval becomes a
+    # READOUT -- the named held-out pool evaluated at its own Coulomb footing
+    # under the converged channel only, in exactly two passes (the final
+    # checkpoint into eval_holdout_converged and, when it exists, the
+    # validation-best one into eval_holdout_converged_val_best). The other
+    # eval_* knobs state that footing; each None falls back to the knob's
+    # training twin (inputs.basis / inputs.grid_level / inputs.density_fit,
+    # and default_auxbasis(eval_basis) for the auxbasis under DF).
+    # eval_orientation_lock has NO fallback: readout mode states the lock
+    # once, beside the reference job's, so a training 3e-5 lock can never be
+    # silently inherited by an unlocked readout. eval_coldstart/eval_converged
+    # are inert in readout mode (the readout replaces the whole channel set).
+    # Default None -> the inline eval exactly as before.
+    eval_pool: str | None = None
+    eval_basis: str | None = None
+    eval_grid_level: int | None = None
+    eval_orientation_lock: float | None = None
+    # tri-state: None inherits inputs.density_fit; DF is stated explicitly by
+    # a readout because def2-TZVP without DF materializes a >200 GB ERI.
+    eval_density_fit: bool | None = None
+    eval_auxbasis: str | None = None
+    # the directory of precomputed CCSD reference densities the readout
+    # consumes (benchmark_refs --out-dir); the loud refs guard refuses a
+    # pass whose species lack a complete, footing-matching npz there.
+    eval_refs_dir: str | None = None
+    eval_dump_densities: bool = False
     # Pretraining-fidelity certificate tolerances. Optional in the YAML: a
     # config written before the certificate existed loads at the binding
     # 1.0 kcal/mol / 1.0 mHa defaults rather than at no tolerance.
@@ -712,6 +738,47 @@ class GridConfig:
     # Optional in the YAML: a config written before the anchor existed loads
     # as the unanchored, legacy-coordinate class it was written for.
     model: ModelConfig = field(default_factory=ModelConfig)
+
+
+def _validate_eval_readout(cfg: GridConfig) -> None:
+    """Refuse a half-stated inline-readout block at load time.
+
+    A readout is stated by ``eval_pool`` alone; the block is validated here
+    so a mis-stated one fails at submit (and in every re-read of
+    resolved_config.yaml) instead of surfacing as a silently different
+    eval on the cluster:
+
+      - the pool must be a registered held-out pool;
+      - with no pool, any OTHER ``eval_*`` knob is dead text an operator may
+        edit to no effect -- refused, exactly like a duplicated bh76_mode;
+      - with a pool, ``eval_orientation_lock`` is REQUIRED and >= 0: the
+        readout lock has no fallback (a training 3e-5 lock silently inherited
+        by an unlocked readout is a wrong-physics result, not a default).
+    """
+    if cfg.eval_pool is None:
+        stray = sorted(
+            name for name in ("eval_basis", "eval_grid_level",
+                              "eval_orientation_lock", "eval_density_fit",
+                              "eval_auxbasis", "eval_refs_dir",
+                              "eval_dump_densities")
+            if getattr(cfg, name) not in (None, False))
+        if stray:
+            raise ValueError(
+                f"grid config carries {', '.join(stray)} without eval_pool: "
+                "the eval_* readout knobs are dead text unless eval_pool "
+                "names the pool the readout evaluates. State eval_pool or "
+                "remove them.")
+        return
+    if cfg.eval_pool not in _HELD_OUT_POOLS:
+        raise ValueError(
+            f"eval_pool {cfg.eval_pool!r} is not a held-out pool; the "
+            f"registered pools are {', '.join(_HELD_OUT_POOLS)}")
+    if cfg.eval_orientation_lock is None or cfg.eval_orientation_lock < 0:
+        raise ValueError(
+            "eval_orientation_lock is required in readout mode (eval_pool "
+            f"is {cfg.eval_pool!r}) and must be a float >= 0: the readout "
+            "lock is stated once, beside the reference job's, and never "
+            "inherited from the training configuration")
 
 
 # ---------------------------------------------------------------------------
@@ -2022,7 +2089,10 @@ def load_grid_config(path: str) -> GridConfig:
     _reject_unknown_keys(raw, GridConfig, "<root>",
                          retired=_RETIRED_ROOT_KEYS)
 
-    return GridConfig(
+    # tri-state DF: None (unset, inherits inputs.density_fit) vs an explicit
+    # boolean, so bool() is applied only when the key was actually stated.
+    _eval_df = raw.get("eval_density_fit")
+    cfg = GridConfig(
         sweep=_build_sweep(_require(raw, "sweep", "<root>")),
         solvers=_build_solvers(_require(raw, "solvers", "<root>")),
         hyperparams=_build_hyperparams(_require(raw, "hyperparams", "<root>")),
@@ -2039,9 +2109,22 @@ def load_grid_config(path: str) -> GridConfig:
         inline_eval=bool(raw.get("inline_eval", False)),
         eval_coldstart=bool(raw.get("eval_coldstart", False)),
         eval_converged=bool(raw.get("eval_converged", False)),
+        eval_pool=raw.get("eval_pool"),
+        eval_basis=raw.get("eval_basis"),
+        eval_grid_level=(int(raw["eval_grid_level"])
+                         if raw.get("eval_grid_level") is not None else None),
+        eval_orientation_lock=(
+            float(raw["eval_orientation_lock"])
+            if raw.get("eval_orientation_lock") is not None else None),
+        eval_density_fit=(None if _eval_df is None else bool(_eval_df)),
+        eval_auxbasis=raw.get("eval_auxbasis"),
+        eval_refs_dir=raw.get("eval_refs_dir"),
+        eval_dump_densities=bool(raw.get("eval_dump_densities", False)),
         fidelity=_build_fidelity(raw.get("fidelity")),
         model=_build_model_block(raw.get("model")),
     )
+    _validate_eval_readout(cfg)
+    return cfg
 
 
 # ---------------------------------------------------------------------------

@@ -732,3 +732,137 @@ def test_paper_wtmad2_reproduces_the_hand_value():
     import math
     empty, empty_table = paper_wtmad2([])
     assert math.isnan(empty) and empty_table == {}
+
+
+# ---------------------------------------------------------------------------
+# The DFS-Letter combined metric and the readout finalize
+# ---------------------------------------------------------------------------
+
+def test_dfs_letter_ed_reproduces_the_letter_table():
+    """The Letter's Eq. 21 effective-dynamic measure at the published gamma
+    (the zero-intercept regression over six non-empirical density
+    functionals): each (WTMAD-2, eps) pair of the Letter's Table I maps to
+    its published ED to one decimal, and the closed form carries the literal
+    constant so the oracle does not merely re-read the implementation's
+    own."""
+    assert eh.DFS_LETTER_GAMMA == pytest.approx(1084.87)
+    for wtmad2, eps, published in ((10.5, 0.0100, 10.7),
+                                   (8.0, 0.0062, 7.3),
+                                   (7.3, 0.0052, 6.4)):
+        ed = eh.dfs_letter_ed(wtmad2, eps)
+        assert ed == pytest.approx(
+            2 * (1.0 / wtmad2 + 1.0 / (1084.87 * eps)) ** -1)
+        assert round(ed, 1) == published
+
+
+def test_readout_metrics_writes_paper_wtmad2_and_joins_subsets(tmp_path):
+    """The readout table is recomputed from the written per_reaction and
+    per_molecule artifacts: subsets joined by reaction NAME from the pool's
+    own reactions (the per-reaction records carry no subset field), the
+    paper WTMAD-2 (NN and its PBE twin), the finite-only eps means, the ED
+    pair, and the two appended csv rows.
+
+    Hand computation over the synthetic rows:
+      W4: |10-11| = 1, |20-18| = 2 -> MAD 1.5, mean|ref| 15 -> 0.2
+      IP: |5-4| = 1, |15-15| = 0 -> MAD 0.5, mean|ref| 10 -> 0.1
+      N = 4, mean|ref| = (2*15 + 2*10)/4 = 12.5
+      total = (12.5/4) * (0.2 + 0.1) = 0.9375
+      PBE twin: W4 (0.5, 1.0) -> 0.1; IP (1.0, 3.0) -> 0.4 -> 1.5625
+      eps legs: finite (0.10, 0.30, 0.05) -> 0.15; pbe (0.20, 0.40) -> 0.30
+    """
+    import csv as _csv
+
+    pool = "slim16"
+    basis, grid, aux = "def2-TZVP", 4, "def2-tzvp-jkfit"
+    refs_dir = "/gpfs/scratch/awills/external_refs_slim16_tzvp_g4"
+
+    out_dir = tmp_path / "eval_holdout_converged"
+    out_dir.mkdir()
+    # the real per_reaction.json records carry NO subset field -- that is
+    # why the finalize joins subsets by reaction name from the pool; the
+    # written fixture must not smuggle the truth into the record itself
+    reactions = [
+        {"name": "slim16_w001", "de_nn_kcalmol": 11.0,
+         "de_pbe_kcalmol": 10.5, "reaction_energy_ref_kcalmol": 10.0},
+        {"name": "slim16_w002", "de_nn_kcalmol": 18.0,
+         "de_pbe_kcalmol": 21.0, "reaction_energy_ref_kcalmol": 20.0},
+        {"name": "slim16_i003", "de_nn_kcalmol": 4.0,
+         "de_pbe_kcalmol": 6.0, "reaction_energy_ref_kcalmol": 5.0},
+        {"name": "slim16_i004", "de_nn_kcalmol": 15.0,
+         "de_pbe_kcalmol": 12.0, "reaction_energy_ref_kcalmol": 15.0},
+    ]
+    (out_dir / "per_reaction.json").write_text(json.dumps(reactions))
+    molecules = [
+        {"molecule": "slim16_w4_h2o", "density_eps_l1": 0.10,
+         "density_eps_l1_pbe": 0.20, "ref_density_method": "ccsd"},
+        {"molecule": "slim16_w4_nh3", "density_eps_l1": 0.30,
+         "density_eps_l1_pbe": None, "ref_density_method": "ccsd"},
+        {"molecule": "slim16_ip_h", "density_eps_l1": None,
+         "density_eps_l1_pbe": None, "ref_density_method": None},
+        {"molecule": "slim16_ip_ch", "density_eps_l1": 0.05,
+         "density_eps_l1_pbe": 0.40, "ref_density_method": "ccsd"},
+    ]
+    (out_dir / "per_molecule.json").write_text(json.dumps(molecules))
+    # the csv _finalize_holdout_outputs wrote before the readout joins in
+    eh.write_test_set_csv(out_dir / "test_set.csv",
+                          {pool: (3.0, 2.0, 4, 0, 0)},
+                          (3.0, 2.0, 4, 0, 0), combined_pools=(pool,))
+    # the pool carries the subset truth independently of the records; W4
+    # for the w-pair, IP for the i-pair (names alone must drive the join)
+    pool_reactions = [
+        {"name": "slim16_w001", "subset": "W4"},
+        {"name": "slim16_w002", "subset": "W4"},
+        {"name": "slim16_i003", "subset": "IP"},
+        {"name": "slim16_i004", "subset": "IP"},
+    ]
+
+    eh.write_readout_metrics(
+        str(out_dir), pool_reactions, pool=pool,
+        footing={"basis": basis, "grid_level": grid,
+                 "orientation_lock": 0.0, "density_fit": True,
+                 "auxbasis": aux, "refs_dir": refs_dir},
+        channel="eval_holdout_converged", model="model.eqx")
+
+    with open(out_dir / "readout_metrics.json") as f:
+        payload = json.load(f)
+    assert set(payload) == {
+        "pool", "basis", "grid_level", "orientation_lock", "density_fit",
+        "auxbasis", "refs_dir", "channel", "model", "wtmad2_paper",
+        "wtmad2_paper_pbe", "wtmad2_per_subset", "eps_l1_mean",
+        "eps_l1_mean_pbe", "gamma", "ed", "ed_pbe", "n_species",
+        "n_species_with_refs", "n_reactions"}
+    assert payload["pool"] == pool
+    assert payload["basis"] == basis
+    assert payload["grid_level"] == grid
+    assert payload["orientation_lock"] == 0.0
+    assert payload["density_fit"] is True
+    assert payload["auxbasis"] == aux
+    assert payload["refs_dir"] == refs_dir
+    assert payload["channel"] == "eval_holdout_converged"
+    assert payload["model"] == "model.eqx"
+    assert payload["wtmad2_paper"] == pytest.approx(0.9375)
+    assert payload["wtmad2_paper_pbe"] == pytest.approx(1.5625)
+    assert set(payload["wtmad2_per_subset"]) == {"W4", "IP"}
+    assert payload["wtmad2_per_subset"]["W4"]["N_i"] == 2
+    assert payload["eps_l1_mean"] == pytest.approx(0.15)
+    assert payload["eps_l1_mean_pbe"] == pytest.approx(0.30)
+    assert payload["gamma"] == pytest.approx(1084.87)
+    assert payload["ed"] == pytest.approx(
+        2 * (1.0 / 0.9375 + 1.0 / (1084.87 * 0.15)) ** -1)
+    assert payload["ed_pbe"] == pytest.approx(
+        2 * (1.0 / 1.5625 + 1.0 / (1084.87 * 0.30)) ** -1)
+    assert payload["n_species"] == 4
+    assert payload["n_species_with_refs"] == 3
+    assert payload["n_reactions"] == 4
+
+    with open(out_dir / "test_set.csv", newline="") as f:
+        rows = list(_csv.DictReader(f))
+    by_set = {r["set"]: r for r in rows}
+    paper = by_set[f"{pool}_wtmad2_paper"]
+    assert float(paper["mae_nn_kcalmol"]) == pytest.approx(0.9375)
+    assert int(paper["n_reactions"]) == 4
+    pbe_row = by_set[f"{pool}_wtmad2_paper_pbe"]
+    # the twin's own total, in whichever mae column carries the row value
+    assert (pytest.approx(1.5625) == float(pbe_row["mae_nn_kcalmol"])
+            or pytest.approx(1.5625) == float(pbe_row["mae_pbe_kcalmol"]))
+    assert int(pbe_row["n_reactions"]) == 4

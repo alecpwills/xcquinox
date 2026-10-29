@@ -2132,6 +2132,17 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     if lk.get("aux_only_names"):
         lk["aux_only_names"] = tuple(a for a in lk["aux_only_names"]
                                      if a in present)
+    # Scoped to the group exactly as aux_only_names is: the run-level list
+    # names radicals of the WHOLE pool, and under per-molecule updates a
+    # group missing one refused its sub-loss outright (cluster job 2374311,
+    # the v9 preflight compile-smoke). Inside the loss the list only sets
+    # rho-record weights for compounds in the set, so the group's sub-loss
+    # equals the full-pool semantics restricted to the group; run-level
+    # construction still validates the whole list against the whole pool,
+    # so a typo'd name keeps refusing there.
+    if lk.get("radical_species"):
+        lk["radical_species"] = tuple(r for r in lk["radical_species"]
+                                      if r in present)
     lk.pop("pbe_anchor_weight", None)
     lk.pop("pbe_anchor_sample", None)
 

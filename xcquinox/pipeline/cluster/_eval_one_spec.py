@@ -115,6 +115,49 @@ def _held_out_basis_grid(cfg):
     return basis, (1 if grid_level is None else int(grid_level))
 
 
+def _readout_plan(cfg):
+    """The resolved inline-readout plan for ``cfg``, or None when no readout
+    is configured (``eval_pool`` unset -- the default, byte-identical
+    inline eval).
+
+    Every read is getattr-with-default: ``hpcjobs/slim16_eval.py`` builds cfg
+    as a SimpleNamespace carrying only ``inputs.basis``/``grid_level``/
+    ``held_out_pools`` and ``cluster.eval_workers``, and that caller must
+    keep working unchanged. Resolution of the footing: basis and grid fall
+    back to their training twins when unstated, DF falls back to
+    ``inputs.density_fit``, the auxbasis to ``default_auxbasis`` of the
+    resolved basis under DF, and the lock has NO fallback --
+    ``load_grid_config`` refuses a stated readout without one, so the
+    ``inputs`` fallback below covers only hand-built cfg objects."""
+    pool = getattr(cfg, "eval_pool", None)
+    if not pool:
+        return None
+    inputs = getattr(cfg, "inputs", None)
+    basis = getattr(cfg, "eval_basis", None) or getattr(
+        inputs, "basis", None)
+    grid = getattr(cfg, "eval_grid_level", None)
+    if grid is None:
+        grid = getattr(inputs, "grid_level", None)
+    density_fit = getattr(cfg, "eval_density_fit", None)
+    if density_fit is None:
+        density_fit = bool(getattr(inputs, "density_fit", False))
+    auxbasis = getattr(cfg, "eval_auxbasis", None)
+    if auxbasis is None and density_fit:
+        from xcquinox.pipeline.df_jk import default_auxbasis
+        auxbasis = default_auxbasis(basis)
+    lock = getattr(cfg, "eval_orientation_lock", None)
+    if lock is None:
+        lock = float(getattr(inputs, "orientation_lock_strength", 0.0) or 0.0)
+    return {
+        "pool": str(pool), "basis": basis,
+        "grid_level": (1 if grid is None else int(grid)),
+        "orientation_lock": float(lock), "density_fit": bool(density_fit),
+        "auxbasis": auxbasis,
+        "refs_dir": getattr(cfg, "eval_refs_dir", None),
+        "dump": bool(getattr(cfg, "eval_dump_densities", False)),
+    }
+
+
 def _load_spec(path):
     """Deserialize a TrainingSpec from a trusted local file.
 
@@ -424,10 +467,13 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         # pass's start; its tables do, until this pass ends (PASS_OUTPUTS)
         _clear_pass_outputs(holdout_dir, _CLEARED_AT_START)
         model_name = os.path.basename(model_path)
-        # the pools the configuration names; the benchmark pair for a
-        # configuration written before the selection existed
-        pools = tuple(getattr(getattr(cfg, "inputs", None), "held_out_pools",
-                              ("bh76", "w411")))
+        # a stated readout (eval_pool) replaces the pool set and the footing;
+        # None keeps the configuration's own held-out pools and the training
+        # footing exactly as before
+        readout = _readout_plan(cfg)
+        pools = ((readout["pool"],) if readout is not None else
+                 tuple(getattr(getattr(cfg, "inputs", None),
+                               "held_out_pools", ("bh76", "w411"))))
         _log(idx, f"starting full-pool held-out eval ({', '.join(pools)}) "
                   f"[{model_name} -> {holdout_subdir}]")
         t1 = time.time()
@@ -435,12 +481,43 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         # Basis + grid_level MUST match what training used (read from the
         # resolved config) so the held-out PBE/NN energies are computed in the
         # same basis as the in-sample eval, otherwise a basis bump silently
-        # evaluates the held-out set in def2-svp (invalid comparison).
-        _hb, _hg = _held_out_basis_grid(cfg)
+        # evaluates the held-out set in def2-svp (invalid comparison) -- UNLESS
+        # a readout states its own footing, which is the point of one.
+        _hb, _hg = ((readout["basis"], readout["grid_level"])
+                    if readout is not None else _held_out_basis_grid(cfg))
         _log(idx, f"held-out pool basis={_hb} grid_level={_hg}")
         full_specs, full_rxns = load_held_out_pools(
             pools, basis=_hb, grid_level=_hg,
         )
+        if readout is not None and readout["refs_dir"]:
+            # The read side's ONLY completeness check: the eval-time reference
+            # loader tests file existence alone, so without this a refs dir
+            # generated at another footing (or half-built by a killed job)
+            # would silently yield an all-None density column and a NaN eps.
+            # Refuses with the names, so the operator knows what to rebuild.
+            from xcquinox.pipeline.benchmark_refs import (
+                _benchmark_npz_is_complete)
+            _missing = sorted(
+                name for name in full_specs
+                if not _benchmark_npz_is_complete(
+                    os.path.join(readout["refs_dir"], f"{name}.npz"),
+                    basis=_hb, grid_level=_hg,
+                    orientation_lock_strength=readout["orientation_lock"],
+                    density_fit=readout["density_fit"],
+                    auxbasis=readout["auxbasis"]))
+            if _missing:
+                raise RuntimeError(
+                    f"the readout refs dir {readout['refs_dir']!r} carries "
+                    f"no complete reference for {len(_missing)} of "
+                    f"{len(full_specs)} {readout['pool']} species at the "
+                    f"readout footing ({_hb}, grid {_hg}, lock "
+                    f"{readout['orientation_lock']}, DF "
+                    f"{readout['density_fit']}, auxbasis "
+                    f"{readout['auxbasis']}); build them first "
+                    f"(benchmark_refs --pool {readout['pool']}). Missing: "
+                    f"{', '.join(_missing[:10])}"
+                    + (f" (+{len(_missing) - 10} more)"
+                       if len(_missing) > 10 else ""))
         n_pool = len(full_rxns)
         full_specs, full_rxns, _slice_names = _apply_species_slice(
             idx, full_specs, full_rxns, holdout_dir)
@@ -489,7 +566,17 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                     holdout_dir, basis=_hb, grid_level=_hg,
                     n_workers_top=n_top, total_cpus=detect_available_cpus(),
                     model_name=model_name, channel=channel, pools=pools,
-                    dump_densities=dump_densities)
+                    dump_densities=dump_densities,
+                    # the readout footing, when this channel is one: the
+                    # workers reload the TRAINING spec, so the footing rides
+                    # the command line exactly as the channel name does
+                    solver_footing=(
+                        json.dumps({
+                            "density_fit": readout["density_fit"],
+                            "auxbasis": readout["auxbasis"],
+                            "orientation_lock_strength":
+                                readout["orientation_lock"]})
+                        if readout is not None else None))
             except Exception as pexc:  # noqa: BLE001
                 _log(idx, f"held-out parallel path failed "
                           f"({type(pexc).__name__}: {pexc}); serial fallback")
@@ -522,9 +609,32 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                                       if _slice_names else None),
                     "n_species": len(full_specs),
                     "n_reactions": len(full_rxns),
+                    # the readout identity, when this channel is one: every
+                    # number below it is only readable with the footing that
+                    # produced it
+                    "readout": (None if readout is None else {
+                        "pool": readout["pool"],
+                        "basis": readout["basis"],
+                        "grid_level": readout["grid_level"],
+                        "orientation_lock": readout["orientation_lock"],
+                        "density_fit": readout["density_fit"],
+                        "auxbasis": readout["auxbasis"],
+                        "refs_dir": readout["refs_dir"],
+                    }),
                 }, f, indent=2, sort_keys=True)
         except Exception as _mexc:  # noqa: BLE001
             _log(idx, f"eval_metadata.json write failed ({_mexc}); non-fatal")
+
+        if readout is not None:
+            # the readout's own tables: paper WTMAD-2 + the Eq. 21 ED pair,
+            # recomputed from the channel artifacts the pass just wrote
+            from xcquinox.pipeline.eval_holdout import write_readout_metrics
+            write_readout_metrics(
+                holdout_dir, full_rxns, pool=readout["pool"],
+                footing={key: readout[key] for key in (
+                    "basis", "grid_level", "orientation_lock", "density_fit",
+                    "auxbasis", "refs_dir")},
+                channel=holdout_subdir, model=model_name)
 
         elapsed_h = time.time() - t1
         _log(
@@ -645,6 +755,78 @@ def main(argv=None) -> int:
         f"eval_df.csv written -- mae={mae:.4f} rho_rmse={rho_rmse:.4f} "
         f"n_eval={n_eval} ({csv_path})",
     )
+
+    # --- configurable inline readout (eval_pool, 2026-10-29) ---------------
+    # With eval_pool stated, the inline eval's whole channel set is REPLACED
+    # by the readout: the named pool evaluated at its OWN Coulomb footing
+    # under the converged channel, in exactly two passes -- the final
+    # checkpoint into eval_holdout_converged and, when it exists, the
+    # validation-best one into eval_holdout_converged_val_best -- each
+    # dumping its densities under <channel>/densities when
+    # eval_dump_densities is on. The warm/best/val-best/coldstart/converged
+    # blocks below are UNREACHABLE in readout mode, so eval_coldstart and
+    # eval_converged are inert here: the readout states its own channel set.
+    readout = _readout_plan(cfg)
+    if readout is not None:
+        from xcquinox.pipeline.holdout_channels import (
+            CHANNEL_CONVERGED, CHANNEL_CONVERGED_VAL_BEST, MODEL_VAL_BEST,
+            OVERRIDE_CONVERGED)
+        _sc = getattr(training_spec, "solver_config", None)
+        if (_sc is None
+                or getattr(getattr(_sc, "mode", None), "value", None)
+                != "full"):
+            # Not a skip: the readout IS this eval's purpose, so completing
+            # the task with no readout artifacts would be the silent failure
+            # mode every channel above refuses; a mis-stated solver fails
+            # the task where the cause is visible.
+            raise RuntimeError(
+                "eval_pool readout requires a FULL-mode solver config (got "
+                f"mode="
+                f"{getattr(getattr(_sc, 'mode', None), 'value', None)!r}); "
+                "a one-shot protocol has no converged channel to read out")
+        import dataclasses as _dc
+
+        from xcquinox.pipeline.eval_holdout import (
+            converged_solver_config, readout_solver_config)
+        # ONE composed spec object for both passes, like the channel pairs:
+        # the footing first, then the converged protocol on top of it
+        readout_spec = _dc.replace(
+            training_spec,
+            solver_config=converged_solver_config(readout_solver_config(
+                _sc, density_fit=readout["density_fit"],
+                auxbasis=readout["auxbasis"],
+                orientation_lock_strength=readout["orientation_lock"])))
+        _rb = os.path.join(checkpoint_dir, MODEL_VAL_BEST)
+        _saved_refs = os.environ.get("XCQUINOX_BENCH_REFS_DIR")
+        try:
+            if readout["refs_dir"]:
+                # Supersedes the training-basis line submit.py bakes into
+                # the sbatch: every shard inherits this through
+                # parallel.py's os.environ copy, and the in-process serial
+                # tiers read it directly.
+                os.environ["XCQUINOX_BENCH_REFS_DIR"] = readout["refs_dir"]
+            for _mp, _sub in (
+                    (model_path, CHANNEL_CONVERGED),
+                    (_rb, CHANNEL_CONVERGED_VAL_BEST)):
+                if (_sub == CHANNEL_CONVERGED_VAL_BEST
+                        and not os.path.isfile(_rb)):
+                    _log(idx, "no model_val_best.eqx -- readout on the "
+                              "final checkpoint only")
+                    continue
+                _run_held_out_eval(
+                    run_dir, idx, cfg, checkpoint_dir, _mp, readout_spec,
+                    holdout_subdir=_sub, channel=OVERRIDE_CONVERGED,
+                    dump_densities=(
+                        os.path.join(checkpoint_dir, _sub, "densities")
+                        if readout["dump"] else None))
+        finally:
+            # the override never outlives the readout stage, so a later
+            # pass in the same process cannot read the readout's references
+            if _saved_refs is None:
+                os.environ.pop("XCQUINOX_BENCH_REFS_DIR", None)
+            else:
+                os.environ["XCQUINOX_BENCH_REFS_DIR"] = _saved_refs
+        return 0
 
     # --- 2026-05-29: held-out eval against full BH76 + W4-11 --------------
     # Adds an apples-to-apples comparison surface against XCDiff & friends
