@@ -17,7 +17,7 @@
 # all-SC footing where the deterministic v8 fine-tune wrecked readout
 # robustness. All four architectures donate from the v8 arm-S
 # PRETRAIN-stage checkpoints (shared parentage with arm i); the pretrain
-# stage self-omits. Submit with --stages all so datagen renders the
+# stage self-omits. Submit with --stages optimize: preflight stages the
 # validation slice.
 # =============================================================================
 

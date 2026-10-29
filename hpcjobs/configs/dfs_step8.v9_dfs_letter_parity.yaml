@@ -26,8 +26,9 @@
 # deviation (validation_density_weight), every 10 epochs, patience 8.
 # The 8 AE compound CCSD density references for that metric are generated
 # by benchmark_refs --manifest into inputs.val_refs_dir (cluster job 1 of
-# the program). Submit with --stages all so datagen renders the validation
-# slice; the pretrain stage self-omits (the only arch is donated).
+# the program). Submit with --stages optimize: preflight stages the
+# validation slice and the pretrain stage self-omits (the only arch is
+# donated).
 # =============================================================================
 
 sweep:
