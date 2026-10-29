@@ -865,6 +865,8 @@ _TRACKED_CONFIGS = (
     "dfs_step8.v8_dfs_coldstart.yaml",
     "dfs_step8.v8_dfs_parity.yaml",
     "dfs_step8.v8_slim05_allsc.yaml",
+    "dfs_step8.v9_dfs_letter_allsc.yaml",
+    "dfs_step8.v9_dfs_letter_parity.yaml",
     "step7.yaml",
 )
 

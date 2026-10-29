@@ -47,7 +47,7 @@ def test_worker_main_writes_shard_and_prints_success(tmp_path, monkeypatch, caps
     monkeypatch.setattr(
         ehw, "compute_shard",
         lambda rd, idx, names, basis, gl, model_name="model.eqx",
-        channel=None, pools=("bh76", "w411"): {
+        channel=None, pools=("bh76", "w411"), dump_densities=None: {
             "energies": {"h2": -1.17}, "pbe_energies": {"h2": -1.16},
             "mol_records": [{"molecule": "h2"}]})
 
@@ -313,7 +313,7 @@ def test_the_worker_and_the_driver_carry_qualified_names(tmp_path, monkeypatch):
                         refs_dir=None: (dict(pool), []))
     captured = {}
 
-    def _fake_compute(ts, model, subset):
+    def _fake_compute(ts, model, subset, dump_densities=None):
         captured["subset"] = dict(subset)
         return {"energies": {n: -1.0 for n in subset},
                 "pbe_energies": {n: -0.9 for n in subset},
@@ -352,7 +352,7 @@ def test_the_worker_refuses_a_shard_name_its_pools_do_not_carry(monkeypatch):
         lambda names, basis, grid_level: (
             {"bh76@h2": "s1", "w411@h2": "s2"}, []))
     monkeypatch.setattr(eh, "compute_holdout_per_molecule",
-                        lambda ts, m, subset: {
+                        lambda ts, m, subset, dump_densities=None: {
                             "energies": {}, "pbe_energies": {},
                             "mol_records": []})
 

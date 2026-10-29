@@ -377,7 +377,7 @@ def _clear_pass_outputs(holdout_dir, names) -> None:
 
 def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                        training_spec, holdout_subdir="eval_holdout",
-                       channel=None) -> None:
+                       channel=None, dump_densities=None) -> None:
     """Full-pool held-out eval over the run's held-out pools for one trained
     spec.
 
@@ -403,6 +403,10 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
     None for the warm passes): the caller has already replaced the spec's
     solver, and the name travels to the shard workers, which reload the spec
     themselves, and into the channel's ``eval_metadata.json`` stamp.
+    ``dump_densities`` (a directory, the slim16 density saving) writes each
+    molecule's converged NN + PBE grid densities under it, threaded to the
+    shard workers and the serial fallback alike; None (default) changes
+    nothing.
     """
     try:
         from pathlib import Path as _Path
@@ -484,7 +488,8 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                     run_dir, idx, training_spec, model, full_rxns, full_specs,
                     holdout_dir, basis=_hb, grid_level=_hg,
                     n_workers_top=n_top, total_cpus=detect_available_cpus(),
-                    model_name=model_name, channel=channel, pools=pools)
+                    model_name=model_name, channel=channel, pools=pools,
+                    dump_densities=dump_densities)
             except Exception as pexc:  # noqa: BLE001
                 _log(idx, f"held-out parallel path failed "
                           f"({type(pexc).__name__}: {pexc}); serial fallback")
@@ -492,7 +497,8 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         if result is None:
             result = run_full_holdout_eval(
                 training_spec=training_spec, model=model,
-                mol_specs=full_specs, reactions=full_rxns, out_dir=holdout_dir)
+                mol_specs=full_specs, reactions=full_rxns, out_dir=holdout_dir,
+                dump_densities=dump_densities)
 
         # Channel provenance stamp: per-row columns alone cannot distinguish
         # a cold-start pass from a capped warm one (both report cycles_run at

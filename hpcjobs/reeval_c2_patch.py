@@ -1357,12 +1357,26 @@ def _gate_reference(md, where: str) -> None:
 def _gate_solver_describe(plan: ChannelPlan, sc) -> None:
     recorded = plan.meta.get("solver_config")
     rebuilt = sc.describe()
-    if recorded != rebuilt:
-        diff = {k: (recorded.get(k) if isinstance(recorded, dict) else None,
-                    rebuilt.get(k))
-                for k in set(rebuilt) | set(recorded or {})
-                if (recorded.get(k) if isinstance(recorded, dict)
-                    else None) != rebuilt.get(k)}
+    if recorded == rebuilt:
+        return
+    # A key the stamp does not carry postdates it (the fock degeneracy-
+    # noise pair is the live case): it changes nothing about the protocol
+    # the channel ran exactly when the rebuild keeps it at the field's own
+    # default. Every other mismatch is drift and refuses.
+    defaults = {f.name: f.default for f in dataclasses.fields(type(sc))
+                if f.default is not dataclasses.MISSING}
+    diff = {}
+    for k in set(rebuilt) | (set(recorded) if isinstance(recorded, dict)
+                             else set()):
+        r = recorded.get(k) if isinstance(recorded, dict) else None
+        b = rebuilt.get(k)
+        if r == b:
+            continue
+        if (isinstance(recorded, dict) and k not in recorded
+                and k in defaults and defaults[k] == b):
+            continue
+        diff[k] = (r, b)
+    if diff:
         raise PatchRefused(
             f"spec {plan.record.spec} {plan.record.channel}: the rebuilt "
             f"solver config does not match the channel's recorded "

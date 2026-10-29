@@ -299,9 +299,11 @@ def evaluate(args) -> int:
         inputs=SimpleNamespace(basis=BASIS, grid_level=GRID_LEVEL, held_out_pools=(POOL,)),
         cluster=SimpleNamespace(eval_workers=args.workers))
     _log(f"network {idx} ({_network_label(run_dir, idx)}): {POOL} at {BASIS} / "
-         f"grid {GRID_LEVEL}, channel {CHANNEL}")
+         f"grid {GRID_LEVEL}, channel {CHANNEL}"
+         + (f", densities -> {args.dump_densities}" if args.dump_densities else ""))
     _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path, spec,
-                       holdout_subdir=HOLDOUT_SUBDIR, channel=CHANNEL)
+                       holdout_subdir=HOLDOUT_SUBDIR, channel=CHANNEL,
+                       dump_densities=args.dump_densities)
     out = Path(checkpoint_dir) / HOLDOUT_SUBDIR
     if not (out / "per_reaction.json").is_file():
         failure = out / "failure.json"
@@ -647,6 +649,10 @@ def main(argv=None) -> int:
     e.add_argument("run_dir")
     e.add_argument("idx", type=int)
     e.add_argument("--workers", type=int, default=None)
+    e.add_argument("--dump-densities", default=None, metavar="DIR",
+                   help="write each species' converged NN + PBE grid "
+                        "densities to <DIR>/<pool>@<name>.npz (the slim16 "
+                        "density saving, for later CCSD comparison)")
     d = modes.add_parser("pbe-df", help="the PBE-DF table of the set")
     d.add_argument("run_dir")
     d.add_argument("--workers", type=int, default=24,

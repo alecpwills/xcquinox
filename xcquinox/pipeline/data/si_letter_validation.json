@@ -1,0 +1,474 @@
+{
+  "footing": {
+    "basis": "6-311++G(3df,2pd)",
+    "grid_level": 3,
+    "density_fit": true,
+    "orientation_lock_strength": 3e-05
+  },
+  "provenance": "The executed xc-diff validation set (Dick & Fernandez-Serra PRB 104 L161109 (2021) SI; vendored scripts/validation.py systems [103, 14, 23, 5, 10, 79, 27, 105] plus the two barrier reactions): 8 AE compounds, their 9 element atoms, and the 6 barrier species. Species names are si_letter@-qualified so validation energies resolve by exact name against the training pool's names. The SI lists C2H2 where the executed code reads xyz 103 = C2N2 (101 is the C2H2 training entry); the manifest selects by xyz_idx, never by name. Validation CH2 is the singlet (105) against the training triplet (106).",
+  "species": [
+    {
+      "name": "si_letter@c2n2",
+      "role": "ae_compound",
+      "geometry": {
+        "source": "g2_xyz",
+        "xyz_idx": 103
+      },
+      "spin": 0,
+      "charge": 0,
+      "composition": {
+        "C": 2,
+        "N": 2
+      },
+      "source": "g2_97.csv row 103, E = 2100.2 kJ/mol"
+    },
+    {
+      "name": "si_letter@beh",
+      "role": "ae_compound",
+      "geometry": {
+        "source": "g2_xyz",
+        "xyz_idx": 14
+      },
+      "spin": 0,
+      "charge": 0,
+      "composition": {
+        "Be": 1,
+        "H": 1
+      },
+      "source": "g2_97.csv row 14, E = 212.5 kJ/mol"
+    },
+    {
+      "name": "si_letter@no2",
+      "role": "ae_compound",
+      "geometry": {
+        "source": "g2_xyz",
+        "xyz_idx": 23
+      },
+      "spin": 1,
+      "charge": 0,
+      "composition": {
+        "N": 1,
+        "O": 2
+      },
+      "source": "g2_97.csv row 23, E = 954.1 kJ/mol"
+    },
+    {
+      "name": "si_letter@s2",
+      "role": "ae_compound",
+      "geometry": {
+        "source": "g2_xyz",
+        "xyz_idx": 5
+      },
+      "spin": 2,
+      "charge": 0,
+      "composition": {
+        "S": 2
+      },
+      "source": "g2_97.csv row 5, E = 433.94 kJ/mol"
+    },
+    {
+      "name": "si_letter@ch4",
+      "role": "ae_compound",
+      "geometry": {
+        "source": "g2_xyz",
+        "xyz_idx": 10
+      },
+      "spin": 0,
+      "charge": 0,
+      "composition": {
+        "C": 1,
+        "H": 4
+      },
+      "source": "g2_97.csv row 10, E = 1757.82 kJ/mol"
+    },
+    {
+      "name": "si_letter@c2h4o2",
+      "role": "ae_compound",
+      "geometry": {
+        "source": "g2_xyz",
+        "xyz_idx": 79
+      },
+      "spin": 0,
+      "charge": 0,
+      "composition": {
+        "C": 2,
+        "H": 4,
+        "O": 2
+      },
+      "source": "g2_97.csv row 79, E = 3363.76 kJ/mol"
+    },
+    {
+      "name": "si_letter@pf3",
+      "role": "ae_compound",
+      "geometry": {
+        "source": "g2_xyz",
+        "xyz_idx": 27
+      },
+      "spin": 0,
+      "charge": 0,
+      "composition": {
+        "F": 3,
+        "P": 1
+      },
+      "source": "g2_97.csv row 27, E = 1530.92 kJ/mol"
+    },
+    {
+      "name": "si_letter@ch2_singlet",
+      "role": "ae_compound",
+      "geometry": {
+        "source": "g2_xyz",
+        "xyz_idx": 105
+      },
+      "spin": 0,
+      "charge": 0,
+      "composition": {
+        "C": 1,
+        "H": 2
+      },
+      "source": "g2_97.csv row 105, E = 757.45 kJ/mol"
+    },
+    {
+      "name": "si_letter@Be",
+      "role": "element_atom",
+      "geometry": {
+        "source": "unit_atom",
+        "symbol": "Be"
+      },
+      "spin": 0,
+      "charge": 0,
+      "source": "NIST ASD ground state (the executed validation.py spins dict)"
+    },
+    {
+      "name": "si_letter@C",
+      "role": "element_atom",
+      "geometry": {
+        "source": "unit_atom",
+        "symbol": "C"
+      },
+      "spin": 2,
+      "charge": 0,
+      "source": "NIST ASD ground state (the executed validation.py spins dict)"
+    },
+    {
+      "name": "si_letter@Cl",
+      "role": "element_atom",
+      "geometry": {
+        "source": "unit_atom",
+        "symbol": "Cl"
+      },
+      "spin": 1,
+      "charge": 0,
+      "source": "NIST ASD ground state (the executed validation.py spins dict)"
+    },
+    {
+      "name": "si_letter@F",
+      "role": "element_atom",
+      "geometry": {
+        "source": "unit_atom",
+        "symbol": "F"
+      },
+      "spin": 1,
+      "charge": 0,
+      "source": "NIST ASD ground state (the executed validation.py spins dict)"
+    },
+    {
+      "name": "si_letter@H",
+      "role": "element_atom",
+      "geometry": {
+        "source": "unit_atom",
+        "symbol": "H"
+      },
+      "spin": 1,
+      "charge": 0,
+      "source": "NIST ASD ground state (the executed validation.py spins dict)"
+    },
+    {
+      "name": "si_letter@N",
+      "role": "element_atom",
+      "geometry": {
+        "source": "unit_atom",
+        "symbol": "N"
+      },
+      "spin": 3,
+      "charge": 0,
+      "source": "NIST ASD ground state (the executed validation.py spins dict)"
+    },
+    {
+      "name": "si_letter@O",
+      "role": "element_atom",
+      "geometry": {
+        "source": "unit_atom",
+        "symbol": "O"
+      },
+      "spin": 2,
+      "charge": 0,
+      "source": "NIST ASD ground state (the executed validation.py spins dict)"
+    },
+    {
+      "name": "si_letter@P",
+      "role": "element_atom",
+      "geometry": {
+        "source": "unit_atom",
+        "symbol": "P"
+      },
+      "spin": 3,
+      "charge": 0,
+      "source": "NIST ASD ground state (the executed validation.py spins dict)"
+    },
+    {
+      "name": "si_letter@S",
+      "role": "element_atom",
+      "geometry": {
+        "source": "unit_atom",
+        "symbol": "S"
+      },
+      "spin": 2,
+      "charge": 0,
+      "source": "NIST ASD ground state (the executed validation.py spins dict)"
+    },
+    {
+      "name": "si_letter@RKT17",
+      "role": "barrier_species",
+      "geometry": {
+        "source": "bh76_pool",
+        "pool": "bh76",
+        "species": "RKT17"
+      },
+      "spin": 2,
+      "charge": 0,
+      "source": "bh76_full_pool.json species_spins (RKT17 spin 2)"
+    },
+    {
+      "name": "si_letter@cl",
+      "role": "barrier_species",
+      "geometry": {
+        "source": "bh76_pool",
+        "pool": "bh76",
+        "species": "cl"
+      },
+      "spin": 1,
+      "charge": 0,
+      "source": "bh76_full_pool.json species_spins (cl spin 1)"
+    },
+    {
+      "name": "si_letter@h",
+      "role": "barrier_species",
+      "geometry": {
+        "source": "bh76_pool",
+        "pool": "bh76",
+        "species": "h"
+      },
+      "spin": 1,
+      "charge": 0,
+      "source": "bh76_full_pool.json species_spins (h spin 1)"
+    },
+    {
+      "name": "si_letter@n2o",
+      "role": "barrier_species",
+      "geometry": {
+        "source": "bh76_pool",
+        "pool": "bh76",
+        "species": "n2o"
+      },
+      "spin": 0,
+      "charge": 0,
+      "source": "bh76_full_pool.json species_spins (n2o spin 0)"
+    },
+    {
+      "name": "si_letter@n2ohts",
+      "role": "barrier_species",
+      "geometry": {
+        "source": "bh76_pool",
+        "pool": "bh76",
+        "species": "n2ohts"
+      },
+      "spin": 1,
+      "charge": 0,
+      "source": "bh76_full_pool.json species_spins (n2ohts spin 1)"
+    },
+    {
+      "name": "si_letter@oh",
+      "role": "barrier_species",
+      "geometry": {
+        "source": "bh76_pool",
+        "pool": "bh76",
+        "species": "oh"
+      },
+      "spin": 1,
+      "charge": 0,
+      "source": "bh76_full_pool.json species_spins (oh spin 1)"
+    }
+  ],
+  "reactions": [
+    {
+      "name": "ae_c2n2",
+      "reactants": [
+        "si_letter@c2n2"
+      ],
+      "products": [
+        "si_letter@C",
+        "si_letter@N"
+      ],
+      "coeffs": [
+        -1.0,
+        2.0,
+        2.0
+      ],
+      "reaction_energy_ref": 501.9598470363288,
+      "source": "g2_97.csv row 103 E = 2100.2 kJ/mol / 4.184"
+    },
+    {
+      "name": "ae_beh",
+      "reactants": [
+        "si_letter@beh"
+      ],
+      "products": [
+        "si_letter@Be",
+        "si_letter@H"
+      ],
+      "coeffs": [
+        -1.0,
+        1.0,
+        1.0
+      ],
+      "reaction_energy_ref": 50.7887189292543,
+      "source": "g2_97.csv row 14 E = 212.5 kJ/mol / 4.184"
+    },
+    {
+      "name": "ae_no2",
+      "reactants": [
+        "si_letter@no2"
+      ],
+      "products": [
+        "si_letter@N",
+        "si_letter@O"
+      ],
+      "coeffs": [
+        -1.0,
+        1.0,
+        2.0
+      ],
+      "reaction_energy_ref": 228.03537284894838,
+      "source": "g2_97.csv row 23 E = 954.1 kJ/mol / 4.184"
+    },
+    {
+      "name": "ae_s2",
+      "reactants": [
+        "si_letter@s2"
+      ],
+      "products": [
+        "si_letter@S"
+      ],
+      "coeffs": [
+        -1.0,
+        2.0
+      ],
+      "reaction_energy_ref": 103.71414913957935,
+      "source": "g2_97.csv row 5 E = 433.94 kJ/mol / 4.184"
+    },
+    {
+      "name": "ae_ch4",
+      "reactants": [
+        "si_letter@ch4"
+      ],
+      "products": [
+        "si_letter@C",
+        "si_letter@H"
+      ],
+      "coeffs": [
+        -1.0,
+        1.0,
+        4.0
+      ],
+      "reaction_energy_ref": 420.1290630975143,
+      "source": "g2_97.csv row 10 E = 1757.82 kJ/mol / 4.184"
+    },
+    {
+      "name": "ae_c2h4o2",
+      "reactants": [
+        "si_letter@c2h4o2"
+      ],
+      "products": [
+        "si_letter@C",
+        "si_letter@H",
+        "si_letter@O"
+      ],
+      "coeffs": [
+        -1.0,
+        2.0,
+        4.0,
+        2.0
+      ],
+      "reaction_energy_ref": 803.9579349904398,
+      "source": "g2_97.csv row 79 (C2H4O2 isomer note: row 79 is Acetic acid, the traj's only C2H4O2 entry) E = 3363.76 kJ/mol / 4.184"
+    },
+    {
+      "name": "ae_pf3",
+      "reactants": [
+        "si_letter@pf3"
+      ],
+      "products": [
+        "si_letter@F",
+        "si_letter@P"
+      ],
+      "coeffs": [
+        -1.0,
+        3.0,
+        1.0
+      ],
+      "reaction_energy_ref": 365.89866156787764,
+      "source": "g2_97.csv row 27 E = 1530.92 kJ/mol / 4.184"
+    },
+    {
+      "name": "ae_ch2_singlet",
+      "reactants": [
+        "si_letter@ch2_singlet"
+      ],
+      "products": [
+        "si_letter@C",
+        "si_letter@H"
+      ],
+      "coeffs": [
+        -1.0,
+        1.0,
+        2.0
+      ],
+      "reaction_energy_ref": 181.03489483747612,
+      "source": "g2_97.csv row 105 E = 757.45 kJ/mol / 4.184"
+    },
+    {
+      "name": "barrier_h_n2o_to_n2ohts",
+      "reactants": [
+        "si_letter@h",
+        "si_letter@n2o"
+      ],
+      "products": [
+        "si_letter@n2ohts"
+      ],
+      "coeffs": [
+        -1.0,
+        -1.0,
+        1.0
+      ],
+      "reaction_energy_ref": 17.7,
+      "source": "bh76_full_pool.json bh76_h_n2o_to_n2ohts 17.7 kcal/mol (the xcdiff json carries 18.14; the tracked pool value is used)"
+    },
+    {
+      "name": "barrier_oh_cl_to_RKT17",
+      "reactants": [
+        "si_letter@oh",
+        "si_letter@cl"
+      ],
+      "products": [
+        "si_letter@RKT17"
+      ],
+      "coeffs": [
+        -1.0,
+        -1.0,
+        1.0
+      ],
+      "reaction_energy_ref": 9.9,
+      "source": "bh76_full_pool.json bh76_oh_cl_to_RKT17 9.9 kcal/mol (the xcdiff json carries 10.4; the tracked pool value is used)"
+    }
+  ]
+}

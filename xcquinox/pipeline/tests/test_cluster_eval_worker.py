@@ -475,7 +475,7 @@ def test_the_shard_worker_loads_the_pools_its_command_names(run_dir, monkeypatch
 
     def _fake_compute_shard(run_dir_, spec_idx, names, basis, grid_level,
                             model_name="model.eqx", channel=None,
-                            pools=("bh76", "w411")):
+                            pools=("bh76", "w411"), dump_densities=None):
         seen["pools"] = tuple(pools)
         return {"energies": {}, "pbe_energies": {}, "mol_records": []}
 

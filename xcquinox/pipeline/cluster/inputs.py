@@ -291,8 +291,33 @@ def _stage_validation_slice(cfg: GridConfig, run_dir: str):
 
     Returns the val reaction list. The caller (``prepare_inputs``) only invokes
     this when ``cfg.inputs.val_refs_dir`` AND ``run_dir`` are both set, so it is a
-    no-op for runs that do not configure in-loop validation."""
+    no-op for runs that do not configure in-loop validation.
+
+    2026-10-28, the Letter-parity arms: when
+    ``cfg.inputs.validation_manifest`` is set, that manifest REPLACES the
+    held-out-pool split as the validation set. The manifest's reaction rows
+    (already qualified names + coeffs + published refs) are staged VERBATIM --
+    no split_held_out, no val_frac, nothing drawn from the training pools --
+    so the in-loop selection loss scores exactly the executed protocol's ten
+    reactions. The manifest species are staged into molecules on the spec
+    side (``spec_builder._attach_validation_slice``), not here."""
     from xcquinox.pipeline.eval_holdout import split_held_out
+
+    val_dir = os.path.join(run_dir, "validation")
+    os.makedirs(val_dir, exist_ok=True)
+
+    manifest_path = getattr(cfg.inputs, "validation_manifest", None)
+    if manifest_path:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        val_rxns = list(manifest["reactions"])
+        with open(os.path.join(val_dir, "val_reactions.json"), "w") as f:
+            json.dump(val_rxns, f, indent=2)
+        print(f"[val-slice] staged {len(val_rxns)} manifest reactions "
+              f"verbatim from {manifest_path} -> "
+              f"{val_dir}/val_reactions.json (no held-out split).",
+              flush=True)
+        return val_rxns
 
     val_frac = float(getattr(cfg.hyperparams, "val_frac", 0.2))
     pools = tuple(getattr(cfg.inputs, "held_out_pools", ("bh76", "w411")))
@@ -300,8 +325,6 @@ def _stage_validation_slice(cfg: GridConfig, run_dir: str):
         pools, basis=cfg.inputs.basis, grid_level=cfg.inputs.grid_level)
     val_rxns, _test_rxns = split_held_out(reactions, val_frac=val_frac)
 
-    val_dir = os.path.join(run_dir, "validation")
-    os.makedirs(val_dir, exist_ok=True)
     with open(os.path.join(val_dir, "val_reactions.json"), "w") as f:
         json.dump(list(val_rxns), f, indent=2)
     print(f"[val-slice] staged {len(val_rxns)} val reactions "

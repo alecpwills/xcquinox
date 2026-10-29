@@ -54,7 +54,10 @@ from xcquinox.pipeline.solver import SolverConfig, SolverMode
 from xcquinox.pipeline.data import precompute_fixed_density_data
 from xcquinox.pipeline.losses import make_loss
 from xcquinox.pipeline.models import AlecGGAModel
-from xcquinox.pipeline.oneshot import ONESHOT_AT_REFERENCE_KEY
+from xcquinox.pipeline.oneshot import (
+    ONESHOT_AT_REFERENCE_KEY,
+    oneshot_grid_density,
+)
 from xcquinox.pipeline.networks import create_network_pair
 from xcquinox.pipeline.defused_grad import defused_value_and_grad
 from xcquinox.pipeline.padding import common_pad_target
@@ -918,6 +921,60 @@ def _validation_reaction_mae(model, val_mol_data, val_reactions,
         energies_ha[name] = e if math.isfinite(e) else float("nan")
     mae, _n_used, _n_nan = reaction_mae_kcalmol(energies_ha, val_reactions)
     return float(mae)
+
+
+def _validation_parity_metric(model, spec, val_mol_data,
+                              val_reactions) -> float:
+    """Executed-protocol validation metric: MAE + sqrt(w_rho) * density term.
+
+    The published validation loss (Dick & Fernandez-Serra 2021, the executed
+    form) is the mean absolute reaction-energy error PLUS sqrt(lambda_n)
+    times the mean over the density-carrying validation species of the
+    predicted-norm-relative density deviation
+    ``sqrt(sum_g w_g drho_g^2) / sum_g w_g rho_nn_g``, both evaluated on a
+    forward-only pass. ``spec.validation_density_weight`` is lambda_n
+    (20.0 in the v9 arms, the training density weight).
+
+    Falls back to the plain :func:`_validation_reaction_mae` when the
+    weight is 0 or no validation species carries ``rho_ref_grid`` -- the
+    byte-identical pre-L6 behavior. A species whose density pass fails or
+    is non-finite drops its term (an energy species that diverges drops its
+    reaction); with no finite terms the metric is the plain MAE. The
+    solver config is resolved exactly as the training groups resolve it
+    (loss kwargs override, spec fallback), so the validation energy path
+    equals the loss energy path.
+    """
+    w = float(getattr(spec, "validation_density_weight", 0.0) or 0.0)
+    lk = getattr(spec, "loss_kwargs_dict", None) or {}
+    solver_config = lk.get("solver_config") or getattr(
+        spec, "solver_config", None)
+    if w <= 0.0:
+        return _validation_reaction_mae(
+            model, val_mol_data, val_reactions, solver_config=solver_config)
+    with_refs = [(name, md) for name, md in val_mol_data.items()
+                 if md.get("rho_ref_grid") is not None]
+    if not with_refs:
+        return _validation_reaction_mae(
+            model, val_mol_data, val_reactions, solver_config=solver_config)
+    mae = _validation_reaction_mae(
+        model, val_mol_data, val_reactions, solver_config=solver_config)
+    terms = []
+    for _name, md in with_refs:
+        try:
+            rho_ref = jnp.asarray(md["rho_ref_grid"])
+            grid_w = jnp.asarray(md["grid_weights"])
+            rho_nn = oneshot_grid_density(
+                model, md, solver_config=solver_config, forward_only=True)
+            dev = float(
+                jnp.sqrt(jnp.sum(grid_w * (rho_nn - rho_ref) ** 2))
+                / jnp.sum(grid_w * rho_nn))
+        except Exception:  # noqa: BLE001 -- a diverged species drops its term
+            continue
+        if math.isfinite(dev):
+            terms.append(dev)
+    if not terms:
+        return mae
+    return mae + math.sqrt(w) * (sum(terms) / len(terms))
 
 
 def _discard(path) -> None:
@@ -1897,13 +1954,18 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
 # Density-dominant fixed channel weights (dpyscf: density L_n weight ~20,
 # atomization/reaction L_RE ~1, total-energy L_E ~0.01). Energy channels at 1.0,
 # density at 20.0, vxc at 1.0. Used when update_scheme="per_molecule" and the
-# spec sets no explicit channel_weights.
+# spec sets no explicit channel_weights. loss_Eatom defaults to 1.0 because the
+# L6 loss emits the atomic-anchor residual RAW (the 0.01 lambda_E is a yaml
+# channel weight there, not a default); it is NOT an energy channel below, so a
+# non-self-consistent group's nonsc scaling leaves the anchor at its own
+# weight, matching the executed protocol's unscaled atomic energy terms.
 _DEFAULT_CHANNEL_WEIGHTS = {
     "loss_AE": 1.0,
     "loss_BH76": 1.0,
     "loss_IP13": 1.0,
     "loss_vxc": 1.0,
     "loss_rho": 20.0,
+    "loss_Eatom": 1.0,
 }
 
 #: The energy channels: the ones a non-self-consistent group's ``nonsc_weight``
@@ -2075,12 +2137,17 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
 
     sub_loss = make_loss(spec.loss_name, molecules=species, **lk)
     nonsc_weight = float(getattr(spec, "nonsc_weight", 1.0))
-    if marked and lk.get("regularize_atom_syms") and nonsc_weight > 0.0:
+    if (marked and lk.get("regularize_atom_syms") and nonsc_weight > 0.0
+            and not getattr(sub_loss, "emits_eatom_channel", False)):
         # The loop scales this group's energy channels by nonsc_weight, and
         # the atomic regularizer of the group's unmarked atoms rides in the
         # AE channel; the published script adds those atoms' energy terms
         # unscaled, so the regularizer's weight is raised by the same factor
-        # and the term stays at the run's own value.
+        # and the term stays at the run's own value. Skipped for a loss
+        # with emits_eatom_channel (L6): its anchor residual is a separate
+        # loss_Eatom channel outside _ENERGY_CHANNELS -- already unscaled,
+        # and its 0.01 lives in the channel weights, so dividing w_atomic
+        # by nonsc_weight would double-compensate.
         w_atomic = getattr(sub_loss, "w_atomic", None)
         if w_atomic is not None:
             lk["w_atomic"] = float(w_atomic) / nonsc_weight
@@ -2249,14 +2316,13 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
 
     # WS3: held-out validation -> early-stop + validation-best snapshot. A no-op
     # when validate_every<=0 / no val data (_build_validation_data -> None,None):
-    # the loop is then byte-identical to before. solver_config matches training
-    # so the val energy path == the loss energy path.
+    # the loop is then byte-identical to before. The metric resolves the solver
+    # config exactly as the training groups do, so the val energy path == the
+    # loss energy path.
     val_every = int(getattr(spec, "validate_every", 0))
     val_mol_data, val_reactions = _build_validation_data(spec)
     val_enabled = val_every > 0 and val_mol_data is not None
     val_tracker = _BestValidationTracker() if val_enabled else None
-    val_solver_config = (spec.loss_kwargs_dict.get("solver_config")
-                         or spec.solver_config)
     early_stopped = False
     epochs_run = 0
 
@@ -2449,9 +2515,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                 # RSS bracketing the validation eval: a boundary memory burst
                 # (fresh kernels for the val set) appears as post-minus-pre.
                 rss_pre_val, _ = read_rss_gb()
-                val_mae = _validation_reaction_mae(
-                    model, val_mol_data, val_reactions,
-                    solver_config=val_solver_config)
+                val_mae = _validation_parity_metric(
+                    model, spec, val_mol_data, val_reactions)
                 rss_post_val, hwm_post_val = read_rss_gb()
                 val_tracker.update(val_mae, model)
                 aux_log.append({

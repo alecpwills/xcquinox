@@ -473,7 +473,8 @@ _DENSITY_RECORD_KEYS: Tuple[str, ...] = (
 
 
 def density_errors_for_record(model, md: Dict[str, Any], *,
-                              solver_config=None) -> Dict[str, Any]:
+                              solver_config=None,
+                              keep_rho: bool = False) -> Dict[str, Any]:
     """NN-vs-CCSD and PBE-vs-CCSD density errors for one held-out species.
 
     Returns ``{density_rmse, density_l1, density_rmse_pbe, density_l1_pbe,
@@ -484,6 +485,14 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
     (``rho_ref_grid is None``; e.g. the species' ``external_data_path`` was
     unresolved), so runs without benchmark refs are byte-identical to the
     historical all-None schema.
+
+    ``keep_rho`` (the slim16 density saving) additionally runs the NN forward
+    for reference-less molecules and attaches the converged NN grid density
+    as ``"rho_nn_grid"`` (numpy array) so the caller can write it to disk;
+    the scalar columns of a reference-less record stay all-None, so the
+    JSON schema never changes shape. The array NEVER belongs in a JSON
+    payload: every caller that sets ``keep_rho`` pops the key and hands it
+    to :func:`dump_density_arrays`.
 
     The NN channel reuses :class:`~xcquinox.pipeline.evaluation.DensityRMSEMetric`
     (solver-aware; with a FULL/FIXED_J ``solver_config`` this re-runs the SCF
@@ -503,15 +512,23 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
     if sum(n for _, n in comp) == 1:
         return none_result                      # atoms: density matching skipped
     if md.get("rho_ref_grid") is None:
-        return none_result
+        if not keep_rho:
+            return none_result
+        import xcquinox.pipeline.evaluation as evaluation
+        nn = evaluation.DensityRMSEMetric().compute(
+            model, md, solver_config=solver_config, keep_rho=True)
+        out = dict(none_result)
+        if nn.get("rho_nn_grid") is not None:
+            out["rho_nn_grid"] = nn["rho_nn_grid"]
+        return out
     import xcquinox.pipeline.evaluation as evaluation
-    nn = evaluation.DensityRMSEMetric().compute(model, md,
-                                                solver_config=solver_config)
+    nn = evaluation.DensityRMSEMetric().compute(
+        model, md, solver_config=solver_config, keep_rho=keep_rho)
     rmse_pbe, l1_pbe = evaluation.pbe_density_errors(md)
     eps_pbe, _, _ = evaluation.pbe_density_eps(md)
     _, n_e, wsum = evaluation.density_eps_terms(
         md["rho_ref_grid"], md["rho_ref_grid"], md["grid_weights"])
-    return {
+    out = {
         "density_rmse": nn.get("density_rmse"),
         "density_l1": nn.get("density_l1"),
         "density_rmse_pbe": rmse_pbe,
@@ -523,6 +540,45 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
         "ref_density_method": nn.get("ref_density_method")
                               or md.get("ref_density_method"),
     }
+    if keep_rho and nn.get("rho_nn_grid") is not None:
+        out["rho_nn_grid"] = nn["rho_nn_grid"]
+    return out
+
+
+def dump_density_arrays(out_dir, name, md: Dict[str, Any], rho_nn) -> str:
+    """Write one species' converged NN + PBE grid densities to
+    ``<out_dir>/<name>.npz`` (the slim16 density saving, 2026-10-28).
+
+    Keys: ``rho_nn`` (the passed converged NN grid density), ``rho_pbe``
+    (``md['rho_pbe_ref_grid']``, the reference calculation's own PBE density,
+    when present -- else the locally recomputed ``md['rho_grid']``; the
+    fallback is what a species without benchmark refs has, and the file is
+    for later CCSD comparison), ``grid_weights``, ``n_electrons`` (from the
+    record; the quadrature integral of rho_pbe when absent), ``name`` and
+    ``ref_density_method`` (provenance). The arrays are ~0.5-2 MB per species
+    at grid 4, so this is opt-in from the eval driver (``--dump-densities``).
+    Returns the path written."""
+    import numpy as _np
+
+    rho_pbe = md.get("rho_pbe_ref_grid")
+    if rho_pbe is None:
+        rho_pbe = md.get("rho_grid")
+    w = _np.asarray(md["grid_weights"])
+    n_e = md.get("n_electrons")
+    if n_e is None and rho_pbe is not None:
+        n_e = float(_np.sum(w * _np.asarray(rho_pbe)))
+    os.makedirs(str(out_dir), exist_ok=True)
+    path = os.path.join(str(out_dir), f"{name}.npz")
+    _np.savez(
+        path,
+        rho_nn=_np.asarray(rho_nn),
+        rho_pbe=rho_pbe,
+        grid_weights=w,
+        n_electrons=n_e,
+        name=str(name),
+        ref_density_method=md.get("ref_density_method"),
+    )
+    return path
 
 
 def make_per_molecule_record(
@@ -1255,6 +1311,7 @@ def run_full_holdout_eval(
     out_dir: Path,
     *,
     mol_data: Optional[Dict[str, Any]] = None,
+    dump_densities: Optional[str] = None,
 ) -> Dict[str, Any]:
     """End-to-end held-out eval driver, what the cluster eval task calls.
 
@@ -1285,7 +1342,8 @@ def run_full_holdout_eval(
     log line.
     """
     per = compute_holdout_per_molecule(
-        training_spec, model, mol_specs, mol_data=mol_data)
+        training_spec, model, mol_specs, mol_data=mol_data,
+        dump_densities=dump_densities)
     require_precomputed_species(per["mol_records"], mol_specs)
     return _finalize_holdout_outputs(
         reactions, per["energies"], per["pbe_energies"], per["mol_records"],
@@ -1293,7 +1351,8 @@ def run_full_holdout_eval(
 
 
 def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any],
-                                 *, mol_data: Optional[Dict[str, Any]] = None
+                                 *, mol_data: Optional[Dict[str, Any]] = None,
+                                 dump_densities: Optional[str] = None,
                                  ) -> Dict[str, Any]:
     """Per-molecule stage of the held-out eval (the parallelizable part).
 
@@ -1302,6 +1361,14 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
     is pure of reaction aggregation and file IO, so a sharded driver can call it
     on a SUBSET of ``mol_specs`` and merge the returned maps (the loops iterate
     the dict, so a shard is just a smaller ``mol_specs``).
+
+    ``dump_densities`` (a directory, the slim16 density saving) writes each
+    molecule's converged NN + PBE grid densities to
+    ``<dump_densities>/<name>.npz`` via :func:`dump_density_arrays` -- the
+    density record is computed with ``keep_rho=True``, the array is popped
+    before the record enters ``mol_records``, and atoms (no NN density
+    computed) are simply not dumped. None (default) leaves every output
+    byte-identical.
 
     Returns a dict with: ``energies`` (name -> E_nn), ``pbe_energies``
     (name -> E_pbe), ``scf_info`` (name -> SCF convergence dict), ``mol_records``
@@ -1353,13 +1420,23 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
     training_cf = {str(t).casefold() for t in flag_names}
     mol_records: List[Dict[str, Any]] = []
     for name in sorted(mol_data):
+        density = density_errors_for_record(
+            model, mol_data[name], solver_config=spec_solver_config,
+            keep_rho=bool(dump_densities))
+        if dump_densities:
+            # The array goes to its npz, never into the JSON record: pop it
+            # here so mol_records (and every shard payload merged from them)
+            # stay scalar-only whatever the caller does with the dump.
+            rho_arr = density.pop("rho_nn_grid", None)
+            if rho_arr is not None:
+                dump_density_arrays(dump_densities, name, mol_data[name],
+                                    rho_arr)
         mol_records.append(make_per_molecule_record(
             name, mol_data[name], energies.get(name, float("nan")),
             in_training_subset=(str(name).casefold() in training_cf),
             scf=scf_info.get(name),
             # all-None without benchmark CCSD refs (rho_ref_grid is None then)
-            density=density_errors_for_record(
-                model, mol_data[name], solver_config=spec_solver_config),
+            density=density,
         ))
 
     return {

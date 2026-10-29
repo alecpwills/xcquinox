@@ -127,6 +127,13 @@ class SolverNamed:
     # ``inputs.orientation_lock_strength`` whenever a run supplies one, so the
     # run-level knob -- not this one -- is what a production sweep locks with.
     orientation_lock_strength: float = 0.0
+    # 2026-10-28: the executed protocol's degeneracy noise (SolverConfig
+    # .fock_noise_std / .fock_noise_seed): symmetrized half-normal noise on
+    # the assembled Fock, applied on the differentiable path only. 0.0 (the
+    # default) leaves every existing solver byte-identical; the v9
+    # Letter-parity solvers set 1e-5 (the vendored torch_routines.py value).
+    fock_noise_std: float = 0.0
+    fock_noise_seed: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +208,13 @@ class HyperParams:
     # Off by default: byte-identical to every existing sweep.
     respect_sc_flag: bool = False
     nonsc_weight: float = 1.0
+    # 2026-10-28, the Letter-parity arms: the density term of the in-loop
+    # validation metric. When > 0 and validation molecules carry rho_ref_grid,
+    # the metric is MAE(reactions) + sqrt(this) * mean relative density
+    # deviation over the reference-carrying species (the executed protocol's
+    # selection loss). Default 0.0 keeps every existing sweep's metric at the
+    # plain reaction MAE. Threaded onto TrainingSpec.validation_density_weight.
+    validation_density_weight: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +292,14 @@ class InputPaths:
     # validation-best selection. Mirrors ``benchmark_refs_dir``. None (default)
     # = no in-loop validation precompute.
     val_refs_dir: str | None = None
+    # 2026-10-28, the Letter-parity arms: a tracked validation manifest
+    # (pipeline/data/si_letter_validation.json form -- species with geometry
+    # sources, reactions with refs) REPLACES the held-out-pool split as the
+    # in-loop validation set. When set, the staged val_reactions.json is the
+    # manifest's reactions verbatim and the validation molecules are the
+    # manifest's species at the run footing; ``val_refs_dir`` then holds their
+    # density references. None (default) = the WS3 held-out-pool slice.
+    validation_manifest: str | None = None
     # Per-rung SCF seeding (2026-08-14). "pbe" (default) keeps every arch on
     # the converged-PBE seed -- byte-identical to the pre-seeding protocol,
     # and deliberately NOT "auto": an auto default would silently convert a
@@ -1093,6 +1115,8 @@ def _build_solvers(d: dict) -> dict[str, SolverNamed]:
             freeze_on_convergence=bool(sd.get("freeze_on_convergence", True)),
             orientation_lock_strength=float(
                 sd.get("orientation_lock_strength", 0.0)),
+            fock_noise_std=float(sd.get("fock_noise_std", 0.0)),
+            fock_noise_seed=int(sd.get("fock_noise_seed", 0)),
         )
     return out
 
@@ -1128,6 +1152,8 @@ def _build_hyperparams(d: dict) -> HyperParams:
         seed_mix_atomic=bool(d.get("seed_mix_atomic", False)),
         respect_sc_flag=bool(d.get("respect_sc_flag", False)),
         nonsc_weight=float(d.get("nonsc_weight", 1.0)),
+        validation_density_weight=float(
+            d.get("validation_density_weight", 0.0)),
     )
 
 
@@ -1250,6 +1276,7 @@ def _build_inputs(d: dict) -> InputPaths:
         irreproducible_degenerate_reason=reason,
         benchmark_refs_dir=d.get("benchmark_refs_dir"),
         val_refs_dir=d.get("val_refs_dir"),
+        validation_manifest=d.get("validation_manifest"),
         seed_xc=seed_xc,
         seed_cache_dir=d.get("seed_cache_dir"),
         held_out_pools=pools,
