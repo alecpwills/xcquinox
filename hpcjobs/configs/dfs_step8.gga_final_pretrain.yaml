@@ -18,6 +18,17 @@
 #     stems ride along in the same fresh write. The currency rule would
 #     otherwise regenerate the screen's file in place, the exact hazard the
 #     lap sweep's own root was cut for.
+#   pretrain.pool_atoms / pretrain.atoms, with a further data-root rename
+#     (2026-10-30): the atom-context descriptor labels elements through a
+#     frozen random embedding, so any element the pretraining pool never
+#     trains fails its certificate free atom outright. The slim05 draw
+#     covers ten elements; the certificate probes fourteen free atoms
+#     (S 41.8, Na 21.6, P 13.5, Al 9.7, B 6.2 mHa on the first arm run).
+#     pool_atoms adds the BH76 / W4-11 free atoms, an explicit Na/Li pair
+#     completes the atom coverage the screen's DFS set used to carry, and
+#     because pool knobs change the data file's content rather than its
+#     name the root takes the _atoms suffix so the regeneration cannot
+#     land on the in-flight siblings' file.
 #
 # The arm is a pretraining run: --stages pretrain submits datagen -> pretrain
 # and nothing downstream is rendered or queued. The arm's readout is the
@@ -95,8 +106,9 @@ inputs:
   output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/gga_final
 
 pretrain:
-  # the arm's own root: the atom-context stem forces a fresh file
-  data_dir: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/gga_final/pretrain_data_slim05_def2tzvp_g4_ggafinal
+  # the arm's own root: the atom-context stem forced a fresh file; the
+  # _atoms suffix keeps the extended pool's regeneration off the siblings
+  data_dir: /gpfs/scratch/awills/xcquinox_runs/dfs_step8/gga_final/pretrain_data_slim05_def2tzvp_g4_ggafinal_atoms
   # the published cloning schedule and objective
   n_steps: 20000
   lr_start: 1.0e-3
@@ -109,7 +121,10 @@ pretrain:
   points_per_system: 800
   sampling_seed: 42
   dfs_set: false
-  pool_atoms: false
+  pool_atoms: true
+  # Na and Li sit outside the BH76 / W4-11 pool-atom set (2S 1 each); the
+  # certificate probes both as free atoms
+  atoms: [["Na", 1], ["Li", 1]]
   slim_set: slim05
   parent_density: auto
   exchange_footing: paper
