@@ -126,8 +126,11 @@ def test_run_shard_fail_continues_and_ledger_records(tmp_path, monkeypatch):
     bad = _ms(name="BAD", atom="H 0 0 0", comp=(("H", 1),))
 
     real_generate = br.generate_one
+    marker_at_call = {}
 
     def flaky(ms, **kw):
+        marker_at_call[ms.name] = br._inflight_marker_path(
+            kw["out_dir"], ms.name).is_file()
         if ms.name == "BAD":
             raise RuntimeError("ccsd exploded")
         return real_generate(ms, **kw)
@@ -139,12 +142,18 @@ def test_run_shard_fail_continues_and_ledger_records(tmp_path, monkeypatch):
     assert n_fail == 1
     assert (tmp_path / "GOOD.npz").is_file()      # FAIL did not sink the shard
     assert not (tmp_path / "BAD.npz").exists()
+    # each species carries an in-flight marker WHILE it computes (the kill
+    # death-certificate a stale marker represents), and every species survived
+    # its own attempt, so none is left behind
+    assert marker_at_call == {"BAD": True, "GOOD": True}
+    assert list((tmp_path / "_inflight").glob("*.json")) == []
     ledgers = list((tmp_path / "_runlogs" / "shard_2_of_4").glob("_run_log_*.json"))
     assert ledgers, "finalized RunLog ledger expected"
     results = json.loads(ledgers[0].read_text())["results"]
     by_name = {r["name"]: r for r in results}
     assert by_name["BAD"]["status"] == "FAIL"
     assert "ccsd exploded" in by_name["BAD"]["error_msg"]
+    assert "peakRSS=" in by_name["BAD"]["error_msg"]  # the un-lagging number
     assert by_name["GOOD"]["status"] == "OK"
 
 

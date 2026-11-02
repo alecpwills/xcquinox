@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -429,6 +430,37 @@ def _fmt_hms(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{sec:02d}"
 
 
+def _inflight_marker_path(out_dir, name: str) -> Path:
+    """The in-flight marker of a species: present exactly while THIS process
+    is computing it, left behind by a kill (SIGKILL runs no cleanup)."""
+    return Path(out_dir) / "_inflight" / f"{name}.json"
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
+
+def _peak_rss_mb() -> Optional[int]:
+    """The process's true resident high-water mark (VmHWM), MB, or None off
+    Linux. jobacct samples MaxRSS periodically, so a memory spike that kills
+    the process inside one sampling window records the PRE-spike value; this
+    is the number that cannot lag."""
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
               out_dir, basis: str, grid_level: int, density_fit: bool = False,
               auxbasis: Optional[str] = None,
@@ -444,13 +476,33 @@ def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
     ledger_dir = (Path(out_dir) / "_runlogs"
                   / f"shard_{shard_label.replace('/', '_of_')}")
     log = RunLog(cache_dir=ledger_dir)
+    # Kill deferral: a species whose in-flight marker is present at entry was
+    # being computed by a process that died (SIGKILL runs no cleanup, so the
+    # marker IS the death certificate). Attempt it LAST: a restart then banks
+    # every other species before re-entering the one that kills its process,
+    # so one unkillable molecule costs its own partial work, never the
+    # remaining pool (slim16 refs jobs 2374667/2386472: killed twice in
+    # flight on the same species, the second run banked nothing).
+    stale = [n for n in names if _inflight_marker_path(out_dir, n).is_file()]
+    if stale:
+        names = [n for n in names if n not in set(stale)] + stale
+        print(f"benchmark_refs: {len(stale)} species carried a stale "
+              f"in-flight marker (a process died on them; deferred to the "
+              f"end of this attempt): {', '.join(stale)}", flush=True)
     log.start(names)
+    marker_dir = Path(out_dir) / "_inflight"
+    marker_dir.mkdir(parents=True, exist_ok=True)
     n = len(names)
     t0 = time.monotonic()
     n_fail = 0
+    failed: List[str] = []
     for k, name in enumerate(names, 1):
         ms = mol_specs[name]
         t1 = time.monotonic()
+        marker = _inflight_marker_path(out_dir, name)
+        _atomic_write_json(marker, {
+            "name": name, "host": socket.gethostname(), "pid": os.getpid(),
+            "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
         err: Optional[str] = None
         try:
             status = generate_one(ms, out_dir=out_dir, basis=basis,
@@ -462,18 +514,34 @@ def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
             status = "FAIL"      # sink the whole shard's remaining work
             err = f"{type(exc).__name__}: {exc}"
             n_fail += 1
+            failed.append(name)
+        # the process SURVIVED this species -- generate_one returned, or the
+        # failure was caught and logged -- so the marker is no longer a
+        # death certificate. A propagating BaseException (KeyboardInterrupt,
+        # SystemExit) never reaches this line, and SIGKILL/SIGTERM run no
+        # cleanup at all: in every death case the marker stays behind and
+        # the next attempt defers the species the process died on.
+        if marker.is_file():
+            marker.unlink()
         wall = time.monotonic() - t1
+        peak = _peak_rss_mb()
+        if err and peak is not None:
+            err = f"{err} [peakRSS={peak}MB]"
         log.record_result(name=name, charge=ms.charge, spin=ms.spin,
                           status=status, wall_clock_s=wall, error_msg=err)
         if progress:
             elapsed = time.monotonic() - t0
             eta = elapsed / k * (n - k)
+            rss = f" peakRSS={peak}MB" if peak is not None else ""
             print(f"[gen {k}/{n} shard {shard_label}] {name} "
                   f"(q={ms.charge},2S={ms.spin}) status={status} "
-                  f"wall={wall:.1f}s | elapsed {_fmt_hms(elapsed)} "
+                  f"wall={wall:.1f}s{rss} | elapsed {_fmt_hms(elapsed)} "
                   f"ETA {_fmt_hms(eta)}", flush=True)
             if err:
                 print(f"    {err}", flush=True)
+    if failed:
+        print(f"benchmark_refs: shard {shard_label}: {len(failed)}/{n} "
+              f"species FAILED: {', '.join(failed)}", flush=True)
     log.finalize()
     return n_fail
 

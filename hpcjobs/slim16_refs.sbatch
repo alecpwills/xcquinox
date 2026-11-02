@@ -21,7 +21,12 @@
 # merge is pulled in and BEFORE (or while) the arms train: the readout's
 # guard refuses a pass whose species lack a complete, footing-matching npz
 # here. The generator is resumable per species (existing complete npz files
-# are skipped), so a wall-kill just needs a resubmit.
+# are skipped), a species that KILLS its process is deferred to the end of
+# the next attempt's queue (its _inflight marker is the death certificate),
+# and this wrapper retries the generator while attempts remain -- so one
+# unkillable molecule costs its own partial work, never the remaining pool
+# (refs jobs 2374667/2386472: SIGKILLed in flight on the same species on
+# two different nodes, the second run banked nothing).
 #
 # The footing is read from the arm configuration itself (the eval_* readout
 # block, never a line match), so this job and the readout cannot drift;
@@ -92,13 +97,27 @@ fi
 echo "[sl16-refs] out=${REFS} pool=${POOL} basis=${BASIS} grid=${GRID} df='${DF_ARGS}' lock=${OL}"
 
 mkdir -p "${REFS}"
-rc=0
-# shellcheck disable=SC2086
-python -m xcquinox.pipeline.benchmark_refs --out-dir "${REFS}" \
-    --pool "${POOL}" --basis "${BASIS}" --grid-level "${GRID}" \
-    ${DF_ARGS} --orientation-lock-strength "${OL}" || rc=$?
+# Bounded auto-retry: a killed attempt (rc 137) resumes with the killed
+# species DEFERRED last, so the next attempt banks everything else before
+# re-entering it. Fixed attempt cap -- the deferral bounds the waste to one
+# species-partial per kill, and a species that dies with everything else
+# complete leaves a short FAILED job with the residue named in the log.
+ATTEMPTS=3
+rc=1
+attempt=0
+while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+    attempt=$((attempt + 1))
+    rc=0
+    # shellcheck disable=SC2086
+    python -m xcquinox.pipeline.benchmark_refs --out-dir "${REFS}" \
+        --pool "${POOL}" --basis "${BASIS}" --grid-level "${GRID}" \
+        ${DF_ARGS} --orientation-lock-strength "${OL}" || rc=$?
+    n_ok=$(ls "${REFS}" 2>/dev/null | grep -c '\.npz$' || true)
+    echo "[sl16-refs] attempt ${attempt}/${ATTEMPTS} rc=${rc} complete npz=${n_ok}"
+    if [ "${rc}" -eq 0 ]; then break; fi
+done
 if [ "${rc}" -ne 0 ]; then
-    echo "[sl16-refs] generation FAILED rc=${rc}"
+    echo "[sl16-refs] generation FAILED rc=${rc} after ${attempt} attempt(s); see the deferred/failed species above"
     exit "${rc}"
 fi
 echo "[sl16-refs] DONE"

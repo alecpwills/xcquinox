@@ -35,8 +35,25 @@ echo "[thread-caps] allocation=$${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLA
 # (no OEP stage), capped at the configured species size when one is stated;
 # every species' final npz is atomic + skip-if-complete, so a timeout/requeue
 # simply resumes. Starts once the train array has BEGUN (--dependency=after).
-python -m xcquinox.pipeline.benchmark_refs \
-  --out-dir "${BENCH_REFS_DIR}" \
-  --pool ${BENCH_POOLS} \
-  --basis "${BASIS}" \
-  --grid-level ${GRID_LEVEL}${BENCH_DF_FLAGS}
+# A species that KILLS its process is deferred to the end of the next
+# attempt's queue (its _inflight marker is the death certificate), and this
+# bounded retry then banks every other species before re-entering it.
+ATTEMPTS=3
+rc=1
+attempt=0
+while [ "$$attempt" -lt "$$ATTEMPTS" ]; do
+  attempt=$$((attempt + 1))
+  rc=0
+  python -m xcquinox.pipeline.benchmark_refs \
+    --out-dir "${BENCH_REFS_DIR}" \
+    --pool ${BENCH_POOLS} \
+    --basis "${BASIS}" \
+    --grid-level ${GRID_LEVEL}${BENCH_DF_FLAGS} || rc=$$?
+  n_ok=$$(ls "${BENCH_REFS_DIR}" 2>/dev/null | grep -c '\.npz$$' || true)
+  echo "[benchmark-refs] attempt $${attempt}/$${ATTEMPTS} rc=$${rc} complete npz=$${n_ok}"
+  if [ "$$rc" -eq 0 ]; then break; fi
+done
+if [ "$$rc" -ne 0 ]; then
+  echo "[benchmark-refs] FAILED rc=$${rc} after $${attempt} attempt(s)"
+  exit "$$rc"
+fi
