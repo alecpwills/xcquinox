@@ -30,6 +30,15 @@ export MKL_NUM_THREADS="$$PYSCF_THREADS"
 export OPENBLAS_NUM_THREADS="$$PYSCF_THREADS"
 echo "[thread-caps] allocation=$${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$$PYSCF_THREADS"
 
+# --- pyscf scratch off the node ---------------------------------------------
+# UCCSD on a DF mean field builds its four-center + DIIS scratch (187.6 GB
+# modeled for one open-shell 16-atom species) into PYSCF_TMPDIR, which defaults to
+# /tmp on the node -- cgroup-charged, and what killed two whole-node refs
+# jobs at rc 137. The run's own gpfs tree instead; a SIGKILL orphans it
+# inside the run dir.
+mkdir -p "${RUN_DIR}/pyscf_tmp"
+export PYSCF_TMPDIR="${RUN_DIR}/pyscf_tmp"
+
 # --- hold-out benchmark reference densities (single job, resumable) ---------
 # CCSD + PBE densities for the species of the held-out pools the run names
 # (no OEP stage), capped at the configured species size when one is stated;
@@ -55,5 +64,7 @@ while [ "$$attempt" -lt "$$ATTEMPTS" ]; do
 done
 if [ "$$rc" -ne 0 ]; then
   echo "[benchmark-refs] FAILED rc=$${rc} after $${attempt} attempt(s)"
+  rm -rf "${RUN_DIR}/pyscf_tmp"
   exit "$$rc"
 fi
+rm -rf "${RUN_DIR}/pyscf_tmp"

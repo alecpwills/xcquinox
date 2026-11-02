@@ -47,6 +47,34 @@ class SpeciesEntry:
                  # "probe_atom_ref", "hbpt"
 
 
+def _peak_rss_mb():
+    """The process's true resident high-water mark (VmHWM), MB, or None off
+    Linux. jobacct samples MaxRSS periodically, so a memory spike that kills
+    the process inside one sampling window records the PRE-spike value; this
+    is the number that cannot lag."""
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _ccsd_cycle_report(envs):
+    """CCSD-iteration telemetry: the iteration index and the process memory
+    high-water mark. A species whose process is KILLED mid-CCSD prints no
+    completion line and writes no FAIL record, so this callback is the only
+    reading from inside the dying computation. Touches envs only; no
+    numerical effect.
+
+    pyscf's CCSD kernel calls callback(locals()) with the loop counter
+    under "istep" (0-based), not "cycle"."""
+    it = envs.get("istep") if isinstance(envs, dict) else envs
+    print(f"    ccsd iter {it}: peakRSS={_peak_rss_mb()}MB", flush=True)
+
+
 def _fsync_dir(dir_path) -> None:
     """fsync a directory entry for durability after an atomic os.replace.
 
@@ -873,6 +901,9 @@ def run_ccsd_with_cache(
     else:
         from pyscf.cc import ccsd
         mycc = ccsd.RCCSD(mf_hf)
+    # Per-cycle telemetry (see _ccsd_cycle_report): attached before the
+    # kernel so every iteration prints, including the ones before a kill.
+    mycc.callback = _ccsd_cycle_report
     mycc.kernel()
     _require_ccsd_converged(mycc, spec.name)
     # the multireference diagnostic, taken here where the amplitudes exist

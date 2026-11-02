@@ -70,6 +70,18 @@ export MKL_NUM_THREADS="$THREADS"
 export OPENBLAS_NUM_THREADS="$THREADS"
 echo "[sl16-refs] allocation=${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$THREADS"
 
+# pyscf scratch off the node: UCCSD on a DF mean field always builds its
+# four-center + DIIS scratch OUT-OF-CORE (187.6 GB modeled for the pool's
+# one open-shell 16-atom species, mb16_43_34) into PYSCF_TMPDIR, which defaults
+# to /tmp on the node -- cgroup-charged and within 0.1% of the memory cap;
+# that is what killed jobs 2374667/2386472 (rc 137, two different nodes,
+# ~40 GB RSS). gpfs scratch instead: same algorithms, same bytes, off the
+# cgroup. A SIGKILL orphans the per-job dir; it is named by job id.
+PYSCF_SCRATCH="/gpfs/scratch/awills/pyscf_tmp_refs_${SLURM_JOB_ID:-manual}"
+mkdir -p "${PYSCF_SCRATCH}"
+export PYSCF_TMPDIR="${PYSCF_SCRATCH}"
+echo "[sl16-refs] PYSCF_TMPDIR=${PYSCF_TMPDIR}"
+
 python -c "import xcquinox.pipeline.benchmark_refs" \
     || { echo "[sl16-refs] FATAL: repo import failed (env/activation)"; exit 1; }
 
@@ -118,7 +130,9 @@ while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
 done
 if [ "${rc}" -ne 0 ]; then
     echo "[sl16-refs] generation FAILED rc=${rc} after ${attempt} attempt(s); see the deferred/failed species above"
+    rm -rf "${PYSCF_SCRATCH}"
     exit "${rc}"
 fi
+rm -rf "${PYSCF_SCRATCH}"
 echo "[sl16-refs] DONE"
 exit 0

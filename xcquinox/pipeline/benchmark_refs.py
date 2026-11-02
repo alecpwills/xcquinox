@@ -54,6 +54,7 @@ from xcquinox.pipeline.external_refs import (
     SpeciesEntry,
     _fsync_dir,
     _fsync_file,
+    _peak_rss_mb,
     run_ccsd_with_cache,
     run_scf_with_cache,
 )
@@ -444,21 +445,6 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
         os.fsync(fh.fileno())
     os.replace(tmp, path)
     _fsync_dir(path.parent)
-
-
-def _peak_rss_mb() -> Optional[int]:
-    """The process's true resident high-water mark (VmHWM), MB, or None off
-    Linux. jobacct samples MaxRSS periodically, so a memory spike that kills
-    the process inside one sampling window records the PRE-spike value; this
-    is the number that cannot lag."""
-    try:
-        with open("/proc/self/status", "r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("VmHWM:"):
-                    return int(line.split()[1]) // 1024
-    except (OSError, ValueError, IndexError):
-        pass
-    return None
 
 
 def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
