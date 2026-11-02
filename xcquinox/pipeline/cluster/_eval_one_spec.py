@@ -158,6 +158,46 @@ def _readout_plan(cfg):
     }
 
 
+def _missing_readout_refs(readout, names):
+    """Sorted names in ``names`` whose refs npz under ``readout['refs_dir']``
+    is absent or incomplete at the readout footing -- the ONE completeness
+    predicate of the read side, shared by the eval-time guard below and the
+    preflight's submit-time gate (``_preflight._readout_refs_gate``), so the
+    two can never disagree about what counts as built."""
+    from xcquinox.pipeline.benchmark_refs import _benchmark_npz_is_complete
+    return sorted(
+        name for name in names
+        if not _benchmark_npz_is_complete(
+            os.path.join(readout["refs_dir"], f"{name}.npz"),
+            basis=readout["basis"], grid_level=readout["grid_level"],
+            orientation_lock_strength=readout["orientation_lock"],
+            density_fit=readout["density_fit"],
+            auxbasis=readout["auxbasis"]))
+
+
+def readout_refs_gap(cfg):
+    """The readout refs completeness gap of ``cfg`` for the preflight gate:
+    ``None`` when the config states no readout or no refs dir, else
+    ``{"readout": plan, "total": n_pool_species, "missing": [name, ...]}``.
+
+    The pool is enumerated exactly as the eval worker will enumerate it
+    (:func:`load_held_out_pools` at the readout footing), so the gate counts
+    the same species the later guard counts."""
+    readout = _readout_plan(cfg)
+    if readout is None or not readout["refs_dir"]:
+        return None
+    from xcquinox.pipeline.full_benchmark_pools import load_held_out_pools
+    names, _ = load_held_out_pools(
+        (readout["pool"],), basis=readout["basis"],
+        grid_level=readout["grid_level"])
+    names = list(names)
+    return {
+        "readout": readout,
+        "total": len(names),
+        "missing": _missing_readout_refs(readout, names),
+    }
+
+
 def _load_spec(path):
     """Deserialize a TrainingSpec from a trusted local file.
 
@@ -495,16 +535,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
             # generated at another footing (or half-built by a killed job)
             # would silently yield an all-None density column and a NaN eps.
             # Refuses with the names, so the operator knows what to rebuild.
-            from xcquinox.pipeline.benchmark_refs import (
-                _benchmark_npz_is_complete)
-            _missing = sorted(
-                name for name in full_specs
-                if not _benchmark_npz_is_complete(
-                    os.path.join(readout["refs_dir"], f"{name}.npz"),
-                    basis=_hb, grid_level=_hg,
-                    orientation_lock_strength=readout["orientation_lock"],
-                    density_fit=readout["density_fit"],
-                    auxbasis=readout["auxbasis"]))
+            _missing = _missing_readout_refs(readout, full_specs)
             if _missing:
                 raise RuntimeError(
                     f"the readout refs dir {readout['refs_dir']!r} carries "

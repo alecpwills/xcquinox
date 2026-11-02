@@ -1468,6 +1468,13 @@ def test_eval_readout_knobs_validate(tmp_path):
     with pytest.raises(ValueError):
         load_grid_config(_write(tmp_path, "negative_lock.yaml", raw))
 
+    # the preflight waiver is part of the same closed block: dead text
+    # without eval_pool, a recorded string with it
+    raw = _base_config_dict()
+    raw["eval_refs_override_reason"] = "rebuild in flight"
+    with pytest.raises(ValueError, match="without eval_pool"):
+        load_grid_config(_write(tmp_path, "stray_override.yaml", raw))
+
     raw = _base_config_dict()
     raw.update(readout)
     cfg = load_grid_config(_write(tmp_path, "readout.yaml", raw))
@@ -1479,7 +1486,12 @@ def test_eval_readout_knobs_validate(tmp_path):
     assert cfg.eval_density_fit is True
     assert cfg.eval_auxbasis == "def2-tzvp-jkfit"
     assert cfg.eval_refs_dir == str(tmp_path / "refs")
+    assert cfg.eval_refs_override_reason is None
     assert cfg.eval_dump_densities is True
+
+    raw["eval_refs_override_reason"] = "rebuild in flight"
+    cfg = load_grid_config(_write(tmp_path, "waived.yaml", raw))
+    assert cfg.eval_refs_override_reason == "rebuild in flight"
 
     import pathlib
 
@@ -1507,6 +1519,7 @@ def test_resolved_config_round_trips_the_readout_knobs(tmp_path):
         "eval_density_fit": True,
         "eval_auxbasis": "def2-tzvp-jkfit",
         "eval_refs_dir": str(tmp_path / "refs"),
+        "eval_refs_override_reason": "rebuild in flight",
         "eval_dump_densities": True,
     }
     cfg = load_grid_config(_write(tmp_path, "base.yaml", _base_config_dict()))

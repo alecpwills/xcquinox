@@ -729,6 +729,13 @@ class GridConfig:
     # consumes (benchmark_refs --out-dir); the loud refs guard refuses a
     # pass whose species lack a complete, footing-matching npz there.
     eval_refs_dir: str | None = None
+    # waives the PREFLIGHT's readout-refs completeness gate: a non-empty
+    # string records why the run may start against a dir that is incomplete
+    # at submit time (e.g. a rebuild job that completes before the eval
+    # stage runs). The eval-time guard is NOT waived -- a run that reaches
+    # eval still refuses an incomplete dir on the node, so a broken promise
+    # fails loudly instead of yielding a silently reduced readout.
+    eval_refs_override_reason: str | None = None
     eval_dump_densities: bool = False
     # Pretraining-fidelity certificate tolerances. Optional in the YAML: a
     # config written before the certificate existed loads at the binding
@@ -760,6 +767,7 @@ def _validate_eval_readout(cfg: GridConfig) -> None:
             name for name in ("eval_basis", "eval_grid_level",
                               "eval_orientation_lock", "eval_density_fit",
                               "eval_auxbasis", "eval_refs_dir",
+                              "eval_refs_override_reason",
                               "eval_dump_densities")
             if getattr(cfg, name) not in (None, False))
         if stray:
@@ -2119,6 +2127,7 @@ def load_grid_config(path: str) -> GridConfig:
         eval_density_fit=(None if _eval_df is None else bool(_eval_df)),
         eval_auxbasis=raw.get("eval_auxbasis"),
         eval_refs_dir=raw.get("eval_refs_dir"),
+        eval_refs_override_reason=raw.get("eval_refs_override_reason"),
         eval_dump_densities=bool(raw.get("eval_dump_densities", False)),
         fidelity=_build_fidelity(raw.get("fidelity")),
         model=_build_model_block(raw.get("model")),

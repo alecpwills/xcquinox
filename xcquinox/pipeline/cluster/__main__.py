@@ -217,6 +217,10 @@ def _config_to_raw_dict(cfg) -> dict:
         "eval_density_fit": cfg.eval_density_fit,
         "eval_auxbasis": cfg.eval_auxbasis,
         "eval_refs_dir": cfg.eval_refs_dir,
+        # the waiver MUST round-trip with the block it waives: the preflight
+        # reads resolved_config.yaml, so a reason dropped here would silently
+        # hard-block at submit time a run whose source yaml states it.
+        "eval_refs_override_reason": cfg.eval_refs_override_reason,
         "eval_dump_densities": cfg.eval_dump_densities,
     }
     return raw
