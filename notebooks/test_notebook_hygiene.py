@@ -31,6 +31,7 @@ BUILDER_PRODUCTS = {
     "notebooks/_build_gga_training_anchor_transfer_notebook.py": "notebooks/gga_training_anchor_transfer.ipynb",
     "notebooks/_build_gga_training_dfs_subsets_notebook.py": "notebooks/gga_training_dfs_subsets.ipynb",
     "notebooks/_build_subset_generation_notebook.py": "notebooks/gga_subset_generation.ipynb",
+    "notebooks/_build_registry_pt_transfer_notebook.py": "notebooks/registry_pt_transfer.ipynb",
     "notebooks/dfs_selfconsistent_density/_build_notebook.py":
         "notebooks/dfs_selfconsistent_density/train_dfs_density.ipynb",
 }
@@ -151,3 +152,50 @@ def test_no_tracked_notebook_anywhere_stores_outputs():
             offenders.append((path, n))
     assert offenders == [], (
         f"{len(offenders)} tracked notebooks store outputs (path, cells): {offenders[:3]}")
+
+
+def test_registry_pt_builder_yaml_round_trips(tmp_path):
+    """The registry-pt builder's campaign dict loads through the cluster
+    validators and carries the miniature's contract: the registry's 44
+    architectures minus the GEA arm (whose gate cannot share a run-wide model
+    block with the meta rungs), an ONESHOT solver at zero cycles, and both
+    waivers (grid-1 O-atom degeneracy, fidelity-gate release) stated with
+    reasons."""
+    import yaml
+
+    from xcquinox.pipeline.cluster.domain import get_domain_profile
+    from xcquinox.pipeline.cluster.grid_config import (
+        load_grid_config,
+        require_explicit_bh76_mode,
+        validate_grid_semantics,
+    )
+    from xcquinox.pipeline.solver import SolverMode
+
+    raw = _load_builder(
+        "notebooks/_build_registry_pt_transfer_notebook.py"
+    ).make_grid_config_dict(tmp_path)
+    path = tmp_path / "campaign.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    require_explicit_bh76_mode(str(path))
+    cfg = load_grid_config(str(path))
+    validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
+
+    # deep_gea_3x16 cannot share the campaign block: gea_mu='pbe' pins its
+    # gate to x2 while every meta-GGA network pins tanh2, and a campaign
+    # model block forces one run-wide gate; the notebook trains that arm
+    # separately under its own block (production arch_screen's form).
+    assert len(cfg.sweep.arch) == 43, len(cfg.sweep.arch)
+    assert "deep_gea_3x16" not in cfg.sweep.arch
+    assert cfg.sweep.solver == ("oneshot",), cfg.sweep.solver
+    token = cfg.solvers["oneshot"].mode
+    try:
+        resolved = SolverMode[token]
+    except KeyError:
+        resolved = SolverMode(token)
+    assert resolved is SolverMode.ONESHOT, token
+    assert cfg.solvers["oneshot"].max_cycles == 0
+    assert cfg.inputs.allow_irreproducible_degenerate is True
+    assert str(cfg.inputs.irreproducible_degenerate_reason or "").strip()
+    assert cfg.fidelity.enforce is False
+    assert str(cfg.fidelity.override_reason or "").strip()
+    assert cfg.bh76_mode in ("barrier_height", "reaction_energy")
