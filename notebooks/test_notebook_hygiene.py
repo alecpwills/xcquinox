@@ -158,8 +158,10 @@ def test_registry_pt_builder_yaml_round_trips(tmp_path):
     """The registry-pt builder's campaign dict loads through the cluster
     validators and carries the miniature's contract: the registry's 44
     architectures minus the GEA arm (whose gate cannot share a run-wide model
-    block with the meta rungs), an ONESHOT solver at zero cycles, and both
-    waivers (grid-1 O-atom degeneracy, fidelity-gate release) stated with
+    block with the meta rungs), the Letter-parity loss under the v9
+    dfs_letter_allsc full_25 solver block (FULL mode, 25 cycles, decaying
+    mixer, tail weights, Fock noise, no convergence freeze), and both
+    waivers (grid-1 O/C-atom degeneracy, fidelity-gate release) stated with
     reasons."""
     import yaml
 
@@ -186,14 +188,15 @@ def test_registry_pt_builder_yaml_round_trips(tmp_path):
     # separately under its own block (production arch_screen's form).
     assert len(cfg.sweep.arch) == 43, len(cfg.sweep.arch)
     assert "deep_gea_3x16" not in cfg.sweep.arch
-    assert cfg.sweep.solver == ("oneshot",), cfg.sweep.solver
-    token = cfg.solvers["oneshot"].mode
+    assert cfg.sweep.loss == ("L6_letter_parity",), cfg.sweep.loss
+    assert cfg.sweep.solver == ("full_25",), cfg.sweep.solver
+    token = cfg.solvers["full_25"].mode
     try:
         resolved = SolverMode[token]
     except KeyError:
         resolved = SolverMode(token)
-    assert resolved is SolverMode.ONESHOT, token
-    assert cfg.solvers["oneshot"].max_cycles == 0
+    assert resolved is SolverMode.FULL, token
+    assert cfg.solvers["full_25"].max_cycles == 25
     assert cfg.inputs.allow_irreproducible_degenerate is True
     assert str(cfg.inputs.irreproducible_degenerate_reason or "").strip()
     assert cfg.fidelity.enforce is False

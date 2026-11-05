@@ -1146,6 +1146,45 @@ def dm_prediction_for_loss(model, mol_data, solver_config):
     return oneshot_dm_prediction_fast(model, mol_data, solver_config=solver_config)
 
 
+@eqx.filter_jit
+def _total_energy_scf_jit(model, mol_data, solver_config):
+    """SCF-backed total energy, compiled once per (molecule shape, solver_config)."""
+    return total_energy_for_solver(model, mol_data, solver_config)
+
+
+@eqx.filter_jit
+def _energy_trajectory_scf_jit(model, mol_data, solver_config):
+    """SCF energy trajectory, compiled once per (molecule shape, solver_config)."""
+    return energy_trajectory_for_solver(model, mol_data, solver_config)
+
+
+def total_energy_for_loss(model, mol_data, solver_config=None):
+    """Total energy for the training energy channels.
+
+    Numerically identical to :func:`total_energy_for_solver` at the training
+    default (``forward_only=False``); the difference is only where the SCF is
+    compiled. See the seam note above: EVERY loss's energy evaluation must
+    route through this seam regardless of loss type -- the raw dispatcher
+    recompiles the scan per call under reverse-mode AD and exhausts the
+    process mapping ceiling (``vm.max_map_count``).
+    """
+    if _scf_needs_jit(solver_config):
+        return _total_energy_scf_jit(model, mol_data, solver_config)
+    return total_energy_for_solver(model, mol_data, solver_config)
+
+
+def energy_trajectory_for_loss(model, mol_data, solver_config=None):
+    """Per-cycle energy trajectory for the tail-weighted training loss.
+
+    The trajectory twin of :func:`total_energy_for_loss`: same routing, same
+    rationale (the trajectory is the largest scan graph -- an unrouted one
+    exhausts the mapping ceiling fastest).
+    """
+    if _scf_needs_jit(solver_config):
+        return _energy_trajectory_scf_jit(model, mol_data, solver_config)
+    return energy_trajectory_for_solver(model, mol_data, solver_config)
+
+
 def oneshot_total_energy(model, mol_data) -> float:
     """Harris functional energy at the NN-predicted density.
 

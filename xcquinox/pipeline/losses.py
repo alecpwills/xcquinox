@@ -5,7 +5,7 @@ Implements THE SPEC §7.1 (base class) and §7.2 (A, B, C, D1, D2, D3).
 import abc
 import math
 import warnings
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 import jax.numpy as jnp
 import equinox as eqx
@@ -15,6 +15,8 @@ from xcquinox.pipeline.oneshot import (
     fixed_density_total_energy,
     total_energy_for_solver,
     energy_trajectory_for_solver,
+    total_energy_for_loss,
+    energy_trajectory_for_loss,
     scf_loss_tail_weights,
     dm_prediction_for_loss,
     grid_density_for_loss,
@@ -182,7 +184,7 @@ def _compute_energies(model, mol_data, N, solver_config=None):
         # outside this graph and injected (see xcquinox.pipeline.defused_grad).
         return override
     return jnp.stack([
-        total_energy_for_solver(model, mol_data[i], solver_config)
+        total_energy_for_loss(model, mol_data[i], solver_config)
         for i in range(N)
     ])
 
@@ -201,7 +203,7 @@ def _compute_energy_trajectories(model, mol_data, N, solver_config=None):
         # computed outside this graph and injected (see defused_grad).
         return override
     return jnp.stack([
-        energy_trajectory_for_solver(model, mol_data[i], solver_config)
+        energy_trajectory_for_loss(model, mol_data[i], solver_config)
         for i in range(N)
     ])
 
@@ -265,6 +267,28 @@ def _atomic_reg_abs(E_nn, atom_mol_idx_dict, atom_energies, step_w2=None):
             diff_sq = jnp.mean(step_w2 * diff_sq)
         terms.append(diff_sq)
     return jnp.mean(jnp.stack(terms))
+
+
+def _atomic_reg_abs_masked(E_nn, anchor_syms, atom_mol_idx, atom_energies,
+                           masks, step_w2=None):
+    """The Letter atomic-total residual over the UNION anchor set with
+    per-group masks (the superset path's eatom channel).
+
+    ``anchor_syms`` fixes the mask alignment (the loss's
+    ``ordered_anchor_syms()``); the residual per atom is IDENTICAL to
+    ``_atomic_reg_abs`` (absolute Ha^2, tail-weighted under step_w2) and
+    the reduction is sum(mask*term)/sum(mask) -- exactly the mean over the
+    group's anchored atoms the per-group scoped loss produced.
+    """
+    terms = []
+    view = []
+    for k, Z in enumerate(anchor_syms):
+        diff_sq = (E_nn[atom_mol_idx[Z]] - atom_energies[Z]) ** 2
+        if step_w2 is not None:
+            diff_sq = jnp.mean(step_w2 * diff_sq)
+        terms.append(diff_sq)
+        view.append(masks[k])
+    return _masked_mean(terms, view)
 
 
 def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies,
@@ -331,6 +355,50 @@ def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets,
     return jnp.mean(jnp.stack(terms))
 
 
+def _presence_mask(record, field):
+    """Per-record 0/1 presence for an optional channel target.
+
+    Canonical (padded) records carry every optional field plus a
+    ``field_masks`` dict of traced 0-d masks (padding.py); a 0-masked field
+    holds a canonical empty and must contribute exactly zero to its channel.
+    Non-padded records keep the historical semantics: the field itself is
+    None when it legitimately carries no target (mask 0), while a key that
+    is ENTIRELY ABSENT is a construction bug and must stay loud -- the
+    historical ``record[field]`` KeyError is the invariant guard.
+    """
+    fm = record.get("field_masks")
+    if fm is not None and field in fm:
+        return fm[field]
+    if field not in record:
+        raise KeyError(field)
+    return 0.0 if record[field] is None else 1.0
+
+
+def _masked_mean(terms, masks):
+    """sum(mask*term)/sum(mask) with the historical all-absent behavior.
+
+    Reproduces ``jnp.mean(stack(active_terms))`` exactly for the active
+    subset (the reduction is sum over the stacked axis / count), and
+    ``jnp.array(0.0)`` when nothing is active -- matching the `if not
+    terms` guards this replaces. With all-1 python masks the result is the
+    untouched historical mean.
+    """
+    if not terms:
+        return jnp.array(0.0)
+    stacked = jnp.stack(terms)
+    if all(m is None or (isinstance(m, float) and m == 1.0) for m in masks):
+        # every record active: the historical mean, bit-identical
+        return jnp.mean(stacked)
+    if all(isinstance(m, float) for m in masks):
+        active = [t for t, m in zip(terms, masks) if m != 0.0]
+        return jnp.mean(jnp.stack(active)) if active else jnp.array(0.0)
+    arr = jnp.stack([jnp.asarray(m, dtype=stacked.dtype) for m in masks])
+    total = jnp.sum(arr)
+    return jnp.where(total > 0.0,
+                     jnp.sum(arr * stacked) / jnp.where(total > 0.0, total, 1.0),
+                     jnp.array(0.0))
+
+
 def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
     """DM matching: Frobenius^2 mean-squared error per element.
 
@@ -340,8 +408,13 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
     ``_vxc_term``'s convention; normalizing the UKS branch by ``n_ao^2``
     only would be off by a factor of 2 vs RKS and inconsistent with
     ``_vxc_term``.
+
+    Records without a dm_target (None historically; canonical empty +
+    0 mask under padding) contribute exactly zero and leave the mean's
+    denominator unchanged -- the historical skip semantics.
     """
     terms = []
+    masks = []
     n_skipped = 0
     n_total = 0
     for i in iter_idx:
@@ -349,12 +422,12 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
             # a non-self-consistent entry carries no per-molecule loss
             continue
         n_total += 1
-        dm_ref = mol_data[i]["dm_target"]
-        if dm_ref is None:
+        mask = _presence_mask(mol_data[i], "dm_target")
+        if isinstance(mask, float) and mask == 0.0:
             n_skipped += 1
             continue
         dm_nn = dm_prediction_for_loss(model, mol_data[i], solver_config)
-        dm_ref_arr = jnp.asarray(dm_ref)
+        dm_ref_arr = jnp.asarray(mol_data[i]["dm_target"])
         err = jnp.sum((dm_nn - dm_ref_arr) ** 2)
         if relative:
             err = err / (jnp.sum(dm_ref_arr ** 2) + 1e-8)
@@ -380,6 +453,7 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
                 spin_mult = 2.0 if dm_ref_arr.ndim == 3 else 1.0
                 err = err / (spin_mult * n_ao_u * n_ao_u)
         terms.append(err)
+        masks.append(mask)
     if n_skipped:
         warnings.warn(
             f"_dm_term: {n_skipped} of {n_total} mol(s) had "
@@ -387,7 +461,7 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
             RuntimeWarning,
             stacklevel=2,
         )
-    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
+    return _masked_mean(terms, masks)
 
 
 def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
@@ -405,6 +479,7 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
     density so the total N_e^2 is used.
     """
     terms = []
+    masks = []
     n_skipped = 0
     n_total = 0
     for i in iter_idx:
@@ -412,10 +487,11 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
             # a non-self-consistent entry carries no per-molecule loss
             continue
         n_total += 1
-        rho_ref = mol_data[i]["rho_ref_grid"]
-        if rho_ref is None:
+        mask = _presence_mask(mol_data[i], "rho_ref_grid")
+        if isinstance(mask, float) and mask == 0.0:
             n_skipped += 1
             continue
+        rho_ref = mol_data[i]["rho_ref_grid"]
         rho_nn = grid_density_for_loss(model, mol_data[i], solver_config)
         w = mol_data[i]["grid_weights"]
         err = jnp.sum(w * (rho_nn - rho_ref) ** 2)
@@ -425,6 +501,7 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
             n_e = jnp.sum(w * rho_ref)
             err = err / (n_e ** 2 + 1e-8)
         terms.append(err)
+        masks.append(mask)
     if n_skipped:
         warnings.warn(
             f"_grid_term: {n_skipped} of {n_total} mol(s) had "
@@ -432,10 +509,10 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
             RuntimeWarning,
             stacklevel=2,
         )
-    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
+    return _masked_mean(terms, masks)
 
 
-def _vxc_term(model, mol_data, iter_idx, relative=False):
+def _vxc_term(model, mol_data, iter_idx, relative=False, record_masks=None):
     """V_xc matching: Frobenius^2 of (V_xc^NN - V_xc^ref).
 
     Normalized by n_ao^2 (absolute) or ||V_xc^ref||_F^2 (relative).
@@ -448,18 +525,20 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
     both spin channels.
     """
     terms = []
+    masks = []
     n_skipped = 0
     n_total = 0
+    k = 0
     for i in iter_idx:
         if mol_data[i].get(ONESHOT_AT_REFERENCE_KEY, False):
             # a non-self-consistent entry carries no per-molecule loss
             continue
         n_total += 1
-        vxc_ref = mol_data[i]["vxc_ref"]
-        if vxc_ref is None:
+        mask = _presence_mask(mol_data[i], "vxc_ref")
+        if isinstance(mask, float) and mask == 0.0:
             n_skipped += 1
             continue
-        vxc_ref_arr = jnp.asarray(vxc_ref)
+        vxc_ref_arr = jnp.asarray(mol_data[i]["vxc_ref"])
         features = assemble_descriptor_features(model.descriptors, mol_data[i])
 
         if vxc_ref_arr.ndim == 3:  # UKS: (2, n_ao, n_ao)
@@ -506,6 +585,11 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
                     n_ao = vxc_ref_arr.shape[-1]
                 err = err / (n_ao * n_ao)
         terms.append(err)
+        if record_masks is None:
+            masks.append(mask)
+        else:
+            masks.append(mask * record_masks[k])
+            k += 1
     if n_skipped:
         warnings.warn(
             f"_vxc_term: {n_skipped} of {n_total} mol(s) had "
@@ -513,7 +597,7 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
             RuntimeWarning,
             stacklevel=2,
         )
-    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
+    return _masked_mean(terms, masks)
 
 
 def _anchor_term(model, sample, weight: float) -> jnp.ndarray:
@@ -1044,6 +1128,39 @@ class DeltaAEPlusGridLoss(AlecLoss):
 _HA_REF_SANITY_MAX = 10.0
 
 
+class GroupView(NamedTuple):
+    """Per-group traced masks for the masked-superset assembly (2026-11-04).
+
+    ONE loss object (the run-level union: every molecule, every reaction,
+    every anchor) serves every training group; each group supplies a
+    GroupView zeroing the entries that are not its own. The compiled
+    assembly then compiles ONCE for the whole run instead of once per
+    group's static scoping -- the group axis stops multiplying the process
+    mapping working set. Mask vectors are TRACED arrays (values change per
+    group, per update; the module does not recompile). Alignments:
+
+    * ``ae``: this loss's ``compound_idx`` order (post static skips)
+    * ``bh76``: ``self.bh76_reactions`` order (reactions with e_ref None
+      are statically skipped; the mask has one entry per REMAINING
+      reaction -- the builder mirrors the static skips)
+    * ``ip13``: ``self.ip13_pairs`` order, same None convention
+    * ``eatom``: ``ordered_anchor_syms()`` order
+    * ``rho``: ``self.rho_records`` order
+    * ``vxc_records``: the loss's aux-channel iteration order
+      (``_iter_idx_for_aux_channels``)
+
+    Every channel reduces as sum(mask*term)/sum(mask), all-masked -> 0.0 --
+    the exact semantics the per-group scoped losses produced by
+    construction.
+    """
+    ae: object          # per-compound masks, compound_idx order
+    bh76: object        # per-reaction masks, post-None-skip order
+    ip13: object        # per-pair masks, post-None-skip order
+    eatom: object       # per-anchor masks, ordered_anchor_syms order
+    rho: object         # per-record masks, rho_records order
+    vxc_records: object  # per-record masks, aux-iteration order
+
+
 def _guard_ref_is_hartree(value, label, kind):
     """Raise if a frozen reference energy looks like kcal/mol, not Hartree."""
     if value is not None and abs(value) > _HA_REF_SANITY_MAX:
@@ -1513,6 +1630,9 @@ class L6LetterParity(AlecLoss):
     # Consumed by train._build_group_loss_and_batch: the nonsc w_atomic
     # compensation is skipped for a loss carrying this marker.
     emits_eatom_channel: ClassVar[bool] = True
+    # Consumed by train._superset_loss_and_batch: compute_components
+    # accepts a GroupView (the masked-superset assembly path).
+    supports_group_view: ClassVar[bool] = True
 
     bh76_reactions: tuple = eqx.field(default=(), static=True)
     ip13_pairs: tuple = eqx.field(default=(), static=True)
@@ -1772,26 +1892,101 @@ class L6LetterParity(AlecLoss):
             return jnp.array(0.0)
         return jnp.mean(jnp.stack(terms))
 
-    def _rho_channel(self, model, mol_data) -> jnp.ndarray:
+    def _ae_channel_masked(self, E_nn, targets, masks, step_w2=None):
+        """The AE channel over the union compounds with per-group masks.
+
+        Identical to _ae_channel per compound (the static availability
+        skips are evaluated on the UNION index maps -- the group-local rule
+        that an ae group trains no AE is expressed as an all-zero group
+        mask, which reduces to exactly 0.0).
+        """
+        if not self.compound_idx:
+            return jnp.array(0.0)
+        atom_idx = dict(self.atom_mol_idx)
+        terms = []
+        view = []
+        k = 0
+        for i in self.compound_idx:
+            comp = dict(self.compositions[i])
+            if not set(comp) <= set(atom_idx):
+                continue
+            e_atoms = sum(n * E_nn[atom_idx[Z]] for Z, n in comp.items())
+            resid = e_atoms - E_nn[i] - targets[self.mol_names[i]]
+            if step_w2 is not None:
+                terms.append(jnp.mean(step_w2 * resid ** 2))
+            else:
+                terms.append(resid ** 2)
+            view.append(masks[k])
+            k += 1
+        return _masked_mean(terms, view)
+
+    def _bh76_channel_masked(self, E_nn, masks, step_w2=None):
+        """The BH76 channel over the union reactions with per-group masks."""
+        if not self.bh76_reactions:
+            return jnp.array(0.0)
+        name_to_idx = {n: i for i, n in enumerate(self.mol_names)}
+        terms = []
+        view = []
+        k = 0
+        for (_rname, reactants, products, coeffs, e_ref) in self.bh76_reactions:
+            if e_ref is None:
+                continue
+            species = (*reactants, *products)
+            idx = jnp.array([name_to_idx[s] for s in species])
+            e_species = E_nn[idx]
+            coeffs_arr = jnp.array(coeffs)
+            terms.append(_rxn_residual_term(
+                e_species, coeffs_arr, jnp.array(e_ref), step_w2=step_w2,
+            ))
+            view.append(masks[k])
+            k += 1
+        return _masked_mean(terms, view)
+
+    def _ip13_channel_masked(self, E_nn, masks, step_w2=None):
+        """The IP13 channel over the union pairs with per-group masks."""
+        if not self.ip13_pairs:
+            return jnp.array(0.0)
+        name_to_idx = {n: i for i, n in enumerate(self.mol_names)}
+        terms = []
+        view = []
+        k = 0
+        for (_pname, neutral, cation, ip_ref) in self.ip13_pairs:
+            if ip_ref is None:
+                continue
+            e_neutral = E_nn[name_to_idx[neutral]]
+            e_cation = E_nn[name_to_idx[cation]]
+            terms.append(_ip_residual_term(
+                e_cation, e_neutral, jnp.array(ip_ref), step_w2=step_w2,
+            ))
+            view.append(masks[k])
+            k += 1
+        return _masked_mean(terms, view)
+
+    def _rho_channel(self, model, mol_data, record_masks=None) -> jnp.ndarray:
         """Per-record density residual with per-record factors.
 
         Same skip/warn behavior as `_grid_term` (non-self-consistent
         records carry no per-record loss; missing rho refs warn), with the
         per-electron^2 normalization of ``_grid_term(per_electron=True)``
-        and the per-record factors fixed at construction.
+        and the per-record factors fixed at construction. ``record_masks``
+        (the superset path) carries a traced mask per rho_records entry --
+        the group's records keep mask 1, the rest of the union zeroes out.
         """
         terms = []
+        masks = []
         n_skipped = 0
         n_total = 0
+        k = 0
         for i, factor in self.rho_records:
             if mol_data[i].get(ONESHOT_AT_REFERENCE_KEY, False):
                 # a non-self-consistent entry carries no per-molecule loss
                 continue
             n_total += 1
-            rho_ref = mol_data[i]["rho_ref_grid"]
-            if rho_ref is None:
+            mask = _presence_mask(mol_data[i], "rho_ref_grid")
+            if isinstance(mask, float) and mask == 0.0:
                 n_skipped += 1
                 continue
+            rho_ref = mol_data[i]["rho_ref_grid"]
             rho_nn = grid_density_for_loss(
                 model, mol_data[i], self.solver_config)
             w = mol_data[i]["grid_weights"]
@@ -1800,6 +1995,11 @@ class L6LetterParity(AlecLoss):
                 n_e = jnp.sum(w * rho_ref)
                 err = err / (n_e ** 2 + 1e-8)
             terms.append(factor * err)
+            if record_masks is None:
+                masks.append(mask)
+            else:
+                masks.append(mask * record_masks[k])
+                k += 1
         if n_skipped:
             warnings.warn(
                 f"L6LetterParity._rho_channel: {n_skipped} of {n_total} "
@@ -1808,7 +2008,7 @@ class L6LetterParity(AlecLoss):
                 RuntimeWarning,
                 stacklevel=2,
             )
-        return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
+        return _masked_mean(terms, masks)
 
     def _iter_idx_for_aux_channels(self) -> tuple:
         """Indices used by the V_xc channel (compounds + aux fixtures)."""
@@ -1822,13 +2022,26 @@ class L6LetterParity(AlecLoss):
         )
         return tuple(sorted(set(self.compound_idx) | set(aux_idx)))
 
-    def compute_components(self, model, batch, relative=False):
+    def compute_components(self, model, batch, relative=False,
+                           group_view=None):
         """Return the 6 Letter-parity channels as a dict.
 
         Keys: loss_AE, loss_BH76, loss_IP13, loss_vxc, loss_rho,
         loss_Eatom. All residuals are absolute Ha^2 (the executed Letter
         objective); ``relative`` is accepted for the AlecLoss interface and
         deliberately not forwarded.
+
+        ``group_view`` (the masked-superset path): traced per-entry masks
+        aligned to THIS loss's static index lists -- one loss object serves
+        every training group of the run, each group zeroing the entries
+        that are not its own (the per-group scoping recast as data; the
+        compiled assembly is then shared across groups instead of one
+        module per group's static scoping). None keeps the historical
+        whole-loss behavior. The energy channels take the masks; the
+        per-record channels (rho/vxc) take a per-record mask over the
+        loss's own iteration order. All-masked channels return exactly 0.0
+        with sum(mask) denominators -- the semantics the per-group scoped
+        losses produced by construction.
         """
         if not self.mol_names:
             raise RuntimeError(
@@ -1837,8 +2050,12 @@ class L6LetterParity(AlecLoss):
             )
         atom_idx = dict(self.atom_mol_idx)
         # Restrict the anchor residual to the configured atom set when
-        # regularize_atom_syms is given (None anchors every atom).
-        if self.regularize_atom_syms is not None:
+        # regularize_atom_syms is given (None anchors every atom). Under a
+        # group_view the allowlist is encoded in the eatom mask instead --
+        # the union anchor set stays whole so the mask vector has a stable
+        # alignment (the union loss is constructed with the run-wide
+        # allowlist; the group's anchor subset is a mask).
+        if self.regularize_atom_syms is not None and group_view is None:
             allowed = set(self.regularize_atom_syms)
             atom_idx = {sym: i for sym, i in atom_idx.items() if sym in allowed}
         mol_data = batch["mol_data"]
@@ -1861,16 +2078,34 @@ class L6LetterParity(AlecLoss):
             )
             step_w2 = None
 
-        loss_ae = self._ae_channel(E_nn, targets, step_w2=step_w2)
-        # RAW anchor residual: lambda_E lives in channel_weights only.
-        loss_eatom = _atomic_reg_abs(
-            E_nn, atom_idx, atom_energies, step_w2=step_w2)
-        loss_bh76 = self._bh76_channel(E_nn, step_w2=step_w2)
-        loss_ip13 = self._ip13_channel(E_nn, step_w2=step_w2)
-        loss_vxc = self.vxc_weight * _vxc_term(
-            model, mol_data, self._iter_idx_for_aux_channels(),
-        )
-        loss_rho = self.density_weight * self._rho_channel(model, mol_data)
+        if group_view is None:
+            loss_ae = self._ae_channel(E_nn, targets, step_w2=step_w2)
+            loss_eatom = _atomic_reg_abs(
+                E_nn, atom_idx, atom_energies, step_w2=step_w2)
+            loss_bh76 = self._bh76_channel(E_nn, step_w2=step_w2)
+            loss_ip13 = self._ip13_channel(E_nn, step_w2=step_w2)
+            loss_vxc = self.vxc_weight * _vxc_term(
+                model, mol_data, self._iter_idx_for_aux_channels(),
+            )
+            loss_rho = self.density_weight * self._rho_channel(model, mol_data)
+        else:
+            loss_ae = self._ae_channel_masked(
+                E_nn, targets, group_view.ae, step_w2=step_w2)
+            loss_eatom = _atomic_reg_abs_masked(
+                E_nn, self.ordered_anchor_syms(),
+                dict(self.atom_mol_idx),
+                atom_energies, group_view.eatom, step_w2=step_w2)
+            loss_bh76 = self._bh76_channel_masked(
+                E_nn, group_view.bh76, step_w2=step_w2)
+            loss_ip13 = self._ip13_channel_masked(
+                E_nn, group_view.ip13, step_w2=step_w2)
+            # vxc: per-record masks over the aux iteration order
+            loss_vxc = self.vxc_weight * _vxc_term(
+                model, mol_data, self._iter_idx_for_aux_channels(),
+                record_masks=group_view.vxc_records,
+            )
+            loss_rho = self.density_weight * self._rho_channel(
+                model, mol_data, record_masks=group_view.rho)
 
         return {
             "loss_AE": loss_ae,
@@ -1880,6 +2115,14 @@ class L6LetterParity(AlecLoss):
             "loss_rho": loss_rho,
             "loss_Eatom": loss_eatom,
         }
+
+    def ordered_anchor_syms(self):
+        """The union anchor set's symbols in the eatom mask's alignment."""
+        syms = [sym for sym, _i in self.atom_mol_idx]
+        if self.regularize_atom_syms is not None:
+            allowed = set(self.regularize_atom_syms)
+            syms = [s for s in syms if s in allowed]
+        return tuple(syms)
 
     def __call__(self, model, batch):
         components = self.compute_components(model, batch)

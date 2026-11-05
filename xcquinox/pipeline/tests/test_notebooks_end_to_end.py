@@ -98,8 +98,11 @@ def test_gga_training_anchor_transfer_notebook_runs_end_to_end(tmp_path):
 def test_registry_pt_transfer_smoke(tmp_path):
     """The registry miniature end to end at smoke tier: three architectures
     (both harness demos and one attention arm) pretrain through the harness
-    and the library route, train on the H/O/H2O-CCSD corpus, and produce
-    proton-transfer barriers for all three paths against frozen CCSD
+    and the library route, fine-tune on the 16-species DFS-Letter corpus
+    under the production pathway (FULL-25 differentiable SCF, L6 with the
+    atomic-total channel, relaxed CCSD(T) density references, the cost
+    measurement and the 12 h projection ceiling), and produce
+    proton-transfer barriers for all three paths against frozen CCSD(T)
     densities."""
     gen = _load_builder("_build_registry_pt_transfer_notebook.py")
     nb_path = tmp_path / "registry_pt_smoke.ipynb"
@@ -108,7 +111,10 @@ def test_registry_pt_transfer_smoke(tmp_path):
     nb = nbformat.read(str(nb_path), as_version=4)
     os.environ["STEP_SMOKE"] = "1"
     try:
-        _client(nb, timeout=1200, cwd=tmp_path).execute()
+        # FULL-25 kernels compile for three architectures and ten (T)
+        # references are solved; the smoke tier's two measurement runs add
+        # another compile cycle
+        _client(nb, timeout=3600, cwd=tmp_path).execute()
     finally:
         os.environ.pop("STEP_SMOKE", None)
 
