@@ -1360,9 +1360,16 @@ def _ccsd_t_relaxed(mol, tag):
     eris = mycc.ao2mo()
     _lam = uccsd_t_lambda if mol.spin else ccsd_t_lambda
     _rdm = uccsd_t_rdm if mol.spin else ccsd_t_rdm
-    # max_cycle 300 (measured on hf2ts: the lambda iteration is slow, not
-    # cycling -- the default 50 cycles leave it unconverged, 300 converges
-    # at the default tol)
+    # The (T)-lambda solve reads its DIIS space off the CC object, so it is
+    # set explicitly here. At pyscf's default space of 6 the iteration crawls
+    # or stalls on open-shell points (measured at def2-svp: cation_pt 462
+    # cycles; RKT11 not converged in 2000), while a space of 20 converges
+    # every measured species in <= 72 cycles (cation_pt 28, RKT11 36, n2ohts
+    # 30, hf2ts 72). Where both spaces converge, the relaxed 1-RDMs agree to
+    # within 6e-8 (hf2ts 7e-9, n2ohts 1e-8, cation_pt 5e-8). RKT11 previously
+    # converged only because the CCSD restart above builds a fresh object
+    # with the wide space. max_cycle 300 remains the bound.
+    mycc.diis_space = 20
     conv, l1, l2 = _lam.kernel(mycc, eris, mycc.t1, mycc.t2,
                                 max_cycle=300)
     assert conv, (tag, "the (T)-lambda solve did not converge")
@@ -2153,7 +2160,7 @@ for _spec in tqdm(all_points, desc="PT CCSD(T) refs", dynamic_ncols=True):
         continue
     mol = gto.M(atom=_spec.atom, basis=BASIS,
                 charge=_spec.charge, spin=_spec.spin, verbose=0)
-    dm_pt, _dm_total, _dm_ccsd, E_t, _t1, _ = _ccsd_t_relaxed(
+    dm_pt, _dm_total, _dm_ccsd, E_t, _t1 = _ccsd_t_relaxed(
         mol, _spec.name)
     # per-spin pair for the UKS cation points (the UHF (T)-RDM returns the
     # pair); the patch helper indexes exactly these shapes, and the
