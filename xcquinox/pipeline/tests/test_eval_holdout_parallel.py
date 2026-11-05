@@ -28,7 +28,9 @@ from xcquinox.pipeline.workers import eval_holdout_worker as ehw
 # ---------------------------------------------------------------------------
 
 def test_eval_worker_ladder_24():
-    assert par.eval_worker_ladder(24) == [(24, 1), (12, 2), (6, 4)]
+    # the RAM cap (half the cores, 40-worker ceiling, 2026-11-04): a
+    # 24-core node opens 12 workers, not 24 -- workers are whole processes
+    assert par.eval_worker_ladder(24) == [(12, 2), (6, 4), (3, 8)]
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +125,12 @@ def test_escalation_retries_only_failed_names_at_lower_tier(tmp_path, monkeypatc
                             AssertionError("serial fallback should not run")))
 
     out_dir = tmp_path / "eval_holdout"
+    # total_cpus=16/top=8 keeps >=2 ladder tiers under the RAM cap
+    # (8 -> 4 -> 2), so the failed name retries at a lower tier; a tiny
+    # 4-cpu ladder would collapse to one tier and fall to serial.
     summary = hp.run_holdout_with_escalation(
         "/run", 0, _FakeSpec(), object(), [], full_specs, out_dir,
-        basis="def2-svp", grid_level=1, n_workers_top=4, total_cpus=4)
+        basis="def2-svp", grid_level=1, n_workers_top=8, total_cpus=16)
 
     assert summary["n_species"] == 4
     assert _molecules_in_per_molecule_json(out_dir) == {"a", "b", "c", "d"}
