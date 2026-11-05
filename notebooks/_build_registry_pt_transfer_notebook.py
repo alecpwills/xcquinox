@@ -537,7 +537,8 @@ from xcquinox.pipeline.cluster.domain import (
 from xcquinox.pipeline.cluster import fidelity as fidelity_lib
 from xcquinox.pipeline.full_benchmark_pools import W411_JSON_PATH
 from xcquinox.pipeline.subset_selection import _make_hb_atoms, _make_pt_atoms
-from xcquinox.pipeline.external_refs import _require_electron_count
+from xcquinox.pipeline.external_refs import (
+    _require_electron_count, _t1_diagnostic)
 
 # tqdm.auto picks tqdm.notebook.tqdm (ipywidgets) under JupyterLab and
 # tqdm.std.tqdm in a plain script/terminal, so the same symbol gives a
@@ -1304,14 +1305,6 @@ ENERGY_ONLY_NAMES = ("O", "C", "N", "F", "Li+", "C+")
 print(f"W4-11 AE(H2O) = {AE_W411_KCAL:.3f} kcal/mol = {AE_HA:.8f} Ha")
 print(f"atom anchors (Chakravorty): {ATOM_ANCHORS}")
 
-def _t1_of(cc_obj):
-    # pyscf exposes the T1 diagnostic as a method; anything else records NaN.
-    try:
-        return float(cc_obj.t1_diagnostic())
-    except Exception:
-        return float("nan")
-
-
 def _ccsd_t_relaxed(mol, tag):
     """Converged canonical (locked) HF -> CCSD/UCCSD -> the (T)-lambda
     equations -> the RELAXED CCSD(T) 1-RDM (pyscf's opt-in ccsd_t_lambda /
@@ -1386,7 +1379,9 @@ def _ccsd_t_relaxed(mol, tag):
     else:
         dm_store, dm_total, dm_ccsd_total = dm_t, dm_t, dm_ccsd
     E_ccsd_t = float(mf_hf.e_tot + mycc.e_corr + mycc.ccsd_t())
-    return dm_store, dm_total, dm_ccsd_total, E_ccsd_t, _t1_of(mycc)
+    # the package's T1 diagnostic (Lee-Taylor; for UCCSD the spin-orbital
+    # norm normalized to the restricted value at closed shell)
+    return dm_store, dm_total, dm_ccsd_total, E_ccsd_t, _t1_diagnostic(mycc)
 
 
 _t0 = time.time()
