@@ -461,18 +461,30 @@ def detect_available_cpus() -> int:
     return max(1, os.cpu_count() or 1)
 
 
+#: Hard ceiling on tier-1 eval workers. Sized by RAM, not cores: each worker
+#: is a full JAX+pyscf process (~2.6 GiB), and a 96-core node at 96 workers
+#: put ~97 of them against the node's memory with nothing in reserve -- the
+#: v9 letter arms' holdout evals were OOM-killed at exactly that tier
+#: (2026-11-04; 40-worker nodes ran the same eval to completion).
+_EVAL_WORKER_CEILING = 40
+
+
 def eval_worker_ladder(total_cpus: int, top: int | None = None
                        ) -> list[tuple[int, int]]:
     """Descending ``(n_workers, threads_per_worker)`` tiers for the held-out
     eval's adaptive degradation.
 
-    Starts at ``top`` (or ``total_cpus`` if unset, capped at ``total_cpus``) and
-    halves the worker count twice, three tiers max, giving each worker
-    ``total_cpus // n`` BLAS threads so the node stays fully utilized at every
-    tier. Tiers with ``n <= 1`` are dropped (those mean "serial", handled
-    separately by the caller), so a single core / ``top=1`` yields an empty
-    ladder (serial only). Example: ``total_cpus=24 -> [(24,1),(12,2),(6,4)]``."""
-    base = total_cpus if top is None else min(top, total_cpus)
+    Starts at ``min(top or total_cpus, total_cpus // 2, 40)`` -- half the
+    node's cores, hard-capped at 40 workers -- and halves the worker count
+    twice, three tiers max, giving each worker ``total_cpus // n`` BLAS
+    threads. The cap keeps memory in reserve by construction: workers are
+    whole processes, not threads, so sizing them by every core overspends
+    RAM 2x+ on big nodes. Tiers with ``n <= 1`` are dropped (serial is the
+    caller's), so a single core yields an empty ladder. Example:
+    ``total_cpus=96 -> [(40,2),(20,4),(10,9)]``; ``total_cpus=24 ->
+    [(12,2),(6,4),(3,8)]``."""
+    base = min(total_cpus if top is None else top,
+               max(1, total_cpus // 2), _EVAL_WORKER_CEILING)
     tiers: list[tuple[int, int]] = []
     seen: set[int] = set()
     for n in (base, base // 2, base // 4):

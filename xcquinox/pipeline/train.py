@@ -2404,9 +2404,13 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         # and is loss-agnostic (any AlecLoss, via the shared energy-stack hook).
         # group_view: the masked-superset path's per-group masks (None keeps
         # the scoped-loss behavior).
-        (loss_val, comps), grads = defused_value_and_grad(
-            gloss, model, gbatch, gcw, relative, pad_target=pad_target,
-            group_view=group_view)
+        if group_view is None:
+            (loss_val, comps), grads = defused_value_and_grad(
+                gloss, model, gbatch, gcw, relative, pad_target=pad_target)
+        else:
+            (loss_val, comps), grads = defused_value_and_grad(
+                gloss, model, gbatch, gcw, relative, pad_target=pad_target,
+                group_view=group_view)
         updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         model = eqx.apply_updates(model, updates)
         return model, opt_state, loss_val, comps, grads
