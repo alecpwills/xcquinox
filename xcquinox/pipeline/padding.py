@@ -44,6 +44,7 @@ zero-occupation eigenvalues), was removed 2026-08-06; both surviving
 """
 from typing import NamedTuple, Optional
 
+import equinox as eqx
 import jax.numpy as jnp
 
 _PAD_ORBITAL_ENERGY = 1.0e6  # padded-orbital Fock diagonal; >> real virtuals (~1e2)
@@ -145,7 +146,11 @@ _PAD_AO_ON_GRID = ("ao_grid", "rung35_proj_ao", "ao_grid_lapl")
 # dm_minao is mixed into dm_seed BEFORE padding and never read by the kernel,
 # so it is stripped with the identifying leaves rather than compiled in.
 _STRIP_KEYS = ("_pyscfad_mol", "name", "atom_composition", "reference_xc",
-               "dm_minao")
+               "dm_minao",
+               # provenance leaves with no training-path consumer whose
+               # per-record VALUES (float/str) would otherwise key the
+               # per-molecule JIT (2026-11-04 canonicalization)
+               "E_ref_literature", "ref_density_method")
 # Precomputed scalar PBE energies stored as Python floats -> distinct static
 # leaves; traced so their values stop keying the compile.
 _TRACE_SCALARS = ("E_pbe", "E_xc_pbe", "E_non_xc", "e_nuc")
@@ -247,14 +252,19 @@ def _pad_mol_data(mol_data, target: PadTarget):
 def canonicalize_mol_data(mol_data, target: PadTarget):
     """The full pass for one molecule: pad arrays, strip the identifying leaves the
     energy kernel does not read, reduce ``mol_metadata`` to the AO matrix the SCF
-    uses, and trace the static scalar energies. Results-neutral; see module docstring."""
+    uses, trace the static scalar energies, and CANONICALIZE the per-record
+    optional fields so every molecule of one spin class carries an identical
+    pytree. Results-neutral; see module docstring and the field-mask notes on
+    ``_canonical_field_presence``."""
     out = _pad_mol_data(mol_data, target)
 
     for k in _STRIP_KEYS:
         out.pop(k, None)
 
     meta = out.get("mol_metadata")
+    lock_bias = None
     if isinstance(meta, dict):
+        lock_bias = meta.get("orientation_lock_bias")
         kept = {k: meta[k] for k in _META_KEEP if meta.get(k) is not None}
         if kept:
             out["mol_metadata"] = kept
@@ -269,12 +279,96 @@ def canonicalize_mol_data(mol_data, target: PadTarget):
         if v is not None and not hasattr(v, "shape"):
             out[k] = jnp.asarray(float(v))
 
+    _canonical_field_presence(out, target, lock_bias)
     return out
+
+
+def _canonical_field_presence(out, target: PadTarget, lock_bias):
+    """Canonical presence for the per-record optional fields (2026-11-04).
+
+    Measured on jax 0.10.2: the per-molecule JIT classes multiply through
+    per-record field presence -- the three channel targets (dm_target,
+    rho_ref_grid, vxc_ref), and the orientation lock's conditional
+    ``mol_metadata`` entry -- so a mixed corpus compiles one kernel set per
+    presence combination (~15 classes for 16 species). After this pass every
+    molecule of one spin class carries the SAME fields:
+
+    * absent channel targets are filled with the canonical empty AT THE
+      PADDED TARGET SHAPE (dm/vxc: the class-correct AO layout -- 2-D under
+      RKS, (2,nao,nao) under UKS, matching the reference loader's validated
+      shape; rho: a zero grid vector) and their entry in ``field_masks``
+      (a traced 0-d float) is 0; present targets carry mask 1;
+    * ``mol_metadata['orientation_lock_bias']`` is always present, an exact
+      zero AO matrix when the record ran unlocked (adding zeros to h_core
+      is the identity) with mask 0;
+    * ``field_masks`` carries a FIXED key set -- the pytree is uniform
+      across the class, so the jit key collapses to {RKS, UKS}.
+
+    Neutrality contract: a 0-masked field's VALUE is never read for its own
+    sake -- the loss channels multiply their per-record error by the mask
+    and divide by sum(mask) (losses._dm_term/_grid_term/_vxc_term and L6's
+    _rho_channel), reproducing the historical skip semantics exactly,
+    including the all-absent -> exactly-zero channel. Provenance leaves
+    with value-keyed statics (E_ref_literature, ref_density_method -- no
+    consumers in the training path) are stripped outright in _STRIP_KEYS.
+    """
+    n_ao_t = target.n_ao
+    n_grid_t = target.n_grid
+    unres = bool(out.get("is_unrestricted", False))
+    masks = {}
+
+    # Channel targets: canonical empties at the class-correct shapes.
+    # dm/vxc layouts follow the reference side (dm_pbe / vxc_pbe): 2-D
+    # under RKS, (2, nao, nao) under UKS -- a 3-D empty on an RKS record
+    # would route the vxc branch into the UKS formula against a 2-D dm.
+    spin_leading = (2, n_ao_t, n_ao_t) if unres else (n_ao_t, n_ao_t)
+    for k in ("dm_target", "vxc_ref"):
+        if out.get(k) is None:
+            out[k] = jnp.zeros(spin_leading)
+            masks[k] = jnp.zeros(())
+        else:
+            masks[k] = jnp.ones(())
+    if out.get("rho_ref_grid") is None:
+        out["rho_ref_grid"] = jnp.zeros((n_grid_t,))
+        masks["rho_ref_grid"] = jnp.zeros(())
+    else:
+        masks["rho_ref_grid"] = jnp.ones(())
+
+    # Orientation lock: always present; zeros + mask 0 when unlocked (the
+    # solver adds the bias to h_core -- adding an exact zero is identity).
+    meta = out.get("mol_metadata")
+    if lock_bias is None:
+        bias = jnp.zeros((n_ao_t, n_ao_t))
+        masks["orientation_lock_bias"] = jnp.zeros(())
+    else:
+        bias = _pad_ao_block(jnp.asarray(lock_bias), n_ao_t, 0.0)
+        masks["orientation_lock_bias"] = jnp.ones(())
+    out["mol_metadata"] = {"orientation_lock_bias": bias}
+
+    out["field_masks"] = masks
+
+
+@eqx.filter_jit
+def _canonicalize_mol_data_jit(mol_data, target: PadTarget):
+    """The one-molecule pass under a module-scope jit.
+
+    Executed eagerly (the historical form), the pass's pad/slice/trace
+    primitives each compile a standalone micro-kernel -- measured 2026-11-04:
+    ~145 _pad modules and ~770 micro-modules in one epoch, whose ~20k small
+    LLVM sections (x3 mappings each) fill the vm.max_map_count ceiling from
+    the padding glue alone. Under one jit per species-class the same ops
+    fuse into a single module; ``target`` (ints) and the record's static
+    leaves key it, all stable across updates -- only dm_seed's VALUES vary
+    (the per-update seed mixture) and values never key the cache.
+    Identical output pytree, identical numerics: same ops, one barrier.
+    """
+    return canonicalize_mol_data(mol_data, target)
 
 
 def pad_batch(batch, target: PadTarget):
     """The independent pass-through: return ``batch`` with every molecule in
     ``batch['mol_data']`` canonicalized to ``target``. Everything else (targets,
     atom_energies, ...) is carried through unchanged."""
-    mol_data = tuple(canonicalize_mol_data(md, target) for md in batch["mol_data"])
+    mol_data = tuple(_canonicalize_mol_data_jit(md, target)
+                     for md in batch["mol_data"])
     return {**batch, "mol_data": mol_data}

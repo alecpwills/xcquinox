@@ -52,7 +52,7 @@ from xcquinox.pipeline.checkpoint_class import (DEFAULT_MLP,
 from xcquinox.pipeline.config import TrainingSpec, ArchitectureConfig
 from xcquinox.pipeline.solver import SolverConfig, SolverMode
 from xcquinox.pipeline.data import precompute_fixed_density_data
-from xcquinox.pipeline.losses import make_loss
+from xcquinox.pipeline.losses import GroupView, make_loss
 from xcquinox.pipeline.models import AlecGGAModel
 from xcquinox.pipeline.oneshot import (
     ONESHOT_AT_REFERENCE_KEY,
@@ -2075,10 +2075,124 @@ def _training_groups(spec: TrainingSpec) -> list:
     return groups
 
 
+def _superset_loss_and_batch(spec: TrainingSpec, batch: dict):
+    """ONE loss + the UNION batch for the masked-superset assembly.
+
+    The per-group scoping that ``_build_group_loss_and_batch`` bakes into
+    each group's loss STATIC (reactions, pairs, anchor allowlist, aux and
+    radical lists -- one compiled assembly per group) is recast here as
+    per-group traced masks over a single run-level loss, so the assembly
+    compiles ONCE for the whole run (the group axis stops multiplying the
+    process mapping working set). Numerically the channels reduce as
+    sum(mask*term)/sum(mask) with the all-masked -> exactly-0.0 rule --
+    the semantics the scoped losses produced by construction (proven by
+    the equivalence suite; see losses.GroupView for the alignments).
+
+    Requires ``pad_group_to_common_shape`` (the union species must share
+    jit classes) and REFUSES ``respect_sc_flag``: the non-self-consistent
+    marker selects the ENERGY GRAPH per (group, species) -- a record copy
+    flagged one-shot in one group and self-consistent in another cannot be
+    one pytree -- so those runs keep the scoped path unchanged.
+    """
+    if bool(getattr(spec, "respect_sc_flag", False)):
+        raise ValueError(
+            "superset_assembly cannot run under respect_sc_flag: the "
+            "non-self-consistent marker selects the energy graph per "
+            "(group, species) and is not expressible as a traced mask; "
+            "the per-group scoped path is used instead")
+    if not bool(getattr(spec, "pad_group_to_common_shape", False)):
+        raise ValueError(
+            "superset_assembly requires pad_group_to_common_shape: the "
+            "union species must collapse to one jit class per spin type")
+    lk = dict(spec.loss_kwargs_dict)
+    # The masked channels are L6_letter_parity's (the Letter objective's
+    # own loss); other losses keep the scoped path.
+    from xcquinox.pipeline.losses import LOSS_REGISTRY
+    if not getattr(LOSS_REGISTRY.get(spec.loss_name),
+                   "supports_group_view", False):
+        raise ValueError(
+            f"superset_assembly requires a loss whose compute_components "
+            f"accepts group_view (L6_letter_parity); {spec.loss_name!r} "
+            f"keeps the per-group scoped path")
+    lk["vxc_weight"] = 1.0
+    lk["density_weight"] = 1.0
+    lk["solver_config"] = (spec.loss_kwargs_dict.get("solver_config")
+                           or spec.solver_config)
+    lk.pop("pbe_anchor_weight", None)
+    lk.pop("pbe_anchor_sample", None)
+    union_loss = make_loss(spec.loss_name, molecules=spec.molecules, **lk)
+    union_batch = {
+        "mol_data": batch["mol_data"],
+        "targets": batch["targets"],
+        "atom_energies": batch["atom_energies"],
+    }
+    return union_loss, union_batch
+
+
+def _group_view(spec: TrainingSpec, group: dict, union_loss, batch: dict):
+    """The per-group traced mask bundle aligned to the union loss's
+    structures. Mirrors the scoping rules of _build_group_loss_and_batch
+    exactly: the group's reactions/pairs/compounds/anchors/records keep
+    their scoped-loss participation, everything else zeroes out."""
+    species = group["species"]
+    present = {s.name for s in species}
+    group_atoms = {
+        next(iter(dict(s.atom_composition)))
+        for s in species
+        if sum(dict(s.atom_composition).values()) == 1
+    }
+
+    def jmask(flags):
+        return jnp.asarray([1.0 if f else 0.0 for f in flags])
+
+    # bh76 / ip13: the group's entries (static None-ref skips mirrored --
+    # the masked channels index masks in post-skip order)
+    rxn_names = {r["name"] for r in group["bh76"]}
+    bh76 = jmask([(_rname in rxn_names)
+                  for (_rname, _r, _p, _c, e_ref) in union_loss.bh76_reactions
+                  if e_ref is not None]) \
+        if union_loss.bh76_reactions else jnp.zeros((0,))
+    ip_names = {p["name"] for p in group["ip13"]}
+    ip13 = jmask([(_pname in ip_names)
+                  for (_pname, _n, _c, ip_ref) in union_loss.ip13_pairs
+                  if ip_ref is not None]) \
+        if union_loss.ip13_pairs else jnp.zeros((0,))
+
+    # AE: compounds of the group that pass the GROUP's atom-availability
+    # rule (the scoped loss judged availability against the group's atoms;
+    # an ae-group's compounds have no in-group atoms and train no AE)
+    ae = jmask([
+        (union_loss.mol_names[i] in present)
+        and (set(dict(union_loss.compositions[i])) <= group_atoms)
+        for i in union_loss.compound_idx
+    ]) if union_loss.compound_idx else jnp.zeros((0,))
+
+    # eatom: the group's unmarked atoms inside the run allowlist, in the
+    # union anchor order
+    run_reg = spec.loss_kwargs_dict.get("regularize_atom_syms")
+    allowed = (None if run_reg is None else set(run_reg))
+    eatom = jmask([
+        (Z in group_atoms) and (allowed is None or Z in allowed)
+        for Z in union_loss.ordered_anchor_syms()
+    ])
+
+    # rho: the group's records, in rho_records order
+    rho = jmask([union_loss.mol_names[i] in present
+                 for i, _factor in union_loss.rho_records])
+
+    # vxc: the group's species, in the aux-channel iteration order minus
+    # the static ONESHOT skips (none under this path -- respect_sc refused)
+    vxc_idx = union_loss._iter_idx_for_aux_channels()
+    vxc_records = jmask([union_loss.mol_names[i] in present for i in vxc_idx])
+
+    return GroupView(ae=ae, bh76=bh76, ip13=ip13, eatom=eatom,
+                     rho=rho, vxc_records=vxc_records)
+
+
 def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     """Scoped loss + sub-batch for one group. Channels are RAW (vxc/density
     pre-weights forced to 1.0), the outer fixed ``channel_weights`` are the
-    sole weighting control in per-molecule mode."""
+    sole weighting control in per_molecule mode."""
     name_to_idx = {m.name: i for i, m in enumerate(spec.molecules)}
     species = group["species"]
     sub_mol_data = tuple(batch["mol_data"][name_to_idx[s.name]] for s in species)
@@ -2176,7 +2290,8 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
 def _require_minao_seed(prepared) -> None:
     """seed_mix_atomic needs dm_minao on every molecule of every group; a missing
     one is refused before the first update, by name."""
-    for label, _gloss, gbatch, _gcw in prepared:
+    for entry in prepared:
+        label, gbatch = entry[0], entry[2]
         for md in gbatch["mol_data"]:
             if md.get("dm_minao") is None:
                 raise ValueError(
@@ -2279,7 +2394,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     resume_enabled = checkpoint_every > 0
     checkpoint_dir = spec.checkpoint_dir
 
-    def _step(model, opt_state, gbatch, gloss, gcw):
+    def _step(model, opt_state, gbatch, gloss, gcw, group_view=None):
         # De-fused value-and-gradient: identical (loss, grads) to the fused
         # eqx.filter_value_and_grad(scalar_loss) but each molecule's SCF compiles
         # at per-molecule size, so the 6-311++G(3df,2pd)+grid3 groups no longer
@@ -2287,8 +2402,15 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         # filter_jit -- the group-wide fusion is exactly what is removed; the
         # utility jits per molecule internally (see xcquinox.pipeline.defused_grad),
         # and is loss-agnostic (any AlecLoss, via the shared energy-stack hook).
-        (loss_val, comps), grads = defused_value_and_grad(
-            gloss, model, gbatch, gcw, relative, pad_target=pad_target)
+        # group_view: the masked-superset path's per-group masks (None keeps
+        # the scoped-loss behavior).
+        if group_view is None:
+            (loss_val, comps), grads = defused_value_and_grad(
+                gloss, model, gbatch, gcw, relative, pad_target=pad_target)
+        else:
+            (loss_val, comps), grads = defused_value_and_grad(
+                gloss, model, gbatch, gcw, relative, pad_target=pad_target,
+                group_view=group_view)
         updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         model = eqx.apply_updates(model, updates)
         return model, opt_state, loss_val, comps, grads
@@ -2302,11 +2424,24 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                     for k, v in cw.items()}
         return cw
 
-    prepared = [
-        (g["label"], *_build_group_loss_and_batch(spec, g, batch),
-         _group_weights(g))
-        for g in groups
-    ]
+    # The masked-superset assembly: one union loss serves every group,
+    # each group carrying a traced GroupView (the scoping recast as data;
+    # compiled once per run instead of once per group). Refused specs keep
+    # the scoped path -- _superset_loss_and_batch raises on entry.
+    superset = bool(getattr(spec, "superset_assembly", False))
+    if superset:
+        union_loss, union_batch = _superset_loss_and_batch(spec, batch)
+        prepared = [
+            (g["label"], union_loss, union_batch,
+             _group_view(spec, g, union_loss, batch), _group_weights(g))
+            for g in groups
+        ]
+    else:
+        prepared = [
+            (g["label"], *_build_group_loss_and_batch(spec, g, batch),
+             _group_weights(g))
+            for g in groups
+        ]
 
     mix_seed = bool(getattr(spec, "seed_mix_atomic", False))
     if mix_seed:
@@ -2467,11 +2602,15 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         for epoch in range(start_epoch, n_epochs):
             rng.shuffle(order)
             for gi in order:
-                label, gloss, gbatch, gcw = prepared[gi]
+                if superset:
+                    label, gloss, gbatch, gview, gcw = prepared[gi]
+                else:
+                    label, gloss, gbatch, gcw = prepared[gi]
+                    gview = None
                 if mix_seed:
                     gbatch = _mix_seed_batch(gbatch, mix_rng)
                 model, opt_state, loss_val, comps, grads = _step(
-                    model, opt_state, gbatch, gloss, gcw)
+                    model, opt_state, gbatch, gloss, gcw, group_view=gview)
                 loss_py = float(loss_val)
                 _abort_if_nonfinite(loss_val, comps, loop="per_molecule",
                                     step=update, group=label, grads=grads)

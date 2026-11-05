@@ -1571,6 +1571,13 @@ class TrainingSpec:
     # de-fused per-molecule kernels collapse to one compile per spin-type; results-
     # neutral (see xcquinox.pipeline.padding). Threaded from HyperParams by spec_builder.
     pad_group_to_common_shape: bool = False
+    # Masked-superset assembly: one run-level loss serves every training
+    # group with per-group traced masks (the scoping recast as data), so
+    # the compiled assembly is shared across groups instead of one module
+    # per group's static scoping. Requires pad_group_to_common_shape and
+    # refuses respect_sc_flag at loop entry (train._superset_loss_and_
+    # batch); those runs keep the scoped path. Default off.
+    superset_assembly: bool = False
     # Fixed per-channel weights for `update_scheme="per_molecule"` (ignored in
     # "batched" mode, where `balancing` controls weighting). Empty -> the
     # density-dominant dpyscf-style default in train._DEFAULT_CHANNEL_WEIGHTS.

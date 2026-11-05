@@ -97,8 +97,46 @@ def _tree_add(a, b):
     return jax.tree_util.tree_map(jnp.add, a, b)
 
 
+@eqx.filter_jit
+def _assemble_vjp_jit(E_stack, arrays_, batch, model_static, loss,
+                      channel_weights, relative, kind, group_view=None):
+    """The assembly pass (pass 1.5) as ONE module-scope jit.
+
+    Differentiating the loss assembly eagerly (a raw jax.value_and_grad over
+    a per-call closure) recompiles every primitive chain's transposes per
+    update -- eager transposes never hit the executable cache (the same
+    identity-hash mechanism the seam note documents for the SCF scans) --
+    permanently retaining two module sets per update and climbing straight
+    into the ``vm.max_map_count`` ceiling. With every per-call input an
+    ARGUMENT, the jit key is (group batch pytree, loss, weights): bounded
+    by the training groups, not the number of updates. The batch's array
+    leaves (the per-update seed mixture) are traced VALUES, so updates that
+    only change them cache-hit. ``group_view`` (the masked-superset path)
+    is a pytree of traced mask arrays -- per-group values, one module.
+    """
+    def assemble(args_):
+        energy_stack, arrays__ = args_
+        m = eqx.combine(arrays__, model_static)
+        token = set_energy_override({kind: energy_stack})
+        try:
+            if group_view is None:
+                comps = loss.compute_components(m, batch, relative=relative)
+            else:
+                comps = loss.compute_components(
+                    m, batch, relative=relative, group_view=group_view)
+            total = jnp.zeros(())
+            for key, value in comps.items():
+                total = total + channel_weights.get(key, 1.0) * value
+        finally:
+            reset_energy_override(token)
+        return total, comps
+
+    return eqx.filter_value_and_grad(assemble, has_aux=True)(
+        (E_stack, arrays_))
+
+
 def defused_value_and_grad(loss, model, batch, channel_weights, relative=False,
-                           pad_target=None):
+                           pad_target=None, group_view=None):
     """Loss-agnostic drop-in for the fused per-molecule
     ``eqx.filter_value_and_grad``.
 
@@ -146,20 +184,9 @@ def defused_value_and_grad(loss, model, batch, channel_weights, relative=False,
     # energy gradient is reconstructed in pass 2 from the energy cotangents.
     arrays, static = eqx.partition(model, eqx.is_inexact_array)
 
-    def assemble(energy_stack, arrays_):
-        m = eqx.combine(arrays_, static)
-        token = set_energy_override({kind: energy_stack})
-        try:
-            comps = loss.compute_components(m, batch, relative=relative)
-            total = jnp.zeros(())
-            for key, value in comps.items():
-                total = total + channel_weights.get(key, 1.0) * value
-        finally:
-            reset_energy_override(token)
-        return total, comps
-
-    (total, comps), (ct_energy, grad_nonenergy) = jax.value_and_grad(
-        assemble, argnums=(0, 1), has_aux=True)(E_stack, arrays)
+    (total, comps), (ct_energy, grad_nonenergy) = _assemble_vjp_jit(
+        E_stack, arrays, batch, static, loss, channel_weights, relative,
+        kind, group_view)
 
     # Pass 2: per-molecule seeded backward through the SCF energies, summed.
     grad_energy = None

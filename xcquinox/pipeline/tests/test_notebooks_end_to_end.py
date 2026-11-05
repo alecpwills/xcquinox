@@ -92,3 +92,50 @@ def test_gga_training_anchor_transfer_notebook_runs_end_to_end(tmp_path):
         pretrain_n_steps=100, train_n_steps_short=10, train_n_steps_long=20,
     )
     _client(nb, timeout=600).execute()
+
+
+@pytest.mark.slow
+def test_registry_pt_transfer_smoke(tmp_path):
+    """The registry miniature end to end at smoke tier: three architectures
+    (both harness demos and one attention arm) pretrain through the harness
+    and the library route, fine-tune on the 16-species DFS-Letter corpus
+    under the production pathway (FULL-25 differentiable SCF, L6 with the
+    atomic-total channel, relaxed CCSD(T) density references, the cost
+    measurement and the 12 h projection ceiling), and produce
+    proton-transfer barriers for all three paths against frozen CCSD(T)
+    densities."""
+    gen = _load_builder("_build_registry_pt_transfer_notebook.py")
+    nb_path = tmp_path / "registry_pt_smoke.ipynb"
+    work = tmp_path / "work_registry_pt"
+    gen.main(str(nb_path), arch_subset=gen.SMOKE_ARCH_SUBSET, work_root=str(work))
+    nb = nbformat.read(str(nb_path), as_version=4)
+    os.environ["STEP_SMOKE"] = "1"
+    try:
+        # FULL-25 kernels compile for three architectures and ten (T)
+        # references are solved; the smoke tier's two measurement runs add
+        # another compile cycle
+        _client(nb, timeout=3600, cwd=tmp_path).execute()
+    finally:
+        os.environ.pop("STEP_SMOKE", None)
+
+    run_dirs = sorted(p for p in (work / "runs").iterdir() if p.is_dir())
+    assert len(run_dirs) == 1, [p.name for p in run_dirs]
+    run_dir = run_dirs[0]
+    for rel in ("resolved_config.yaml", "submit_commands.txt"):
+        assert (run_dir / rel).is_file(), rel
+    assert (run_dir / "scripts").is_dir()
+    for arch in gen.SMOKE_ARCH_SUBSET:
+        assert (run_dir / "pretrain" / arch / "xnet.eqx").is_file(), arch
+        assert (run_dir / "pretrain" / arch / "fidelity_certificate.json").is_file(), arch
+        assert (run_dir / "train" / arch / "model.eqx").is_file(), arch
+
+    results = work / "results"
+    for rel in ("barriers.csv", "barriers.json", "timings.json", "manifest.json"):
+        assert (results / rel).is_file(), rel
+    import pandas as pd
+
+    df = pd.read_csv(results / "barriers.csv")
+    assert len(df) == len(gen.SMOKE_ARCH_SUBSET)
+    for col in ("barrier_cation_ha", "barrier_zundel_ha", "barrier_neutral_ha",
+                "parent_barrier_cation_ha", "ccsd_barrier_cation_ha"):
+        assert df[col].notna().all(), col
