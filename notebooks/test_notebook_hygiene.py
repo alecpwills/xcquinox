@@ -32,6 +32,8 @@ BUILDER_PRODUCTS = {
     "notebooks/_build_gga_training_dfs_subsets_notebook.py": "notebooks/gga_training_dfs_subsets.ipynb",
     "notebooks/_build_subset_generation_notebook.py": "notebooks/gga_subset_generation.ipynb",
     "notebooks/_build_registry_pt_transfer_notebook.py": "notebooks/registry_pt_transfer.ipynb",
+    "notebooks/_build_registry_pt_prong_A_notebook.py": "notebooks/registry_pt_prong_A.ipynb",
+    "notebooks/_build_registry_pt_prong_B_notebook.py": "notebooks/registry_pt_prong_B.ipynb",
     "notebooks/dfs_selfconsistent_density/_build_notebook.py":
         "notebooks/dfs_selfconsistent_density/train_dfs_density.ipynb",
 }
