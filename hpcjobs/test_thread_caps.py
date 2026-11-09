@@ -28,6 +28,8 @@ CAPPED_SCRIPTS = (
     "letter_val_refs.sbatch",
     "slim16_refs.sbatch",
     "nonempirical_pool.sbatch",
+    "registry_pt_prep.sbatch",
+    "registry_pt_train.sbatch",
 )
 
 
