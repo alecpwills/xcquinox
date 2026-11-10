@@ -27,7 +27,11 @@ The rules, read from the files a user and a runner see:
 * the test configuration lives with the packaging metadata and nowhere else, so that one
   file states the test paths and the markers;
 * the workflow runs on the branch the work happens on, installs the package with its
-  declared dependencies rather than over a hand-written environment, and runs the tests;
+  declared dependencies rather than over a hand-written environment, holds that install to
+  the parity file's pins as constraints, and runs the tests: the floors admit later
+  releases than the stack runs on (pyscf 2.15.0, which pyscfad 0.3.4 does not support,
+  broke every run from 2026-11-08), so an unconstrained install tests a stack no result
+  was produced on;
 * the coverage upload can neither fail the build nor run a codecov-action pin below
   v5 or not a release tag, so that a crash in the reporter's own process (v4.0.1's
   gpg verification, run 37033864579) red-builds no suite the tests have passed on.
@@ -173,8 +177,9 @@ def target_defines(target: str) -> bool:
 
 def workflow_offences(workflow: dict) -> list[str]:
     """What the workflow does not do: the branches it misses on either trigger, an install
-    step that refuses the declared dependencies, a missing install or test step, and a test
-    step that runs before the kernel's mapping ceiling is raised.
+    step that refuses the declared dependencies, a missing install or test step, an install
+    not held to the parity file's pins (``-c requirements.txt``), and a test step that runs
+    before the kernel's mapping ceiling is raised.
 
     The ceiling rule reads the steps in order rather than as one text: a step that raises
     ``vm.max_map_count`` after the tests have run raises it for nothing."""
@@ -191,8 +196,13 @@ def workflow_offences(workflow: dict) -> list[str]:
     commands = "\n".join(runs)
     if "--no-deps" in commands:
         out.append("the install step refuses the declared dependencies (--no-deps)")
-    if "pip install ." not in commands:
+    installs = [line for run in runs for line in run.splitlines() if "pip install ." in line]
+    if not installs:
         out.append("no step installs the package from the tree")
+    elif not any(re.search(rf"(?:-c|--constraint)[ =]{re.escape(PARITY_FILE)}(?:\s|$)", line)
+                 for line in installs):
+        out.append("the package install is not held to the parity pins "
+                   f"(-c {PARITY_FILE})")
     if "pytest" not in commands:
         out.append("no step runs the tests")
     else:
@@ -245,26 +255,43 @@ def test_the_rules_fire_on_fixtures():
     here = _ROOT / "xcquinox" / "pipeline" / "workers"
     assert "_cpu_bind" not in imported_libraries([here / "train_worker.py"])
 
+    pinned = "pip install .[test] -c requirements.txt"
     good = {"on": {"push": {"branches": ["main", "alec_dev"]},
                    "pull_request": {"branches": ["main", "alec_dev"]}},
-            "jobs": {"test": {"steps": [{"run": "pip install .[test]"},
+            "jobs": {"test": {"steps": [{"run": pinned},
                                         {"run": "sudo sysctl -w vm.max_map_count=262144"},
                                         {"run": "pytest -m 'not slow'"}]}}}
     assert workflow_offences(good) == []
     narrow = {"on": {"push": {"branches": ["main"]}, "pull_request": {"branches": ["main"]}},
               "jobs": {"test": {"steps": [{"run": "pip install . --no-deps"}]}}}
     offences = workflow_offences(narrow)
-    assert len(offences) == 4 and any("alec_dev" in o for o in offences), offences
+    assert len(offences) == 5 and any("alec_dev" in o for o in offences), offences
+
+    # the install held to the pins: the floors alone, another constraints file, or the
+    # pins on a line that does not install the package each leave it unheld
+    for install in ("pip install .[test]",
+                    "pip install .[test] -c requirements-dev.txt",
+                    "pip install -r requirements.txt\npip install .[test]"):
+        unpinned = {**good, "jobs": {"test": {"steps": [
+            {"run": install}, *good["jobs"]["test"]["steps"][1:]]}}}
+        assert workflow_offences(unpinned) == [
+            "the package install is not held to the parity pins (-c requirements.txt)"
+        ], install
+    for install in ("pip install .[test] --constraint requirements.txt",
+                    "python -m pip install .[test] -c requirements.txt --upgrade"):
+        held = {**good, "jobs": {"test": {"steps": [
+            {"run": install}, *good["jobs"]["test"]["steps"][1:]]}}}
+        assert workflow_offences(held) == [], install
 
     unraised = {"on": {"push": {"branches": ["main", "alec_dev"]},
                        "pull_request": {"branches": ["main", "alec_dev"]}},
-                "jobs": {"test": {"steps": [{"run": "pip install .[test]"},
+                "jobs": {"test": {"steps": [{"run": pinned},
                                             {"run": "pytest -m 'not slow'"}]}}}
     assert workflow_offences(unraised) == [
         "the tests run before the mapping ceiling is raised"]
     late = {"on": {"push": {"branches": ["main", "alec_dev"]},
                    "pull_request": {"branches": ["main", "alec_dev"]}},
-            "jobs": {"test": {"steps": [{"run": "pip install .[test]"},
+            "jobs": {"test": {"steps": [{"run": pinned},
                                         {"run": "pytest -m 'not slow'"},
                                         {"run": "sudo sysctl -w vm.max_map_count=262144"}]}}}
     assert workflow_offences(late) == [
@@ -858,8 +885,8 @@ def test_the_pytest_configuration_lives_in_the_packaging_file():
 
 
 def test_the_workflow_runs_on_the_working_branch_and_installs_what_is_declared():
-    """The workflow runs on both branches, installs the package with its dependencies and
-    runs the tests."""
+    """The workflow runs on both branches, installs the package with its dependencies held
+    to the parity pins and runs the tests."""
     yaml = pytest.importorskip("yaml")
     with open(_WORKFLOW, encoding="utf-8") as fh:
         workflow = yaml.safe_load(fh)
