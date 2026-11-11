@@ -2669,3 +2669,163 @@ def test_per_molecule_loop_stamps_one_update_counter_per_step(
     n_mol = len(spec.molecules)
     for _u, ids in seen:
         assert ids and all(0 <= i < n_mol for i in ids)
+
+
+# ---------------------------------------------------------------------------
+# C2: validation eligibility, the training-entry preflight, the epoch score,
+# the L6 ae-group composition, the PYSCFAD+FULL refusal
+# ---------------------------------------------------------------------------
+
+_KCAL_PER_HA = 627.5094740631
+
+
+def test_validation_check_that_loses_a_reaction_is_ineligible(monkeypatch):
+    """A diverged validation species drops its reaction identity; the check
+    is INELIGIBLE (mae +inf, coverage counts reported), the tracker never
+    takes it as best, and it advances the no-improvement streak."""
+    from types import SimpleNamespace
+
+    from xcquinox.pipeline import oneshot as oneshot_mod
+    from xcquinox.pipeline import train as train_mod
+
+    energies = {"A": -1.0, "B": -1.5, "C": float("nan"), "D": -2.0}
+    mol_data = {n: {"tag": n} for n in energies}
+
+    def fake_total_energy(model, md, solver_config=None, forward_only=False):
+        return energies[md["tag"]]
+
+    monkeypatch.setattr(oneshot_mod, "total_energy_for_solver",
+                        fake_total_energy)
+    reactions = [
+        {"name": "r1", "reactants": ["A"], "products": ["B"],
+         "coeffs": [-1.0, 1.0],
+         "reaction_energy_ref": (-0.5) * _KCAL_PER_HA + 4.0},
+        {"name": "r2", "reactants": ["C"], "products": ["D"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0},
+    ]
+    spec = SimpleNamespace(validation_density_weight=0.0,
+                           loss_kwargs_dict={}, solver_config=None)
+    score = train_mod._validation_parity_metric(
+        object(), spec, mol_data, reactions)
+    assert score.mae == float("inf")
+    assert (score.reactions_used, score.reactions_expected) == (1, 2)
+    assert (score.density_used, score.density_expected) == (0, 0)
+    tracker = train_mod._BestValidationTracker()
+    tracker.update(12.0, object())
+    tracker.update(score.mae, object())
+    assert math.isfinite(tracker.best_mae) and tracker.best_mae == 12.0
+    assert tracker.should_stop(patience=3, min_delta=0.0) is False
+    tracker.update(score.mae, object())       # a second ineligible check
+    assert tracker.should_stop(patience=2, min_delta=0.0) is True
+
+
+def test_preflight_refuses_active_vxc_with_dm_descriptor():
+    """A density-matrix-dependent descriptor with an ACTIVE vxc channel is
+    refused: per_molecule reads the effective channel weights, the batched
+    schemes the loss's own vxc_weight kwarg; weight 0 passes in both (the
+    channel is never built)."""
+    from types import SimpleNamespace
+    from typing import ClassVar
+
+    import equinox as eqx
+    import jax.numpy as jnp
+
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.descriptors import Descriptor
+
+    class _DM(Descriptor):
+        n_features: int = eqx.field(default=1, static=True)
+        required_mol_keys: ClassVar[tuple] = ()
+        spin_mol_keys: ClassVar[tuple] = ("dm_a", "dm_b")
+        density_matrix_dependent: ClassVar[bool] = True
+        registry_name: ClassVar[str] = "dummy_dm"
+
+        def compute(self, mol_data):
+            return jnp.zeros((0, self.n_features))
+
+    def _spec(scheme, cw, lk):
+        return SimpleNamespace(
+            channel_weights_dict=dict(cw), loss_kwargs_dict=dict(lk),
+            update_scheme=scheme, loss_name="L6_letter_parity",
+            arch=SimpleNamespace(
+                materialize_descriptors=lambda: (_DM(),)))
+
+    with pytest.raises(ValueError, match="dummy_dm"):
+        train_mod._preflight_refusals(
+            _spec("per_molecule", {"loss_vxc": 1.0}, {}))
+    with pytest.raises(ValueError, match="vxc_weight"):
+        train_mod._preflight_refusals(
+            _spec("batched", {"loss_vxc": 0.0}, {"vxc_weight": 1.0}))
+    train_mod._preflight_refusals(
+        _spec("per_molecule", {"loss_vxc": 0.0}, {}))
+    train_mod._preflight_refusals(
+        _spec("batched", {"loss_vxc": 1.0}, {"vxc_weight": 0.0}))
+
+
+def test_per_molecule_epoch_score_is_recorded_per_epoch(
+        training_batch_info, tmp_path):
+    """The per-molecule loop scores the epoch's final parameters on every
+    group at fixed inputs and records one __epoch_score__ aux entry per
+    epoch (the best-loss snapshot is selected on that score)."""
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.train import run_training
+
+    spec = _make_live_spec(
+        training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+        n_steps=2, tmpdir=str(tmp_path), update_scheme="per_molecule",
+        require_atom_anchors=False,
+    )
+    run_training(spec)
+    with open(os.path.join(spec.checkpoint_dir, "aux_log.pkl"), "rb") as fh:
+        aux = pickle.load(fh)
+    scores = [e for e in aux if e.get("group") == "__epoch_score__"]
+    assert len(scores) == int(spec.n_steps)
+    assert all(np.isfinite(e["epoch_score"]) for e in scores)
+
+
+def test_ae_group_carries_its_network_atoms():
+    """L6LetterParity forms the AE from the network's atomic totals, so an
+    ae group scoped to the compound alone would train no AE; the builder
+    attaches the compound's neutral atoms and refuses when they are
+    missing."""
+    from types import SimpleNamespace
+
+    from xcquinox.pipeline import train as train_mod
+
+    def _spec(mols):
+        return SimpleNamespace(
+            molecules=mols, loss_name="L6_letter_parity",
+            targets_dict={"h2o": 0.1}, loss_kwargs_dict={},
+            bh76_reactions_dict=(), ip13_pairs_dict=(), nonsc_names=(),
+            update_scheme="per_molecule", channel_weights_dict={})
+
+    compound = SimpleNamespace(name="h2o",
+                               atom_composition={"H": 2, "O": 1}, charge=0)
+    h = SimpleNamespace(name="H", atom_composition={"H": 1}, charge=0)
+    o = SimpleNamespace(name="O", atom_composition={"O": 1}, charge=0)
+    groups = train_mod._training_groups(_spec((compound, h, o)))
+    ae = [g for g in groups if g["label"] == "ae:h2o"][0]
+    assert {m.name for m in ae["species"]} == {"h2o", "H", "O"}
+    with pytest.raises(ValueError, match="neutral single-atom"):
+        train_mod._training_groups(_spec((compound,)))
+
+
+def test_pyscfad_full_training_spec_is_refused(tmp_path):
+    """run_pyscfad_scf requires concrete arrays and the training step traces
+    them, so the spec is refused at validate() instead of dying mid-run."""
+    from xcquinox.pipeline.config import TrainingSpec, get_architecture
+    from xcquinox.pipeline.solver import SolverBackend
+    from xcquinox.pipeline.tests.fixtures.molecules import h2_molecule, h_atom
+
+    sc = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FULL,
+                      max_cycles=3)
+    spec = TrainingSpec.from_dicts(
+        arch=get_architecture("deep_combined"),
+        molecules=(h_atom(), h2_molecule()),
+        targets={"H": -0.5, "H2": 0.17}, atom_energies={"H": -0.5},
+        loss_name="A_atomization", loss_kwargs={"solver_config": sc},
+        require_atom_anchors=False, n_steps=1, lr_start=1e-3,
+        lr_end=1e-5, lr_decay_start=0.0, grad_clip=1.0,
+        checkpoint_dir=str(tmp_path), seed=0)
+    with pytest.raises(ValueError, match="pyscfad"):
+        spec.validate()

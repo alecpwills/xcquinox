@@ -165,7 +165,14 @@ def _floor_as_libxc(x, threshold):
     a floored channel (its expression is differentiated at the clamped
     density). Below the threshold the function is therefore evaluated at the
     threshold and its derivative there is returned, finite, rather than the
-    zero a plain clamp would give."""
+    zero a plain clamp would give.
+
+    The returned derivative is a SURROGATE: the derivative of the unclamped
+    expression evaluated at the clamped point (libxc's reporting convention),
+    not the derivative of the clamped value, which is zero below the bound.
+    A finite difference of the clamped function therefore does not reproduce
+    it below the threshold: the value is flat there while the surrogate is
+    not."""
     return x + jax.lax.stop_gradient(jnp.maximum(x, threshold) - x)
 
 # --- PW92 on libxc's LDA_C_PW_MOD parameters --------------------------------
@@ -333,7 +340,12 @@ def _clip_as_libxc(x, lo=None, hi=None):
     """``x`` held to ``[lo, hi]`` in value with the derivative taken at the
     clipped point and passed through unscaled (:func:`_floor_as_libxc` with
     an upper bound as well), which is how libxc reports its potentials for a
-    sanitized input."""
+    sanitized input.
+
+    As there, the returned derivative is a SURROGATE: the derivative of the
+    unclamped expression at the clipped point, not the derivative of the
+    clipped value, which is zero outside ``[lo, hi]``. A finite difference of
+    the clipped function does not reproduce it below ``lo`` or above ``hi``."""
     y = x
     if lo is not None:
         y = jnp.maximum(y, lo)

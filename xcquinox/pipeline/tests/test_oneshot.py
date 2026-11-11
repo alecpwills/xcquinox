@@ -495,3 +495,21 @@ def test_polarized_correlation_rho_coefficients_at_exact_zero_sigma():
         gb = float(jax.grad(ec, argnums=1)(*args))
         assert abs(float(vc_a[g, g]) - ga) < 1e-9 * max(1.0, abs(ga)), (g, float(vc_a[g, g]), ga)
         assert abs(float(vc_b[g, g]) - gb) < 1e-9 * max(1.0, abs(gb)), (g, float(vc_b[g, g]), gb)
+
+
+def test_tail_weighted_mean_energy_masks_non_finite_entries():
+    """A diverged cycle drops out of the weighted tail mean (numerator and
+    denominator alike); an all-non-finite tail stays NaN."""
+    import math
+
+    from xcquinox.pipeline.oneshot import tail_weighted_mean_energy
+
+    mixed = jnp.array([1.0, float("nan"), 1.2])
+    val = float(tail_weighted_mean_energy(mixed, tail=3, power=2))
+    assert math.isfinite(val)
+    w = np.array([0.0, 0.25, 1.0])          # linspace(0, 1, 3)**2
+    expect = float((w[0] * 1.0 + w[2] * 1.2) / (w[0] + w[2]))
+    assert val == pytest.approx(expect, rel=1e-12)
+    all_nan = jnp.array([float("nan")] * 3)
+    assert not math.isfinite(
+        float(tail_weighted_mean_energy(all_nan, tail=3, power=2)))

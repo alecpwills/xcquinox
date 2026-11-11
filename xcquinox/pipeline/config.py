@@ -1758,6 +1758,25 @@ class TrainingSpec:
                 "start while the record states a mixed-seed protocol. Use "
                 "seed_source 'pbe' or 'scan' with the mixture, or 'minao' "
                 "without it.")
+        # The pyscfad backend's self-consistent driver needs concrete arrays:
+        # every training step traces the molecular arrays (the batched step
+        # is one filter_jit; the per-molecule step jits the energy per
+        # molecule), and run_pyscfad_scf refuses traced inputs. Its energy
+        # trace is a list of callback floats, so a tail-weighted loss over it
+        # would carry no gradient either. Both are refused here, before a
+        # batch is built.
+        from xcquinox.pipeline.solver import SolverBackend
+        from xcquinox.pipeline.solver import SolverMode as _SolverMode
+        if (getattr(solver_cfg, "backend", None) == SolverBackend.PYSCFAD
+                and getattr(solver_cfg, "mode", None) == _SolverMode.FULL):
+            raise ValueError(
+                "solver backend 'pyscfad' with mode FULL cannot train: the "
+                "training step traces the molecular arrays and "
+                "run_pyscfad_scf requires concrete inputs (update_scheme="
+                f"{self.update_scheme!r}, scf_loss_use_tail="
+                f"{bool(getattr(solver_cfg, 'scf_loss_use_tail', False))}); "
+                "use the manual backend for a self-consistent training "
+                "solver, or the pyscfad backend for evaluation only")
         if self.respect_sc_flag and self.update_scheme != "per_molecule":
             raise ValueError(
                 "respect_sc_flag is applied by the per-molecule loop only; got "

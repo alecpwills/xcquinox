@@ -711,13 +711,22 @@ def tail_weighted_mean_energy(energy_trace, tail, power):
 
     ``energy_trace`` is the per-cycle energy ``(n_cycles,)`` from
     ``run_scf().energy_trace``. Denoises a non-converged (oscillating) tail and
-    equals the converged value for a frozen/flat tail. ``sum(weights) >= 1``
-    always (the final step carries weight 1), so the mean is well-defined.
+    equals the converged value for a frozen/flat tail. A non-finite entry (a
+    diverged cycle) drops out of the numerator AND the denominator, so a
+    mixed tail yields the finite entries' weighted mean rather than a NaN
+    that would propagate into every readout; an ALL-non-finite tail is
+    ``0/0 = NaN``, the honest no-information value and the one the unmasked
+    mean already returned there. The weights over the finite entries keep
+    their guarantee (``sum >= 1``) whenever the FINAL kept entry is finite,
+    since that entry carries weight exactly 1.
     """
     n = energy_trace.shape[0]
     skip, w = scf_tail_window(n, tail, power)
     w = jnp.asarray(w, dtype=energy_trace.dtype)
     tail_e = energy_trace[skip:]
+    finite = jnp.isfinite(tail_e)
+    w = jnp.where(finite, w, 0.0)
+    tail_e = jnp.where(finite, tail_e, 0.0)
     return jnp.sum(w * tail_e) / jnp.sum(w)
 
 

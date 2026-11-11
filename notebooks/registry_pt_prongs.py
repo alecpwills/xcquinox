@@ -773,6 +773,10 @@ def train_accum_main(spec_path) -> int:
     with open(spec_path, "rb") as fh:
         spec = load_pickle(fh)   # the run's own spec, written by the notebook
     spec.validate()
+    # This loop builds its own groups and losses from the same helpers, so
+    # the package entry's preflight (run_training) is bypassed here: the
+    # same refusals apply, read from the module that defines them.
+    T._preflight_refusals(spec)
     if getattr(spec, "respect_sc_flag", False):
         # the per-molecule loop scales a non-self-consistent group's energy
         # channels by nonsc_weight; this loop does not implement that, so a
@@ -841,7 +845,7 @@ def train_accum_main(spec_path) -> int:
             if mix_rng is not None:
                 mix_rng.set_state(restored["mix_rng_state"])
             order[:] = restored["order"]
-            tracker = restored["train_tracker"]
+            tracker = T._rebuild_epoch_tracker(restored["train_tracker"])
             losses = restored["losses"]
             aux_log = restored["aux_log"]
             start_epoch = restored["epoch"]
@@ -915,7 +919,15 @@ def train_accum_main(spec_path) -> int:
         model = eqx.apply_updates(model, updates)
         epoch_loss = float(np.mean(group_losses))
         losses.append(epoch_loss)
-        tracker.update(epoch_loss, model)
+        # The best-loss snapshot: the parameters this epoch ends with, scored
+        # on every group at fixed inputs (the group losses above were taken at
+        # the pre-step parameters on mixed seeds); the plateau controller
+        # below keeps the epoch mean of the group losses.
+        epoch_score = T._epoch_end_score(prepared, model, relative, pad, False)
+        tracker.update(epoch_score, model)
+        aux_log.append({"step": epoch, "epoch": epoch, "group": "__epoch_score__",
+                        "epoch_score": epoch_score,
+                        "update_scheme": "grad_accum_mean"})
         new_lr = None
         if plateau is not None:
             metric = float(np.sqrt(max(0.0, epoch_loss)) * 1000.0)
