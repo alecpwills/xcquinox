@@ -179,12 +179,14 @@ def _cnet_inputs(arch, rho, sigma, zeta, features, alpha_index):
 def _gate(arch, rho, sigma, features, alpha_index):
     """The uniform-gas gate, unchanged by the coordinate choice: ``tanh(s)^2``
     on the GGA rung, ``x_s + tanh^2(ln((alpha + 1) / 2))`` on the meta-GGA
-    rung (the reference implementation's eq. 12 prefactor)."""
+    rung (the reference implementation's eq. 12 prefactor), with ``alpha``
+    the RAW indicator the stored column encodes, as the network's gate reads
+    it."""
     s = jnp.atleast_1d(_reduced_gradient(rho, sigma))
     if not ArchitectureConfig.is_meta_gga(arch):
         return jnp.tanh(s) ** 2
-    alpha = jnp.atleast_1d(features).flatten()[alpha_index]
-    return _x_s(s) + jnp.tanh(_x_alpha(alpha)) ** 2
+    column = jnp.atleast_1d(features).flatten()[alpha_index]
+    return _x_s(s) + jnp.tanh(_x_alpha(_raw_indicator(column))) ** 2
 
 
 def _rebuild(net, arch, rho, sigma, features, alpha_index, *, zeta=None,
@@ -648,3 +650,51 @@ def test_the_geometric_architectures_pretrain_on_the_published_inputs_plus_the_c
     assert assembled.shape == (3, 4)
     np.testing.assert_array_equal(np.asarray(assembled[:, 2:]),
                                   np.asarray(pretrain_data["cusp_all"]))
+
+
+# ---------------------------------------------------------------------------
+# The meta-GGA gate reads the raw indicator, like the DFS MLP coordinate
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("coordinates", ["legacy", "dfs"])
+def test_the_meta_gga_gate_reads_the_raw_indicator_at_the_uniform_gas_points(
+        coordinates):
+    """``x3 = ln((alpha + 1)/2)`` of the RAW iso-orbital indicator: the
+    ``tanh^2(x3)`` term of the eq. 12 prefactor is exactly 0 at ``alpha = 1``
+    (the uniform gas) and ``tanh^2(ln 1/2)`` at ``alpha = 0``. The stored
+    column is the smoothed positive part ``p(alpha)`` of width 1e-5, which
+    reads ``1 + 2.5e-11`` and ``5e-6`` at those two points, so a gate taken
+    at the column instead of the indicator it encodes is off by ~2e-6 in the
+    prefactor at ``alpha = 0``: the forward is compared with the gate written
+    at the raw value to 1e-12 relative, which separates the two readings."""
+    from xcquinox.pipeline.metagga import (_ALPHA_SMOOTHING_WIDTH,
+                                           smooth_positive_part)
+    arch = _arch(_MGGA_ARCHS[0], coordinates)
+    xnet, cnet = create_network_pair(arch, seed=23)
+    # final layers perturbed away from their initialization so the MLP, and
+    # with it the gate, moves F by construction rather than by seed
+    xnet = _perturb_final_layer(xnet)
+    cnet = _perturb_final_layer(cnet)
+    rho, sigma, zeta = jnp.asarray(0.3), jnp.asarray(0.04), jnp.asarray(0.2)
+    for alpha_raw in (0.0, 1.0):
+        column = smooth_positive_part(jnp.asarray(alpha_raw),
+                                      _ALPHA_SMOOTHING_WIDTH)
+        gate_alpha = jnp.tanh(_x_alpha(jnp.asarray(alpha_raw))) ** 2
+        if alpha_raw == 1.0:
+            assert float(gate_alpha) == 0.0
+        s = jnp.atleast_1d(_reduced_gradient(rho, sigma))
+        gate = _x_s(s) + gate_alpha
+        for net, polarized in ((xnet, False), (cnet, True)):
+            idx = _alpha_index(net)
+            features = jnp.full((arch.n_extra_features,), 0.5).at[idx].set(column)
+            if polarized:
+                got = float(net(_pack_row_polarized(rho, sigma, zeta, features)).squeeze())
+                netinp = _cnet_inputs(arch, rho, sigma, zeta, features, idx)
+            else:
+                got = float(net(_pack_row(rho, sigma, features)).squeeze())
+                netinp = _xnet_inputs(arch, rho, sigma, features, idx)
+            netterm = _mlp_apply(net.net, net.attention, netinp)
+            expected = float(1.0 + net.lobf(gate * netterm).squeeze())
+            assert abs(expected - 1.0) > 1e-4, "the MLP must move F"
+            assert abs(got - expected) <= 1e-12 * abs(expected), (
+                coordinates, alpha_raw, polarized, got, expected)

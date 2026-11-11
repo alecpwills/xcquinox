@@ -2609,3 +2609,63 @@ def test_per_molecule_loop_steps_the_plateau_on_the_epoch_mean(
     assert meta_off["optimizer"] == "adamw_linear"
 
 
+
+
+# ---------------------------------------------------------------------------
+# Fock-noise keys: the molecule id at the batch build, the update counter per
+# step, both as traced 0-d int32 arrays.
+# ---------------------------------------------------------------------------
+
+def test_fock_noise_stamps_mol_ids_and_update_counter():
+    import jax.numpy as jnp
+    from xcquinox.pipeline.solver_manual import (
+        FOCK_NOISE_MOL_ID_KEY, FOCK_NOISE_UPDATE_KEY)
+    from xcquinox.pipeline.train import (
+        _stamp_fock_noise_mol_ids, _stamp_fock_noise_update)
+    arr = np.ones((2, 2))
+    records = [{"name": "A", "dm_seed": arr}, {"name": "B", "dm_seed": arr}]
+    stamped = _stamp_fock_noise_mol_ids(records)
+    assert [int(md[FOCK_NOISE_MOL_ID_KEY]) for md in stamped] == [0, 1]
+    for md in stamped:
+        assert md[FOCK_NOISE_MOL_ID_KEY].dtype == jnp.int32
+        assert md[FOCK_NOISE_MOL_ID_KEY].shape == ()
+        assert md["dm_seed"] is arr          # arrays shared, dicts copied
+    assert FOCK_NOISE_MOL_ID_KEY not in records[0]
+    batch = {"mol_data": tuple(stamped), "targets": {}}
+    out = _stamp_fock_noise_update(batch, 7)
+    assert all(int(md[FOCK_NOISE_UPDATE_KEY]) == 7 for md in out["mol_data"])
+    assert all(md[FOCK_NOISE_UPDATE_KEY].dtype == jnp.int32 for md in out["mol_data"])
+    assert all(md[FOCK_NOISE_MOL_ID_KEY] is s[FOCK_NOISE_MOL_ID_KEY]
+               for md, s in zip(out["mol_data"], stamped))
+    assert out["targets"] is batch["targets"]
+    assert FOCK_NOISE_UPDATE_KEY not in stamped[0]
+
+
+def test_per_molecule_loop_stamps_one_update_counter_per_step(
+        training_batch_info, monkeypatch):
+    """Every update of the per-molecule loop stamps its own counter, in
+    order, on a batch whose records carry the molecule ids of the build."""
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.solver_manual import FOCK_NOISE_MOL_ID_KEY
+    from xcquinox.pipeline.train import run_training, _training_groups
+    seen = []
+    real = train_mod._stamp_fock_noise_update
+
+    def _recording(batch, update):
+        seen.append((int(update),
+                     [int(md[FOCK_NOISE_MOL_ID_KEY]) for md in batch["mol_data"]]))
+        return real(batch, update)
+
+    monkeypatch.setattr(train_mod, "_stamp_fock_noise_update", _recording)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=2, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False,
+        )
+        n_groups = len(_training_groups(spec))
+        run_training(spec)
+    assert [u for u, _ids in seen] == list(range(2 * n_groups))
+    n_mol = len(spec.molecules)
+    for _u, ids in seen:
+        assert ids and all(0 <= i < n_mol for i in ids)

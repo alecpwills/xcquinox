@@ -430,3 +430,68 @@ def test_a_marked_record_takes_the_fixed_density_energy(monkeypatch):
         energy_trajectory_for_solver(model, md, sc_tail)
 
 
+
+
+def _v_rho_from_builder(builder, model, rho, sigma, part="xc"):
+    """v_rho(g) read off the LDA-only assembly with an identity AO table and
+    unit weights: V_ij = sum_g w_g v_rho(g) phi_i(g) phi_j(g) is then
+    diag(v_rho)."""
+    n = rho.shape[0]
+    feats = jnp.zeros((n, 0))
+    V = builder(model, rho, sigma, feats, jnp.eye(n), jnp.ones(n), part=part)
+    return jnp.diag(V)
+
+
+def test_v_rho_at_exact_zero_sigma_is_the_rho_derivative_at_zero_sigma():
+    """At a grid point with healthy rho and sigma == 0 exactly the kept v_rho
+    must be d e_xc/d rho at sigma = 0 (the sigma the energy evaluates): it
+    equals a central finite difference of the per-point energy density in rho
+    at sigma = 0 and the reverse-mode derivative there. Evaluating the rho
+    tangent at a unit surrogate sigma instead puts it at a reduced gradient of
+    order 1/(2 k_F rho) that the energy never sees (5e-3 relative on this
+    network at rho = 0.3)."""
+    from xcquinox.pipeline.oneshot import _compute_vxc_nn_core, _exc_scalar_for_part
+    model = _make_model(seed=3)
+    exc = _exc_scalar_for_part(model, "xc")
+    rho = jnp.asarray([0.3, 0.05, 1.2])
+    sigma = jnp.zeros_like(rho)
+    v_rho = _v_rho_from_builder(_compute_vxc_nn_core, model, rho, sigma)
+    assert np.all(np.isfinite(np.asarray(v_rho)))
+    eps = 1e-5
+    no_feat = jnp.zeros((0,))
+    for g in range(rho.shape[0]):
+        r = rho[g]
+        fd = (float(exc(r + eps, sigma[g], no_feat))
+              - float(exc(r - eps, sigma[g], no_feat))) / (2 * eps)
+        ad = float(jax.grad(exc, argnums=0)(r, sigma[g], no_feat))
+        assert abs(ad - fd) < 1e-7 * max(1.0, abs(ad)), (g, ad, fd)
+        assert abs(float(v_rho[g]) - ad) < 1e-9 * max(1.0, abs(ad)), (
+            g, float(v_rho[g]), ad)
+
+
+def test_polarized_correlation_rho_coefficients_at_exact_zero_sigma():
+    """The per-spin correlation coefficients d e_c/d rho_s at a sigma == 0
+    point equal the reverse-mode derivatives of the SAME energy density at
+    sigma = 0, for both spins."""
+    from xcquinox.pipeline.oneshot import compute_vc_polarized_per_spin, uks_zeta
+    model = _make_model(seed=5, use_polarized_correlation=True)
+    rho_a = jnp.asarray([0.2, 0.7])
+    rho_b = jnp.asarray([0.1, 0.05])
+    sigma = jnp.zeros_like(rho_a)
+    n = rho_a.shape[0]
+    feats = jnp.zeros((n, 0))
+    vc_a, vc_b = compute_vc_polarized_per_spin(
+        model, rho_a, rho_b, sigma, feats, jnp.eye(n), jnp.ones(n),
+        jnp.zeros((n, 3)), jnp.zeros((3, n, n)))
+    assert np.all(np.isfinite(np.asarray(vc_a)))
+
+    def ec(ra, rb, s):
+        return model.eval_ec_scalar(ra + rb, s, jnp.zeros((0,)),
+                                    zeta=uks_zeta(ra, rb))
+
+    for g in range(n):
+        args = (rho_a[g], rho_b[g], sigma[g])
+        ga = float(jax.grad(ec, argnums=0)(*args))
+        gb = float(jax.grad(ec, argnums=1)(*args))
+        assert abs(float(vc_a[g, g]) - ga) < 1e-9 * max(1.0, abs(ga)), (g, float(vc_a[g, g]), ga)
+        assert abs(float(vc_b[g, g]) - gb) < 1e-9 * max(1.0, abs(gb)), (g, float(vc_b[g, g]), gb)

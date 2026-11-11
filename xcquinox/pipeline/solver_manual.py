@@ -269,19 +269,65 @@ class SCFCycleState(NamedTuple):
     mixer_state: MixerState
     converged: jnp.ndarray
     cycles_run: jnp.ndarray
+    # The latched OR of the criterion over the cycles run so far; equal to
+    # ``converged`` under the convergence freeze.
+    converged_ever: jnp.ndarray
+    # max |D_mixed - D_cur| of the last cycle that advanced the state.
+    dm_residual: jnp.ndarray
 
 
-def _fock_noise(config, cycle, shape, channel: int = 0):
+def _convergence_flags(converged_ever_prev, is_conv, freeze_on_convergence):
+    """``(converged, converged_ever)`` after a cycle whose criterion read
+    ``is_conv``.
+
+    ``converged_ever`` is the OR of the criterion over every cycle so far.
+    Under the convergence freeze the state stops advancing once the criterion
+    has fired, so the latched flag IS the final state's flag and ``converged``
+    is the same OR. Without the freeze every cycle keeps running (dpyscf's
+    loop), so an early cycle that dipped below the tolerance says nothing
+    about the final density: ``converged`` is then the LAST cycle's
+    criterion, and the latched OR is reported separately.
+    """
+    ever = converged_ever_prev | is_conv
+    if freeze_on_convergence:
+        return ever, ever
+    return is_conv, ever
+
+
+# mol_data keys that, when present, enter the Fock-noise key: the training
+# loop's update counter and the molecule's index in the run's molecule list
+# (see train._stamp_fock_noise_keys). Carried as 0-d int32 arrays so they are
+# traced under the per-molecule jit and never key a recompile.
+FOCK_NOISE_UPDATE_KEY = "fock_noise_update"
+FOCK_NOISE_MOL_ID_KEY = "fock_noise_mol_id"
+
+
+def _fock_noise(config, cycle, shape, channel: int = 0,
+                update=None, mol_id=None):
     """The executed xc-diff protocol's degeneracy noise (Dick & Fernandez-Serra
     2021): a symmetrized half-normal perturbation of the ASSEMBLED Fock,
-    |N(0,1)| * fock_noise_std with noise + noise.T, drawn per cycle from
-    PRNGKey(fock_noise_seed) folded with the cycle counter (and the spin
-    channel under UKS), applied between Fock assembly and the Roothaan
-    diagonalization on the differentiable path only -- the forward-only
-    readout stays exact. Byte-identical SCF at std 0 (never called then)."""
+    |N(0,1)| * fock_noise_std with noise + noise.T, applied between Fock
+    assembly and the Roothaan diagonalization on the differentiable path
+    only -- the forward-only readout stays exact. Byte-identical SCF at std 0
+    (never called then).
+
+    The reference protocol (dpyscf torch_routines.py, the training SCF loop)
+    draws ``abs(randn) * 1e-5``, symmetrized, afresh on every cycle of every
+    training call, so no two updates and no two molecules see the same
+    perturbation. The key here is PRNGKey(fock_noise_seed) folded with the
+    cycle counter and the spin channel (UKS), and, when the molecule's data
+    carries them, with the training loop's update counter and the molecule's
+    id: ``update`` and ``mol_id`` are 0-d int32 arrays from ``mol_data``
+    (FOCK_NOISE_UPDATE_KEY, FOCK_NOISE_MOL_ID_KEY), folded in only when
+    present, so a caller that does not set them gets the draw of the cycle
+    and channel alone, bit for bit."""
     key = jax.random.fold_in(
         jax.random.PRNGKey(config.fock_noise_seed), cycle)
     key = jax.random.fold_in(key, channel)
+    if update is not None:
+        key = jax.random.fold_in(key, jnp.asarray(update, dtype=jnp.int32))
+    if mol_id is not None:
+        key = jax.random.fold_in(key, jnp.asarray(mol_id, dtype=jnp.int32))
     n = config.fock_noise_std * jnp.abs(jax.random.normal(key, shape))
     return n + n.T
 
@@ -425,12 +471,17 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
     mixer = _build_mixer(config)
     criterion = _build_criterion(config)
 
+    noise_update = mol_data.get(FOCK_NOISE_UPDATE_KEY)
+    noise_mol_id = mol_data.get(FOCK_NOISE_MOL_ID_KEY)
+
     init_state = SCFCycleState(
         density_matrix=D0,
         energy=E0,
         mixer_state=mixer.init_state(S.shape[0]),
         converged=jnp.bool_(False),
         cycles_run=jnp.int32(0),
+        converged_ever=jnp.bool_(False),
+        dm_residual=jnp.zeros((), dtype=jnp.asarray(D0).dtype),
     )
 
     def body(state, _):
@@ -441,7 +492,8 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
         J_cycle = _j_for_cycle(D_cur)
         F = h_core + J_cycle + vxc_nn
         if config.fock_noise_std > 0 and not forward_only:
-            F = F + _fock_noise(config, state.cycles_run, F.shape)
+            F = F + _fock_noise(config, state.cycles_run, F.shape,
+                                update=noise_update, mol_id=noise_mol_id)
         D_new = _diagonalize_roothaan(F, S, nocc)
         new_mixer_state, D_mixed = mixer.step(state.mixer_state, D_cur, D_new)
         # Compute E_new as a consistent functional of D_mixed: recompute
@@ -454,14 +506,19 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
             grid_weights, h_core, J_mix, e_nuc,
         )
         is_conv = criterion.is_converged_from_energies(state.energy, E_new)
-        latched = state.converged
+        converged, converged_ever = _convergence_flags(
+            state.converged_ever, is_conv, config.freeze_on_convergence)
         # The convergence freeze: with freeze_on_convergence the state stops
         # advancing once converged (every campaign through v7); without it every
-        # cycle runs, as dpyscf's loop does, and only the flag below latches.
-        already = latched if config.freeze_on_convergence else jnp.bool_(False)
+        # cycle runs, as dpyscf's loop does (see _convergence_flags for the
+        # flags each setting reports).
+        already = (state.converged_ever if config.freeze_on_convergence
+                   else jnp.bool_(False))
         D_out = jnp.where(already, state.density_matrix, D_mixed)
         E_out = jnp.where(already, state.energy, E_new)
         cycles_inc = jnp.where(already, state.cycles_run, state.cycles_run + jnp.int32(1))
+        dm_residual = jnp.where(already, state.dm_residual,
+                                jnp.max(jnp.abs(D_mixed - D_cur)))
         # Freeze the mixer state once the scan has entered the ``already``
         # branch: otherwise emitting ``new_mixer_state`` would advance
         # ``step_index`` (and any history-tracking fields, e.g. DIIS Fock
@@ -475,8 +532,10 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
             density_matrix=D_out,
             energy=E_out,
             mixer_state=frozen_mixer_state,
-            converged=latched | is_conv,
+            converged=converged,
             cycles_run=cycles_inc,
+            converged_ever=converged_ever,
+            dm_residual=dm_residual,
         )
         return next_state, E_out
 
@@ -494,6 +553,8 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
         converged=final_state.converged,
         features_used=features_final,
         energy_trace=energy_trace,
+        converged_ever=final_state.converged_ever,
+        dm_residual=final_state.dm_residual,
     )
 
 
@@ -754,12 +815,17 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
     mixer = _build_mixer(config)
     criterion = _build_criterion(config)
 
+    noise_update = mol_data.get(FOCK_NOISE_UPDATE_KEY)
+    noise_mol_id = mol_data.get(FOCK_NOISE_MOL_ID_KEY)
+
     init_state = SCFCycleState(
         density_matrix=D0,
         energy=E0,
         mixer_state=mixer.init_state(S.shape[0]),
         converged=jnp.bool_(False),
         cycles_run=jnp.int32(0),
+        converged_ever=jnp.bool_(False),
+        dm_residual=jnp.zeros((), dtype=jnp.asarray(D0).dtype),
     )
 
     def body(state, _):
@@ -803,9 +869,13 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         fock_b = h_core + j_total + vxc_nn_b
         if config.fock_noise_std > 0 and not forward_only:
             fock_a = fock_a + _fock_noise(config, state.cycles_run,
-                                          fock_a.shape, channel=0)
+                                          fock_a.shape, channel=0,
+                                          update=noise_update,
+                                          mol_id=noise_mol_id)
             fock_b = fock_b + _fock_noise(config, state.cycles_run,
-                                          fock_b.shape, channel=1)
+                                          fock_b.shape, channel=1,
+                                          update=noise_update,
+                                          mol_id=noise_mol_id)
         dm_new_a = _diagonalize_roothaan_unrestricted(fock_a, S, nocc_a)
         dm_new_b = _diagonalize_roothaan_unrestricted(fock_b, S, nocc_b)
         D_new = jnp.stack([dm_new_a, dm_new_b], axis=0)
@@ -824,14 +894,19 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
             grid_weights, h_core, j_total_m, e_nuc,
         )
         is_conv = criterion.is_converged_from_energies(state.energy, E_new)
-        latched = state.converged
+        converged, converged_ever = _convergence_flags(
+            state.converged_ever, is_conv, config.freeze_on_convergence)
         # The convergence freeze: with freeze_on_convergence the state stops
         # advancing once converged (every campaign through v7); without it every
-        # cycle runs, as dpyscf's loop does, and only the flag below latches.
-        already = latched if config.freeze_on_convergence else jnp.bool_(False)
+        # cycle runs, as dpyscf's loop does (see _convergence_flags).
+        already = (state.converged_ever if config.freeze_on_convergence
+                   else jnp.bool_(False))
         D_out = jnp.where(already, state.density_matrix, D_mixed)
         E_out = jnp.where(already, state.energy, E_new)
         cycles_inc = jnp.where(already, state.cycles_run, state.cycles_run + jnp.int32(1))
+        # Both spin channels together: one max over the (2, nao, nao) stack.
+        dm_residual = jnp.where(already, state.dm_residual,
+                                jnp.max(jnp.abs(D_mixed - D_cur)))
         # Freeze mixer state on ``already`` (see _run_manual_scf_rks for
         # full rationale).
         frozen_mixer_state = jax.tree_util.tree_map(
@@ -842,8 +917,10 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
             density_matrix=D_out,
             energy=E_out,
             mixer_state=frozen_mixer_state,
-            converged=latched | is_conv,
+            converged=converged,
             cycles_run=cycles_inc,
+            converged_ever=converged_ever,
+            dm_residual=dm_residual,
         )
         return next_state, E_out
 
@@ -861,4 +938,6 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         converged=final_state.converged,
         features_used=features_final,
         energy_trace=energy_trace,
+        converged_ever=final_state.converged_ever,
+        dm_residual=final_state.dm_residual,
     )

@@ -390,6 +390,20 @@ class PBEReferenceMetric(Metric):
 # SCFConvergenceMetric
 # ---------------------------------------------------------------------------
 
+def _optional_bool(x):
+    """``bool(x)``, or None where the backend does not report ``x``."""
+    return None if x is None else bool(x)
+
+
+def _optional_float(x):
+    """``float(x)``, or None where the backend does not report ``x`` or it is
+    not finite (the records are JSON)."""
+    if x is None:
+        return None
+    x = float(x)
+    return x if math.isfinite(x) else None
+
+
 @register_metric("scf_convergence")
 class SCFConvergenceMetric(Metric):
     """Run one SCF solve and report the cycles taken + converged flag.
@@ -418,7 +432,16 @@ class SCFConvergenceMetric(Metric):
         result = run_scf(solver_config, model, mol_data, forward_only=True)
         out = {
             "cycles_run": int(result.cycles_run),
+            # converged at the last cycle; converged_ever is the criterion
+            # having fired at any cycle (the two differ only when the solver
+            # keeps cycling after convergence), dm_residual the last cycle's
+            # max-abs density-matrix change. Backends that do not report the
+            # latter two give None.
             "scf_converged": bool(result.converged),
+            "scf_converged_ever": _optional_bool(
+                getattr(result, "converged_ever", None)),
+            "scf_dm_residual": _optional_float(
+                getattr(result, "dm_residual", None)),
             "scf_total_energy": float(result.total_energy),
         }
         if getattr(result, "energy_trace", None) is not None:

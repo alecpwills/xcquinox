@@ -564,6 +564,11 @@ def test_scf_convergence_metric_records_residual_trace(tiny_model, h2o_data):
     assert "cycles_run" in out
     assert "scf_converged" in out
     assert "scf_total_energy" in out
+    # the final-cycle and any-cycle flags and the last density change are
+    # reported separately (the manual backend reports all three)
+    assert isinstance(out["scf_converged_ever"], bool)
+    assert out["scf_converged_ever"] or not out["scf_converged"]
+    assert out["scf_dm_residual"] is not None and out["scf_dm_residual"] >= 0.0
     # Per-cycle residual fields when the backend recorded a trace
     residual_keys = [k for k in out if k.startswith("scf_energy_residual_")]
     assert residual_keys, (

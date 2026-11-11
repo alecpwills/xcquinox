@@ -31,8 +31,8 @@ from xcquinox.pipeline.tests.fixtures.molecules import (
 
 # The keys every row states, the record the analysis reads.
 _ROW_KEYS = frozenset({
-    "name", "converged", "cycles_run", "total_energy", "last_delta_e",
-    "energy_trace", "wall_s",
+    "name", "converged", "converged_ever", "dm_residual", "cycles_run",
+    "total_energy", "last_delta_e", "energy_trace", "wall_s",
 })
 
 
@@ -177,7 +177,8 @@ def test_the_census_runs_the_training_solver_from_the_cold_start(tmp_path):
         json.dumps(row)
 
     # converged is the solver's flag, not a reading of the cycle count: with
-    # the freeze off every cycle runs and the flag still latches.
+    # the freeze off every cycle runs and the flag reports the last cycle's
+    # criterion, which this tolerance satisfies on every cycle.
     loose = SolverConfig(mode=SolverMode.FULL, max_cycles=3, conv_tol=1e6,
                          freeze_on_convergence=False)
     loose_spec = _h2_spec(tmp_path, loose, name="loose")

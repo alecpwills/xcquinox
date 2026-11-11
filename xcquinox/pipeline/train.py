@@ -699,10 +699,36 @@ def _build_batch(spec: TrainingSpec, loss) -> dict:
         for m in spec.molecules
     ]
     return {
-        "mol_data": tuple(mol_data_list),
+        "mol_data": tuple(_stamp_fock_noise_mol_ids(mol_data_list)),
         "targets": spec.targets_dict,
         "atom_energies": spec.atom_energies_dict,
     }
+
+
+def _stamp_fock_noise_mol_ids(mol_data_list):
+    """Each molecule's index in the run's molecule list (``spec.molecules``
+    order, the order of ``batch['mol_data']``) as its Fock-noise molecule id,
+    a 0-d int32 array under ``solver_manual.FOCK_NOISE_MOL_ID_KEY``. The
+    per-group sub-batches and the superset union batch draw their records
+    from this tuple, so every group sees the same id for a molecule. Traced
+    under the per-molecule jit: the value never keys a recompile."""
+    from xcquinox.pipeline.solver_manual import FOCK_NOISE_MOL_ID_KEY
+    return [dict(md, **{FOCK_NOISE_MOL_ID_KEY: jnp.asarray(i, dtype=jnp.int32)})
+            for i, md in enumerate(mol_data_list)]
+
+
+def _stamp_fock_noise_update(batch, update):
+    """``batch`` with every molecule carrying ``update`` as its Fock-noise
+    update counter (``solver_manual.FOCK_NOISE_UPDATE_KEY``, a 0-d int32
+    array, so a new value per step is a new traced value and never a
+    recompile). The reference protocol draws fresh Fock noise on every
+    training call; folding the counter into the key gives every update its
+    own draw. Only the record dicts are copied; every array is shared."""
+    from xcquinox.pipeline.solver_manual import FOCK_NOISE_UPDATE_KEY
+    stamp = jnp.asarray(update, dtype=jnp.int32)
+    stamped = tuple(dict(md, **{FOCK_NOISE_UPDATE_KEY: stamp})
+                    for md in batch["mol_data"])
+    return {**batch, "mol_data": stamped}
 
 
 class _BestModelTracker:
@@ -1600,6 +1626,7 @@ def _run_static_loop(spec, model, batch, loss, progress_callback):
     )
 
     for step in range(spec.n_steps):
+        batch = _stamp_fock_noise_update(batch, step)
         model, opt_state, loss_value, aux, grads = _train_step(
             model, opt_state, batch, loss, optimizer
         )
@@ -1652,6 +1679,7 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
     aux_log = []
     tracker = _BestModelTracker()
     for step in range(spec.n_steps):
+        batch = _stamp_fock_noise_update(batch, step)
         model, opt_state, loss_value, components, grads = _normed_step(
             model, opt_state, batch)
         loss_py = float(loss_value)
@@ -1713,6 +1741,7 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
     opt_state = phase1_optimizer.init(eqx.filter(model, eqx.is_array))
 
     for step in range(balancing.phase1_steps):
+        batch = _stamp_fock_noise_update(batch, step)
         model, opt_state, loss_value, aux, grads = _train_step(
             model, opt_state, batch, phase1_loss, phase1_optimizer)
         loss_py = float(loss_value)
@@ -1738,6 +1767,7 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
 
     for step in range(phase2_steps):
         global_step = balancing.phase1_steps + step
+        batch = _stamp_fock_noise_update(batch, global_step)
         model, opt_state, loss_value, aux, grads = _train_step(
             model, opt_state, batch, loss, phase2_optimizer)
         loss_py = float(loss_value)
@@ -1908,6 +1938,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
     aux_log = []
     tracker = _BestModelTracker()
     for step in range(spec.n_steps):
+        batch = _stamp_fock_noise_update(batch, step)
         weights = jax.nn.softmax(log_weights) * n_tasks
         components, comp_values, model_grads = _model_grad_step(
             model, batch, weights)
@@ -2609,6 +2640,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                     gview = None
                 if mix_seed:
                     gbatch = _mix_seed_batch(gbatch, mix_rng)
+                gbatch = _stamp_fock_noise_update(gbatch, update)
                 model, opt_state, loss_val, comps, grads = _step(
                     model, opt_state, gbatch, gloss, gcw, group_view=gview)
                 loss_py = float(loss_val)

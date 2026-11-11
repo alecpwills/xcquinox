@@ -564,3 +564,38 @@ def test_the_driver_reports_143_only_for_a_sigterm_shaped_failure():
     assert driver.exit_code(CellExecutionError(), False) == 1
     assert driver.exit_code(AttributeError("cleanup_resources"), True) == 1
     assert driver.exit_code(ValueError(), False) == 1
+
+
+def test_train_accum_stamps_a_counter_per_group_evaluation(tmp_path, monkeypatch):
+    """One optimizer step per epoch but one SCF per group evaluation: the
+    Fock-noise update counter is ``epoch * n_groups + position``, so the
+    recorded counters over two epochs of two groups read 0, 1, 2, 3."""
+    from xcquinox.pipeline import train as T
+    from xcquinox.pipeline.cluster.materialize import write_spec_atomic
+    from xcquinox.pipeline.config import TrainingSpec
+    from xcquinox.pipeline.tests.fixtures.molecules import (
+        h_atom, h2_molecule, h2o_molecule, o_atom)
+    from xcquinox.pipeline.tests.test_train import _make_arch
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(),
+        molecules=(h_atom(), o_atom(), h2o_molecule(), h2_molecule()),
+        targets={"H": -0.5, "O": -75.0, "H2O": 0.3, "H2": 0.17},
+        atom_energies={"H": -0.5, "O": -75.0},
+        loss_name="L5_gradnorm_vxc_step7", n_steps=2,
+        lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0, grad_clip=1.0,
+        checkpoint_dir=str(tmp_path / "ckpt"), seed=3,
+        update_scheme="per_molecule", require_atom_anchors=False)
+    n_groups = len(T._training_groups(spec))
+    assert n_groups == 2
+    seen = []
+    real = T._stamp_fock_noise_update
+
+    def _recording(batch, update):
+        seen.append(int(update))
+        return real(batch, update)
+
+    monkeypatch.setattr(T, "_stamp_fock_noise_update", _recording)
+    path = str(tmp_path / "spec.pkl")
+    write_spec_atomic(spec, path)
+    assert rpp.train_accum_main(path) == 0
+    assert seen == [0, 1, 2, 3]

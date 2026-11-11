@@ -887,10 +887,15 @@ def train_accum_main(spec_path) -> int:
         rng.shuffle(order)
         acc = None
         group_losses = []
-        for gi in order:
+        for position, gi in enumerate(order):
             label, gloss, gbatch, gcw = prepared[gi]
             if mix_seed:
                 gbatch = T._mix_seed_batch(gbatch, mix_rng)
+            # One optimizer step per epoch but one SCF per group evaluation:
+            # the Fock-noise counter advances per evaluation so no two of them
+            # share a draw (the molecule id was stamped by the batch build).
+            gbatch = T._stamp_fock_noise_update(
+                gbatch, epoch * n_groups + position)
             (loss_val, comps), grads = defused_value_and_grad(
                 gloss, model, gbatch, gcw, relative, pad_target=pad)
             T._abort_if_nonfinite(loss_val, comps, loop="grad_accum", step=epoch,
