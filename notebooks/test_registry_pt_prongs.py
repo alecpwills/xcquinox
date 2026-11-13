@@ -204,14 +204,21 @@ def _wait_for(path, timeout=30.0):
 
 
 # a stage child: marks itself started, exits 143 on SIGTERM (a training run
-# flushing its resume set), otherwise sleeps far past the test
+# flushing its resume set), otherwise sleeps far past the test. Both markers
+# are written atomically (tmp + os.replace), so a poller that waits for the
+# file's EXISTENCE never sees it empty: the open()-creates-then-write()-fills
+# window is exactly the '' the CI 3.12 run parsed (2026-11-13).
 _TERM_CHILD = (
     "import os, signal, sys, time\n"
+    "def _mark(path, text):\n"
+    "    tmp = path + '.tmp'\n"
+    "    open(tmp, 'w').write(text)\n"
+    "    os.replace(tmp, path)\n"
     "def _term(*_):\n"
-    "    open({mark!r} + '.term', 'w').write(str(os.getpid()))\n"
+    "    _mark({mark!r} + '.term', str(os.getpid()))\n"
     "    os._exit(143)\n"
     "signal.signal(signal.SIGTERM, _term)\n"
-    "open({mark!r}, 'w').write(str(os.getpid()))\n"
+    "_mark({mark!r}, str(os.getpid()))\n"
     "time.sleep(120)\n")
 
 
