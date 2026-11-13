@@ -143,7 +143,7 @@ def build_rsync_command(
     Parameters
     ----------
     host
-        SSH host (``"login.seawulf.stonybrook.edu"``, ``"seawulf"`` after
+        SSH host (``"milan.seawulf.stonybrook.edu"``, ``"seawulf"`` after
         ``~/.ssh/config`` aliasing) or ``""`` to source from the local
         filesystem.
     remote_root

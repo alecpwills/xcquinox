@@ -423,6 +423,108 @@ if not REFS_MAY_COMPUTE:
 """)
 
 
+def cell_val_refs():
+    return code("""
+# The manifest validation species' references, prep stage only: their SCAN
+# seeds primed into the shared cache (the in-loop check refuses a
+# scan-seeded spec whose validation species lack cached seeds -- without
+# this priming every meta-GGA arm dies at its first validate boundary),
+# then their density references at the production identity from the same
+# (T)-lambda, orbital-unrelaxed driver as the training corpus (cell 19's
+# _ccsd_t_relaxed), stamped with the method and the lock like every
+# reference npz.
+_t0 = time.time()
+_val_manifest = json.loads(Path(
+    rpp.REPO, "xcquinox", "pipeline", "data",
+    "si_letter_validation.json").read_text())
+_val_refs_dir = os.path.join(RUN_DIR, "val_refs")
+os.makedirs(_val_refs_dir, exist_ok=True)
+_seed_sources = sorted({
+    rpp.make_solver(resolve_arch(_a), IDENT,
+                    seed_cache_dir=SEED_CACHE_DIR).seed_source
+    for _a in ARCH_NAMES})
+
+
+def _val_mol_spec(row):
+    # The resolver's own output, NO external_data_path forced in: on a
+    # fresh run dir the reference npz does not exist yet, and a spec that
+    # points at a missing external file makes the seed-priming precompute
+    # refuse to load it. The staging in the train-specs cell (which runs
+    # after this cell has written every reference) is where the
+    # unconditional pointer belongs.
+    from xcquinox.pipeline.cluster.spec_builder import _manifest_val_mol_spec
+    return _manifest_val_mol_spec(
+        row, basis=BASIS, grid_level=GRID_LEVEL,
+        val_refs_dir=_val_refs_dir)
+
+
+for _row in tqdm(_val_manifest["species"], desc="val seeds",
+                 dynamic_ncols=True):
+    _mspec = _val_mol_spec(_row)
+    for _src in _seed_sources:
+        pipeline.precompute_fixed_density_data(
+            _mspec,
+            required_keys=("rho_grid", "sigma_grid", "grid_weights",
+                           "E_non_xc"),
+            descriptors=(), orientation_lock_strength=ORIENTATION_LOCK,
+            seed_source=_src, seed_cache_dir=SEED_CACHE_DIR,
+            seed_density_fit=bool(IDENT["density_fit"]),
+            seed_allow_generate=True)
+
+for _row in tqdm(_val_manifest["species"], desc="val CCSD(T) refs",
+                 dynamic_ncols=True):
+    _path = os.path.join(_val_refs_dir, f"{_row['name']}.npz")
+    if os.path.isfile(_path):
+        continue
+    _mspec = _val_mol_spec(_row)
+    # the RESOLVED spec's geometry string (the manifest row's "geometry" is
+    # a provenance dict: source + index, not coordinates)
+    mol = gto.M(atom=_mspec.atom, basis=BASIS,
+                charge=_mspec.charge, spin=_mspec.spin, verbose=0)
+    # A species whose (T)-lambda solve does not converge at this footing
+    # (observed: the quartet TS RKT17 at def2-svp) is DEMOTED to
+    # energy-only validation: no density npz is written, the metric's
+    # density term averages over the reference-carrying species, and the
+    # coverage counts state the demotion. No npz means the next run retries
+    # -- a larger footing may converge where this one stalls. The training
+    # corpus's own driver stays untouched (its species are all measured to
+    # converge under its escalation).
+    try:
+        dm_store, dm_total, _dm_ccsd_total, E_ccsd_t, _t1 = _ccsd_t_relaxed(
+            mol, _row["name"])
+    except AssertionError as _exc:
+        print(f"val ref DEMOTED to energy-only ({_row['name']}): {_exc}")
+        continue
+    _require_electron_count(dm_store, mol, _path)
+    _probe = pipeline.precompute_fixed_density_data(
+        pipeline.MoleculeSpec(
+            name=f"{_row['name']}_probe", atom=_mspec.atom,
+            basis=BASIS, charge=_mspec.charge, spin=_mspec.spin,
+            atom_composition=_mspec.atom_composition, grid_level=GRID_LEVEL),
+        orientation_lock_strength=ORIENTATION_LOCK)
+    _ao = np.asarray(_probe["ao_grid"])
+    _w = np.asarray(_probe["grid_weights"])
+    _rho = np.einsum("ij,pi,pj->p", dm_total, _ao, _ao)
+    assert abs(float(np.dot(_rho, _w))
+               - mol.nelectron) / mol.nelectron < 0.01, _row["name"]
+    np.savez(
+        _path,
+        dm_target=dm_store,
+        rho_ref_grid=_rho,
+        ref_density_method="ccsd(t)",
+        E_ref_literature=float(E_ccsd_t),
+        grid_level_used=GRID_LEVEL,
+        basis_used=BASIS,
+        grid_weights=_w,
+        t1_diagnostic=_t1,
+        ccsd_converged=True,
+        density_fit_used=False,
+        orientation_lock_strength=ORIENTATION_LOCK,
+    )
+TIMINGS["val refs"] = time.time() - _t0
+""")
+
+
 def cell_pt_specs_save():
     return code("""
 # The path points travel to the validation children as a pickle of their
@@ -476,7 +578,10 @@ def cell_train_specs():
     return code("""
 # The training specs of both prongs (identical but for the checkpoint
 # directory): the Letter pathway at the run identity, the per-rung seed,
-# 100 epochs, a resume checkpoint after every epoch.
+# 100 epochs, a resume checkpoint after every epoch. Validation is the
+# executed protocol (dfs_step8.v9_dfs_letter_parity): the manifest set,
+# every 10 epochs, patience 8, selected on MAE + sqrt(20) * the density
+# deviation, val_best saved beside the final model.
 import pickle
 from xcquinox.pipeline.train import _DEFAULT_CHANNEL_WEIGHTS, _training_groups
 
@@ -489,6 +594,39 @@ TARGETS = {
     "h2o": AE_HA,
     **{n: 0.0 for n in ("HO", "N2", "HF", "CH3", "n2ohts", "RKT11", "hf2ts")},
 }
+
+# The manifest validation set, staged: the reactions VERBATIM to the JSON
+# the in-loop check reads, the species through the package's own manifest
+# resolver (g2_xyz frames, unit atoms, held-out-pool barrier species). The
+# resolver attaches external_data_path ONLY where the reference npz exists
+# by spec-build time: a species demoted by the val-refs cell (its
+# (T)-lambda solve did not converge at this footing) validates energy-only,
+# which is exactly the metric's own rule for a species without a reference.
+from xcquinox.pipeline.cluster.spec_builder import _manifest_val_mol_spec
+
+_manifest = json.loads(Path(
+    rpp.REPO, "xcquinox", "pipeline", "data",
+    "si_letter_validation.json").read_text())
+VAL_REFS_DIR = os.path.join(RUN_DIR, "val_refs")
+os.makedirs(VAL_REFS_DIR, exist_ok=True)
+VAL_REACTIONS_PATH = os.path.join(RUN_DIR, "validation",
+                                  "val_reactions.json")
+os.makedirs(os.path.dirname(VAL_REACTIONS_PATH), exist_ok=True)
+with open(VAL_REACTIONS_PATH, "w") as _fh:
+    json.dump(list(_manifest["reactions"]), _fh, indent=2)
+
+
+def _val_spec(row):
+    return _manifest_val_mol_spec(
+        row, basis=IDENT["basis"], grid_level=IDENT["grid_level"],
+        val_refs_dir=VAL_REFS_DIR)
+
+
+VAL_SPECS = tuple(_val_spec(_r) for _r in _manifest["species"])
+print(f"staged {len(VAL_SPECS)} validation species and "
+      f"{len(_manifest['reactions'])} reactions from the manifest; "
+      f"{sum(1 for _m in VAL_SPECS if _m.external_data_path)} with "
+      f"references attached")
 
 
 def make_train_spec(arch_name, prong):
@@ -533,8 +671,11 @@ def make_train_spec(arch_name, prong):
         seed_mix_atomic=True, respect_sc_flag=False, nonsc_weight=0.01,
         pad_group_to_common_shape=True, superset_assembly=False,
         channel_weights=dict(CHANNEL_WEIGHTS),
-        val_frac=0.2, validate_every=0, patience=8, early_stop_min_delta=0.1,
+        val_frac=0.2, validate_every=int(IDENT.get("validate_every", 10)),
+        patience=8, early_stop_min_delta=0.1,
         validation_density_weight=20.0,
+        validation_molecules=tuple(VAL_SPECS),
+        validation_reactions_path=VAL_REACTIONS_PATH,
         checkpoint_every=1,
         pbe_anchor_weight=0.0, require_atom_anchors=False,
         balancing=GradNormConfig(alpha=1.5),
@@ -602,6 +743,7 @@ if stage_is("train"):
         _spec = spec_path(arch, PRONG)
         _train_dir = os.path.join(PRONG_ROOT, "train", arch)
         _readout = os.path.join(PRONG_ROOT, "readout", arch)
+        _vb_readout = os.path.join(PRONG_ROOT, "readout_val_best", arch)
         _clone = os.path.join(SHARED, "clone_readout", arch)
         if PRONG == "A":
             _train = [sys.executable, "-m", "xcquinox.pipeline._train_one_spec",
@@ -615,6 +757,14 @@ if stage_is("train"):
             ("readout", _ro + ["--model", os.path.join(_train_dir, "model.eqx"),
                                "--out", _readout, "--label", f"prong_{PRONG}:{arch}"],
              None, os.path.join(_readout, "readout.json"), True),
+            # the validation-best model gets its OWN out dir: the species
+            # cache would otherwise serve the final model's rows to this
+            # pass and report the final network's numbers as val_best's
+            ("readout_val_best",
+             _ro + ["--model", os.path.join(_train_dir, "model_val_best.eqx"),
+                    "--out", _vb_readout,
+                    "--label", f"prong_{PRONG}:{arch}:val_best"],
+             None, os.path.join(_vb_readout, "readout.json"), True),
             ("clone_readout", _ro + ["--model", "clone", "--out", _clone,
                                      "--label", f"clone:{arch}"],
              None, os.path.join(_clone, "readout.json"), False),
@@ -730,6 +880,7 @@ def build_cells(prong):
         cell_refs_gate("path-point"),
         cell_pt_refs_guard(),
         tb.build_cell_29_pt_ccsd(),
+        cell_val_refs(),
         cell_pt_specs_save(),
         cell_certificates(),
         cell_train_specs(),

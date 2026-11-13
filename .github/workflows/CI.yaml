@@ -40,9 +40,14 @@ jobs:
           ulimit -a
 
       - name: Install the package with its declared dependencies
+        # Held to the parity pins (requirements.txt) as constraints: the floors admit later
+        # releases than the stack runs on -- pyscf 2.15.0, which pyscfad 0.3.4 does not
+        # support, failed every run from 2026-11-08 -- so the tests run on the stack the
+        # cluster and the workstation run.
         run: |
           python -m pip install --upgrade pip
-          python -m pip install .[test]
+          python -m pip install .[test] -c requirements.txt
+          python -m pip check
           python -m pip list
 
       - name: Raise the memory-mapping ceiling

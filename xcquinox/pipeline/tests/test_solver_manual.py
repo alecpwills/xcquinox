@@ -207,8 +207,9 @@ def _assert_freeze_semantics(md, max_cycles=4):
     energy trace held at its first entry). Without it the run is bit-identical
     to the control -- same cycle count, same trace, same density, so the
     density, the energy, the counter and the mixer state all advanced
-    unconditionally -- while the ``converged`` flag keeps its latched meaning
-    and still reports the convergence the control never reached.
+    unconditionally -- while the ``converged`` flag reports the last cycle's
+    criterion, which at this tolerance fires on every cycle, so it still
+    reports the convergence the control never reached.
     """
     model = _seed_model()
     frozen = run_scf(_freeze_cfg(1e3, freeze_on_convergence=True), model, md)
@@ -275,3 +276,136 @@ def test_solver_config_describe_reports_freeze_on_convergence():
                        max_cycles=3, freeze_on_convergence=False)
     assert cfg.freeze_on_convergence is False
     assert cfg.describe()["freeze_on_convergence"] is False
+
+
+# --------------------------------------------------------------------------- #
+# The reported flags: ``converged`` is the LAST cycle's criterion, the latched
+# OR is ``converged_ever``; ``dm_residual`` is the last cycle's density change.
+# --------------------------------------------------------------------------- #
+def _flags_over_energies(energies, tol, freeze):
+    """Drive ``_convergence_flags`` over consecutive energies as the SCF body
+    does; returns the final ``(converged, converged_ever)``."""
+    from xcquinox.pipeline.solver import EnergyConvergence
+    from xcquinox.pipeline.solver_manual import _convergence_flags
+    crit = EnergyConvergence(tol=tol)
+    ever = jnp.bool_(False)
+    conv = jnp.bool_(False)
+    for e_prev, e_cur in zip(energies[:-1], energies[1:]):
+        is_conv = crit.is_converged_from_energies(jnp.asarray(e_prev),
+                                                  jnp.asarray(e_cur))
+        conv, ever = _convergence_flags(ever, is_conv, freeze)
+    return bool(conv), bool(ever)
+
+
+def test_convergence_flags_an_early_dip_does_not_report_a_moving_end():
+    """Energies 0, 1e-8, 1, 2 at tol 1e-6: the criterion fires on the first
+    step and never again. Without the freeze every cycle runs, so the run
+    ends unconverged (converged False) though it converged once (converged_ever
+    True); with the freeze the latched flag stays True, as the state would
+    have stopped advancing at the first step."""
+    energies = [0.0, 1e-8, 1.0, 2.0]
+    assert _flags_over_energies(energies, 1e-6, freeze=False) == (False, True)
+    assert _flags_over_energies(energies, 1e-6, freeze=True) == (True, True)
+    # a run that converges at the end reports both flags True either way
+    assert _flags_over_energies([0.0, 1.0, 1.0 + 1e-8], 1e-6, False) == (True, True)
+    # a run that never converges reports both False either way
+    assert _flags_over_energies([0.0, 1.0, 2.0], 1e-6, False) == (False, False)
+    assert _flags_over_energies([0.0, 1.0, 2.0], 1e-6, True) == (False, False)
+
+
+def test_rks_result_reports_the_flags_and_the_density_residual():
+    """A real manual RKS SCF: ``converged`` agrees with the last step of its
+    own energy trace, ``converged_ever`` is implied by any step of the trace
+    below the tolerance (the trace omits the initial energy, so the first
+    cycle's criterion is not visible from it and the OR is only bracketed
+    from below), ``dm_residual`` is finite and, on a one-cycle run, is
+    exactly max|D_final - D_seed|."""
+    from xcquinox.pipeline.data import clear_precompute_cache
+    clear_precompute_cache()
+    md = precompute_fixed_density_data(_seed_spec(), required_keys=("eri",))
+    model = _seed_model()
+    for tol in (1e3, 1e-12):
+        res = run_scf(_freeze_cfg(tol, freeze_on_convergence=False), model, md)
+        tr = np.asarray(res.energy_trace)
+        steps = np.abs(np.diff(tr)) < tol            # cycles 2..max_cycles
+        assert bool(res.converged) == bool(steps[-1]), (tol, tr)
+        assert bool(res.converged_ever) >= bool(steps.any()), (tol, tr)
+        assert bool(res.converged_ever) >= bool(res.converged)
+        assert np.isfinite(float(res.dm_residual))
+        assert float(res.dm_residual) > 0.0
+    one = run_scf(SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                               max_cycles=1, conv_tol=1e-12,
+                               mixer_kwargs=(("alpha", 0.5),)), model, md)
+    expected = float(np.max(np.abs(np.asarray(one.density_matrix)
+                                   - np.asarray(md["dm_seed"]))))
+    assert float(one.dm_residual) == expected
+    # under the freeze the two flags coincide
+    frozen = run_scf(_freeze_cfg(1e3, freeze_on_convergence=True), model, md)
+    assert bool(frozen.converged) and bool(frozen.converged_ever)
+    assert np.isfinite(float(frozen.dm_residual))
+
+
+# --------------------------------------------------------------------------- #
+# Fock noise: fresh per update and per molecule when the keys are carried.
+# --------------------------------------------------------------------------- #
+def _noise_cfg(**kw):
+    return SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                        max_cycles=2, conv_tol=1e-12,
+                        fock_noise_std=1.0e-5, fock_noise_seed=0, **kw)
+
+
+def test_fock_noise_draw_keys_on_update_and_molecule_when_present():
+    import jax
+    from xcquinox.pipeline.solver_manual import _fock_noise
+    cfg = _noise_cfg()
+    shape = (3, 3)
+    u0, u1 = jnp.int32(0), jnp.int32(1)
+    m0, m1 = jnp.int32(0), jnp.int32(1)
+    base = np.asarray(_fock_noise(cfg, jnp.int32(1), shape, 0, update=u0, mol_id=m0))
+    assert not np.array_equal(base, np.asarray(
+        _fock_noise(cfg, jnp.int32(1), shape, 0, update=u1, mol_id=m0)))
+    assert not np.array_equal(base, np.asarray(
+        _fock_noise(cfg, jnp.int32(1), shape, 0, update=u0, mol_id=m1)))
+    np.testing.assert_array_equal(base, np.asarray(
+        _fock_noise(cfg, jnp.int32(1), shape, 0, update=u0, mol_id=m0)))
+    # the symmetrized half-normal form is kept
+    assert np.array_equal(base, base.T) and np.all(base >= 0.0)
+    # absent keys: the draw of the cycle and channel alone, bit for bit
+    key = jax.random.fold_in(jax.random.PRNGKey(cfg.fock_noise_seed), jnp.int32(1))
+    key = jax.random.fold_in(key, 0)
+    n = cfg.fock_noise_std * jnp.abs(jax.random.normal(key, shape))
+    np.testing.assert_array_equal(np.asarray(n + n.T),
+                                  np.asarray(_fock_noise(cfg, jnp.int32(1), shape, 0)))
+
+
+def test_scf_fock_noise_differs_across_updates_and_molecules():
+    """The keys enter the SCF through mol_data: two update counters (and two
+    molecule ids) give two trajectories of the same record, while a record
+    without the keys follows the keyless draw."""
+    from xcquinox.pipeline.data import clear_precompute_cache
+    from xcquinox.pipeline.solver_manual import (
+        FOCK_NOISE_MOL_ID_KEY, FOCK_NOISE_UPDATE_KEY)
+    clear_precompute_cache()
+    md = precompute_fixed_density_data(_seed_spec(), required_keys=("eri",))
+    model = _seed_model()
+    cfg = _noise_cfg()
+
+    def _run(update=None, mol_id=None):
+        rec = dict(md)
+        if update is not None:
+            rec[FOCK_NOISE_UPDATE_KEY] = jnp.asarray(update, dtype=jnp.int32)
+        if mol_id is not None:
+            rec[FOCK_NOISE_MOL_ID_KEY] = jnp.asarray(mol_id, dtype=jnp.int32)
+        return np.asarray(run_scf(cfg, model, rec).energy_trace)
+
+    plain = _run()
+    np.testing.assert_array_equal(plain, _run())
+    u0m0 = _run(0, 0)
+    np.testing.assert_array_equal(u0m0, _run(0, 0))
+    assert not np.array_equal(u0m0, _run(1, 0))
+    assert not np.array_equal(u0m0, _run(0, 1))
+    # the forward-only readout carries no noise whatever the keys say
+    exact = np.asarray(run_scf(cfg, model, md, forward_only=True).energy_trace)
+    rec = dict(md, **{FOCK_NOISE_UPDATE_KEY: jnp.int32(3)})
+    np.testing.assert_array_equal(
+        exact, np.asarray(run_scf(cfg, model, rec, forward_only=True).energy_trace))

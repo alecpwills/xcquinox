@@ -564,3 +564,313 @@ def test_the_driver_reports_143_only_for_a_sigterm_shaped_failure():
     assert driver.exit_code(CellExecutionError(), False) == 1
     assert driver.exit_code(AttributeError("cleanup_resources"), True) == 1
     assert driver.exit_code(ValueError(), False) == 1
+
+
+def test_train_accum_stamps_a_counter_per_group_evaluation(tmp_path, monkeypatch):
+    """One optimizer step per epoch but one SCF per group evaluation: the
+    Fock-noise update counter is ``epoch * n_groups + position``, so the
+    recorded counters over two epochs of two groups read 0, 1, 2, 3."""
+    from xcquinox.pipeline import train as T
+    from xcquinox.pipeline.cluster.materialize import write_spec_atomic
+    from xcquinox.pipeline.config import TrainingSpec
+    from xcquinox.pipeline.tests.fixtures.molecules import (
+        h_atom, h2_molecule, h2o_molecule, o_atom)
+    from xcquinox.pipeline.tests.test_train import _make_arch
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(),
+        molecules=(h_atom(), o_atom(), h2o_molecule(), h2_molecule()),
+        targets={"H": -0.5, "O": -75.0, "H2O": 0.3, "H2": 0.17},
+        atom_energies={"H": -0.5, "O": -75.0},
+        loss_name="L5_gradnorm_vxc_step7", n_steps=2,
+        lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0, grad_clip=1.0,
+        checkpoint_dir=str(tmp_path / "ckpt"), seed=3,
+        update_scheme="per_molecule", require_atom_anchors=False)
+    n_groups = len(T._training_groups(spec))
+    assert n_groups == 2
+    seen = []
+    real = T._stamp_fock_noise_update
+
+    def _recording(batch, update):
+        seen.append(int(update))
+        return real(batch, update)
+
+    monkeypatch.setattr(T, "_stamp_fock_noise_update", _recording)
+    path = str(tmp_path / "spec.pkl")
+    write_spec_atomic(spec, path)
+    assert rpp.train_accum_main(path) == 0
+    assert seen == [0, 1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# C3/C4: validation at the executed identity, honest readouts, stamped refs
+# ---------------------------------------------------------------------------
+
+_LK = {"bh76_reactions": [{"name": "r1", "reactants": ("A", "B"),
+                           "products": ("TS",),
+                           "coeffs": (-1.0, -1.0, 1.0), "e_rxn_ref": 0.010}],
+       "ip13_pairs": [{"name": "ip", "neutral": "A", "cation": "A+",
+                       "ip_ref": 0.200}]}
+_PT_NAMES = ["cation_hb", "cation_pt"]
+
+
+def test_readout_refuses_nonfinite_and_reports_coverage():
+    """A non-finite species energy marks its reaction failed (the NaN is
+    kept, never averaged); a dropped reaction leaves used/expected counts
+    with NaN corpus scores -- a dropped reaction must not win."""
+    energies = {"A": -1.0, "B": float("nan"), "TS": -2.985, "A+": -0.79}
+    rows = rpp._reaction_errors(energies, _LK["bh76_reactions"],
+                                _LK["ip13_pairs"])
+    assert rows["r1"].get("failed") is True
+    assert math.isnan(rows["r1"]["err_kcal"])
+    assert rows["ip"].get("failed") is not True
+
+    species = {"A": {"E_final": -1.0, "eps": 0.010},
+               "TS": {"E_final": -2.985, "eps": None},
+               "A+": {"E_final": -0.79, "eps": None},
+               "cation_hb": {"E_final": -10.0, "eps": 0.009},
+               "cation_pt": {"E_final": -10.02, "eps": 0.011}}
+    s = rpp.summarize_readout(species, _LK, _PT_NAMES, tracked_ha=-0.03)
+    assert (s["n_reactions_used"], s["n_reactions_expected"]) == (1, 2)
+    assert math.isnan(s["wtmad2_corpus_kcal"])
+    assert math.isnan(s["ed_published"]) and math.isnan(s["mae_train_kcal"])
+
+
+def test_readout_complete_coverage_is_finite_with_counts():
+    """Complete reaction coverage keeps finite corpus scores; the density
+    counts state the reference-carrying species."""
+    species = {"A": {"E_final": -1.0, "eps": 0.010},
+               "B": {"E_final": -2.0, "eps": 0.020},
+               "TS": {"E_final": -2.985, "eps": None},
+               "A+": {"E_final": -0.79, "eps": None},
+               "cation_hb": {"E_final": -10.0, "eps": 0.009},
+               "cation_pt": {"E_final": -10.02, "eps": 0.011}}
+    s = rpp.summarize_readout(species, _LK, _PT_NAMES, tracked_ha=-0.03)
+    assert s["n_reactions_used"] == s["n_reactions_expected"] == 2
+    assert math.isfinite(s["wtmad2_corpus_kcal"])
+    assert s["n_eps_used"] == s["n_eps_expected"] == 4
+
+
+def test_train_accum_validates_writes_val_best_and_stops(tmp_path,
+                                                          monkeypatch):
+    """train_accum_main runs the package validation machinery every
+    validate_every epochs, writes model_val_best.eqx, and early-stops at
+    patience (the validation seam is stubbed; no validation SCF)."""
+    from xcquinox.pipeline import train as T
+    from xcquinox.pipeline.cluster.materialize import write_spec_atomic
+    from xcquinox.pipeline.config import TrainingSpec
+    from xcquinox.pipeline.tests.fixtures.molecules import (
+        h_atom, h2_molecule, h2o_molecule, o_atom)
+    from xcquinox.pipeline.tests.test_train import _make_arch
+
+    val_reactions = [{"name": "h2o_ae", "reactants": ["H2", "O"],
+                      "products": ["H2O"], "coeffs": [-1.0, -1.0, 1.0],
+                      "reaction_energy_ref": 230.0}]
+    rxn_path = tmp_path / "val_reactions.json"
+    rxn_path.write_text(json.dumps(val_reactions))
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(),
+        molecules=(h_atom(), o_atom(), h2o_molecule(), h2_molecule()),
+        targets={"H": -0.5, "O": -75.0, "H2O": 0.3, "H2": 0.17},
+        atom_energies={"H": -0.5, "O": -75.0},
+        loss_name="L5_gradnorm_vxc_step7", n_steps=3,
+        lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0, grad_clip=1.0,
+        checkpoint_dir=str(tmp_path / "ckpt"), seed=3,
+        update_scheme="per_molecule", require_atom_anchors=False,
+        validate_every=1, patience=1, early_stop_min_delta=0.0,
+        validation_density_weight=0.0,
+        validation_molecules=(h2_molecule(),),
+        validation_reactions_path=str(rxn_path))
+    builds, checks = [], []
+    real_score = T._validation_score
+
+    def _fake_build(s):
+        builds.append(s.validate_every)
+        return ({"H2": {}}, json.loads(rxn_path.read_text()))
+
+    def _fake_metric(model, s, vmd, vr):
+        checks.append(s.validate_every)
+        return real_score(1.0, None, None, 0, 0)
+
+    monkeypatch.setattr(T, "_build_validation_data", _fake_build)
+    monkeypatch.setattr(T, "_validation_parity_metric", _fake_metric)
+    path = str(tmp_path / "spec.pkl")
+    write_spec_atomic(spec, path)
+    assert rpp.train_accum_main(path) == 0
+    assert builds == [1] and checks == [1, 1]
+    ckpt = tmp_path / "ckpt"
+    completion = json.loads((ckpt / "completion.json").read_text())
+    assert completion["early_stopped"] is True
+    assert completion["epochs_run"] == 2
+    assert (ckpt / "model_val_best.eqx").is_file()
+
+
+def test_readout_refuses_a_mismatched_pt_reference_stamp(tmp_path,
+                                                          monkeypatch):
+    """A PT reference npz stamped ref_density_method='pbe' is refused in
+    the readout's CCSD(T) density slot: a wrong number, not a tolerance."""
+    import pickle
+    from dataclasses import replace
+
+    import numpy as np
+    from xcquinox.pipeline import solver as solver_pkg
+    from xcquinox.pipeline.cluster.materialize import write_spec_atomic
+    from xcquinox.pipeline.config import TrainingSpec
+    from xcquinox.pipeline.tests.fixtures.molecules import (
+        h_atom, h2_molecule, h2o_molecule, o_atom)
+    from xcquinox.pipeline.tests.test_train import _make_arch
+
+    pt_refs = tmp_path / "pt_refs"
+    pt_refs.mkdir()
+    _dm = 0.5 * np.eye(4) + 0.01
+    with open(pt_refs / "pt_h2.npz", "wb") as fh:
+        np.savez(fh, dm=_dm, ref_density_method=np.array("pbe"),
+                 orientation_lock_strength=np.array(3.0e-5))
+
+    lk = {"bh76_reactions": [{"name": "r1", "reactants": ("H2", "O"),
+                              "products": ("H2O",),
+                              "coeffs": (-1.0, -1.0, 1.0),
+                              "e_rxn_ref": 2.5 / rpp.KCAL_PER_HA}],
+          "ip13_pairs": [{"name": "ip_h2", "neutral": "H2", "cation": "H2+",
+                          "ip_ref": 0.60}]}
+    mols = [replace(m, external_data_path=str(tmp_path / "refs" / m.name))
+            for m in (h_atom(), o_atom(), h2o_molecule(), h2_molecule())]
+    mols.append(replace(h2_molecule(), name="H2+", charge=1, spin=1,
+                        external_data_path=str(tmp_path / "refs/H2+.npz")))
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(), molecules=tuple(mols),
+        targets={"H": -0.5, "O": -75.0, "H2O": 0.3, "H2": 0.17,
+                 "H2+": -0.3},
+        atom_energies={"H": -0.5, "O": -75.0},
+        loss_name="L5_gradnorm_vxc_step7", loss_kwargs=dict(lk),
+        solver_config=rpp.make_solver(_make_arch(), rpp.SMOKE_IDENTITY,
+                                      seed_cache_dir=str(tmp_path / "seed")),
+        n_steps=1, checkpoint_dir=str(tmp_path / "ckpt"), seed=5,
+        update_scheme="per_molecule", require_atom_anchors=False)
+    spec_path = str(tmp_path / "spec.pkl")
+    write_spec_atomic(spec, spec_path)
+    pt_path = str(tmp_path / "pt_specs.pkl")
+    with open(pt_path, "wb") as fh:
+        pickle.dump([replace(h2_molecule(), name="pt_h2")], fh)
+
+    def _stub_precompute(ms, **kw):
+        return {"ao_grid": np.full((6, 4), 0.2),
+                "grid_weights": np.full(6, 1.0 / 6), "dm_pbe": _dm,
+                "E_pbe": -1.25, "dm_target": None,
+                "mol_metadata": {"atom": "H 0 0 0; H 0 0 0.74",
+                                 "basis": "sto-3g", "charge": 0, "spin": 0}}
+
+    class _Res:
+        total_energy = -1.5
+        converged = True
+        cycles_run = 3
+        energy_trace = None
+
+        def __init__(self, dm):
+            self.density_matrix = np.asarray(dm)
+
+    import xcquinox.pipeline as pipeline_pkg
+    monkeypatch.setattr(pipeline_pkg, "precompute_fixed_density_data",
+                        _stub_precompute)
+    monkeypatch.setattr(
+        solver_pkg, "run_scf",
+        lambda sc, model, rec, forward_only=True: _Res(rec["dm_pbe"]))
+    with pytest.raises(ValueError, match="ref_density_method='pbe'"):
+        rpp.readout_main(spec_path, "clone", pt_path, str(pt_refs),
+                         str(tmp_path / "readout"), "dev")
+
+
+def test_cached_species_recomputed_when_reference_lands(tmp_path,
+                                                         monkeypatch):
+    """A cached species row whose eps is None is recomputed once its
+    reference npz exists; a species whose reference never landed is served
+    from the cache."""
+    import pickle
+    from dataclasses import replace
+
+    import numpy as np
+    from xcquinox.pipeline import solver as solver_pkg
+    from xcquinox.pipeline.cluster.materialize import write_spec_atomic
+    from xcquinox.pipeline.config import TrainingSpec
+    from xcquinox.pipeline.tests.fixtures.molecules import (
+        h_atom, h2_molecule, h2o_molecule, o_atom)
+    from xcquinox.pipeline.tests.test_train import _make_arch
+
+    _dm = 0.5 * np.eye(4) + 0.01
+    lk = {"bh76_reactions": [{"name": "r1", "reactants": ("H2", "O"),
+                              "products": ("H2O",),
+                              "coeffs": (-1.0, -1.0, 1.0),
+                              "e_rxn_ref": 2.5 / rpp.KCAL_PER_HA}],
+          "ip13_pairs": [{"name": "ip_h2", "neutral": "H2", "cation": "H2+",
+                          "ip_ref": 0.60}]}
+    refs_dir = tmp_path / "refs"
+
+    def _mols():
+        out = [replace(m, external_data_path=str(refs_dir / m.name))
+               for m in (h_atom(), o_atom(), h2o_molecule(), h2_molecule())]
+        out.append(replace(h2_molecule(), name="H2+", charge=1, spin=1,
+                           external_data_path=str(refs_dir / "H2+.npz")))
+        return tuple(out)
+
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(), molecules=_mols(),
+        targets={"H": -0.5, "O": -75.0, "H2O": 0.3, "H2": 0.17,
+                 "H2+": -0.3},
+        atom_energies={"H": -0.5, "O": -75.0},
+        loss_name="L5_gradnorm_vxc_step7", loss_kwargs=dict(lk),
+        solver_config=rpp.make_solver(_make_arch(), rpp.SMOKE_IDENTITY,
+                                      seed_cache_dir=str(tmp_path / "seed")),
+        n_steps=1, checkpoint_dir=str(tmp_path / "ckpt"), seed=5,
+        update_scheme="per_molecule", require_atom_anchors=False)
+    spec_path = str(tmp_path / "spec.pkl")
+    write_spec_atomic(spec, spec_path)
+    pt_path = str(tmp_path / "pt_specs.pkl")
+    with open(pt_path, "wb") as fh:
+        pickle.dump([replace(h2_molecule(), name="pt_h2")], fh)
+    out = tmp_path / "readout"
+    calls = []
+
+    def _install():
+        import xcquinox.pipeline as pipeline_pkg
+
+        def _stub_precompute(ms, **kw):
+            calls.append(ms.name)
+            ext = getattr(ms, "external_data_path", None)
+            has_ref = bool(ext) and Path(ext).is_file()
+            return {"ao_grid": np.full((6, 4), 0.2),
+                    "grid_weights": np.full(6, 1.0 / 6), "dm_pbe": _dm,
+                    "E_pbe": -1.25, "dm_target": (_dm if has_ref else None),
+                    "mol_metadata": {"atom": "H 0 0 0; H 0 0 0.74",
+                                     "basis": "sto-3g", "charge": 0,
+                                     "spin": 0}}
+
+        class _Res:
+            total_energy = -1.5
+            converged = True
+            cycles_run = 3
+            energy_trace = None
+
+            def __init__(self, rec):
+                self.density_matrix = np.asarray(rec["dm_pbe"])
+
+        monkeypatch.setattr(pipeline_pkg, "precompute_fixed_density_data",
+                            _stub_precompute)
+        monkeypatch.setattr(
+            solver_pkg, "run_scf",
+            lambda sc, model, rec, forward_only=True: _Res(rec))
+
+    _install()
+    assert rpp.readout_main(spec_path, "clone", pt_path,
+                            str(tmp_path / "pt_refs"), str(out), "dev") == 0
+    row = json.loads((out / "species" / "H2O.json").read_text())
+    assert row["eps"] is None            # pass 1 saw no reference
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    for ms in _mols():
+        with open(ms.external_data_path, "wb") as fh:
+            np.savez(fh, dm=_dm)
+    _install()                            # same calls list: pass 2 appends
+    assert rpp.readout_main(spec_path, "clone", pt_path,
+                            str(tmp_path / "pt_refs"), str(out), "dev") == 0
+    row = json.loads((out / "species" / "H2O.json").read_text())
+    assert row["eps"] is not None         # recomputed after the landing
+    assert calls.count("H2O") == 2
+    assert calls.count("pt_h2") == 1      # never-referenced stays cached

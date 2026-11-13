@@ -827,6 +827,11 @@ def make_per_molecule_record(
     elif scf is not None:
         record["cycles_run"] = int(scf.get("cycles_run", 0))
         record["scf_converged"] = bool(scf.get("converged", False))
+        _ever = scf.get("converged_ever")
+        record["scf_converged_ever"] = None if _ever is None else bool(_ever)
+        _dmr = scf.get("dm_residual")
+        record["scf_dm_residual"] = (float(_dmr) if _dmr is not None
+                                     and math.isfinite(float(_dmr)) else None)
         e_final = scf.get("total_energy")
         if e_final is not None and math.isfinite(float(e_final)):
             record["scf_total_energy"] = float(e_final)
@@ -1043,9 +1048,16 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
                 else:
                     e = e_final
                 if scf_info_out is not None:
+                    _ever = getattr(result, "converged_ever", None)
+                    _dmr = getattr(result, "dm_residual", None)
                     scf_info_out[name] = {
                         "cycles_run": int(getattr(result, "cycles_run", 0)),
+                        # converged at the last cycle; converged_ever: at any
+                        # cycle; dm_residual: the last cycle's max-abs
+                        # density-matrix change (None where not reported)
                         "converged": bool(getattr(result, "converged", False)),
+                        "converged_ever": None if _ever is None else bool(_ever),
+                        "dm_residual": None if _dmr is None else float(_dmr),
                         # raw final-cycle energy, kept for forensics ...
                         "total_energy": e_final,
                         # ... alongside the energy the metric actually used.

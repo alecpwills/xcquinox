@@ -292,13 +292,14 @@ def _atomic_reg_abs_masked(E_nn, anchor_syms, atom_mol_idx, atom_energies,
 
 
 def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies,
-               step_w2=None):
-    """A-family: relative squared AE error per compound.
+               step_w2=None, relative=True):
+    """A-family: squared AE error per compound, relative by default.
 
     AE is computed via `_ae_from_atoms` so the anchor dict is the same
     one that AtomizationEnergyMetric consumes at evaluation time.
 
-    The relative normalization uses a scale-aware floor
+    ``relative=True`` (the A/B/C losses, relative by definition) divides
+    each compound's squared residual by a scale-aware floor
     ``max(tgt**2, _DELTA_TGT_FLOOR_HA2)`` (mirroring `_delta_losses`)
     rather than the additive ``tgt**2 + 1e-8``: a near-zero AE target
     would otherwise inflate that compound's loss/gradient without bound
@@ -306,7 +307,10 @@ def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies
     ~1340x vs CO2-class targets, pegging the grad clip and dominating
     training). The floor guards the tgt->0 singularity; cross-compound
     gradient equalization proper comes from the reaction-form AE channel
-    (absolute residuals), not from this floor.
+    (absolute residuals), not from this floor. ``relative=False`` keeps the
+    absolute Ha^2 residual, so a loss whose metric flag is absolute (L5
+    under ``loss_metric='absolute'``) scores the AE channel on the same
+    footing as its BH76/IP13 channels.
     """
     terms = []
     for i in compound_idx:
@@ -317,7 +321,9 @@ def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies
             # tail mode: ae is a (T,) SCF trajectory -> DFS weighted-MSE over
             # the step axis before the relative normalization.
             sq = jnp.mean(step_w2 * sq)
-        terms.append(sq / jnp.maximum(tgt ** 2, _DELTA_TGT_FLOOR_HA2))
+        if relative:
+            sq = sq / jnp.maximum(tgt ** 2, _DELTA_TGT_FLOOR_HA2)
+        terms.append(sq)
     return jnp.mean(jnp.stack(terms))
 
 
@@ -1529,9 +1535,12 @@ class L5GradnormVxcStep7(AlecLoss):
         # subsets); atomic_reg may still be nonzero if any Dick atom is
         # in atom_idx.
         if self.compound_idx:
+            # `relative` reaches the AE channel as it reaches BH76/IP13 below,
+            # so under loss_metric='absolute' every energy channel is Ha^2.
             loss_ae = _ae_losses(
                 E_nn, self.compound_idx, comp_dicts,
                 self.mol_names, targets, atom_energies, step_w2=step_w2,
+                relative=relative,
             )
         else:
             loss_ae = jnp.array(0.0)
@@ -1547,15 +1556,18 @@ class L5GradnormVxcStep7(AlecLoss):
         loss_bh76 = self._bh76_channel(E_nn, relative=relative, step_w2=step_w2)
         loss_ip13 = self._ip13_channel(E_nn, relative=relative, step_w2=step_w2)
 
-        # vxc + rho channels: existing pipeline mechanisms.
+        # vxc + rho channels: existing pipeline mechanisms, built only at a
+        # positive pre-weight (a static float, so a Python branch): a
+        # zero-weighted channel costs no SCF and cannot carry a non-finite
+        # term into the total as 0 times NaN would.
         iter_idx = self._iter_idx_for_aux_channels()
-        loss_vxc = self.vxc_weight * _vxc_term(
+        loss_vxc = (self.vxc_weight * _vxc_term(
             model, mol_data, iter_idx, relative=relative,
-        )
-        loss_rho = self.density_weight * _grid_term(
+        ) if self.vxc_weight > 0 else jnp.array(0.0))
+        loss_rho = (self.density_weight * _grid_term(
             model, mol_data, iter_idx, solver_config=self.solver_config,
             relative=relative, per_electron=self.density_per_electron,
-        )
+        ) if self.density_weight > 0 else jnp.array(0.0))
 
         return {
             "loss_AE": loss_ae_total,
@@ -1633,6 +1645,10 @@ class L6LetterParity(AlecLoss):
     # Consumed by train._superset_loss_and_batch: compute_components
     # accepts a GroupView (the masked-superset assembly path).
     supports_group_view: ClassVar[bool] = True
+    # Consumed by train._training_groups: the AE channel subtracts the
+    # network's own atomic totals, so an ae group must carry the compound's
+    # neutral atoms (the anchor-dict losses leave the compound alone).
+    forms_ae_from_network_atoms: ClassVar[bool] = True
 
     bh76_reactions: tuple = eqx.field(default=(), static=True)
     ip13_pairs: tuple = eqx.field(default=(), static=True)
@@ -1785,11 +1801,13 @@ class L6LetterParity(AlecLoss):
 
         # The AE channel scores a compound only when every element of its
         # composition has a single-atom record in `molecules` (the skip is
-        # computed there); a separate construction-time check is deliberately
-        # absent because a compound-only species set is legitimate: the
-        # per-molecule scheme builds ae:<name> groups from the compound
-        # alone (train.py _training_groups), and reaction-form AE compounds
-        # are aux-excluded here, training through their bh76 group instead.
+        # computed there); a construction-time check is absent because a
+        # compound-only species set is legitimate for a reaction group: its
+        # compound trains through the reaction residual, and reaction-form
+        # AE compounds are aux-excluded here. The per-molecule scheme's
+        # ae:<name> groups carry the compound's neutral atoms (train.py
+        # _training_groups refuses an ae group whose atoms are missing), so
+        # the channel is live there.
 
         # Validate radical_species against the species set (a typo would
         # silently train the radical at full weight).
@@ -1828,15 +1846,22 @@ class L6LetterParity(AlecLoss):
         AE_NN = sum_Z n_Z E_NN[atom_Z] - E_NN[compound] against the AE
         target, so the channel moves only when NN energies move. The fixed
         Chakravorty anchors are never read (contrast _ae_losses, which
-        builds AE from the anchor dict); evaluation's
-        AtomizationEnergyMetric under FULL measures the same NN-minus-NN
-        quantity. ``step_w2`` carries the DFS tail-weighted form.
+        builds AE from the anchor dict). Evaluation's
+        AtomizationEnergyMetric measures a DIFFERENT quantity: its AE is
+        anchor-based, the sum of the fixed atomic reference totals minus
+        the network's molecular energy (``ae_definition =
+        "fixed_atom_anchors"``), so its error and this residual agree only
+        when the network's atomic totals equal the anchors; the
+        reaction-form evaluations (eval_holdout) use the network-atoms AE
+        this channel trains. ``step_w2`` carries the DFS tail-weighted form.
 
         A compound whose composition lacks a single-atom record in the
-        spec is skipped: the per-molecule scheme scopes ae:<name> groups
-        to the compound alone, and such a compound's energy supervision
-        comes from its reaction group (or its own group's rho/Eatom
-        channels), never from an anchor-dict AE it cannot form.
+        loss's species is skipped: a reaction group carries only the
+        reaction's species, and such a compound's energy supervision there
+        comes from the reaction residual (and the group's rho/Eatom
+        channels), never from an anchor-dict AE it cannot form. The
+        per-molecule scheme's ae:<name> groups carry the compound's neutral
+        atoms (train.py _training_groups), so the channel is live there.
         """
         if not self.compound_idx:
             return jnp.array(0.0)
@@ -2078,16 +2103,21 @@ class L6LetterParity(AlecLoss):
             )
             step_w2 = None
 
+        # The potential and density terms are BUILT only at a positive
+        # pre-weight (a static float, so a Python branch): a zero-weighted
+        # channel costs no SCF and carries nothing into the total, whereas
+        # 0 times a non-finite term would.
         if group_view is None:
             loss_ae = self._ae_channel(E_nn, targets, step_w2=step_w2)
             loss_eatom = _atomic_reg_abs(
                 E_nn, atom_idx, atom_energies, step_w2=step_w2)
             loss_bh76 = self._bh76_channel(E_nn, step_w2=step_w2)
             loss_ip13 = self._ip13_channel(E_nn, step_w2=step_w2)
-            loss_vxc = self.vxc_weight * _vxc_term(
+            loss_vxc = (self.vxc_weight * _vxc_term(
                 model, mol_data, self._iter_idx_for_aux_channels(),
-            )
-            loss_rho = self.density_weight * self._rho_channel(model, mol_data)
+            ) if self.vxc_weight > 0 else jnp.array(0.0))
+            loss_rho = (self.density_weight * self._rho_channel(model, mol_data)
+                        if self.density_weight > 0 else jnp.array(0.0))
         else:
             loss_ae = self._ae_channel_masked(
                 E_nn, targets, group_view.ae, step_w2=step_w2)
@@ -2100,12 +2130,13 @@ class L6LetterParity(AlecLoss):
             loss_ip13 = self._ip13_channel_masked(
                 E_nn, group_view.ip13, step_w2=step_w2)
             # vxc: per-record masks over the aux iteration order
-            loss_vxc = self.vxc_weight * _vxc_term(
+            loss_vxc = (self.vxc_weight * _vxc_term(
                 model, mol_data, self._iter_idx_for_aux_channels(),
                 record_masks=group_view.vxc_records,
-            )
-            loss_rho = self.density_weight * self._rho_channel(
+            ) if self.vxc_weight > 0 else jnp.array(0.0))
+            loss_rho = (self.density_weight * self._rho_channel(
                 model, mol_data, record_masks=group_view.rho)
+                if self.density_weight > 0 else jnp.array(0.0))
 
         return {
             "loss_AE": loss_ae,

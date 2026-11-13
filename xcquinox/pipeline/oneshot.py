@@ -228,8 +228,6 @@ def _compute_vxc_nn_core(
     # (1/(2 sqrt(1e-30)) = 5e14 is finite; underflow risk is below ~1e-300), so
     # v_sigma stays finite everywhere AND the analytic V_xc remains the true
     # functional derivative of E_xc.
-    _V_RHO_THRESHOLD = 1e-10
-    _V_SIGMA_THRESHOLD = 1e-30
     rho_ok = rho > _V_RHO_THRESHOLD
     # v_rho only needs the rho guard; v_sigma needs BOTH guards because the
     # sqrt(sigma)-derivative divergence is what makes the sigma-tangent JVP
@@ -240,20 +238,28 @@ def _compute_vxc_nn_core(
     # below). At a high-density point with sigma == 0 EXACTLY (rho_ok but not
     # sigma_ok) v_rho is KEPT, so it must see the TRUE rho: gating safe_rho on
     # safe_mask (as before) fed rho=1 into that kept v_rho, breaking
-    # V_xc = dE_xc/drho at zero-gradient high-symmetry points. safe_sigma keeps
-    # BOTH guards because the sqrt(sigma) tangent is the actual 0*inf source, so
-    # sigma must stay away from 0 in both JVPs. This mirrors the correlation
-    # path (keep rho, mask sigma only).
+    # V_xc = dE_xc/drho at zero-gradient high-symmetry points. The same
+    # argument applies to the sigma argument of that kept v_rho: the energy
+    # (models._exc_pieces) evaluates the enhancement at the TRUE sigma of the
+    # point, so v_rho must be d e_xc/d rho at that sigma, not at a unit
+    # surrogate. The rho tangent therefore sees sigma lifted only from the
+    # exact zero to the denormal threshold (_sigma_for_rho_tangent), which is
+    # what keeps its forward-mode sqrt derivative finite. safe_sigma (both
+    # guards, unit surrogate under the mask) serves the sigma tangent alone,
+    # whose output is masked at those points anyway.
     safe_rho = jnp.where(rho_ok, rho, jnp.ones_like(rho))
+    sigma_r = jnp.where(rho_ok, _sigma_for_rho_tangent(sigma),
+                        jnp.ones_like(sigma))
     safe_sigma = jnp.where(safe_mask, sigma, jnp.ones_like(sigma))
 
-    # Per-point JVPs: tangent on rho and then on sigma
+    # Per-point JVPs: tangent on rho (at sigma_r) and then on sigma (at
+    # safe_sigma).
     v_rho, v_sigma = jax.vmap(
-        lambda r, s, f: (
+        lambda r, s_r, s, f: (
             jax.jvp(
                 exc_single_point,
-                (r, s, f),
-                (jnp.ones_like(r), jnp.zeros_like(s), jnp.zeros_like(f)),
+                (r, s_r, f),
+                (jnp.ones_like(r), jnp.zeros_like(s_r), jnp.zeros_like(f)),
             )[1],
             jax.jvp(
                 exc_single_point,
@@ -261,7 +267,7 @@ def _compute_vxc_nn_core(
                 (jnp.zeros_like(r), jnp.ones_like(s), jnp.zeros_like(f)),
             )[1],
         )
-    )(safe_rho, safe_sigma, features)
+    )(safe_rho, sigma_r, safe_sigma, features)
 
     # Mask JVP outputs to zero at the masked-out points (physically negligible
     # contribution AND keeps gradients finite at rho/sigma = 0). v_rho is
@@ -368,22 +374,27 @@ def feature_energy_derivative(model, rho, sigma, features, part="xc",
         def exc_single_point(r, s, f, _z=None):
             return _ec_scalar(r, s, f, zeta=_z)
 
+        rho_ok = rho > _V_RHO_THRESHOLD
         dedf = jax.vmap(
             lambda r, s, f, z: jax.grad(exc_single_point, argnums=2)(r, s, f, z)
         )(
-            jnp.where(rho > 1e-10, rho, jnp.ones_like(rho)),
-            jnp.where((rho > 1e-10) & (sigma > 1e-30), sigma,
+            jnp.where(rho_ok, rho, jnp.ones_like(rho)),
+            jnp.where(rho_ok, _sigma_for_rho_tangent(sigma),
                       jnp.ones_like(sigma)),
             features, zeta,
         )
-        return jnp.where((rho > 1e-10)[:, None], dedf, 0.0)
-    # Same guards as _compute_vxc_nn_core: keep 1/(2 sqrt(sigma)) off the tape
-    # at sigma == 0 while letting v_rho-like terms see the true rho.
-    rho_ok = rho > 1e-10
+        return jnp.where(rho_ok[:, None], dedf, 0.0)
+    # Same guards as the v_rho JVP of _compute_vxc_nn_core: de/df is a
+    # derivative at fixed (rho, sigma), so it is taken at the point's true rho
+    # and true sigma, the exact zero lifted to the denormal threshold only
+    # (_sigma_for_rho_tangent) so that 1/(2 sqrt(sigma)) stays finite on the
+    # reverse tape.
+    rho_ok = rho > _V_RHO_THRESHOLD
     safe_rho = jnp.where(rho_ok, rho, jnp.ones_like(rho))
-    safe_sigma = jnp.where(rho_ok & (sigma > 1e-30), sigma, jnp.ones_like(sigma))
+    sigma_r = jnp.where(rho_ok, _sigma_for_rho_tangent(sigma),
+                        jnp.ones_like(sigma))
     dedf = jax.vmap(jax.grad(exc_single_point, argnums=2))(
-        safe_rho, safe_sigma, features)
+        safe_rho, sigma_r, features)
     return jnp.where(rho_ok[:, None], dedf, 0.0)
 
 
@@ -467,6 +478,34 @@ _ZETA_BOUNDARY_EPS = 1e-6
 # gradient on the non-physical rt <= floor tail. MUST match in BOTH paths (the
 # energy/potential invariant above).
 _RHO_TOT_FLOOR = 1e-12
+
+# Guards of the per-point potential JVPs, shared by the RKS/UKS exchange
+# builder (_compute_vxc_nn_core), the feature derivative
+# (feature_energy_derivative) and the polarized correlation builder
+# (compute_vc_polarized_per_spin). The rho guard is the tail mask of the
+# potential; the sigma guard is denormal-level, see the block comment in
+# _compute_vxc_nn_core for why it must not be any larger.
+_V_RHO_THRESHOLD = 1e-10
+_V_SIGMA_THRESHOLD = 1e-30
+
+
+def _sigma_for_rho_tangent(sigma):
+    """The sigma argument of every tangent that is NOT the sigma tangent.
+
+    The networks' reduced gradient is ``s = sqrt(sigma)/(2 k_F rho)``, and a
+    forward-mode JVP of ``sqrt`` forms ``tangent * 1/(2 sqrt(sigma))`` on
+    every tangent, including one whose sigma component is zero: at sigma == 0
+    exactly that product is ``0 * inf = NaN`` even for the rho tangent, whose
+    reverse-mode value there is finite (the energy at sigma == 0 is finite and
+    ``jax.grad`` with respect to rho agrees with the JVP at 1e-30 to round
+    off). The exact zero is therefore lifted to ``_V_SIGMA_THRESHOLD``, where
+    ``1/(2 sqrt(sigma))`` is finite, and nothing else changes: the energy and
+    its rho derivative are continuous in sigma, so the lift moves the kept
+    v_rho by O(1e-30), while a unit surrogate sigma (the previous practice at
+    these points) evaluated v_rho at a reduced gradient the energy never
+    sees. Byte-identical at every sigma above the threshold.
+    """
+    return jnp.maximum(sigma, _V_SIGMA_THRESHOLD)
 
 
 def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
@@ -672,13 +711,22 @@ def tail_weighted_mean_energy(energy_trace, tail, power):
 
     ``energy_trace`` is the per-cycle energy ``(n_cycles,)`` from
     ``run_scf().energy_trace``. Denoises a non-converged (oscillating) tail and
-    equals the converged value for a frozen/flat tail. ``sum(weights) >= 1``
-    always (the final step carries weight 1), so the mean is well-defined.
+    equals the converged value for a frozen/flat tail. A non-finite entry (a
+    diverged cycle) drops out of the numerator AND the denominator, so a
+    mixed tail yields the finite entries' weighted mean rather than a NaN
+    that would propagate into every readout; an ALL-non-finite tail is
+    ``0/0 = NaN``, the honest no-information value and the one the unmasked
+    mean already returned there. The weights over the finite entries keep
+    their guarantee (``sum >= 1``) whenever the FINAL kept entry is finite,
+    since that entry carries weight exactly 1.
     """
     n = energy_trace.shape[0]
     skip, w = scf_tail_window(n, tail, power)
     w = jnp.asarray(w, dtype=energy_trace.dtype)
     tail_e = energy_trace[skip:]
+    finite = jnp.isfinite(tail_e)
+    w = jnp.where(finite, w, 0.0)
+    tail_e = jnp.where(finite, tail_e, 0.0)
     return jnp.sum(w * tail_e) / jnp.sum(w)
 
 
@@ -763,16 +811,19 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
     d sigma_tot/d(nabla rho_a) = d sigma_tot/d(nabla rho_b) = 2 nabla rho_tot,
     and zeta has no gradient dependence.
 
-    ALL THREE tangents (rho_a, rho_b, sigma) are evaluated at the denormal-
-    guarded ``safe_sigma`` rather than the raw ``sigma_tot``: the cnet's shared
-    ``s = sqrt(sigma)/(...)`` node has a 1/(2 sqrt(sigma)) derivative that is
-    +inf at sigma == 0 EXACTLY, and JAX's JVP forms ``(d/dsigma)*sigma_tangent``
-    for that node on EVERY tangent, so even the rho-only tangents (whose
-    sigma-tangent is 0) hit ``0 * inf = NaN`` at a genuine sigma == 0 grid
-    point. Standard atom-centered Lebedev grids have no sigma == 0 points, but
-    high-symmetry / custom grids do; using ``safe_sigma`` matches the sibling
-    ``compute_vxc_nn`` (which also evaluates v_rho at safe_sigma) and is
-    byte-identical at every physical sigma > 1e-30.
+    The cnet's shared ``s = sqrt(sigma)/(...)`` node has a 1/(2 sqrt(sigma))
+    derivative that is +inf at sigma == 0 EXACTLY, and JAX's JVP forms
+    ``(d/dsigma)*sigma_tangent`` for that node on EVERY tangent, so even the
+    rho-only tangents (whose sigma-tangent is 0) hit ``0 * inf = NaN`` at a
+    genuine sigma == 0 grid point. Standard atom-centered Lebedev grids have
+    no sigma == 0 points, but high-symmetry / custom grids do. The two rho
+    tangents are therefore evaluated at ``sigma_tot`` lifted from the exact
+    zero to the denormal threshold only (:func:`_sigma_for_rho_tangent`), so
+    that they remain d e_c/d rho_s at the sigma the energy evaluates; the
+    sigma tangent, whose output is masked at those points, is evaluated at
+    the unit-surrogate ``safe_sigma``. Both are byte-identical to the raw
+    ``sigma_tot`` at every physical sigma > 1e-30, matching the sibling
+    ``compute_vxc_nn``.
 
     ``features`` is the TOTAL-density block: correlation is spin-interpolated,
     not spin-scaled, so it never sees the per-channel blocks of
@@ -786,14 +837,16 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
         # exact gradient of E_c.
         return model.eval_ec_scalar(ra + rb, s, f, zeta=uks_zeta(ra, rb))
 
-    _V_SIGMA_THRESHOLD = 1e-30
     sigma_ok = sigma_tot > _V_SIGMA_THRESHOLD
     safe_sigma = jnp.where(sigma_ok, sigma_tot, jnp.ones_like(sigma_tot))
+    sigma_r = _sigma_for_rho_tangent(sigma_tot)
 
-    # Per-spin rho coefficients = d eps_c / d rho_{a,b}, evaluated at safe_sigma
-    # (NOT raw sigma_tot): the rho-only tangents still propagate through the
-    # cnet's sqrt(sigma) node, whose +inf derivative at sigma==0 gives
-    # 0*inf=NaN. safe_sigma is byte-identical at every sigma>1e-30.
+    # Per-spin rho coefficients = d eps_c / d rho_{a,b}, evaluated at the
+    # point's own sigma lifted from the exact zero only (sigma_r): the
+    # rho-only tangents still propagate through the cnet's sqrt(sigma) node,
+    # whose +inf derivative at sigma==0 gives 0*inf=NaN, while a unit
+    # surrogate would put them at a reduced gradient the energy never sees.
+    # sigma_r is byte-identical to sigma_tot at every sigma>1e-30.
     coeff_a, coeff_b = jax.vmap(
         lambda ra, rb, s, f: (
             jax.jvp(ec_spin, (ra, rb, s, f),
@@ -803,7 +856,7 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
                     (jnp.zeros_like(ra), jnp.ones_like(rb),
                      jnp.zeros_like(s), jnp.zeros_like(f)))[1],
         )
-    )(rho_a, rho_b, safe_sigma, features)
+    )(rho_a, rho_b, sigma_r, features)
 
     # Shared sigma coefficient = d eps_c / d sigma_tot (safe sigma guard).
     v_sigma = jax.vmap(

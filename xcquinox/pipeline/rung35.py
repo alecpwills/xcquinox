@@ -109,7 +109,21 @@ def compute_rung35_occupancy(proj_ao: jnp.ndarray, dm: jnp.ndarray) -> jnp.ndarr
     -------
     array, shape (N, 2)
         ``[n_alpha(r), n_beta(r)]`` per grid point, each in ``[0, 1]``. Linear in
-        ``dm`` (``A`` is constant) and therefore differentiable through the SCF.
+        ``dm`` (``A`` is constant) on the physical domain and therefore
+        differentiable through the SCF.
+
+    Notes
+    -----
+    ``n_sigma(r) = A(r)^T P^sigma A(r)`` lies in ``[0, 1]`` by Bessel's
+    inequality for every N-representable ``P^sigma`` (a projector of unit
+    occupations in the AO metric). An intermediate SCF density is not always
+    one: the atomic ``minao`` guess projected onto the basis, the mixed seed
+    formed from it, and a mixer step outside the positive-semidefinite cone
+    all carry eigenvalues outside ``[0, 1]`` and push the contraction past
+    the bounds the descriptor declares (:attr:`Rung35Descriptor.column_bounds`),
+    which a spline network's grid is built on. The contraction is therefore
+    clipped to ``[0, 1]``: the identity, in value and gradient, on the
+    physical domain, and a saturation with zero gradient outside it.
     """
     A = jnp.asarray(proj_ao)
     dm = jnp.asarray(dm)
@@ -119,7 +133,8 @@ def compute_rung35_occupancy(proj_ao: jnp.ndarray, dm: jnp.ndarray) -> jnp.ndarr
     else:
         dm_spin = dm                                     # (2, nao, nao)
     # n_sigma(r) = sum_{mn} A_{r,m} P^sigma_{mn} A_{r,n}
-    return jnp.einsum("gm,smn,gn->gs", A, dm_spin, A)    # (N, 2)
+    occ = jnp.einsum("gm,smn,gn->gs", A, dm_spin, A)     # (N, 2)
+    return jnp.clip(occ, 0.0, 1.0)
 
 
 # Gaussian widths for the multi-shell projector, spanning the M11plus kernel

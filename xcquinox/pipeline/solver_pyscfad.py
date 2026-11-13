@@ -917,10 +917,15 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     cycles_run = jnp.int32(cycle_counter[0])
     converged = jnp.bool_(bool(mf.converged))
     features_used = assemble_descriptor_features(descriptors, mol_data)
-    # Pad the history to ``max_cycles`` with NaNs so callers can stack
-    # traces from different SCFs into a fixed-shape array. The length of
-    # ``energy_history`` corresponds to the actual cycles executed; trailing
-    # NaNs mark cycles that never ran (early convergence).
+    # Pad the history to ``max_cycles`` so callers can stack traces from
+    # different SCFs into a fixed-shape array. The length of
+    # ``energy_history`` is the number of cycles executed; the cycles that
+    # never ran (early convergence) are filled FORWARD with the last recorded
+    # energy: a converged SCF's energy holds for every cycle it did not need,
+    # which is the trace the manual backend's frozen state reports, so the
+    # tail reducer (oneshot.tail_weighted_mean_energy) sees a flat tail at the
+    # converged value rather than a NaN that would propagate into the mean.
+    # ``cycles_run`` still states how many cycles were executed.
     # SolverConfig always defines ``max_cycles``; a
     # ``getattr(config, "max_cycles", ...)`` default branch would be
     # unreachable. Use the field directly so a missing attribute fails
@@ -932,7 +937,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         # the suite's ``jax_enable_x64=True`` default a pin changes
         # nothing, but under x32 it would force a silent dtype
         # promotion that breaks downstream metric reductions.
-        trace_arr = jnp.full((pad_len,), jnp.nan)
+        trace_arr = jnp.full((pad_len,), energy_history[-1])
         trace_arr = trace_arr.at[: len(energy_history)].set(jnp.asarray(energy_history))
     else:
         trace_arr = None

@@ -433,6 +433,17 @@ class SCFResult:
     converged: jnp.ndarray          # bool scalar
     features_used: jnp.ndarray      # (n_grid, n_features) final cycle features
     energy_trace: jnp.ndarray | None = None  # (max_cycles,) per-cycle energies
+    # ``converged`` reports the criterion of the LAST cycle run. Without the
+    # convergence freeze every cycle advances, so an early dip below the
+    # tolerance says nothing about the final state; the latched OR over the
+    # cycles is kept apart as ``converged_ever`` (equal to ``converged`` under
+    # the freeze, where the state stops advancing once the criterion fires).
+    # Reported by the manual backend; None from the other backends.
+    converged_ever: jnp.ndarray | None = None  # bool scalar
+    # max |D_mixed - D_cur| over the AO matrix (spin channels together) of the
+    # last cycle: the density change the energy criterion does not see. A
+    # reported quantity only, never part of the criterion.
+    dm_residual: jnp.ndarray | None = None     # float scalar
 
 
 def _contract_dm_to_grid(D: jnp.ndarray, ao_deriv: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:

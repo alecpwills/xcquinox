@@ -632,17 +632,20 @@ class AlecGGA_XNet(eqx.Module):
 
         if self.meta_gga:
             # DFS Eq. 12 meta-GGA UEG-recovery prefactor (x2 + tanh^2(x3)): x2 =
-            # log-transformed s, x3 = ln((alpha+1)/2). alpha is the descriptor
-            # column at metagga_alpha_index (also an MLP input via `extras`), so it
-            # is used in BOTH the gate and the MLP -- the DFS exchange (s, alpha).
-            # DEVIATION from DFS Eq. 10/12: the MLP receives RAW clamped alpha (the
-            # descriptor column), whereas DFS feeds the network the log-transformed
-            # x3 = ln((alpha+1)/2); here x3 enters only through this gate, never as
-            # an MLP input. Documented, not changed (feeding x3 to the MLP would
-            # invalidate existing checkpoints).
-            alpha = jnp.atleast_1d(features).flatten()[self.metagga_alpha_index]
+            # log-transformed s, x3 = ln((alpha+1)/2) of the RAW iso-orbital
+            # indicator. The stored column is the smoothed, capped
+            # min(p(alpha_raw), _ALPHA_MAX) (metagga.compute_alpha), which at
+            # the uniform-gas point alpha_raw = 1 reads 1 + width^2/4 and at
+            # alpha_raw = 0 reads width/2, so a gate read off the column misses
+            # the UEG point by O(width): tanh^2(x3) is exactly 0 only at
+            # alpha_raw = 1. The gate therefore reads the same raw indicator
+            # the DFS-coordinate MLP input reads (_dfs_indicator_coordinate of
+            # alpha_dom, floored at _DFS_INDICATOR_FLOOR so the logarithm stays
+            # defined on an unphysical row), on every coordinate set. Under the
+            # legacy coordinates the MLP still receives the raw clamped column
+            # (feeding it x3 would invalidate existing checkpoints).
             x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
-            x3 = jnp.log((alpha + 1.0) / 2.0)
+            x3 = _dfs_indicator_coordinate(alpha_dom)
             tanhterm = jnp.atleast_1d(x2).flatten() + jnp.tanh(x3) ** 2
         elif self.ueg_gate == "x2":
             # The published clone's prefactor (arXiv:2605.10331 models.py,
@@ -1059,14 +1062,13 @@ class AlecGGA_CNet(eqx.Module):
             # (DFS XC_L exchange) gate form (raw x2) -- a deliberate X/C unification.
             # NOTE it DEVIATES from DFS's correlation C_L, which applies tanh to x2
             # (tanh(x2) + tanh^2(x3); vendored dpyscf/net.py:820). Either form is
-            # bounded by the correlation LOB below. alpha is the descriptor column
-            # at metagga_alpha_index (same as the X-net). As in the X-net, the MLP
-            # receives RAW clamped alpha, not DFS's log-transformed x3 =
-            # ln((alpha+1)/2) network input (Eq. 10/12); x3 enters only through
-            # this gate. Documented, not changed.
-            alpha = jnp.atleast_1d(features).flatten()[self.metagga_alpha_index]
+            # bounded by the correlation LOB below. x3 = ln((alpha+1)/2) of the
+            # RAW indicator recovered from the stored column, the same value the
+            # DFS-coordinate MLP input reads (see the X-net gate for why the
+            # smoothed column itself misses the UEG point by O(width)). Under the
+            # legacy coordinates the MLP still receives the raw clamped column.
             x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
-            x3 = jnp.log((alpha + 1.0) / 2.0)
+            x3 = _dfs_indicator_coordinate(alpha_dom)
             tanhterm = jnp.atleast_1d(x2).flatten() + jnp.tanh(x3) ** 2
         elif self.ueg_gate == "x2":
             # The published clone's prefactor (arXiv:2605.10331 models.py,

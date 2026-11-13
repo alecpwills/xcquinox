@@ -182,6 +182,8 @@ def test_make_per_molecule_record_emits_per_scf_step_trace():
     scf = {
         "cycles_run": 3,
         "converged": False,
+        "converged_ever": True,
+        "dm_residual": 2.5e-3,
         "total_energy": -76.40,
         "energy_trace": [-76.30, -76.38, -76.40],
     }
@@ -189,6 +191,9 @@ def test_make_per_molecule_record_emits_per_scf_step_trace():
         "H2O", mol_data, e_nn_ha=-76.40, in_training_subset=False, scf=scf)
     assert rec["cycles_run"] == 3
     assert rec["scf_converged"] is False
+    # an SCF that converged once and moved again reports both facts
+    assert rec["scf_converged_ever"] is True
+    assert rec["scf_dm_residual"] == pytest.approx(2.5e-3)
     assert rec["scf_total_energy"] == pytest.approx(-76.40)
     # Per-step total energies preserved verbatim.
     assert rec["scf_energy_step_0"] == pytest.approx(-76.30)

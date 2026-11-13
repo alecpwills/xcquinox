@@ -191,6 +191,10 @@ SMOKE_IDENTITY = {
     "auxbasis": None,
     "orientation_lock": 3.0e-5,
     "epochs": 2,
+    # the smoke validates on EVERY epoch: two checks at two epochs, so the
+    # in-loop validation path (the data build, the coverage-aware score,
+    # val_best, the resume keys) is exercised end to end at minutes scale
+    "validate_every": 1,
     "pretrain_steps_harness": 25,
     "pretrain_steps_library": 5,
     "pt_scan_points": 5,
@@ -773,6 +777,10 @@ def train_accum_main(spec_path) -> int:
     with open(spec_path, "rb") as fh:
         spec = load_pickle(fh)   # the run's own spec, written by the notebook
     spec.validate()
+    # This loop builds its own groups and losses from the same helpers, so
+    # the package entry's preflight (run_training) is bypassed here: the
+    # same refusals apply, read from the module that defines them.
+    T._preflight_refusals(spec)
     if getattr(spec, "respect_sc_flag", False):
         # the per-molecule loop scales a non-self-consistent group's energy
         # channels by nonsc_weight; this loop does not implement that, so a
@@ -800,6 +808,22 @@ def train_accum_main(spec_path) -> int:
     prepared = [(g["label"], *T._build_group_loss_and_batch(spec, g, batch), cw)
                 for g in groups]
     n_groups = len(prepared)
+    # The executed validation protocol, the package loop's own machinery:
+    # the check runs every validate_every epochs on the manifest species,
+    # scores MAE (+ the density term at validation_density_weight), and
+    # selects model_val_best; an ineligible check (+inf, the C2 coverage
+    # rule) advances patience like any non-improvement.
+    val_every = int(getattr(spec, "validate_every", 0) or 0)
+    val_enabled = bool(val_every > 0
+                       and getattr(spec, "validation_molecules", None)
+                       and getattr(spec, "validation_reactions_path", None))
+    val_mol_data = val_reactions = None
+    val_tracker = None
+    if val_enabled:
+        val_mol_data, val_reactions = T._build_validation_data(spec)
+        val_tracker = T._BestValidationTracker()
+    early_stopped = False
+    epochs_run = 0                      # set by the loop's end or break
     mix_seed = bool(getattr(spec, "seed_mix_atomic", False))
     if mix_seed:
         T._require_minao_seed(prepared)
@@ -841,7 +865,11 @@ def train_accum_main(spec_path) -> int:
             if mix_rng is not None:
                 mix_rng.set_state(restored["mix_rng_state"])
             order[:] = restored["order"]
-            tracker = restored["train_tracker"]
+            tracker = T._rebuild_epoch_tracker(restored["train_tracker"])
+            # the loader rehydrates the validation tracker itself; adopt it
+            # whole (the pre-kill best model and the streak survive)
+            if val_tracker is not None and restored.get("val_tracker") is not None:
+                val_tracker = restored["val_tracker"]
             losses = restored["losses"]
             aux_log = restored["aux_log"]
             start_epoch = restored["epoch"]
@@ -857,7 +885,15 @@ def train_accum_main(spec_path) -> int:
             losses=list(losses), aux_log=list(aux_log),
             plateau_state=plateau.state() if plateau is not None else None,
             train_best_loss=tracker.best_loss, train_recent=list(tracker._recent),
-            train_window=tracker.window, train_best_model=tracker.best_model)
+            train_window=tracker.window, train_best_model=tracker.best_model,
+            val_present=val_enabled,
+            val_best_mae=(val_tracker.best_mae
+                          if val_tracker is not None else None),
+            val_finite_metrics=(list(val_tracker._finite_metrics)
+                                if val_tracker is not None else None),
+            val_best_model=(val_tracker.best_model
+                            if val_tracker is not None else None),
+            early_stopped=early_stopped)
 
     def flush():
         if not live:
@@ -868,10 +904,14 @@ def train_accum_main(spec_path) -> int:
             mix_rng_state=live["mix_rng_state"],
             train_best_loss=live["train_best_loss"],
             train_recent=live["train_recent"], train_window=live["train_window"],
-            train_best_model=live["train_best_model"], val_present=False,
-            val_best_mae=None, val_finite_metrics=None, val_best_model=None,
+            train_best_model=live["train_best_model"],
+            val_present=live["val_present"],
+            val_best_mae=live["val_best_mae"],
+            val_finite_metrics=live["val_finite_metrics"],
+            val_best_model=live["val_best_model"],
             epoch=live["epoch"], update=live["update"], losses=live["losses"],
-            aux_log=live["aux_log"], early_stopped=False, arch=spec.arch,
+            aux_log=live["aux_log"], early_stopped=live["early_stopped"],
+            arch=spec.arch,
             plateau_state=live["plateau_state"])
 
     def on_term(signum, frame):  # noqa: ARG001 -- signal-handler signature
@@ -887,10 +927,15 @@ def train_accum_main(spec_path) -> int:
         rng.shuffle(order)
         acc = None
         group_losses = []
-        for gi in order:
+        for position, gi in enumerate(order):
             label, gloss, gbatch, gcw = prepared[gi]
             if mix_seed:
                 gbatch = T._mix_seed_batch(gbatch, mix_rng)
+            # One optimizer step per epoch but one SCF per group evaluation:
+            # the Fock-noise counter advances per evaluation so no two of them
+            # share a draw (the molecule id was stamped by the batch build).
+            gbatch = T._stamp_fock_noise_update(
+                gbatch, epoch * n_groups + position)
             (loss_val, comps), grads = defused_value_and_grad(
                 gloss, model, gbatch, gcw, relative, pad_target=pad)
             T._abort_if_nonfinite(loss_val, comps, loop="grad_accum", step=epoch,
@@ -910,7 +955,15 @@ def train_accum_main(spec_path) -> int:
         model = eqx.apply_updates(model, updates)
         epoch_loss = float(np.mean(group_losses))
         losses.append(epoch_loss)
-        tracker.update(epoch_loss, model)
+        # The best-loss snapshot: the parameters this epoch ends with, scored
+        # on every group at fixed inputs (the group losses above were taken at
+        # the pre-step parameters on mixed seeds); the plateau controller
+        # below keeps the epoch mean of the group losses.
+        epoch_score = T._epoch_end_score(prepared, model, relative, pad, False)
+        tracker.update(epoch_score, model)
+        aux_log.append({"step": epoch, "epoch": epoch, "group": "__epoch_score__",
+                        "epoch_score": epoch_score,
+                        "update_scheme": "grad_accum_mean"})
         new_lr = None
         if plateau is not None:
             metric = float(np.sqrt(max(0.0, epoch_loss)) * 1000.0)
@@ -921,23 +974,61 @@ def train_accum_main(spec_path) -> int:
             aux_log.append({"step": epoch, "epoch": epoch, "group": "__plateau__",
                             "epoch_loss": epoch_loss, "plateau_metric": metric,
                             "lr": new_lr, "update_scheme": "grad_accum_mean"})
+        # Validation check every validate_every epochs, on the epoch's final
+        # parameters (after the epoch score, before the snapshot): the
+        # package tracker's semantics -- patience also bounds consecutive
+        # ineligible checks.
+        if val_enabled and (epoch + 1) % val_every == 0:
+            score = T._validation_parity_metric(model, spec, val_mol_data,
+                                                val_reactions)
+            val_tracker.update(score.mae, model)
+            aux_log.append({"step": epoch, "epoch": epoch,
+                            "group": "__validation__",
+                            "val_mae_kcalmol": (float(score.mae)
+                                                if math.isfinite(score.mae)
+                                                else None),
+                            "val_reactions_used": score.reactions_used,
+                            "val_reactions_expected": score.reactions_expected,
+                            "val_density_used": score.density_used,
+                            "val_density_expected": score.density_expected,
+                            "update_scheme": "grad_accum_mean"})
+            if val_tracker.should_stop(
+                    int(getattr(spec, "patience", 0) or 0),
+                    float(getattr(spec, "early_stop_min_delta", 0.0) or 0.0)):
+                early_stopped = True
+                epochs_run = epoch + 1
+                capture(epoch + 1)
+                flush()
+                break
         capture(epoch + 1)
         flush()
         print(json.dumps({"kind": "step", "epoch": epoch + 1, "total": n_epochs,
                           "loss": epoch_loss, "lr": new_lr,
                           "elapsed_s": time.time() - t0}), flush=True)
+    else:
+        epochs_run = n_epochs
 
+    extra_metadata = {"update_scheme_effective": "grad_accum_mean",
+                      "n_groups_averaged": n_groups,
+                      "epochs_run": epochs_run,
+                      # one optimizer step per epoch: the aux log's "step"
+                      # is the optimizer step, equal to the epoch index here
+                      # (the per-molecule loop counts one per group)
+                      "aux_log_step_unit": "optimizer step = epoch"}
+    if val_enabled:
+        extra_metadata.update({
+            "early_stopped": early_stopped, "validate_every": val_every,
+            "patience": int(getattr(spec, "patience", 0) or 0),
+            "val_best_mae": (float(val_tracker.best_mae)
+                             if math.isfinite(val_tracker.best_mae) else None),
+        })
     T._save_artifacts(spec, model, losses, aux_log, time.time() - t0,
                       best_model=tracker.best_model,
-                      extra_metadata={"update_scheme_effective": "grad_accum_mean",
-                                      "n_groups_averaged": n_groups,
-                                      "epochs_run": n_epochs,
-                                      # one optimizer step per epoch: the aux
-                                      # log's "step" is the optimizer step,
-                                      # equal to the epoch index here (the
-                                      # per-molecule loop counts one per group)
-                                      "aux_log_step_unit": "optimizer step = epoch"})
-    T._finalize_completion(ckpt, early_stopped=False, epochs_run=n_epochs)
+                      val_best_model=(val_tracker.best_model
+                                      if val_enabled else None),
+                      extra_metadata=extra_metadata)
+    T._finalize_completion(ckpt, early_stopped=early_stopped,
+                           epochs_run=epochs_run)
     print(json.dumps({"kind": "done", "elapsed_s": time.time() - t0}), flush=True)
     return 0
 
@@ -980,10 +1071,24 @@ def _rho_on_grid(dm, ao):
 
 
 def _reaction_errors(energies, reactions, ip_pairs):
+    """Per-reaction errors, refusing non-finite species energies.
+
+    A reaction whose species energies are present but NON-finite is recorded
+    with ``failed: true`` and its NaN kept -- it counts as uncovered in the
+    summary and is never silently averaged. A reaction whose species is
+    absent from ``energies`` outright stays out of the rows (the readout's
+    coverage counts state the loss).
+    """
     rows = {}
     for r in reactions:
         names = [*r["reactants"], *r["products"]]
         if not all(n in energies for n in names):
+            continue
+        vals = [energies[n] for n in names]
+        if not all(math.isfinite(v) for v in vals):
+            rows[r["name"]] = {"pred_ha": float("nan"),
+                               "ref_ha": float(r["e_rxn_ref"]),
+                               "err_kcal": float("nan"), "failed": True}
             continue
         pred = sum(c * energies[n] for n, c in zip(names, r["coeffs"]))
         rows[r["name"]] = {"pred_ha": pred, "ref_ha": float(r["e_rxn_ref"]),
@@ -991,6 +1096,12 @@ def _reaction_errors(energies, reactions, ip_pairs):
     for p in ip_pairs:
         if p["cation"] in energies and p["neutral"] in energies:
             pred = energies[p["cation"]] - energies[p["neutral"]]
+            if not (math.isfinite(energies[p["cation"]])
+                    and math.isfinite(energies[p["neutral"]])):
+                rows[p["name"]] = {"pred_ha": float("nan"),
+                                   "ref_ha": float(p["ip_ref"]),
+                                   "err_kcal": float("nan"), "failed": True}
+                continue
             rows[p["name"]] = {"pred_ha": pred, "ref_ha": float(p["ip_ref"]),
                                "err_kcal": (pred - float(p["ip_ref"])) * KCAL_PER_HA}
     return rows
@@ -1013,14 +1124,32 @@ def summarize_readout(species, spec_loss_kwargs, pt_names, tracked_ha, *,
                 if s.get(energy_key) is not None}
     rx = _reaction_errors(energies, spec_loss_kwargs["bh76_reactions"],
                           spec_loss_kwargs["ip13_pairs"])
+    # Coverage: a reaction counts as used only when it evaluated without a
+    # non-finite species energy; a dropped or failed reaction makes the
+    # corpus scores NaN (a dropped reaction must not win) while the counts
+    # state what was lost.
+    n_expected = (len(spec_loss_kwargs["bh76_reactions"])
+                  + len(spec_loss_kwargs["ip13_pairs"]))
+    used_rows = [v for v in rx.values() if v.get("failed") is not True]
+    n_used = len(used_rows)
+    complete = n_used == n_expected
     # WTMAD-2 (paper form) over the training reactions, one subset per family
     # (barriers, atomization, ionization): with a single subset the formula
     # reduces to the plain MAE
     family = {r["name"]: _reaction_family(r) for r in spec_loss_kwargs["bh76_reactions"]}
     family.update({p["name"]: "ip" for p in spec_loss_kwargs["ip13_pairs"]})
     w2_rows = [{"subset": family[k], "de_ref": v["ref_ha"] * KCAL_PER_HA,
-                "de_nn": v["pred_ha"] * KCAL_PER_HA} for k, v in rx.items()]
+                "de_nn": v["pred_ha"] * KCAL_PER_HA}
+               for k, v in rx.items() if v.get("failed") is not True]
     wtmad2, _ = paper_wtmad2(w2_rows) if w2_rows else (float("nan"), {})
+    if not complete:
+        wtmad2 = float("nan")
+    # Density coverage: expected = species carrying a density reference
+    # (eps present); used = of those, the ones that evaluated finite.
+    eps_present = [float(s[eps_key]) for s in species.values()
+                   if s.get(eps_key) is not None]
+    n_eps_expected = len(eps_present)
+    n_eps_used = sum(1 for v in eps_present if math.isfinite(v))
     corpus_eps = [float(s[eps_key]) for n, s in species.items()
                   if n not in pt_names and s.get(eps_key) is not None]
     pt_eps = [float(s[eps_key]) for n, s in species.items()
@@ -1037,7 +1166,11 @@ def summarize_readout(species, spec_loss_kwargs, pt_names, tracked_ha, *,
         if vals:
             pt[f"{path}_span_ha"] = max(vals) - min(vals)
     pt_abs = abs(pt["err_kcal"]) if "err_kcal" in pt else float("nan")
-    errs = [abs(v["err_kcal"]) for v in rx.values()]
+    # The corpus MAE is gated like the corpus scores: over less than the
+    # full reaction set it is a mean over an unstated subset, so a dropped
+    # or failed reaction makes it NaN with the counts stating why.
+    errs = ([abs(v["err_kcal"]) for v in rx.values()]
+            if complete else None)
     return {
         "reactions": rx,
         "mae_train_kcal": float(sum(errs) / len(errs)) if errs else float("nan"),
@@ -1049,6 +1182,10 @@ def summarize_readout(species, spec_loss_kwargs, pt_names, tracked_ha, *,
         "ed_own_axes": _ed(float(wtmad2), eps_c, GAMMA_OWN_AXES),
         "ed_pt_published": _ed(pt_abs, eps_p, GAMMA_PUBLISHED),
         "ed_pt_own_axes": _ed(pt_abs, eps_p, GAMMA_OWN_AXES),
+        "n_reactions_used": n_used,
+        "n_reactions_expected": n_expected,
+        "n_eps_used": n_eps_used,
+        "n_eps_expected": n_eps_expected,
     }
 
 
@@ -1094,12 +1231,28 @@ def readout_main(spec_path, model_path, pt_specs_path, pt_refs_dir, out_dir,
     keys = tuple(sorted(keys))
     pt_names = [s.name for s in pt_specs]
     t_all = time.time()
+
+    def _reference_exists(kind, ms):
+        """Whether the species' density reference exists on disk NOW: a
+        corpus record's external_data_path file, a PT record's reference
+        npz under the refs dir."""
+        if kind == "pt":
+            return (Path(pt_refs_dir) / f"{ms.name}.npz").is_file()
+        ext = getattr(ms, "external_data_path", None)
+        return bool(ext) and Path(ext).is_file()
+
     species = {}
     for kind, ms in [("corpus", m) for m in spec.molecules] + [("pt", m) for m in pt_specs]:
         jpath = out / "species" / f"{ms.name}.json"
         if jpath.is_file():
-            species[ms.name] = json.loads(jpath.read_text())
-            continue
+            cached = json.loads(jpath.read_text())
+            # A cached row from a pass BEFORE its reference landed keeps
+            # eps None; once the reference exists the row is recomputed (the
+            # cache no longer freezes the pre-reference state). A species
+            # whose reference never landed is served from the cache.
+            if cached.get("eps") is not None or not _reference_exists(kind, ms):
+                species[ms.name] = cached
+                continue
         t0 = time.time()
         rec = pipeline.precompute_fixed_density_data(
             ms, required_keys=keys, descriptors=descriptors,
@@ -1125,6 +1278,15 @@ def readout_main(spec_path, model_path, pt_specs_path, pt_refs_dir, out_dir,
             ref_npz = Path(pt_refs_dir) / f"{ms.name}.npz"
             if ref_npz.is_file():
                 with np.load(ref_npz) as z:
+                    # A stamped method that is not CCSD(T) is a wrong number
+                    # in this slot, not a tolerance: refused, named.
+                    if "ref_density_method" in z.files and str(
+                            z["ref_density_method"]) != "ccsd(t)":
+                        raise ValueError(
+                            f"the PT reference {ref_npz.name} is stamped "
+                            f"ref_density_method="
+                            f"{str(z['ref_density_method'])!r}; the readout's "
+                            "CCSD(T) density slot refuses it")
                     dm_ref = np.asarray(z["dm"])
         row = {"name": ms.name, "kind": kind, "label": label,
                "E_final": e_final, "E_tail": e_tail, "E_pbe": float(rec["E_pbe"]),
@@ -1155,10 +1317,23 @@ def readout_main(spec_path, model_path, pt_specs_path, pt_refs_dir, out_dir,
 
     tracked = tracked_pt_barrier_ha()
     lk = spec.loss_kwargs_dict
+    # The training run's own recorded validation-best MAE (train_metadata),
+    # so the val_best leg of the summary states what selected the model.
+    val_best_mae = None
+    meta_path = Path(spec.checkpoint_dir) / "train_metadata.json"
+    if meta_path.is_file():
+        try:
+            val_best_mae = (json.loads(meta_path.read_text())
+                            .get("val_best_mae"))
+        except (ValueError, OSError):
+            val_best_mae = None
     payload = {
         "arch": spec.arch.name, "label": label, "model": str(model_path),
+        "val_best_mae_kcalmol": val_best_mae,
         "solver": {"max_cycles": sc.max_cycles, "density_fit": sc.density_fit,
-                   "seed_source": sc.seed_source},
+                   "seed_source": sc.seed_source,
+                   "orientation_lock_strength": float(
+                       sc.orientation_lock_strength)},
         "network": summarize_readout(species, lk, pt_names, tracked),
         "pbe": summarize_readout(species, lk, pt_names, tracked,
                                  energy_key="E_pbe", eps_key="eps_pbe"),
@@ -1188,6 +1363,12 @@ def assemble(prong_root, clone_root=None, ledger=None) -> dict:
     status = ledger.summary() if ledger is not None else {"archs": {}}
     readouts = {p.parent.name: json.loads(p.read_text())
                 for p in sorted((prong_root / "readout").glob("*/readout.json"))}
+    # The validation-best model's own pass lives in readout_val_best/ (its
+    # own out dir, so the species cache cannot serve the final model's rows
+    # to it); absent for an arch whose training never validated.
+    val_bests = {p.parent.name: json.loads(p.read_text())
+                 for p in sorted((prong_root / "readout_val_best").glob(
+                     "*/readout.json"))}
     clones = {}
     if clone_root is not None:
         clones = {p.parent.name: json.loads(p.read_text())
@@ -1204,9 +1385,11 @@ def assemble(prong_root, clone_root=None, ledger=None) -> dict:
     for n in names:
         r = readouts.get(n)
         c = clones.get(n)
+        vb = val_bests.get(n)
         net = r["network"] if r else None
         cl = c["network"] if c else None
         pbe = (r or c or {}).get("pbe")
+        vbest = vb["network"] if vb else None
         summary.append({
             "arch": n, "state": status["archs"].get(n, {}).get("state"),
             "stage": status["archs"].get(n, {}).get("stage"),
@@ -1216,6 +1399,15 @@ def assemble(prong_root, clone_root=None, ledger=None) -> dict:
             "eps_mean_pt": _pick(net, "eps_mean_pt"),
             "ed_published": _pick(net, "ed_published"),
             "ed_own_axes": _pick(net, "ed_own_axes"),
+            "wtmad2_corpus_kcal": _pick(net, "wtmad2_corpus_kcal"),
+            "n_reactions_used": _pick(net, "n_reactions_used"),
+            "n_reactions_expected": _pick(net, "n_reactions_expected"),
+            "n_eps_used": _pick(net, "n_eps_used"),
+            "n_eps_expected": _pick(net, "n_eps_expected"),
+            "val_best_mae_train_kcal": _pick(vbest, "mae_train_kcal"),
+            "val_best_pt_err_kcal": _pick((vbest or {}).get("pt"), "err_kcal"),
+            "val_best_ed_published": _pick(vbest, "ed_published"),
+            "val_best_mae_kcalmol": _pick(vb, "val_best_mae_kcalmol"),
             "clone_mae_train_kcal": _pick(cl, "mae_train_kcal"),
             "clone_pt_err_kcal": _pick((cl or {}).get("pt"), "err_kcal"),
             "clone_ed_published": _pick(cl, "ed_published"),
@@ -1225,7 +1417,8 @@ def assemble(prong_root, clone_root=None, ledger=None) -> dict:
             "scf_converged": (f"{r['scf']['n_converged']}/{r['scf']['n_species']}"
                               if r else ""),
         })
-        for who, block in (("network", net), ("clone", cl), ("pbe", pbe)):
+        for who, block in (("network", net), ("val_best", vbest),
+                           ("clone", cl), ("pbe", pbe)):
             for rx, v in ((block or {}).get("reactions") or {}).items():
                 reactions.append({"arch": n, "functional": who, "reaction": rx,
                                   "err_kcal": v["err_kcal"]})

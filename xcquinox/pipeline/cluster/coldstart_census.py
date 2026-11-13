@@ -37,8 +37,8 @@ import time
 import numpy as np
 
 #: The keys every row carries.
-ROW_KEYS = ("name", "converged", "cycles_run", "total_energy", "finite",
-            "last_delta_e", "energy_trace", "wall_s")
+ROW_KEYS = ("name", "converged", "converged_ever", "dm_residual", "cycles_run",
+            "total_energy", "finite", "last_delta_e", "energy_trace", "wall_s")
 
 
 def census_solver_config(sc):
@@ -88,9 +88,17 @@ def _row(name, result, wall_s):
     last = (abs(trace[-1] - trace[-2])
             if len(trace) >= 2 and trace[-1] is not None
             and trace[-2] is not None else None)
+    # converged: at the last cycle; converged_ever: the criterion fired at
+    # some cycle (they differ when every cycle runs and the energy moves
+    # again after converging); dm_residual: the last cycle's max-abs
+    # density-matrix change. None where the backend reports neither.
+    ever = getattr(result, "converged_ever", None)
+    dm_res = getattr(result, "dm_residual", None)
     return {
         "name": str(name),
         "converged": bool(result.converged),
+        "converged_ever": None if ever is None else bool(ever),
+        "dm_residual": None if dm_res is None else _finite(dm_res),
         "cycles_run": int(result.cycles_run),
         "total_energy": energy,
         "finite": energy is not None and all(x is not None for x in trace),

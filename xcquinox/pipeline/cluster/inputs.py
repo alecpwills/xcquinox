@@ -311,6 +311,28 @@ def _stage_validation_slice(cfg: GridConfig, run_dir: str):
         with open(manifest_path) as f:
             manifest = json.load(f)
         val_rxns = list(manifest["reactions"])
+        # The reactions are staged verbatim and the species build the
+        # validation molecules, so a reaction naming a species the manifest
+        # does not carry would reach the in-loop check as a permanently
+        # missing identity: under the coverage rule every check scores
+        # ineligible and the run early-stops at patience without ever an
+        # eligible validation. Refused here, at staging, naming the
+        # offenders -- the same refusal the held-out-pool path applies to
+        # its own split.
+        known = {(sp.get("name") if isinstance(sp, dict) else str(sp))
+                 for sp in manifest.get("species", ())}
+        wanted = {s for r in val_rxns
+                  for s in list(r.get("reactants", ()))
+                  + list(r.get("products", ()))}
+        missing = sorted(wanted - known)
+        if missing:
+            raise ValueError(
+                f"validation manifest {manifest_path}: its reactions name "
+                f"{len(missing)} species the manifest's own species list "
+                f"does not carry ({', '.join(missing[:5])}"
+                f"{', ...' if len(missing) > 5 else ''}); the in-loop "
+                "validation would score every check ineligible, so a "
+                "missing species is refused here")
         with open(os.path.join(val_dir, "val_reactions.json"), "w") as f:
             json.dump(val_rxns, f, indent=2)
         print(f"[val-slice] staged {len(val_rxns)} manifest reactions "

@@ -2510,7 +2510,7 @@ def cmd_repair_manifest(args) -> int:
 # said this default ended in ``/runs``: anyone who set
 # XCQUINOX_CLUSTER_REMOTE_ROOT explicitly should drop the ``/runs`` tail and
 # pass ``--category runs`` if they want the old single-series behavior.
-_PULL_DEFAULT_HOST = "login.seawulf.stonybrook.edu"
+_PULL_DEFAULT_HOST = "milan.seawulf.stonybrook.edu"
 _PULL_DEFAULT_REMOTE_ROOT = "/gpfs/scratch/awills/xcquinox_runs"
 
 

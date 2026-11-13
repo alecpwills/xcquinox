@@ -117,14 +117,19 @@ def _compute_integration_weights(rho, grid_weights=None):
             where w_i = |ρ_i · ε_LDA_i|   (or  |ρ_i · ε_LDA_i| · w_grid_i
                                              when grid_weights is supplied).
 
-    This is NOT the squared integrated XC-energy residual.  A true
-    integrated-energy L2 loss would require the square of the energy-density
-    weight, i.e.  ``w_i = (ρ_i · ε_LDA_i · w_grid_i)²``.  The linear form
-    was retained because it is the established convention in the codebase
-    (all prior pretrain runs used it) and existing tests pin this behavior.
-    The ``|ρ · ε_LDA|`` factor still steers gradient attention toward
-    energetically important regions without the large dynamic range that the
-    squared form would introduce.
+    This is NOT the squared integrated XC-energy residual, and neither would
+    the squared weights be: with ``a_i = ρ_i · ε_LDA_i · w_grid_i`` and
+    ``r_i = F_nn_i - F_ref_i`` the integrated-energy L2 is
+    ``(Σ_i a_i r_i)²``, a square of a sum whose cross terms ``a_i a_j r_i r_j``
+    couple every pair of points, whereas ``Σ_i a_i² r_i²`` is a different
+    per-point objective (the diagonal alone). The per-system energy term of
+    this module, where a run enables it, is the integrated one
+    ``(Σ_i a_i r_i)²`` formed per system. The linear form was retained for
+    the per-point term because it is the established convention in the
+    codebase (all prior pretrain runs used it) and existing tests pin this
+    behavior. The ``|ρ · ε_LDA|`` factor still steers gradient attention
+    toward energetically important regions without the large dynamic range
+    that a squared weight would introduce.
 
     When ``grid_weights`` is supplied the weights incorporate the quadrature
     measure ``dr_i``, improving the energy-density calibration relative to the
