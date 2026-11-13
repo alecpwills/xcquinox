@@ -7,7 +7,7 @@ miniature (16 species: the atoms, the Li/C cations, H2O with its W4-11
 atomization energy, the DFS barrier trio's reactants and transition
 states) under the production Letter pathway -- 25 differentiable SCF
 cycles per update, the Letter's loss weights, the per-update seed mixture,
-relaxed CCSD(T) density references -- and read out on three proton-transfer
+(T)-lambda CCSD(T) density references (orbital-unrelaxed) -- and read out on three proton-transfer
 paths it never saw (the water-dimer cation hemibonded -> proton-transferred
 pair, a Zundel H5O2+ scan, a neutral water-dimer scan), against the parent
 functional of each architecture's footing on the same frozen densities and
@@ -39,8 +39,8 @@ densities 20, atomic totals 0.01, no vxc), the per-update atomic/minao seed
 mixture, and adam_plateau. The corpus is the DFS miniature: six atoms
 (H, Li, C, N, O, F), the DFS ionization pair's cations (Li+, C+), H2O with
 its W4-11 atomization energy as a predicted-atom reaction, the DFS barrier
-trio's reactants and staged transition states, and RELAXED CCSD(T) density
-references (pyscf's (T)-lambda + (T)-RDM modules) for every compound plus
+trio's reactants and staged transition states, and (T)-lambda CCSD(T)
+density references (orbital-unrelaxed; pyscf's (T)-lambda + (T)-RDM modules) for every compound plus
 the H and Li atoms. The FULL wall is projected from a measured steady
 per-update cost and asserted under a 12 h ceiling BEFORE the sweep; a firing
 ceiling is a stop for a user decision, never a silent knob.
@@ -1144,10 +1144,11 @@ regularizer set: L6's density records are every compound PLUS the neutral
 h_species atoms, so H and Li carry CCSD(T) density targets while O, C, N, F
 stay energy-anchor-only.
 
-The density references are **relaxed CCSD(T)** 1-RDMs: converged canonical
-(locked) HF -> CCSD/UCCSD -> the (T)-lambda equations -> the (T)-relaxed
-RDM (pyscf's opt-in `ccsd_t_lambda` / `ccsd_t_rdm` modules; the make_rdm1
-call includes the HF occupancy, and the UHF variant returns the spin pair).
+The density references are **(T)-lambda CCSD(T)** 1-RDMs (orbital-unrelaxed):
+converged canonical (locked) HF -> CCSD/UCCSD -> the (T)-lambda equations ->
+the (T)-corrected RDM (pyscf's opt-in `ccsd_t_lambda` / `ccsd_t_rdm`
+modules; the make_rdm1 call includes the HF occupancy, and the UHF variant
+returns the spin pair).
 The npz mechanism is the package's own: `MoleculeSpec.external_data_path`
 whitelists `dm_target` / `rho_ref_grid` onto the record, and the density
 channel trains the model's *self-consistent* density against them at the
@@ -1278,8 +1279,8 @@ for _s in corpus_specs:
 
 def build_cell_19_ccsd_refs():
     source = '''# References at the run identity. The W4-11 AE target and the Chakravorty
-# anchors come from the package; the density references are RELAXED CCSD(T)
-# 1-RDMs for the ten rho-target species (L6's rho-record rule: every
+# anchors come from the package; the density references are (T)-lambda
+# CCSD(T) 1-RDMs, orbital-unrelaxed, for the ten rho-target species (L6's rho-record rule: every
 # compound plus the neutral h_species atoms H and Li; the O/C/N/F atoms and
 # both cations stay energy-only).
 with open(W411_JSON_PATH) as _f:
@@ -1307,9 +1308,10 @@ print(f"atom anchors (Chakravorty): {ATOM_ANCHORS}")
 
 def _ccsd_t_relaxed(mol, tag):
     """Converged canonical (locked) HF -> CCSD/UCCSD -> the (T)-lambda
-    equations -> the RELAXED CCSD(T) 1-RDM (pyscf's opt-in ccsd_t_lambda /
-    ccsd_t_rdm modules; with_mf, so the HF occupancy is included; the UHF
-    variant returns the spin pair). The orientation lock biases the HF core
+    equations -> the (T)-lambda CCSD(T) 1-RDM, orbital-unrelaxed (pyscf's
+    opt-in ccsd_t_lambda / ccsd_t_rdm modules; with_mf, so the HF occupancy
+    is included; the UHF variant returns the spin pair). The orientation
+    lock biases the HF core
     exactly as the package's own CCSD reference generation does, so the
     reference and the functional's SCF lock the same degenerate component.
 
@@ -1358,7 +1360,7 @@ def _ccsd_t_relaxed(mol, tag):
     # or stalls on open-shell points (measured at def2-svp: cation_pt 462
     # cycles; RKT11 not converged in 2000), while a space of 20 converges
     # every measured species in <= 72 cycles (cation_pt 28, RKT11 36, n2ohts
-    # 30, hf2ts 72). Where both spaces converge, the relaxed 1-RDMs agree to
+    # 30, hf2ts 72). Where both spaces converge, the (T)-lambda 1-RDMs agree to
     # within 6e-8 (hf2ts 7e-9, n2ohts 1e-8, cation_pt 5e-8). RKT11 previously
     # converged only because the CCSD restart above builds a fresh object
     # with the wide space. max_cycle 300 remains the bound.
@@ -1596,7 +1598,7 @@ identity it runs at:
 * **seed_xc pbe run-wide** vs v9's per-rung auto (SCAN seeds for the eight
   meta arms): auto on this footing would trigger an uncached SCAN seed
   generation, and the notebook states the simpler deviation instead.
-* **CCSD(T) relaxed density references** for every rho target (the
+* **CCSD(T) (T)-lambda density references** (orbital-unrelaxed) for every rho target (the
   published protocol's reference quality at the miniature's basis);
   **lr_end / lr_decay_start are carried but inert** under adam_plateau
   (constant lr_start with the plateau controller flooring at lr_end) --
@@ -2057,8 +2059,8 @@ Three paths the training corpus never saw:
 **frozen CCSD(T) density** of that point: `E_tot = E_non_xc[dm_ccsd_t] +
 E_xc^NN[rho_ccsd_t]`, with the parent functional of the architecture's footing
 (PBE for a GGA arm, SCAN for a meta-GGA arm) evaluated on the *same* patched
-record as its baseline. The reference densities come from the same relaxed
-(T) driver the corpus used. This is what the patched-record helper below
+record as its baseline. The reference densities come from the same
+(T)-lambda (orbital-unrelaxed) driver the corpus used. This is what the patched-record helper below
 does -- readout only; training ran self-consistent SCF from the seed mixture
 (see the Deviations cell).
 
@@ -2141,7 +2143,7 @@ for _s in cation_points:
 
 
 def build_cell_29_pt_ccsd():
-    source = """# Relaxed CCSD(T) references per path point (the corpus driver's helper),
+    source = """# (T)-lambda CCSD(T) references per path point (the corpus driver's helper),
 # cached; the DMs are the frozen densities every barrier is evaluated on.
 _pt_cache = os.path.join(WORK_ROOT, "pt_refs")
 os.makedirs(_pt_cache, exist_ok=True)
@@ -2167,6 +2169,8 @@ for _spec in tqdm(all_points, desc="PT CCSD(T) refs", dynamic_ncols=True):
         dm=dm_pt,
         is_unrestricted=np.asarray(mol.spin != 0),
         t1_diagnostic=np.asarray(_t1),
+        ref_density_method="ccsd(t)",
+        orientation_lock_strength=ORIENTATION_LOCK,
     )
 TIMINGS["PT CCSD(T) refs"] = time.time() - _t0
 
