@@ -240,6 +240,37 @@ def test_build_training_specs_produces_one_spec_per_cell(tmp_path):
         assert cell == expected_cell
 
 
+def test_build_training_specs_donor_arch_warm_starts_from_the_donor(
+        tmp_path):
+    """A swept arch with a stated donor carries the donor dir as its spec's
+    ``pretrain_checkpoint`` (the optimization warm-starts from the specified
+    pretrained networks); an arch without one keeps the run's own pretrain
+    product. Both archs in one build, so the two paths cannot drift."""
+    import dataclasses
+
+    from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
+
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    cfg = dataclasses.replace(
+        cfg,
+        sweep=dataclasses.replace(cfg.sweep, arch=("shallow", "medium")),
+        pretrain=dataclasses.replace(
+            cfg.pretrain,
+            donor_checkpoints={"medium": "/gpfs/donors/run_1/pretrain/medium"}),
+    )
+    run_dir = str(tmp_path / "run")
+
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+    by_arch = {cell.arch: spec for cell, spec in out}
+    assert by_arch["medium"].pretrain_checkpoint == \
+        "/gpfs/donors/run_1/pretrain/medium"
+    assert by_arch["shallow"].pretrain_checkpoint == \
+        pretrain_checkpoint_dir(run_dir, "shallow")
+
+
 def test_build_training_specs_targets_and_aux_only(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()

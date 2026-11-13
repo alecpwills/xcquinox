@@ -18,8 +18,10 @@ import json
 import os
 from dataclasses import dataclass, field
 
+import numpy as np
 import pytest
 
+import xcquinox.pipeline.full_benchmark_pools as fbp
 from xcquinox.pipeline.cluster import _preflight
 from xcquinox.pipeline.cluster._preflight import main
 from xcquinox.pipeline.cluster.grid_config import GridCell
@@ -526,6 +528,139 @@ def test_preflight_blocks_the_array_on_a_missing_certificate(tmp_path,
     out = capsys.readouterr().out
     assert "fidelity gate FAILED" in out
     assert "shallow" in out
+
+
+def _donor_preflight_run(tmp_path, *, donor_certificate=True):
+    """A one-arch run whose resolved config warm-starts ``shallow`` from a
+    donor directory outside the run; the run-local pretrain dir is absent,
+    and the donor carries a PASS certificate or nothing."""
+    import yaml
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    path = _write_resolved_config(run_dir)
+    donor = tmp_path / "donor_run" / "pretrain" / "shallow"
+    donor.mkdir(parents=True)
+    if donor_certificate:
+        _write_pass_certificate(str(tmp_path / "donor_run"))
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    cfg["pretrain"]["donor_checkpoints"] = {"shallow": str(donor)}
+    with open(path, "w") as f:
+        yaml.safe_dump(cfg, f)
+    import shutil
+    shutil.rmtree(os.path.join(str(run_dir), "pretrain"))
+    return run_dir, str(donor)
+
+
+def test_preflight_releases_a_donor_arch_on_its_donor_certificate(
+        tmp_path, patched, capsys):
+    """The preflight is the run-level cross-check that catches an arch
+    pretrained under a different submission; a donor arch certifies on its
+    DONOR's certificate, or the train array is blocked by a product this run
+    never writes."""
+    run_dir, donor = _donor_preflight_run(tmp_path)
+    assert main([str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "fidelity gate PASSED" in out
+    assert donor in out
+
+
+def test_preflight_blocks_a_donor_arch_without_a_certificate(
+        tmp_path, patched, capsys):
+    run_dir, donor = _donor_preflight_run(tmp_path, donor_certificate=False)
+    assert main([str(run_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "fidelity gate FAILED" in out
+    assert "shallow" in out
+    assert donor in out
+
+
+# ---------------------------------------------------------------------------
+# The shared readout-refs gate
+# ---------------------------------------------------------------------------
+
+def _write_ref_npz(path, *, basis="def2-svp", grid_level=1, lock=0.0,
+                   density_fit=False, auxbasis=None):
+    """Write one readout reference npz carrying the footing stamps the gate
+    reads (a wrong-stamp file counts as missing, exactly as at eval time)."""
+    os.makedirs(os.path.dirname(str(path)), exist_ok=True)
+    arrays = dict(
+        rho_ref_grid=np.zeros((2, 2)), ref_density_method="ccsd",
+        basis_used=str(basis), grid_level_used=int(grid_level),
+        orientation_lock_strength=float(lock),
+        density_fit_used=bool(density_fit))
+    if auxbasis is not None:
+        arrays["auxbasis_used"] = str(auxbasis)
+    np.savez(str(path), **arrays)
+
+
+def _readout_refs_run(tmp_path, *, override=None, complete=("a",)):
+    """A one-arch run whose config points the readout at a refs dir holding a
+    complete npz for every name in ``complete`` only; ``override`` adds a
+    recorded ``eval_refs_override_reason``."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    for name in complete:
+        _write_ref_npz(refs / f"{name}.npz")
+    extra = {"eval_pool": "slim16", "eval_orientation_lock": 0.0,
+             "eval_refs_dir": str(refs)}
+    if override is not None:
+        extra["eval_refs_override_reason"] = override
+    _write_resolved_config(run_dir, extra=extra)
+    return run_dir, refs
+
+
+def _two_species_pool(monkeypatch):
+    """The readout pool enumerates two species, a and b, without touching
+    package data."""
+    monkeypatch.setattr(
+        fbp, "load_held_out_pools",
+        lambda pools, basis=None, grid_level=None: ({"a": None, "b": None},
+                                                    []))
+
+
+def test_main_blocks_the_array_on_incomplete_readout_refs(
+        tmp_path, monkeypatch, capsys):
+    """The shared readout refs dir is built OUTSIDE every submission chain,
+    so nothing downstream repairs it: a half-built dir must block the train
+    array at the preflight, in seconds and before any staging work, instead
+    of dying per-spec days later inside the eval workers."""
+    run_dir, _ = _readout_refs_run(tmp_path, complete=("a",))
+    _two_species_pool(monkeypatch)
+    assert main([str(run_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "ERROR" in out and "blocking the train array" in out
+    assert "of 2 slim16 species" in out
+    assert "b" in out
+    assert "eval_refs_override_reason" in out
+    assert "staging inputs" not in out  # refused BEFORE any staging work
+
+
+def test_main_readout_refs_override_waives_the_gate(
+        tmp_path, monkeypatch, patched, capsys):
+    """A recorded reason lets a run start against a rebuild in flight; the
+    eval-time guard is the backstop that still refuses on the node."""
+    run_dir, _ = _readout_refs_run(
+        tmp_path, complete=("a",), override="rebuild completes before eval")
+    _two_species_pool(monkeypatch)
+    assert main([str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "eval_refs_override_reason" in out
+    assert "rebuild completes before eval" in out
+
+
+def test_main_readout_refs_gate_passes_a_complete_dir(
+        tmp_path, monkeypatch, patched, capsys):
+    run_dir, _ = _readout_refs_run(tmp_path, complete=("a", "b"))
+    _two_species_pool(monkeypatch)
+    assert main([str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "readout refs gate PASSED" in out
+    assert "WARNING" not in out
 
 
 # ---------------------------------------------------------------------------

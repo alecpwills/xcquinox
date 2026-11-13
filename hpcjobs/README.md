@@ -157,10 +157,14 @@ therefore must already exist on shared storage before you submit.
 
 ```bash
 python -m xcquinox.pipeline.cluster submit hpcjobs/configs/step7.local.yaml \
-    --run-root "$(pwd)/hpcjobs" \
+    --run-root hpcjobs \
     --partition long-96core-shared \
     --max-nodes 3
 ```
+
+The command works from any directory: a relative grid path and a relative
+`--run-root` resolve against the checkout (the package's own location), not
+the caller's CWD.
 
 This loads + validates the config, creates `hpcjobs/runs/run_<UTC-timestamp>/`,
 renders the four `scripts/*.sbatch` files (pretrain, preflight, train, eval),

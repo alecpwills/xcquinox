@@ -525,6 +525,88 @@ def test_load_missing_pretrain_required_key(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# PretrainConfig.donor_checkpoints: the optimization warm-start donors
+# ---------------------------------------------------------------------------
+
+def _donor_cfg(**donors):
+    """A two-arch cfg whose pretrain section states the given donors."""
+    import dataclasses
+
+    cfg = _cfg(arch=("medium", "deep_3x16"))
+    return dataclasses.replace(
+        cfg, pretrain=PretrainConfig(
+            data_dir="/shared/pretrain_data",
+            donor_checkpoints=dict(donors)))
+
+
+def test_donor_checkpoints_load_and_resolved_round_trip(tmp_path):
+    """pretrain.donor_checkpoints (arch -> absolute dir) loads from a grid
+    file and survives the resolved_config.yaml round trip: the gate, the
+    status tally and the record layer all re-read the RESOLVED file, so a
+    donor the serializer drops silently reverts this run to run-local
+    pretraining for every downstream decision."""
+    data = _base_config_dict()
+    data["sweep"]["arch"] = ["medium", "deep_3x16"]
+    data["pretrain"]["donor_checkpoints"] = {
+        "deep_3x16": "/gpfs/donors/run_20260901/pretrain/deep_3x16",
+    }
+    cfg = load_grid_config(_write(tmp_path, "grid.json", data))
+    assert cfg.pretrain.donor_checkpoints == {
+        "deep_3x16": "/gpfs/donors/run_20260901/pretrain/deep_3x16",
+    }
+
+    from xcquinox.pipeline.cluster import __main__ as cli
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cli._write_resolved_config(cfg, str(run_dir))
+    cfg2 = load_grid_config(str(run_dir / "resolved_config.yaml"))
+    assert cfg2.pretrain.donor_checkpoints == cfg.pretrain.donor_checkpoints
+
+
+def _cfg_with_donor(cfg, arch, path):
+    """A copy of ``cfg`` whose pretrain section carries one more donor."""
+    import dataclasses
+
+    donors = dict(cfg.pretrain.donor_checkpoints)
+    donors[arch] = path
+    return dataclasses.replace(
+        cfg, pretrain=dataclasses.replace(cfg.pretrain,
+                                          donor_checkpoints=donors))
+
+
+def test_donor_key_outside_the_sweep_is_refused(tmp_path):
+    """A donor key that is not a swept arch is a loud ValueError: a
+    misspelled donor would otherwise silently fall back to run-local
+    pretraining for that arch."""
+    cfg = _cfg_with_donor(_cfg(), "ghost_arch", "/gpfs/donors/ghost")
+    with pytest.raises(ValueError, match="ghost_arch"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_donor_path_must_be_absolute(tmp_path):
+    """A relative donor dir is refused the way pretrain.data_dir is: the
+    node stages resolve paths against the shared filesystem, and a relative
+    donor silently resolves against whatever directory the stage runs in."""
+    cfg = _donor_cfg(medium="pretrain/medium")
+    with pytest.raises(ValueError, match="absolute"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_donor_defaults_to_empty_and_validation_passes():
+    """A config with no donors validates exactly as before (every existing
+    YAML is unchanged), and the empty dict is the default."""
+    cfg = _cfg()
+    assert cfg.pretrain.donor_checkpoints == {}
+    validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_valid_donors_pass_validation():
+    cfg = _donor_cfg(medium="/gpfs/donors/medium",
+                     deep_3x16="/gpfs/donors/deep_3x16")
+    validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+# ---------------------------------------------------------------------------
 # Per-stage allocation mode + optional mem
 # ---------------------------------------------------------------------------
 
@@ -532,6 +614,65 @@ def test_load_missing_pretrain_required_key(tmp_path):
 # ---------------------------------------------------------------------------
 # pretrain_checkpoint_dir: run-scoped pretrain output path
 # ---------------------------------------------------------------------------
+
+def test_pretrain_stage_archs_drop_donors_and_keep_the_canonical_order():
+    """The stage's arch list is the canonical (dedup + sorted) sweep axis
+    with the donors removed -- submit sizes the pretrain array with it and
+    the pretrain worker maps array index through it, so both sides must see
+    the SAME list in the SAME order."""
+    from xcquinox.pipeline.cluster.grid_config import pretrain_stage_archs
+
+    cfg = _cfg_with_donor(_cfg(arch=("deep_3x16", "medium", "deep_3x16")),
+                          "medium", "/gpfs/donors/medium")
+    assert pretrain_stage_archs(cfg) == ["deep_3x16"]
+
+
+def test_pretrain_checkpoint_for_donor_else_run_product():
+    """The one resolution rule every consumer shares: the donor when one is
+    stated for the arch, the run's own pretrain product otherwise."""
+    from xcquinox.pipeline.cluster.grid_config import (
+        pretrain_checkpoint_dir, pretrain_checkpoint_for)
+
+    cfg = _cfg_with_donor(_cfg(), "medium", "/gpfs/donors/medium")
+    assert pretrain_checkpoint_for(cfg, "/run", "medium") == \
+        "/gpfs/donors/medium"
+    assert pretrain_checkpoint_for(cfg, "/run", "deep_3x16") == \
+        pretrain_checkpoint_dir("/run", "deep_3x16")
+
+
+def test_load_resolved_run_config_reads_yaml_and_json(tmp_path):
+    """The gate, the status tally and the record layer re-read a run's
+    resolved config; JSON-configured runs write resolved_config.json (the
+    _pretrain dispatch), so the loader accepts both spellings and is loud
+    when neither exists (a gate that silently saw no config would gate the
+    run-local dir for a run that never wrote one)."""
+    from xcquinox.pipeline.cluster.grid_config import (
+        load_resolved_run_config)
+
+    cfg = _cfg()
+    d1 = tmp_path / "run_yaml"
+    d1.mkdir()
+    with open(d1 / "resolved_config.yaml", "w") as f:
+        import yaml
+        yaml.safe_dump(_config_to_raw(cfg), f)
+    assert load_resolved_run_config(str(d1)).hyperparams.n_steps == 200
+
+    d2 = tmp_path / "run_json"
+    d2.mkdir()
+    with open(d2 / "resolved_config.json", "w") as f:
+        json.dump(_config_to_raw(cfg), f)
+    assert load_resolved_run_config(str(d2)).hyperparams.n_steps == 200
+
+    d3 = tmp_path / "run_none"
+    d3.mkdir()
+    with pytest.raises(FileNotFoundError):
+        load_resolved_run_config(str(d3))
+
+
+def _config_to_raw(cfg):
+    """The raw dict a grid file parses to, via the CLI's own serializer."""
+    from xcquinox.pipeline.cluster import __main__ as cli
+    return cli._config_to_raw_dict(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -702,8 +843,9 @@ def test_walltime_bad_shapes_refused(tmp_path, key, literal):
 #: The campaign configs under version control: the template, the two grid-2
 #: campaigns the user guide walks through, the grid-3 lineage root the loss
 #: primer cites line by line, the six v7 files (the three group files, the
-#: reaction-energy control and the two arms) and the three campaign-1 files of
-#: the v8 program (one per seed arm). ``hpcjobs/.gitignore`` excludes
+#: reaction-energy control and the two arms), the three campaign-1 files of
+#: the v8 program (one per seed arm), the architecture screen's pretraining
+#: sweep and the GGA-final pretraining arm. ``hpcjobs/.gitignore`` excludes
 #: ``configs/*.local.yaml`` (personal cluster-filled copies), so a fresh clone,
 #: a git worktree and the cluster checkout carry only these, and the test
 #: below holds the list equal to the directory's other ``*.yaml`` files.
@@ -717,10 +859,14 @@ _TRACKED_CONFIGS = (
     "dfs_step7.dfs6311_grid3_v7g1_size.yaml",
     "dfs_step7.dfs6311_grid3_v7g2_families_mgga.yaml",
     "dfs_step7.dfs6311_grid3_v7g2a_families_core.yaml",
+    "dfs_step8.arch_screen.yaml",
+    "dfs_step8.gga_final_pretrain.yaml",
     "dfs_step8.v8_dfs_allsc.yaml",
     "dfs_step8.v8_dfs_coldstart.yaml",
     "dfs_step8.v8_dfs_parity.yaml",
     "dfs_step8.v8_slim05_allsc.yaml",
+    "dfs_step8.v9_dfs_letter_allsc.yaml",
+    "dfs_step8.v9_dfs_letter_parity.yaml",
     "step7.yaml",
 )
 
@@ -960,7 +1106,8 @@ def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
         raw, n_steps=7, lr_start=3e-2, lr_end=3e-6, lr_decay_start=0.4,
         lr_decay_end=0.7, grad_clip=2.5, seed=1234,
         loss_weighting="rho_w_sampled", points_per_system=333,
-        sampling_seed=9, atoms=[["Li", 1], ["C", 2]]))
+        sampling_seed=9, atoms=[["Li", 1], ["C", 2]],
+        donor_checkpoints={"medium": "/gpfs/donors/medium"}))
     default = PretrainConfig(data_dir="/d")
     for f in dataclasses.fields(every):
         if f.name == "data_dir":
@@ -1278,3 +1425,109 @@ def test_the_retired_strict_key_warns_and_changes_nothing(tmp_path):
     assert "held_out_strict" not in {f.name for f in dataclasses.fields(cfg)}
     from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
     assert "held_out_strict" not in _config_to_raw_dict(cfg)
+
+
+# ---------------------------------------------------------------------------
+# The inline readout knobs (eval_pool and its footing keys)
+# ---------------------------------------------------------------------------
+
+def test_eval_readout_knobs_validate(tmp_path):
+    """The readout block is a closed contract: the pool must name a held-out
+    pool, the footing keys are refused as dead text without eval_pool, and
+    the orientation lock is a stated non-negative float -- never silently
+    inherited from the training footing. The v9 parity yaml, which carries
+    the block natively, loads onto the same fields."""
+    readout = {
+        "eval_pool": "slim16",
+        "eval_basis": "def2-TZVP",
+        "eval_grid_level": 4,
+        "eval_orientation_lock": 0.0,
+        "eval_density_fit": True,
+        "eval_auxbasis": "def2-tzvp-jkfit",
+        "eval_refs_dir": str(tmp_path / "refs"),
+        "eval_dump_densities": True,
+    }
+
+    raw = _base_config_dict()
+    raw["eval_basis"] = "def2-TZVP"
+    with pytest.raises(ValueError):
+        load_grid_config(_write(tmp_path, "dead_text.yaml", raw))
+
+    raw = _base_config_dict()
+    raw.update({"eval_pool": "w4-11", "eval_orientation_lock": 0.0})
+    with pytest.raises(ValueError):
+        load_grid_config(_write(tmp_path, "unknown_pool.yaml", raw))
+
+    raw = _base_config_dict()
+    raw["eval_pool"] = "slim16"
+    with pytest.raises(ValueError):
+        load_grid_config(_write(tmp_path, "no_lock.yaml", raw))
+
+    raw = _base_config_dict()
+    raw.update({"eval_pool": "slim16", "eval_orientation_lock": -1.0})
+    with pytest.raises(ValueError):
+        load_grid_config(_write(tmp_path, "negative_lock.yaml", raw))
+
+    # the preflight waiver is part of the same closed block: dead text
+    # without eval_pool, a recorded string with it
+    raw = _base_config_dict()
+    raw["eval_refs_override_reason"] = "rebuild in flight"
+    with pytest.raises(ValueError, match="without eval_pool"):
+        load_grid_config(_write(tmp_path, "stray_override.yaml", raw))
+
+    raw = _base_config_dict()
+    raw.update(readout)
+    cfg = load_grid_config(_write(tmp_path, "readout.yaml", raw))
+    _assert_well_formed(cfg)
+    assert cfg.eval_pool == "slim16"
+    assert cfg.eval_basis == "def2-TZVP"
+    assert cfg.eval_grid_level == 4
+    assert cfg.eval_orientation_lock == 0.0
+    assert cfg.eval_density_fit is True
+    assert cfg.eval_auxbasis == "def2-tzvp-jkfit"
+    assert cfg.eval_refs_dir == str(tmp_path / "refs")
+    assert cfg.eval_refs_override_reason is None
+    assert cfg.eval_dump_densities is True
+
+    raw["eval_refs_override_reason"] = "rebuild in flight"
+    cfg = load_grid_config(_write(tmp_path, "waived.yaml", raw))
+    assert cfg.eval_refs_override_reason == "rebuild in flight"
+
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    parity = load_grid_config(str(
+        root / "hpcjobs" / "configs" / "dfs_step8.v9_dfs_letter_parity.yaml"))
+    assert parity.eval_pool == "slim16"
+    assert parity.eval_converged is True
+
+
+def test_resolved_config_round_trips_the_readout_knobs(tmp_path):
+    """The submit-time round trip hand-enumerates root keys, so a knob
+    missing from _config_to_raw_dict is silently dropped at submit and the
+    cluster run loses the readout the source yaml states. Every knob must
+    survive GridConfig -> raw dict -> GridConfig unchanged."""
+    import dataclasses
+
+    from xcquinox.pipeline.cluster.__main__ import _config_to_raw_dict
+
+    knobs = {
+        "eval_pool": "slim16",
+        "eval_basis": "def2-TZVP",
+        "eval_grid_level": 4,
+        "eval_orientation_lock": 0.0,
+        "eval_density_fit": True,
+        "eval_auxbasis": "def2-tzvp-jkfit",
+        "eval_refs_dir": str(tmp_path / "refs"),
+        "eval_refs_override_reason": "rebuild in flight",
+        "eval_dump_densities": True,
+    }
+    cfg = load_grid_config(_write(tmp_path, "base.yaml", _base_config_dict()))
+    cfg = dataclasses.replace(cfg, **knobs)
+
+    raw = _config_to_raw_dict(cfg)
+    for key, value in knobs.items():
+        assert raw[key] == value, key
+    loaded = load_grid_config(_write(tmp_path, "resolved.yaml", raw))
+    for key, value in knobs.items():
+        assert getattr(loaded, key) == value, key

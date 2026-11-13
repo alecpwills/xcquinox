@@ -47,8 +47,10 @@ HPCJOBS = Path(__file__).resolve().parent
 CONFIG = HPCJOBS / "configs" / "dfs_step7.dfs6311_grid3_v7g1_size.yaml"
 
 REFERENCE = "nonempirical_pool.sbatch"
-# builds the environment the others activate; it has no interpreter call to guard
-EXEMPT = ("build_parity_env.sbatch",)
+# builds the environment the others activate; it has no interpreter call to
+# guard. gga_final_slim16_eval.sbatch likewise has none: it execs
+# slim16_eval.sbatch, whose own preamble and guard serve the invocation.
+EXEMPT = ("build_parity_env.sbatch", "gga_final_slim16_eval.sbatch")
 # refuses through its own ``fatal`` helper: order and refusal are checked, the
 # byte identity of the block is not
 IDENTITY_EXEMPT = ("workflow_matrix.sbatch",)

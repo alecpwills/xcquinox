@@ -20,28 +20,39 @@ The preflight CONSUMES the existing subset ledger (``subset_index_log.json``)
 read-only. Its job is, on a compute node, before the train array starts:
 
   1. Sweep stale temp files from a prior crashed run (via ``materialize``).
-  2. ``prepare_inputs(cfg)``: build the training-point pool, load the EXISTING
+  2. Readout-refs gate: when the config states an inline readout
+     (``eval_pool``), verify ``eval_refs_dir`` carries a complete,
+     footing-matching reference npz for every species of the readout pool.
+     That dir is a SHARED surface built outside every submission chain
+     (``hpcjobs/slim16_refs.sbatch`` / ``benchmark_refs --out-dir``), so a
+     half-built or wrong-footing dir would otherwise surface only inside the
+     eval workers, days in, per spec, after training completed. An
+     incomplete dir blocks the train array here, in seconds, before any
+     staging work; ``eval_refs_override_reason`` waives the gate for a run
+     that deliberately starts against a rebuild in flight (the eval-time
+     guard still refuses an incomplete dir on the node).
+  3. ``prepare_inputs(cfg)``: build the training-point pool, load the EXISTING
      subset ledger (fail-fast on a missing required ``(metric, r)`` cell), and
      ensure CCSD external references via ``precompute_all`` (skip-if-cached).
-  3. Build one :class:`~xcquinox.pipeline.config.TrainingSpec` per grid cell via
+  4. Build one :class:`~xcquinox.pipeline.config.TrainingSpec` per grid cell via
      :func:`xcquinox.pipeline.cluster.spec_builder.build_training_specs`,
      ``spec.validate()`` every spec, then ``materialize_specs``.
-  4. Write ``<run_dir>/manifest.json`` (atomic, the last write).
-  5. Self-check: assert every ``spec_<idx>`` file exists and the manifest
+  5. Write ``<run_dir>/manifest.json`` (atomic, the last write).
+  6. Self-check: assert every ``spec_<idx>`` file exists and the manifest
      records all ``N`` cells.
-  6. (optional, ``cluster.preflight_compile_smoke``) Compile the single heaviest
+  7. (optional, ``cluster.preflight_compile_smoke``) Compile the single heaviest
      attention cell once on this exclusive node (``_train_one_spec --smoke``,
      n_steps=1). A host-OOM at that epoch-0 compile exits non-zero so the whole
      train array is blocked -- one cheap failure instead of every large-basis
      task OOMing at XLA/LLVM compile time.
-  7. Sweep the per-architecture pretraining-fidelity certificates
+  8. Sweep the per-architecture pretraining-fidelity certificates
      (``<run_dir>/pretrain/<arch>/fidelity_certificate.json``) through
      ``fidelity.gate_certificate``. Every distinct architecture of the sweep
      must carry one that releases the gate; the uncertified ones are named and
      the preflight exits non-zero, so an architecture pretrained under another
      submission, a deleted certificate, or a partial pretrain array SLURM
      reported as complete all block the train array here.
-  8. (optional, ``cluster.preflight_coldstart_census``) Run the cold-start
+  9. (optional, ``cluster.preflight_coldstart_census``) Run the cold-start
      convergence census (``coldstart_census``): the training solver from the
      atomic guess on every training species, for one FULL-mode cell per swept
      architecture with its certified checkpoint, written to
@@ -96,8 +107,10 @@ import time
 
 from xcquinox.pipeline import parallel
 from xcquinox.pipeline.config import get_architecture
-from xcquinox.pipeline.cluster.fidelity import gate_certificate
-from xcquinox.pipeline.cluster.grid_config import load_grid_config
+from xcquinox.pipeline.cluster.fidelity import (gate_certificate_from_read,
+                                               read_certificate_status_in)
+from xcquinox.pipeline.cluster.grid_config import (load_grid_config,
+                                                   pretrain_checkpoint_for)
 from xcquinox.pipeline.cluster.domain import get_domain_profile
 from xcquinox.pipeline.cluster._train_task import (
     _CPU_OOM_MARKERS,
@@ -666,6 +679,56 @@ def _self_check(run_dir, specs_dir, n) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Readout-refs gate (stage 2)
+# ---------------------------------------------------------------------------
+
+def _readout_refs_gate(cfg) -> bool:
+    """Refuse the chain when the inline readout's refs dir is incomplete.
+
+    The gap is computed by :func:`_eval_one_spec.readout_refs_gap` -- the
+    same pool enumeration and the same completeness predicate the eval-time
+    guard applies -- so the gate and the guard cannot disagree about what
+    counts as built. Returns True (proceed) when no readout is configured
+    (silent: non-readout runs log byte-identically to before), when every
+    species carries a complete footing-matching npz, or when
+    ``eval_refs_override_reason`` waives the check (logged as a WARNING with
+    the recorded reason); False (block the train array) only for an
+    incomplete dir with no waiver. The heavy imports live inside: this
+    module's body stays importable without the readout/pyscf stack.
+    """
+    from xcquinox.pipeline.cluster._eval_one_spec import readout_refs_gap
+    gap = readout_refs_gap(cfg)
+    if gap is None:
+        return True
+    readout, total, missing = gap["readout"], gap["total"], gap["missing"]
+    if not missing:
+        _log(f"readout refs gate PASSED: all {total} {readout['pool']} "
+             f"species complete in {readout['refs_dir']!r} at the readout "
+             f"footing")
+        return True
+    override = getattr(cfg, "eval_refs_override_reason", None)
+    if override:
+        _log(f"WARNING: {readout['refs_dir']!r} carries no complete "
+             f"reference for {len(missing)} of {total} {readout['pool']} "
+             f"species -- proceeding under eval_refs_override_reason: "
+             f"{override}")
+        return True
+    head = ", ".join(missing[:10])
+    if len(missing) > 10:
+        head += f" (+{len(missing) - 10} more)"
+    _log(
+        f"ERROR: {readout['refs_dir']!r} carries no complete reference for "
+        f"{len(missing)} of {total} {readout['pool']} species at the readout "
+        f"footing ({readout['basis']}, grid {readout['grid_level']}, lock "
+        f"{readout['orientation_lock']}, DF {readout['density_fit']}, "
+        f"auxbasis {readout['auxbasis']}); build them first "
+        f"(benchmark_refs --pool {readout['pool']}). Missing: {head} -- "
+        "blocking the train array (eval_refs_override_reason waives this "
+        "gate)")
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -707,7 +770,16 @@ def main(argv=None) -> int:
         f"on_precompute_failure={cfg.on_precompute_failure!r}"
     )
 
-    # --- 2. stage inputs ----------------------------------------------------
+    # --- 2. readout-refs gate ------------------------------------------------
+    # Before any staging work (the expensive part of this job): a stated
+    # readout whose shared refs dir is incomplete dies here, in seconds,
+    # instead of inside every eval worker after the training completed
+    # (run_20261029T182948Z: 98/239 species missing after the killed
+    # standalone rebuild, every held-out readout failed per spec).
+    if not _readout_refs_gate(cfg):
+        return 1
+
+    # --- 3. stage inputs ----------------------------------------------------
     # prepare_inputs builds the pool, loads the EXISTING subset ledger
     # (fail-fast on a missing required (metric, r) cell), and ensures the CCSD
     # external references via precompute_all (skip-if-cached). Subset selection
@@ -742,7 +814,7 @@ def main(argv=None) -> int:
     # Provenance copy of the consumed (read-only) subset ledger.
     _write_ledger_provenance(run_dir, staged.subset_ledger)
 
-    # --- 3. build specs -----------------------------------------------------
+    # --- 4. build specs -----------------------------------------------------
     _log("building TrainingSpecs from the subset ledger...")
     try:
         specs = _build_training_specs(
@@ -766,7 +838,7 @@ def main(argv=None) -> int:
             f"references a failed species ({sorted(failed_species)})"
         )
 
-    # --- 4. validate every spec --------------------------------------------
+    # --- 5. validate every spec --------------------------------------------
     _log("validating specs (creates per-spec checkpoint dirs)...")
     for idx, (cell, spec) in enumerate(specs):
         try:
@@ -781,7 +853,7 @@ def main(argv=None) -> int:
             return 1
     _log(f"all {n} specs validated")
 
-    # --- 5. materialize -----------------------------------------------------
+    # --- 6. materialize -----------------------------------------------------
     # materialize_specs purges stale spec_* / temp files from a prior crashed
     # run, then writes spec_0000 .. spec_(N-1).
     specs_dir = os.path.join(run_dir, "specs")
@@ -801,7 +873,7 @@ def main(argv=None) -> int:
         return 1
     _log(f"materialized {len(paths)} spec file(s)")
 
-    # --- 6. manifest (final, atomic write) ---------------------------------
+    # --- 7. manifest (final, atomic write) ---------------------------------
     _log("writing manifest.json...")
     try:
         manifest_path = write_manifest(
@@ -812,12 +884,12 @@ def main(argv=None) -> int:
         return 1
     _log(f"manifest written to {manifest_path}")
 
-    # --- 7. self-check ------------------------------------------------------
+    # --- 8. self-check ------------------------------------------------------
     _log("self-checking materialized grid...")
     if not _self_check(run_dir, specs_dir, n):
         return 1
 
-    # --- 8. optional compile-smoke gate ------------------------------------
+    # --- 9. optional compile-smoke gate ------------------------------------
     # When enabled, compile the single heaviest attention cell once on this
     # exclusive node before the train array launches. A host-OOM at that compile
     # exits the preflight non-zero so the array's afterok dependency blocks (one
@@ -830,21 +902,27 @@ def main(argv=None) -> int:
             return 1
         _log("compile-smoke gate PASSED")
 
-    # --- 9. per-architecture fidelity certificates -------------------------
+    # --- 10. per-architecture fidelity certificates ------------------------
     # The preflight is submitted afterok on the pretrain array, so by this
     # point every distinct architecture has been certified on its own node.
     # This sweep is the run-level cross-check: it catches an architecture that
     # was pretrained under a different submission, a certificate that was
     # deleted, and a partial pretrain array that SLURM reported as complete.
-    # ``gate_certificate`` honours a run configured with
+    # ``gate_certificate_from_read`` honours a run configured with
     # ``fidelity.enforce: false`` (the workflow-verification matrix), which
     # ``validate_run``, ``merge_v4_arms`` and the figure suite still refuse.
+    # The certificate directory is resolved through the ONE donor rule: a
+    # donated arch certifies on its DONOR's certificate (this run never writes
+    # one), every other arch on the run's own pretrain product.
     archs = sorted(set(cfg.sweep.arch))
     uncertified = []
     for arch in archs:
-        allowed, message = gate_certificate(run_dir, arch)
+        pretrain_dir = pretrain_checkpoint_for(cfg, run_dir, arch)
+        allowed, message = gate_certificate_from_read(
+            *read_certificate_status_in(pretrain_dir))
         if allowed:
-            _log(f"fidelity gate for arch {arch}: {message}")
+            _log(f"fidelity gate for arch {arch}: {message} "
+                 f"(checkpoint {pretrain_dir})")
             continue
         uncertified.append(arch)
         _log(f"ERROR: fidelity certificate for arch {arch} does not release "
@@ -857,7 +935,7 @@ def main(argv=None) -> int:
     _log(f"fidelity gate PASSED: {len(archs)}/{len(archs)} architecture "
          "certificate(s) released the gate")
 
-    # --- 10. optional cold-start convergence census -------------------------
+    # --- 11. optional cold-start convergence census -------------------------
     # A report, never a gate: the census records where the training SCF
     # converges from the atomic guess; a census that does not complete is
     # logged as such and the array still proceeds.

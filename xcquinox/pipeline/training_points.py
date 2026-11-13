@@ -125,6 +125,8 @@ def _ae_point_from_atoms(compound: Atoms) -> TrainingPoint:
             "ae_name": compound.info.get("ae_name"),
             # the published training's self-consistency flag of the compound
             "sc": bool(compound.info.get("sc", True)),
+            # the radical-hill flag consumed by L6's radical_species
+            "radical": bool(compound.info.get("radical", False)),
         },
     )
 
@@ -181,6 +183,8 @@ def _ae_reaction_point_from_atoms(compound: Atoms) -> TrainingPoint:
             "ae_name": compound.info.get("ae_name"),
             "source": compound.info.get("ae_source"),
             "sc": bool(compound.info.get("sc", True)),
+            # the radical-hill flag consumed by L6's radical_species
+            "radical": bool(compound.info.get("radical", False)),
         },
     )
 

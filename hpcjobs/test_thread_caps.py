@@ -22,7 +22,14 @@ CAPPED_SCRIPTS = (
     "dfs6311_scan_pool.sbatch",
     "dfs6311_pretrained_holdout.sbatch",
     "slim16_eval.sbatch",
+    "slim16_eval_rerun.sbatch",
+    "slim16_tables.sbatch",
+    "gga_final_slim16_prepare.sbatch",
+    "letter_val_refs.sbatch",
+    "slim16_refs.sbatch",
     "nonempirical_pool.sbatch",
+    "registry_pt_prep.sbatch",
+    "registry_pt_train.sbatch",
 )
 
 

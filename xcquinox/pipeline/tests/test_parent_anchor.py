@@ -64,7 +64,8 @@ _RHO_FLOOR = 1e-10
 #: v8 geometric pair carries the same cusp block on both networks, with and
 #: without attention, and is anchored to PBE with the rest of the GGA rung.
 _GGA_ARCHS = ("deep_3x16", "deep_attn_3x16", "deep_cusp_3x16",
-              "deep_geom_3x16", "deep_geom_attn_3x16")
+              "deep_geom_3x16", "deep_geom_attn_3x16",
+              "deep_lap_3x16", "deep_lap_geom_3x16")
 _MGGA_ARCHS = ("deep_mgga_3x16", "deep_rung35_mgga_3x16")
 
 #: The descriptors any registered architecture can ask for, the meta-GGA
@@ -72,7 +73,7 @@ _MGGA_ARCHS = ("deep_mgga_3x16", "deep_rung35_mgga_3x16")
 #: architecture's feature block, so V3 costs one reference SCF per system
 #: rather than one per descriptor set.
 _ALL_DESCRIPTORS = ("cusp", "dm_statistics", "rung35", "rung35_multishell",
-                    "metagga")
+                    "metagga", "lap")
 
 _RECORDS = {}
 
@@ -475,17 +476,15 @@ def test_an_anchored_zeta_blind_correlation_network_is_refused():
 
 def test_the_anchored_helper_forces_the_zero_initialized_final_layer():
     """``config.anchored`` turns on ``zero_init_final_layer`` whatever the
-    registry entry says: ``shallow``, ``shallow_attn``, ``medium`` and
-    ``medium_attn`` carry False, and without the override their ``gated`` at
-    initialization is not zero (measured +1.826e-3 in ``F_x`` and -8.063e-3 in
-    ``F_c`` on a live packed row for ``shallow``), so they would start off
-    their parent."""
-    for name in ("shallow", "shallow_attn", "medium", "medium_attn"):
-        base = pipeline.get_architecture(name)
+    registry entry says: no entry carries True, and without the override the
+    ``gated`` output at initialization is not zero (measured +1.826e-3 in
+    ``F_x`` and -8.063e-3 in ``F_c`` on a live packed row for ``shallow``), so
+    an anchored network would start off its parent."""
+    for name, base in sorted(pipeline.ARCHITECTURES.items()):
         assert base.zero_init_final_layer is False, name
         arch = anchored(base)
-        assert arch.parent_anchor is True
-        assert arch.zero_init_final_layer is True
+        assert arch.parent_anchor is True, name
+        assert arch.zero_init_final_layer is True, name
 
 
 # ---------------------------------------------------------------------------
@@ -583,8 +582,9 @@ def test_certificate_passes_at_initialization_for_an_anchored_architecture(
     The bound asserted is 1e-2 mHa and 1e-2 kcal/mol -- fourteen times the
     measurement and two orders under the binding 1.0 / 1.0 gate.
 
-    The same architecture UNANCHORED is the control: ``zero_init_final_layer``
-    gives it ``F_x = F_c = 1``, the LDA/PW92 limit, which is nowhere near PBE
+    The same architecture UNANCHORED is the control, built with
+    ``zero_init_final_layer`` set here (no registry entry sets it) so that it
+    starts at ``F_x = F_c = 1``, the LDA/PW92 limit, which is nowhere near PBE
     and FAILs the same gate. Without that half the PASS would be consistent
     with a certificate that cannot fail.
     """
@@ -610,7 +610,8 @@ def test_certificate_passes_at_initialization_for_an_anchored_architecture(
 
     control_dir = str(tmp_path / "control")
     plain = dataclasses.replace(pipeline.get_architecture("deep_3x16"),
-                                use_polarized_correlation=True)
+                                use_polarized_correlation=True,
+                                zero_init_final_layer=True)
     _write_untrained_pretrain_checkpoint(control_dir, plain, "deep_3x16", seed=0)
     control = fid.fidelity_certificate(
         _anchored_cfg(parent_anchor=False), control_dir, "deep_3x16",
@@ -806,7 +807,8 @@ def test_o4_anchored_h_atom_exchange_is_the_spin_scaled_evaluation():
         n_grid=int(np.asarray(md["grid_weights"]).shape[0]),
         cusp_features=md.get("cusp_features"),
         rung35_proj_ao=md.get("rung35_proj_ao"),
-        rung35ms_proj_ao=md.get("rung35ms_proj_ao"))
+        rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+        ao_lapl=md.get("ao_grid_lapl"))
     P0 = jnp.asarray(md["dm_pbe"])
     doubled = doubled_spin_dm(P0, 0)
     ex_uks = 0.5 * float(jnp.sum(w * (

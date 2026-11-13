@@ -171,25 +171,33 @@ def board_architectures(include_meta_gga=False):
 
 def board_arch(name, *, anchor, coordinates="dfs"):
     """The registry entry as the board runs it: polarized correlation, the DFS
-    coordinates, and the anchor on or off."""
+    coordinates, and the anchor on or off. The unanchored control starts at
+    F = 1 exactly: ``zero_init_final_layer`` is set here, since no registry
+    entry sets it, because ``UNANCHORED_REFERENCE`` was recorded from that
+    start and the anchored row is held to its parent from the same point."""
     import dataclasses
     import xcquinox.pipeline as pipeline
     from xcquinox.pipeline.config import anchored
     arch = dataclasses.replace(pipeline.get_architecture(name),
                                use_polarized_correlation=True,
-                               descriptor_coordinates=coordinates)
+                               descriptor_coordinates=coordinates,
+                               zero_init_final_layer=True)
     return anchored(arch) if anchor else arch
 
 
 def ensure_board_data(data_dir, *, systems=BOARD_SYSTEMS, basis=BOARD_BASIS,
                       grid_level=BOARD_GRID_LEVEL, reference_xc="pbe",
-                      progress=False):
+                      progress=False, archs=()):
     """Generate (or reuse) the session's one pretraining file.
 
     Idempotent through the generator's own manifest identity check, so a second
     architecture in the same session pays nothing. The orientation lock is the
     production one: the O and N free atoms are spatially degenerate, and
     without it their rows are one arbitrary member of the P-term manifold.
+    ``archs`` are the architecture configurations the file serves: the
+    descriptor column stems they read are stated to the currency check, so a
+    file written before a column one of them needs is regenerated rather than
+    served (``pretrain_data_gen.descriptor_stems_for``).
 
     ``reference_xc`` is the parent whose SELF-CONSISTENT density the rows sit
     on -- "pbe" for the GGA rung and "scan" for the meta-GGA rung. The two are
@@ -199,14 +207,16 @@ def ensure_board_data(data_dir, *, systems=BOARD_SYSTEMS, basis=BOARD_BASIS,
     by name.
     """
     from xcquinox.pipeline.pretrain_data_gen import (
-        PRETRAIN_ORIENTATION_LOCK_STRENGTH, ensure_pretrain_data)
+        PRETRAIN_ORIENTATION_LOCK_STRENGTH, descriptor_stems_for,
+        ensure_pretrain_data)
     os.makedirs(data_dir, exist_ok=True)
     return ensure_pretrain_data(
         data_dir, atoms=tuple(systems), basis=basis, grid_level=grid_level,
         polarized=True, descriptors=True, dfs_set=False, pool_atoms=False,
         reference_xc=reference_xc, exchange_footing="spin_channel",
         orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
-        allow_irreproducible_degenerate=False, progress=progress)
+        allow_irreproducible_degenerate=False, progress=progress,
+        descriptor_stems=descriptor_stems_for(archs))
 
 
 def measure(arch, data_path, checkpoint_dir, *, seed, probe=None):
@@ -415,7 +425,9 @@ def run_board(*, archs=None, steps=300, seed=0, work_dir, data_dir=None,
     data_paths = {}
     for parent in sorted(set(parents.values())):
         data_paths[parent] = ensure_board_data(
-            data_dir, reference_xc=parent, progress=progress)
+            data_dir, reference_xc=parent, progress=progress,
+            archs=[board_arch(name, anchor=True) for name in names
+                   if parents[name] == parent])
         log(f"[board] {parent} pretraining data: {data_paths[parent]}")
     rows = []
     ok = True

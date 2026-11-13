@@ -163,6 +163,7 @@ NEW_OUTPUTS: Tuple[str, ...] = ("insample_by_pool_3x3", "training_loss_channels"
 # long for a heatmap gutter or a 1-arch-tall rung span).
 _RUNG_SHORT: Dict[str, str] = {
     arch_style.RUNG_GGA: "GGA",
+    arch_style.RUNG_LAP: "Lap",
     arch_style.RUNG_MGGA: "mGGA",
     arch_style.RUNG_R35: "r3.5",
     arch_style.RUNG_R35_MGGA: "r3.5+m",
@@ -189,7 +190,7 @@ def _provenance_text(provenance: Optional[str]) -> str:
     """The provenance line every figure prints: ``provenance`` (or the base
     banner), followed by the expanded key of every architecture drawn when
     :data:`_KEY_LINE_ARCHS` is set, so the shown names (deep_3x16 /
-    deep0_3x16 ...) never need the map to be read."""
+    medium_3x16 ...) never need the map to be read."""
     return provenance or _PROVENANCE_BASE
 
 
@@ -704,6 +705,26 @@ def _certificate_status_label(status: str, cert) -> str:
     return status
 
 
+def _pretrain_dir_for(run_dir: Path, key: str) -> str:
+    """The arch's pretrain directory through the run's resolved config: the
+    config's DONOR for a donated arch, the run's own pretrain product
+    otherwise -- the one resolution rule every consumer shares
+    (``merge_v4_arms._arm_pretrain_dir`` resolves identically).
+
+    A config that does not load keeps the run-local product: the analysis
+    layer also runs beside runs with no readable config, and this resolution
+    must not open a second refusal path for them.
+    """
+    from xcquinox.pipeline.cluster.grid_config import (
+        load_resolved_run_config, pretrain_checkpoint_dir,
+        pretrain_checkpoint_for)
+    try:
+        cfg = load_resolved_run_config(str(run_dir))
+    except Exception:  # noqa: BLE001 -- no readable config: run-local product
+        return pretrain_checkpoint_dir(str(run_dir), key)
+    return pretrain_checkpoint_for(cfg, str(run_dir), key)
+
+
 def _arch_certificate_status(run_dir: Path, arch: str) -> Optional[str]:
     """``arch``'s record-layer certificate status under ``run_dir``.
 
@@ -712,23 +733,28 @@ def _arch_certificate_status(run_dir: Path, arch: str) -> Optional[str]:
     the registry does not know (legacy display name, test fixture), matching
     ``merge_v4_arms._arm_certificate_statuses`` -- or when the package is not
     importable, since the analysis layer also runs without it.
+
+    The certificate directory is resolved through the run's resolved config
+    (:func:`_pretrain_dir_for`): a donor-backed architecture certifies on its
+    DONOR's certificate, every other architecture on the run's own pretrain
+    product. A merged view's config carries no donors, so its slots resolve
+    to the linked directories as before.
     """
     try:
         from xcquinox.pipeline.config import get_architecture
         from xcquinox.pipeline.cluster.fidelity import read_certificate_status_in
-        from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
     except ImportError:      # the analysis layer runs without the package
         return None
     # the rows hold shown names; the certificate sits in pretrain/<stored key>
-    # (pretrain/deep_3x16 is the directory of deep0_3x16, never of the shown
-    # deep_3x16, which is pretrain/medium)
+    # (pretrain/medium is the directory of medium_3x16; a key that states its
+    # size, deep_3x16, is its own shown name)
     key = stored_key(arch)
     try:
         get_architecture(key)
     except KeyError:
         return None
     status, _reason, cert = read_certificate_status_in(
-        pretrain_checkpoint_dir(str(run_dir), key))
+        _pretrain_dir_for(run_dir, key))
     return _certificate_status_label(status, cert)
 
 
@@ -788,7 +814,11 @@ def fidelity_summary(run_dir: Path,
     :func:`uncertified_statuses`: a name the registry does not know carries no
     certificate expectation, so it is neither counted nor read. The
     certificate is located by directory, and without that scoping a directory
-    under any name at all could move the bound the footer discloses.
+    under any name at all could move the bound the footer discloses. The
+    directory itself resolves through the donor rule
+    (:func:`_pretrain_dir_for`): a donor-backed architecture's numbers are
+    its donor's certificate's, so the footer discloses the bound the run's
+    networks actually warm-started under.
 
     ``n_archs`` counts the architectures a figure may say it is bounding: the
     ones whose certificate states BOTH numbers. One that states neither (a
@@ -819,7 +849,6 @@ def fidelity_summary(run_dir: Path,
         from xcquinox.pipeline.config import get_architecture
         from xcquinox.pipeline.cluster.fidelity import (VERDICT_PASS,
                                                     read_certificate_status_in)
-        from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
     except ImportError:
         return None
     if archs is None:
@@ -840,8 +869,12 @@ def fidelity_summary(run_dir: Path,
             # know would otherwise move the disclosed worst (measured: a
             # foreign PASS stating 99.0 / 88.0 replaced a run's 0.31 / 0.62).
             continue
+        # The donor rule (:func:`_pretrain_dir_for`): a donor-backed arch's
+        # numbers are its DONOR's, so a run whose pretrain product was never
+        # generated still discloses the bound its certificates carry, and a
+        # bound is never dropped from the footer by bookkeeping.
         status, _reason, cert = read_certificate_status_in(
-            pretrain_checkpoint_dir(str(run_dir), key))
+            _pretrain_dir_for(run_dir, key))
         if not cert:
             n_unreadable += 1
             continue
@@ -1905,16 +1938,20 @@ def _report_scan_coverage(scan_baseline: Optional[Dict[str, Any]],
 
 
 def arch_reference_kinds(archs) -> Dict[str, str]:
-    """``"pbe"`` for pure-GGA architectures, ``"scan"`` for any architecture
-    carrying beyond-GGA information (meta-GGA, rung-3.5, and their stacks).
+    """``"pbe"`` for the GGA and Laplacian rungs, ``"scan"`` for any
+    architecture carrying orbital-dependent information (meta-GGA, rung-3.5,
+    and their stacks).
 
     The green beats marker claims improvement over the arch's OWN-RUNG
     nonempirical reference; crediting a beyond-GGA architecture for merely
-    beating PBE overstates it. The rung-3.5 families have no same-rung
-    nonempirical reference (nonlocal DM information but no tau, so neither
-    PBE's nor SCAN's input set contains theirs); they are held to SCAN, the
+    beating PBE overstates it. The Laplacian rung has no nonempirical
+    Laplacian-level reference in the pipeline and its parent is PBE, so it is
+    held to PBE. The rung-3.5 families have no same-rung nonempirical
+    reference (nonlocal DM information but no tau, so neither PBE's nor
+    SCAN's input set contains theirs); they are held to SCAN, the
     conservative assignment."""
-    return {a: ("pbe" if arch_style.rung_of(a) == arch_style.RUNG_GGA
+    return {a: ("pbe" if arch_style.rung_of(a) in (arch_style.RUNG_GGA,
+                                                  arch_style.RUNG_LAP)
                 else "scan") for a in archs}
 
 
@@ -2959,9 +2996,11 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
 # Figure D (bonus) -- MAE vs subset_size, one line per arch
 # ---------------------------------------------------------------------------
 
-_RUNG_LS: Dict[str, str] = {
+_RUNG_LS: Dict[str, object] = {
     arch_style.RUNG_GGA: "-", arch_style.RUNG_MGGA: "--",
     arch_style.RUNG_R35: "-.", arch_style.RUNG_R35_MGGA: ":",
+    # the Laplacian rung: dash-dot-dot, the fifth pattern the four above leave
+    arch_style.RUNG_LAP: (0, (3, 1, 1, 1, 1, 1)),
 }
 
 
@@ -9799,9 +9838,9 @@ def _build_all_inner(run_dir: Path, outdir: Path, eval_subdir: str,
         raise ValueError(
             f"archs {list(archs)} match no evaluated cell of {run_dir.name} "
             f"(its architectures: {present}); an empty figure set would "
-            "render. The two names that are both a registry key and a shown "
-            "name are read in the shown sense: deep_3x16 is the registry's "
-            "medium, and the registry's deep_3x16 is selected as deep0_3x16.")
+            "render. A name is read in the shown sense: medium is selected as "
+            "medium_3x16 and deep as deep_4x32; a key that states its size, "
+            "deep_3x16, is its own shown name.")
     # the footer's key line names every architecture the collected rows
     # carry, so every figure of the set explains the shown names it draws;
     # the scope opened by build_all restores the previous value on exit
@@ -9907,19 +9946,39 @@ def _basis_fig_alias(basis: str) -> str:
     return basis.replace("_grid2", "")
 
 
-def _newest_run_per_basis(results_root: Path,
-                          bases: Tuple[str, ...] = _BH76W411_BASES,
-                          domain: str = "bh76w411_repr") -> Dict[str, Path]:
-    """Map each basis -> its newest ``run_*`` dir under
-    ``<results_root>/<domain>/<basis>/runs/``. ISO-Z timestamps sort
-    lexicographically, so the last ``sorted`` entry is the latest pull."""
+def _run_per_basis(results_root: Path,
+                   bases: Tuple[str, ...] = _BH76W411_BASES,
+                   domain: str = "bh76w411_repr",
+                   named: Optional[Dict[str, str]] = None) -> Dict[str, Path]:
+    """Map each basis -> the run the suite draws for it: the ``run_*`` dir
+    ``named`` for the basis, else the newest under
+    ``<results_root>/<domain>/<basis>/runs/`` (ISO-Z timestamps sort
+    lexicographically, so the last ``sorted`` entry is the latest pull).
+
+    The newest run of a basis is not always the one that carries cells: a
+    pretraining suite is a run of its own with no checkpoints, and it can
+    postdate the run whose cells are evaluated. A name for a basis outside
+    ``bases`` and a name that is not a pulled run directory are refused."""
+    named = dict(named or {})
+    unknown = sorted(set(named) - set(bases))
+    if unknown:
+        raise ValueError(
+            f"a run is named for {unknown}, not among the bases {list(bases)}")
     out: Dict[str, Path] = {}
     for basis in bases:
         runs_dir = Path(results_root) / domain / basis / "runs"
-        runs = sorted(runs_dir.glob("run_*"))
+        runs = sorted(r for r in runs_dir.glob("run_*") if r.is_dir())
         if not runs:
             raise FileNotFoundError(f"no run_* dir under {runs_dir}")
-        out[basis] = runs[-1]
+        if basis in named:
+            by_name = {r.name: r for r in runs}
+            if named[basis] not in by_name:
+                raise FileNotFoundError(
+                    f"no run dir {named[basis]} under {runs_dir}; pulled: "
+                    f"{', '.join(by_name)}")
+            out[basis] = by_name[named[basis]]
+        else:
+            out[basis] = runs[-1]
     return out
 
 
@@ -9958,9 +10017,12 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                          bases: Tuple[str, ...] = _BH76W411_BASES,
                          domain: str = "bh76w411_repr",
                          comparison_archs: Optional[Tuple[str, ...]] = None,
-                         archs=None) -> List[Path]:
-    """Regenerate EVERY figure family for ``domain`` from the newest run per
-    basis, so a fresh spec pull lands on all figures in one call. Per basis: the
+                         archs=None,
+                         named_runs: Optional[Dict[str, str]] = None
+                         ) -> List[Path]:
+    """Regenerate EVERY figure family for ``domain`` from one run per basis
+    (the run ``named_runs`` names for it, else its newest), so a fresh spec
+    pull lands on all figures in one call. Per basis: the
     arch-aware ablation set (:func:`build_all`), the held-out energy/density set
     (:func:`build_density_energy_figures`), the five parity-layout variants
     (:func:`build_parity_variants`) and the per-run size-consistency/training-loss
@@ -9995,14 +10057,19 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
 
     ``archs`` restricts every rendered figure to the named architectures (see
     :func:`build_all`); the certificate refusal is then scoped to them too, a
-    withheld architecture's certificate bearing on no figure of the set."""
+    withheld architecture's certificate bearing on no figure of the set.
+
+    ``named_runs`` maps a basis to the name of the ``run_*`` dir to draw for
+    it (:func:`_run_per_basis`): the newest run of a basis can be a
+    pretraining suite, which carries no cell."""
     archs = _validate_archs(archs)
     results_root = Path(results_root) if results_root else _DEFAULT_LOCAL_ROOT
     outroot = Path(outroot) if outroot else Path(__file__).resolve().parent
     prefix = "" if domain == "bh76w411_repr" else f"{domain}_"
-    runs = _newest_run_per_basis(results_root, bases, domain=domain)
+    runs = _run_per_basis(results_root, bases, domain=domain, named=named_runs)
     written: List[Path] = []
     n_sets = 0
+    drawn: Set[str] = set()
     # one set per channel of the vocabulary's figure list, every set gated on
     # having cells: a basis renders exactly the channels it carries
     for eval_subdir in FIGURE_CHANNELS:
@@ -10061,6 +10128,7 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                                                  eval_subdir=eval_subdir,
                                                  archs=archs)
             n_sets += 1
+            drawn.add(basis)
         if not ordered_runs:
             print(f"   (no {eval_subdir}/ data found -- skipping the "
                   f"{_ckpt_label(eval_subdir)} figure set)")
@@ -10086,8 +10154,35 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
             f"{[str(r) for r in runs.values()]}: none of {FIGURE_CHANNELS} "
             "carries a per_reaction.json for a rendered architecture, so the "
             "pull holds no held-out evaluation to draw (re-pull the run with "
-            "the summaries profile, or widen --archs)")
+            "the summaries profile, or widen --archs; where the newest run "
+            "of a base is a pretraining suite, name the run that carries the "
+            "cells with --runs BASE=RUN_NAME)")
+    # A base whose run carries no cell under any channel is skipped channel
+    # by channel above; beside bases that were drawn it would otherwise be
+    # left out of the output without a word.
+    for basis in bases:
+        if basis not in drawn:
+            print(f"   ({basis}: {runs[basis].name} carries no evaluated cell "
+                  "under any channel and is not drawn; where it is a "
+                  f"pretraining suite, name the run with --runs "
+                  f"{basis}=RUN_NAME)")
     return written
+
+
+def _parse_named_runs(values) -> Dict[str, str]:
+    """``--runs BASE=RUN_NAME`` values as ``{base: run_name}``. A value
+    without ``=`` or with an empty side is refused, and so is a base named
+    twice: the second name would otherwise replace the first in silence."""
+    named: Dict[str, str] = {}
+    for value in values or ():
+        basis, sep, run_name = value.partition("=")
+        basis, run_name = basis.strip(), run_name.strip()
+        if not sep or not basis or not run_name:
+            raise ValueError(f"--runs takes BASE=RUN_NAME, got {value!r}")
+        if basis in named:
+            raise ValueError(f"--runs names the base {basis!r} twice")
+        named[basis] = run_name
+    return named
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -10101,9 +10196,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="output directory for PNGs (single-run mode)")
     p.add_argument("--suite", action="store_true",
                    help="regenerate ALL figure families for --domain (every "
-                        "--bases basis) from the newest run per basis, into "
+                        "--bases basis) from one run per basis (its newest, "
+                        "or the one --runs names), into "
                         "figures_<basis>/ + figures_basis_comparison/ under "
                         "--outroot")
+    p.add_argument("--runs", action="append", default=None,
+                   metavar="BASE=RUN_NAME",
+                   help="for --suite: draw the named run_* dir of a base "
+                        "instead of its newest; repeat per base. Needed "
+                        "where a base's newest run carries no cells (a "
+                        "pretraining suite submitted after the run whose "
+                        "cells are evaluated)")
     p.add_argument("--results-root", default=None,
                    help="results runs root for --suite "
                         f"(default: {_DEFAULT_LOCAL_ROOT})")
@@ -10139,6 +10242,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = p.parse_args(argv)
     archs = (tuple(a.strip() for a in args.archs.split(",") if a.strip())
              if args.archs else None)
+    try:
+        named_runs = _parse_named_runs(args.runs)
+    except ValueError as exc:
+        p.error(str(exc))
+    if named_runs and not args.suite:
+        p.error("--runs names the run of a base for --suite; the single-run "
+                "mode takes --run-dir")
 
     if args.suite:
         bases = tuple(b.strip() for b in args.bases.split(",") if b.strip())
@@ -10150,7 +10260,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                        bases=bases,
                                        domain=args.domain,
                                        comparison_archs=cmp_archs,
-                                       archs=archs)
+                                       archs=archs,
+                                       named_runs=named_runs)
         for pth in written:
             print(f"  wrote {pth}")
         return 0

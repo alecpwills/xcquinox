@@ -75,7 +75,7 @@ from arch_style import arch_color, display_name, key_line, stored_key  # noqa: E
 
 def _footer_with_key(footer: str, shown_names) -> str:
     """``footer`` with the expanded key of every shown name drawn appended on
-    its own line, so the names (deep_3x16 / deep0_3x16 ...) read without the
+    its own line, so the names (deep_3x16 / medium_3x16 ...) read without the
     map. The renderer's own addition: a caller's footer never carries it."""
     keys = key_line(shown_names)
     return f"{footer}\n{keys}" if keys else footer
@@ -610,8 +610,8 @@ def main(argv=None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     # --archs in either spelling: the pre-training directories are the
-    # registry keys, a shown name (deep0_3x16) is mapped to its key; a name
-    # that is both (deep_3x16) is read in the shown sense, as the suite does
+    # registry keys; a shown name that is not a key (medium_3x16, deep_4x32)
+    # is mapped to its key, as the suite does
     archs = (tuple(stored_key(a.strip()) for a in args.archs.split(","))
              if args.archs else tuple(discover_archs(run_dir)))
     if not archs:

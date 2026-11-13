@@ -723,3 +723,720 @@ def test_regate_apply_rewrites_the_certificate_and_the_resolved_config(
     assert cfg2.fidelity.tol_AE_max_backstop == 2.0
 
 
+# ---------------------------------------------------------------------------
+# Submit from any directory (the submit-anywhere rule)
+# ---------------------------------------------------------------------------
+
+def _fake_checkout(tmp_path):
+    """A fake checkout root carrying the layout marker (hpcjobs/ + pyproject)."""
+    root = tmp_path / "fake_checkout"
+    (root / "hpcjobs").mkdir(parents=True)
+    (root / "pyproject.toml").write_text("# fake checkout\n", encoding="utf-8")
+    return root
+
+
+def test_submit_anywhere_relative_run_root_lands_under_the_checkout(
+        tmp_path, monkeypatch):
+    """A relative --run-root resolves against the checkout, not the caller's
+    CWD: the runbook's ``--run-root hpcjobs`` spelling works from anywhere."""
+    checkout = _fake_checkout(tmp_path)
+    monkeypatch.setattr(cli, "_repo_root", lambda: str(checkout))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    grid = _write_grid(tmp_path)
+    monkeypatch.setattr(jt, "_run_slurm", _fake_slurm())
+
+    rc = main(["submit", grid, "--run-root", "hpcjobs/zz_out",
+               "--partition", "long-40core"])
+    assert rc == 0
+    runs = list((checkout / "hpcjobs" / "zz_out" / "runs").iterdir())
+    assert len(runs) == 1, "the run dir must sit under the checkout"
+    assert not (elsewhere / "hpcjobs").exists(), \
+        "a relative run root must not resolve against the caller's CWD"
+
+
+def test_submit_anywhere_checkout_relative_grid_path_resolves(
+        tmp_path, monkeypatch):
+    """A grid path spelled relative to the checkout (the runbook's
+    ``hpcjobs/configs/...``) resolves there when it does not exist as given."""
+    checkout = _fake_checkout(tmp_path)
+    grid_rel = _write_grid(checkout / "hpcjobs")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(cli, "_repo_root", lambda: str(checkout))
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(jt, "_run_slurm", _fake_slurm())
+
+    rc = main(["submit", os.path.relpath(grid_rel, checkout),
+               "--run-root", str(out), "--partition", "long-40core"])
+    assert rc == 0, "the checkout-relative spelling must resolve and dry-run"
+    assert len(os.listdir(out / "runs")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Donor warm-starts: the status tally and regate read the donors
+# ---------------------------------------------------------------------------
+
+def test_pretrain_counts_reads_donors(tmp_path):
+    """The status tally counts a donor arch on its donor (the networks and
+    the certificate live there); a tally that counted run-local dirs would
+    call a released donor arch uncertified and mis-state the stalled stage."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    donor = tmp_path / "donor_run" / "pretrain" / "medium"
+    donor.mkdir(parents=True)
+    (donor / "xnet.eqx").write_bytes(b"x")
+    (donor / "cnet.eqx").write_bytes(b"c")
+    with open(donor / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": "medium",
+                   "summary": {"max_atom_mHa": 0.1,
+                               "max_dAE_kcalmol": 0.2}}, f)
+
+    d = _base_config_dict()
+    d["pretrain"]["donor_checkpoints"] = {"medium": str(donor)}
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps(d))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cli._write_resolved_config(load_grid_config(str(p)), str(run_dir))
+
+    assert cli._pretrain_counts(str(run_dir)) == (1, 1, 1, 1, [])
+
+
+def test_regate_skips_donor_archs_and_reports_nothing_to_regate(
+        tmp_path, capsys):
+    """A run whose every arch warm-starts from a donor has no run-local
+    certificate to re-verdict: the command says so and returns 1 (a success
+    exit having done nothing would mask the state)."""
+    rd, tracked, _cert = _regate_fixture(tmp_path)
+    _rewrite_resolved(
+        tmp_path, rd,
+        lambda d: d["pretrain"].__setitem__(
+            "donor_checkpoints", {"medium": "/gpfs/donors/medium"}),
+        "donor")
+
+    rc = main(["regate-certificates", rd, "--config", tracked, "--apply"])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "donor" in out
+    assert "nothing to regate" in out
+
+
+def test_prepare_anywhere_checkout_relative_grid_path_resolves(
+        tmp_path, monkeypatch, capsys):
+    """``prepare`` resolves the grid argument the same way ``submit`` does:
+    the checkout-relative spelling works from any directory, and the refs
+    precompute is skipped (``prepare_inputs`` stubbed; an unresolved grid
+    would fail at load with rc 1 and no resolution log line)."""
+    from types import SimpleNamespace
+
+    checkout = _fake_checkout(tmp_path)
+    grid_rel = _write_grid(checkout / "hpcjobs")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(cli, "_repo_root", lambda: str(checkout))
+    calls = []
+    monkeypatch.setattr(
+        cli, "prepare_inputs",
+        lambda cfg, recompute_refs: calls.append(recompute_refs)
+        or SimpleNamespace(points=[1, 2], subset_ledger=[{}, {}]))
+
+    rc = main(["prepare", os.path.relpath(grid_rel, checkout),
+               "--no-recompute-refs"])
+    assert rc == 0, "the checkout-relative spelling must resolve and prepare"
+    assert calls == [False]
+    assert "resolved against the checkout" in capsys.readouterr().out
+    assert not (elsewhere / "hpcjobs").exists(), \
+        "a checkout-relative grid must not resolve against the caller's CWD"
+
+
+
+
+# ===========================================================================
+# Stage-selective submission: --stages pretrain|optimize and --donor-run
+# ===========================================================================
+
+def test_submit_stages_pretrain_cli_dry_run(tmp_path, monkeypatch):
+    """``submit --stages pretrain`` dry-runs the datagen -> pretrain prefix
+    only: scripts/ carries exactly the two selected stage scripts, no sbatch
+    is made, no jobs.json is written, and the submit-commands record names no
+    other stage's script (a line for an unsubmitted stage would read as a
+    submission that failed)."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "pretrain"])
+    assert rc == 0
+
+    runs = os.listdir(run_root / "runs")
+    assert len(runs) == 1
+    run_dir = run_root / "runs" / runs[0]
+    assert sorted(os.listdir(run_dir / "scripts")) == [
+        "datagen.sbatch", "pretrain.sbatch"]
+    assert [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"] == []
+    assert not os.path.exists(run_dir / "jobs.json")
+    cmds = open(os.path.join(str(run_dir), "submit_commands.txt")).read()
+    for absent in ("preflight.sbatch", "train_array.sbatch",
+                   "eval_array.sbatch"):
+        assert absent not in cmds
+
+
+def _two_arch_grid(tmp_path):
+    """The base grid with two registry keys, medium and shallow, swept."""
+    return _write_grid(tmp_path, mutate=lambda d: d["sweep"].__setitem__(
+        "arch", ["medium", "shallow"]))
+
+
+def test_submit_archs_and_pretrain_seed_state_a_one_arch_refit(tmp_path):
+    """``submit --stages pretrain --archs shallow --pretrain-seed 7`` on a
+    grid sweeping medium and shallow stages a pretraining run of shallow
+    alone at initialization seed 7. The run's resolved_config.yaml, which
+    every node stage re-reads, sweeps shallow only and states pretrain.seed
+    7; hyperparams.seed, the optimization seed, keeps the value the grid file
+    loads to; and the pretrain array is the single task 0-0. Shallow is the
+    later name in canonical order, so index 0 of that array is shallow only
+    if the axis itself was restricted."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    grid = _two_arch_grid(tmp_path)
+    base = load_grid_config(grid)
+    assert sorted(set(base.sweep.arch)) == ["medium", "shallow"]
+    assert 7 not in (base.pretrain.seed, base.hyperparams.seed)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "pretrain",
+               "--archs", "shallow", "--pretrain-seed", "7"])
+    assert rc == 0
+
+    runs = os.listdir(run_root / "runs")
+    assert len(runs) == 1
+    run_dir = run_root / "runs" / runs[0]
+    cfg = load_grid_config(str(run_dir / "resolved_config.yaml"))
+    assert sorted(set(cfg.sweep.arch)) == ["shallow"]
+    assert cfg.pretrain.seed == 7
+    assert cfg.hyperparams.seed == base.hyperparams.seed
+    # The template renders "#SBATCH --array=0-<ARRAY_MAX>%<THROTTLE>"; the
+    # index range is the part before the throttle.
+    script = (run_dir / "scripts" / "pretrain.sbatch").read_text()
+    ranges = [line.split("=", 1)[1].split("%", 1)[0]
+              for line in script.splitlines()
+              if line.startswith("#SBATCH --array=")]
+    assert ranges == ["0-0"]
+
+
+def test_submit_archs_outside_the_sweep_refused_before_run_dir(
+        tmp_path, monkeypatch):
+    """``--archs`` naming a registry key the grid does not sweep is refused
+    before the run dir exists: rc 1, nothing under the run root, no sbatch.
+    The override restricts the configuration's sweep and never extends it.
+    The list pairs a swept name with the unswept one, so only the membership
+    check refuses it; a restriction that dropped the unswept name without a
+    word would stage and submit a run of the swept one."""
+    grid = _two_arch_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "pretrain",
+               "--archs", "shallow,deep", "--submit"])
+
+    assert rc == 1
+    assert os.listdir(str(run_root)) == []
+    assert [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"] == []
+
+    # A list that names nothing is refused the same way, under the whole
+    # graph too, where an emptied axis would otherwise reach the grid
+    # expansion.
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--archs", ","])
+    assert rc == 1
+    assert os.listdir(str(run_root)) == []
+
+
+def test_submit_pretrain_seed_is_held_to_the_loaders_seed_range(tmp_path):
+    """``--pretrain-seed`` takes exactly the range the configuration loader
+    holds ``pretrain.seed`` to. A value the loader refuses, written into
+    resolved_config.yaml unchecked, would be refused only when the first node
+    stage reloads that file, after the graph was queued; it is refused at
+    submit instead, before the run dir exists. The two ends of the range are
+    seeds like any other and are written into the run."""
+    from xcquinox.pipeline.cluster.grid_config import (_MAX_SEED,
+                                                       load_grid_config)
+
+    grid = _write_grid(tmp_path)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    for seed in (-1, _MAX_SEED + 1):
+        rc = main(["submit", grid, "--run-root", str(run_root),
+                   "--partition", "long-40core", "--stages", "pretrain",
+                   f"--pretrain-seed={seed}"])
+        assert rc == 1
+        assert os.listdir(str(run_root)) == []
+
+    for seed in (0, _MAX_SEED):
+        root = tmp_path / f"accepted_{seed}"
+        root.mkdir()
+        rc = main(["submit", grid, "--run-root", str(root),
+                   "--partition", "long-40core", "--stages", "pretrain",
+                   f"--pretrain-seed={seed}"])
+        assert rc == 0
+        (run,) = os.listdir(root / "runs")
+        cfg = load_grid_config(
+            str(root / "runs" / run / "resolved_config.yaml"))
+        assert cfg.pretrain.seed == seed
+
+
+def test_submit_pretrain_seed_refused_on_a_run_that_pretrains_nothing(
+        tmp_path):
+    """``--pretrain-seed`` names the seed of a pretraining. A run seeded
+    entirely from donors pretrains nothing, and a seed written into its
+    resolved_config.yaml would state an initialization none of its networks
+    had: the flag is refused there, before the run dir exists, whether the
+    stage group excludes the pretraining or the donor map empties it."""
+    arch = "medium"  # _write_grid's single sweep arch
+    donor_run = tmp_path / "pretrain_run"
+    donor_dir = donor_run / "pretrain" / arch
+    donor_dir.mkdir(parents=True)
+    with open(donor_dir / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": arch}, f)
+
+    grid = _write_grid(tmp_path)
+    for stages in ("optimize", "all"):
+        run_root = tmp_path / f"out_{stages}"
+        run_root.mkdir()
+        rc = main(["submit", grid, "--run-root", str(run_root),
+                   "--partition", "long-40core", "--stages", stages,
+                   "--donor-run", str(donor_run), "--pretrain-seed", "7"])
+        assert rc == 1
+        assert os.listdir(str(run_root)) == []
+
+
+def test_submit_donor_run_is_asked_for_the_architectures_archs_keeps(
+        tmp_path):
+    """A ``--donor-run`` holding the one architecture ``--archs`` keeps seeds
+    the restricted run: the donor map is built over the axis the run sweeps,
+    so the architectures left out are not asked of the donor run. This is the
+    optimization of a refit, a pretraining suite of one network."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    donor_run = tmp_path / "refit_run"
+    donor_dir = donor_run / "pretrain" / "shallow"
+    donor_dir.mkdir(parents=True)
+    with open(donor_dir / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": "shallow"}, f)
+
+    grid = _two_arch_grid(tmp_path)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "optimize",
+               "--archs", "shallow", "--donor-run", str(donor_run)])
+    assert rc == 0
+    (run,) = os.listdir(run_root / "runs")
+    cfg = load_grid_config(
+        str(run_root / "runs" / run / "resolved_config.yaml"))
+    assert cfg.pretrain.donor_checkpoints == {"shallow": str(donor_dir)}
+
+
+def test_submit_archs_narrows_the_donor_map_to_the_swept_architectures(
+        tmp_path):
+    """A configuration-stated donor for an architecture ``--archs`` leaves
+    out goes with it: the run's resolved_config.yaml names the donors of the
+    architectures it sweeps and no other. A donor key the configuration's own
+    sweep never carried is a different matter, a misspelt key, and stays
+    refused whatever ``--archs`` says."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    def _donors(extra):
+        def _mutate(d):
+            d["sweep"]["arch"] = ["medium", "shallow"]
+            d["pretrain"]["donor_checkpoints"] = {
+                "medium": "/shared/donors/medium",
+                "shallow": "/shared/donors/shallow", **extra}
+        return _mutate
+
+    grid = _write_grid(tmp_path, mutate=_donors({}))
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "optimize",
+               "--archs", "shallow"])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    assert len(runs) == 1
+    cfg = load_grid_config(
+        str(run_root / "runs" / runs[0] / "resolved_config.yaml"))
+    assert cfg.pretrain.donor_checkpoints == {
+        "shallow": "/shared/donors/shallow"}
+
+    misspelt = _write_grid(tmp_path, mutate=_donors(
+        {"medim": "/shared/donors/medim"}))
+    with pytest.raises(ValueError):
+        main(["submit", misspelt, "--run-root", str(tmp_path / "other"),
+              "--partition", "long-40core", "--stages", "optimize",
+              "--archs", "shallow"])
+
+
+def test_submit_stages_optimize_with_donor_run(tmp_path, monkeypatch):
+    """``submit --stages optimize --donor-run DIR`` builds the donor map from
+    a completed pretraining run (one entry per canonical sweep arch), and
+    that map round-trips through resolved_config.yaml -- the recovery
+    commands and the node stages re-read it there, so a map the serializer
+    dropped would silently revert every arch to run-local pretrain dirs.
+    The submitted graph is preflight (no dependency) -> train -> eval."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    arch = "medium"  # _write_grid's single sweep arch
+    donor_run = tmp_path / "pretrain_run"
+    donor_dir = donor_run / "pretrain" / arch
+    donor_dir.mkdir(parents=True)
+    with open(donor_dir / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": arch}, f)
+
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm(ids=["5000", "5001", "5002"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "optimize",
+               "--donor-run", str(donor_run), "--submit"])
+    assert rc == 0
+
+    runs = os.listdir(run_root / "runs")
+    assert len(runs) == 1
+    run_dir = str(run_root / "runs" / runs[0])
+    cfg = load_grid_config(os.path.join(run_dir, "resolved_config.yaml"))
+    assert cfg.pretrain.donor_checkpoints == {arch: str(donor_dir)}
+    kinds = [r["kind"] for r in jt.read_job_records(run_dir)]
+    assert kinds == ["preflight", "train", "eval"]
+    sbatch = [" ".join(c) for c in fake.calls
+              if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch) == 3
+    assert "--dependency" not in sbatch[0]  # preflight, no datagen before it
+
+
+def test_submit_donor_run_missing_certificate_refused_before_run_dir(
+        tmp_path, monkeypatch, capsys):
+    """G5: a --donor-run whose ``<DIR>/pretrain/<arch>`` exists but carries
+    no fidelity_certificate.json cannot be gated, so the submission is
+    refused BEFORE the run dir is created (rc 1, no runs/ directory, zero
+    sbatch) and the message names the path. A refusal that left a run dir
+    behind would hand list-runs and status a half-built run."""
+    arch = "medium"
+    donor_run = tmp_path / "pretrain_run"
+    (donor_run / "pretrain" / arch).mkdir(parents=True)  # dir, no certificate
+
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "optimize",
+               "--donor-run", str(donor_run), "--submit"])
+
+    assert rc == 1
+    # Refusal lands before _make_run_dir: nothing under the run root, and
+    # the message names the offending donor path.
+    assert os.listdir(str(run_root)) == []
+    assert not os.path.exists(os.path.join(str(run_root), "runs"))
+    assert [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"] == []
+    assert str(donor_run / "pretrain" / arch) in capsys.readouterr().out
+
+
+def test_submit_donor_run_refuses_a_certificate_the_gate_does_not_release(
+        tmp_path, monkeypatch, capsys):
+    """A --donor-run certificate is held to the rule the preflight and the
+    train task apply to it on the node: PASS, or FAIL under a recorded waiver
+    naming its reason. A certificate recording FAIL with enforcement on, one
+    that does not parse, and a donor run that is not there are each refused
+    before the run dir is created (rc 1, nothing under the run root, no
+    sbatch), the message naming the donor directory and no --archs remedy,
+    the donor run releasing no architecture to restrict the sweep to;
+    accepted, any of them would queue a graph whose preflight refuses the
+    train array. For the run that is not there the message names the run and
+    no pretrain directory under it: nothing can be said of an architecture
+    of a run that does not exist. The directories gated are the flag's: a
+    configuration that itself states a passing donor does not carry a failed
+    --donor-run through. A FAIL whose certificate records enforced false
+    with a prose override_reason is released on the node: the submission is
+    accepted and states the waiver with the reason the certificate records,
+    since a run seeded from it never enters the record layer. A PASS that
+    carries such a waiver needed none, and none is stated."""
+    arch = "medium"  # _write_grid's single sweep arch
+    grid = _write_grid(tmp_path)
+    reason = "a short pretraining that exercises the train and eval wiring"
+    unused = "a waiver recorded beside a verdict that passed"
+
+    # a configuration that states a passing donor of its own for the arch
+    stated_donor = tmp_path / "stated_donor" / "pretrain" / arch
+    stated_donor.mkdir(parents=True)
+    (stated_donor / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "PASS", "arch": arch}))
+    (tmp_path / "stated").mkdir()
+    stated_grid = _write_grid(
+        tmp_path / "stated",
+        mutate=lambda d: d["pretrain"].__setitem__(
+            "donor_checkpoints", {arch: str(stated_donor)}))
+
+    def _submit(name, certificate_text, config=grid):
+        donor_dir = tmp_path / name / "pretrain" / arch
+        if certificate_text is not None:
+            donor_dir.mkdir(parents=True)
+            (donor_dir / "fidelity_certificate.json").write_text(
+                certificate_text)
+        fake = _fake_slurm()
+        monkeypatch.setattr(jt, "_run_slurm", fake)
+        run_root = tmp_path / f"out_{name}"
+        run_root.mkdir()
+        rc = main(["submit", config, "--run-root", str(run_root),
+                   "--partition", "long-40core", "--stages", "optimize",
+                   "--donor-run", str(tmp_path / name), "--submit"])
+        sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+        return (rc, os.listdir(str(run_root)), sbatch,
+                capsys.readouterr().out, str(donor_dir))
+
+    failed = json.dumps({"verdict": "FAIL", "arch": arch})
+    outcomes = {
+        "failed": _submit("failed", failed),
+        "unparseable": _submit("unparseable", '{"verdict": "PA'),
+        "absent": _submit("absent", None),
+        "stated": _submit("stated_failed", failed, config=stated_grid),
+        "waived": _submit("waived", json.dumps(
+            {"verdict": "FAIL", "arch": arch, "enforced": False,
+             "tolerances": {"override_reason": reason}})),
+        "passed": _submit("passed", json.dumps(
+            {"verdict": "PASS", "arch": arch, "enforced": False,
+             "tolerances": {"override_reason": unused}})),
+    }
+    assert {name: o[0] for name, o in outcomes.items()} == {
+        "failed": 1, "unparseable": 1, "absent": 1, "stated": 1,
+        "waived": 0, "passed": 0}
+    for name in ("failed", "unparseable", "absent", "stated"):
+        _rc, listing, sbatch, out, donor_dir = outcomes[name]
+        assert listing == [], name
+        assert sbatch == [], name
+        assert "--archs" not in out, name
+        if name == "absent":
+            assert str(tmp_path / "absent") in out
+            assert donor_dir not in out
+        else:
+            assert donor_dir in out, name
+    assert reason in outcomes["waived"][3]
+    assert unused not in outcomes["passed"][3]
+
+
+def test_submit_donor_run_is_refused_for_any_swept_architecture_it_fails(
+        tmp_path, capsys):
+    """Every architecture the run sweeps is held to the gate, so a donor run
+    whose second architecture failed its certificate is refused although the
+    first is released, the failed architecture's directory named: the
+    preflight refuses the whole train array on one refused architecture. The
+    refusal ends with the --archs value that restricts the sweep to the
+    architecture the donor run does release, and restricted so the same
+    donor run seeds the run, since the failed one is no longer swept. The
+    released architecture is released by a recorded waiver, and the refusal
+    that names it as the remedy states that too, with the reason its
+    certificate records. The pretrain stage group reads no donor: with every
+    swept architecture donated it is refused for having nothing to pretrain,
+    and no --archs remedy is named, which would lead to that same refusal."""
+    reason = "a short pretraining that exercises the train and eval wiring"
+    donor_run = tmp_path / "pretrain_run"
+    for arch, certificate in (
+            ("medium", {"verdict": "FAIL", "enforced": False,
+                        "tolerances": {"override_reason": reason}}),
+            ("shallow", {"verdict": "FAIL"})):
+        donor_dir = donor_run / "pretrain" / arch
+        donor_dir.mkdir(parents=True)
+        with open(donor_dir / "fidelity_certificate.json", "w") as f:
+            json.dump({"arch": arch, **certificate}, f)
+
+    grid = _two_arch_grid(tmp_path)
+    outcomes = {}
+    for label, selection in (
+            ("both", ["--stages", "optimize"]),
+            ("medium", ["--stages", "optimize", "--archs", "medium"]),
+            ("pretrain", ["--stages", "pretrain"])):
+        run_root = tmp_path / f"out_{label}"
+        run_root.mkdir()
+        rc = main(["submit", grid, "--run-root", str(run_root),
+                   "--partition", "long-40core",
+                   "--donor-run", str(donor_run), *selection])
+        outcomes[label] = (rc, os.listdir(str(run_root)),
+                           capsys.readouterr().out)
+    assert {label: o[0] for label, o in outcomes.items()} == {
+        "both": 1, "medium": 0, "pretrain": 1}
+    assert outcomes["both"][1] == [] and outcomes["pretrain"][1] == []
+    assert str(donor_run / "pretrain" / "shallow") in outcomes["both"][2]
+    # the value the refusal names, read as the word after the flag
+    assert outcomes["both"][2].split("--archs ")[1].split()[0] == "medium"
+    assert reason in outcomes["both"][2]
+    assert "--archs" not in outcomes["pretrain"][2]
+
+
+def test_submit_stages_optimize_refused_before_run_dir(tmp_path, monkeypatch,
+                                                       capsys):
+    """O1: a refused stage selection must not leave a half-built run behind.
+    ``--stages optimize`` on a donorless grid is refused in cmd_submit BEFORE
+    the run dir, resolved_config.yaml and scripts/ exist (rc 1, empty run
+    root, zero sbatch) -- the same pre-run-dir shape the --donor-run
+    certificate refusal has. A refusal that fired inside submit_jobs would
+    leave a stray timestamped run dir for list-runs and status to trip over."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "optimize",
+               "--submit"])
+
+    assert rc == 1
+    assert os.listdir(str(run_root)) == []
+    assert not os.path.exists(os.path.join(str(run_root), "runs"))
+    assert [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"] == []
+    assert "no donor" in capsys.readouterr().out
+
+
+def test_submit_relative_donor_run_resolves_against_checkout(
+        tmp_path, monkeypatch, capsys):
+    """O3: a relative ``--donor-run`` resolves against the checkout, the same
+    rule the grid path and ``--run-root`` follow (submit-anywhere). Resolving
+    it against the caller's CWD would build a donor map of nonexistent paths
+    that the login-node certificate check then refuses with a confusing
+    message."""
+    from xcquinox.pipeline.cluster.grid_config import load_grid_config
+
+    arch = "medium"  # _write_grid's single sweep arch
+    checkout = tmp_path / "fake_checkout"
+    donor_dir = checkout / "hpcjobs" / "donor_run" / "pretrain" / arch
+    donor_dir.mkdir(parents=True)
+    with open(donor_dir / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": arch}, f)
+
+    grid = _write_grid(tmp_path)  # absolute, outside the fake checkout
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(cli, "_repo_root", lambda: str(checkout))
+    fake = _fake_slurm(ids=["5000", "5001", "5002"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "optimize",
+               "--donor-run", "hpcjobs/donor_run", "--submit"])
+    assert rc == 0
+
+    runs = os.listdir(run_root / "runs")
+    assert len(runs) == 1
+    run_dir = str(run_root / "runs" / runs[0])
+    cfg = load_grid_config(os.path.join(run_dir, "resolved_config.yaml"))
+    assert cfg.pretrain.donor_checkpoints == {arch: str(donor_dir)}
+    out = capsys.readouterr().out
+    assert "resolved against the checkout" in out
+    assert not (elsewhere / "hpcjobs").exists(), \
+        "a checkout-relative donor run must not resolve against the CWD"
+
+
+def test_resubmit_preflight_recovers_the_pretrain_group_only(
+        tmp_path, monkeypatch, capsys):
+    """O2: ``resubmit-preflight`` on a pretrain-only run dir derives its stage
+    group from the recorded kinds, so recovery re-submits datagen + pretrain
+    and NEVER grows a preflight/train/eval graph the run never had. A dead
+    pretrain task is precisely the recovery case, and a recovery that queued
+    the full graph would train with no manifest from a preflight the operator
+    never asked this run to run."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm(ids=["3000", "3001", "3002", "3003"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "pretrain",
+               "--submit"])
+    assert rc == 0
+    run_dir = str(run_root / "runs" / os.listdir(run_root / "runs")[0])
+
+    rc = main(["resubmit-preflight", run_dir, "--submit"])
+    assert rc == 0
+
+    # The recovered graph is still the pretrain group: only datagen/pretrain
+    # records exist (old pair now superseded, new pair live), and exactly two
+    # new sbatch calls were made (plus the original two).
+    records = jt.read_job_records(run_dir)
+    kinds = {r["kind"] for r in records}
+    assert kinds == {"datagen", "pretrain"}
+    sbatch = [" ".join(c) for c in fake.calls
+              if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch) == 4
+    scancels = [c for c in fake.calls if os.path.basename(c[0]) == "scancel"]
+    assert scancels == [["scancel", "3000"], ["scancel", "3001"]]
+    out = capsys.readouterr().out
+    assert "pretrain stage group" in out
+
+
+def test_resubmit_preflight_recovers_the_optimize_group(tmp_path,
+                                                        monkeypatch,
+                                                        capsys):
+    """The other branch of the recovery-stage derivation: an optimize-only
+    run dir (no datagen/pretrain records -- every arch donor-backed) recovers
+    as optimize, re-submitting preflight -> train -> eval with preflight
+    dependency-free, never growing a datagen or pretrain stage the run never
+    had."""
+    arch = "medium"  # _write_grid's single sweep arch
+    donor_run = tmp_path / "pretrain_run"
+    donor_dir = donor_run / "pretrain" / arch
+    donor_dir.mkdir(parents=True)
+    with open(donor_dir / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": arch}, f)
+
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm(ids=["4000", "4001", "4002", "4003", "4004", "4005"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core", "--stages", "optimize",
+               "--donor-run", str(donor_run), "--submit"])
+    assert rc == 0
+    run_dir = str(run_root / "runs" / os.listdir(run_root / "runs")[0])
+
+    rc = main(["resubmit-preflight", run_dir, "--submit"])
+    assert rc == 0
+
+    records = jt.read_job_records(run_dir)
+    assert {r["kind"] for r in records} == {"preflight", "train", "eval"}
+    sbatch = [" ".join(c) for c in fake.calls
+              if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch) == 6                       # 3 first submission + 3 recovery
+    # The recovery re-submits preflight dependency-free (no datagen before it).
+    assert "--dependency" not in sbatch[3]
+    assert sbatch[3].endswith("preflight.sbatch")
+    # The old train and eval arrays are cancelled (preflight is a single job
+    # the recovery has never tracked for superseding).
+    scancels = [c for c in fake.calls if os.path.basename(c[0]) == "scancel"]
+    assert scancels == [["scancel", "4001"], ["scancel", "4002"]]
+    out = capsys.readouterr().out
+    assert "optimize stage group" in out

@@ -528,7 +528,9 @@ def main(argv=None) -> int:
     from xcquinox.pipeline.cluster.fidelity import (
         CERTIFICATE_FILENAME, VERDICT_FAIL, gate_certificate_from_read,
         read_certificate_status_in)
-    from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
+    from xcquinox.pipeline.cluster.grid_config import (
+        load_resolved_run_config, pretrain_checkpoint_dir,
+        pretrain_checkpoint_for)
     arch = _read_cell_arch(run_dir, idx)
     if arch is None:
         excerpt = (
@@ -550,8 +552,21 @@ def main(argv=None) -> int:
     # a PASS read by the classifier wrote ``certificate_status: "PASS"`` under
     # ``classification: fidelity_certificate_missing`` with an excerpt naming
     # the FAIL, which no single document produces.
-    status, reason, payload = read_certificate_status_in(
-        pretrain_checkpoint_dir(run_dir, arch))
+    # The checkpoint this spec actually loads: the config's DONOR for the arch
+    # when one is stated, the run's own pretrain product otherwise -- the one
+    # resolution rule every consumer shares. A run whose resolved config
+    # cannot be loaded keeps the run-local product: submit stages a config for
+    # every run, so that is the stripped-fixture case, and its certificate is
+    # where it has always been.
+    try:
+        run_cfg = load_resolved_run_config(run_dir)
+    except Exception:  # noqa: BLE001 -- a missing config falls back, below
+        run_cfg = None
+    pretrain_dir = (
+        pretrain_checkpoint_for(run_cfg, run_dir, arch)
+        if run_cfg is not None
+        else pretrain_checkpoint_dir(run_dir, arch))
+    status, reason, payload = read_certificate_status_in(pretrain_dir)
     allowed, message = gate_certificate_from_read(status, reason, payload)
     if not allowed:
         # The classification vocabulary has two values, so everything that is
@@ -573,7 +588,8 @@ def main(argv=None) -> int:
             "log_excerpt": message,
         })
         return 3
-    _log(idx, f"fidelity gate for arch {arch!r}: {message}")
+    _log(idx, f"fidelity gate for arch {arch!r}: {message} "
+              f"(checkpoint {pretrain_dir})")
 
     if not os.path.exists(spec_path):
         _log(idx, f"spec file not found: {spec_path}")

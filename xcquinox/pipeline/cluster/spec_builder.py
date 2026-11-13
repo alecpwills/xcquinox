@@ -48,11 +48,13 @@ import os
 import warnings
 
 from xcquinox.pipeline.config import (MoleculeSpec, TrainingSpec, TestSpec,
-                                  apply_model_block)
+                                  apply_run_config)
 from xcquinox.pipeline.training_points import (
+    DICK_ATOM_REGULARIZER_SYMS,
     species_union_from_points,
     _atom_anchor_atoms,
 )
+from xcquinox.pipeline.losses import LOSS_REGISTRY
 from xcquinox.pipeline.solver import SolverConfig, SolverMode, FeaturePolicy
 from xcquinox.pipeline import get_architecture
 
@@ -316,6 +318,10 @@ def _solver_config_from_named(named, *, density_fit: bool = False,
             else named.orientation_lock_strength),
         seed_source=seed_source,
         seed_cache_dir=seed_cache_dir,
+        # The executed protocol's degeneracy noise, stated per named solver.
+        # Default 0.0 / 0 leaves every pre-existing run byte-identical.
+        fock_noise_std=named.fock_noise_std,
+        fock_noise_seed=named.fock_noise_seed,
         **mixer_overrides,
     )
 
@@ -358,6 +364,90 @@ def _val_mol_spec_from_held_out(ms, *, basis, grid_level, val_refs_dir):
     )
 
 
+def _manifest_val_mol_spec(sp, *, basis, grid_level, val_refs_dir):
+    """Build a VALIDATION MoleculeSpec from one validation-manifest species row.
+
+    The manifest is the tracked ``pipeline/data/si_letter_validation.json``
+    form: each row names a ``si_letter@``-qualified species, carries its
+    charge/spin and states a geometry source. Three sources exist:
+
+    ``g2_xyz``   -- frame ``xyz_idx`` of the g2_97 trajectory (selected by
+                    INDEX, never by name: the SI's C2H2 is the traj's C2N2
+                    at 103, and the validation CH2 is the singlet at 105
+                    against the training triplet at 106).
+    ``unit_atom`` -- the neutral ground-state single atom of ``symbol``,
+                    the same builder the training anchors use.
+    ``bh76_pool`` -- a named held-out-pool species (the barrier rows),
+                    loaded through the pool seam (which keys species by
+                    their qualified pool@system name) and re-issued under
+                    the manifest's qualified name.
+
+    The manifest's charge/spin are authoritative (stamped over whatever the
+    source geometry carries), and ``external_data_path`` resolves to
+    ``<val_refs_dir>/<name>.npz`` WHEN that file exists -- the benchmark_refs
+    --manifest job writes the 8 AE compounds' CCSD density references there,
+    and the parity validation metric needs ``rho_ref_grid`` to score the
+    density term. A species whose reference has not been generated yet
+    attaches with ``None`` and simply drops out of the density term (the
+    metric averages over the reference-carrying species). This is the ONE
+    validation path where ``external_data_path`` may be non-None: the
+    held-out-pool mode scores energies only, while the Letter-parity arms
+    select their validation-best checkpoint on energies AND densities.
+    """
+    name = str(sp["name"])
+    charge = int(sp.get("charge", 0))
+    spin = int(sp.get("spin", 0))
+    # Nested "geometry" in the tracked manifest; a flat row (the dev-battery
+    # fixture form) reads the row itself.
+    geom = sp.get("geometry") or sp
+    source = str(geom.get("source", "")).strip()
+    if source == "bh76_pool":
+        pool = str(geom.get("pool", "bh76"))
+        pool_mols, _ = _load_full_held_out_pools(
+            (pool,), basis=basis, grid_level=grid_level)
+        # the seam keys every species as its qualified pool@system name;
+        # the manifest carries the bare system name
+        from xcquinox.pipeline.full_benchmark_pools import (
+            qualified_species_name)
+        key = qualified_species_name(pool, str(geom["species"]))
+        if key not in pool_mols:
+            raise ValueError(
+                f"validation-manifest species {name!r} names {pool!r}-pool "
+                f"system {key!r}, which the pool does not carry; the barrier "
+                "geometries must come from the tracked pool JSON")
+        ms = pool_mols[key]
+        ext = None
+        if val_refs_dir:
+            cand = os.path.join(str(val_refs_dir), f"{name}.npz")
+            ext = cand if os.path.isfile(cand) else None
+        return MoleculeSpec.from_dict(
+            name=name,
+            atom=ms.atom,
+            basis=basis,
+            charge=charge,
+            spin=spin,
+            atom_composition=dict(ms.atom_composition),
+            grid_level=grid_level,
+            external_data_path=ext,
+        )
+    if source == "g2_xyz":
+        from ase.io import read as _ase_read
+        from xcquinox.pipeline.dfs_pool import _g297_traj_path
+        at = _ase_read(str(_g297_traj_path()), index=int(geom["xyz_idx"]))
+    elif source == "unit_atom":
+        at = _atom_anchor_atoms(str(geom["symbol"]))
+    else:
+        raise ValueError(
+            f"validation-manifest species {name!r} states an unknown "
+            f"geometry source {source!r}; the manifest sources are g2_xyz, "
+            "unit_atom and bh76_pool")
+    at.info["charge"] = charge
+    at.info["spin"] = spin
+    return atoms_to_mol_spec(
+        at, basis=basis, grid_level=grid_level,
+        external_refs_dir=val_refs_dir, name=name)
+
+
 def _attach_validation_slice(spec, cfg, run_dir):
     """Attach the held-out VALIDATION slice (MoleculeSpecs + reactions path) to a
     TrainingSpec. WS3.
@@ -377,6 +467,27 @@ def _attach_validation_slice(spec, cfg, run_dir):
         return spec
 
     import json
+
+    # 2026-10-28, the Letter-parity arms: a validation manifest REPLACES the
+    # held-out-pool slice. The staged val_reactions.json already holds the
+    # manifest's reactions verbatim (inputs._stage_validation_slice); the
+    # validation molecules are the manifest's OWN species, not held-out pool
+    # species, so the held-out refusal below does not apply to them.
+    manifest_path = getattr(cfg.inputs, "validation_manifest", None)
+    if manifest_path:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        val_mols = tuple(
+            _manifest_val_mol_spec(
+                sp, basis=cfg.inputs.basis,
+                grid_level=cfg.inputs.grid_level,
+                val_refs_dir=val_refs_dir)
+            for sp in manifest["species"]
+        )
+        return dataclasses.replace(
+            spec, validation_molecules=val_mols,
+            validation_reactions_path=val_json)
+
     with open(val_json) as f:
         val_rxns = json.load(f)
     wanted = set()
@@ -440,7 +551,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
         ledger entry names a training point absent from the ``points`` pool.
     """
     from xcquinox.pipeline.cluster.grid_config import (
-        expand_grid, pretrain_checkpoint_dir,
+        expand_grid, pretrain_checkpoint_for,
     )
     from xcquinox.pipeline.balancing import GradNormConfig
 
@@ -621,19 +732,39 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             "density_per_electron": hp.density_per_electron,
         }
 
-        # Run-level spin-polarized-correlation toggle: rebuild the named arch
-        # spin-polarization-aware so training+eval use the zeta-dependent PW92c
-        # baseline. Default False -> the registry arch is used unchanged.
-        arch_cfg = get_architecture(cell.arch)
-        if getattr(cfg, "use_polarized_correlation", False):
-            arch_cfg = dataclasses.replace(arch_cfg, use_polarized_correlation=True)
-        # The run's model block -- the parent anchor and the descriptor
-        # coordinates -- through the one helper every resolver of a run's
-        # architecture uses (the pretrain stage, the certificate, the run
-        # validator), so the spec's arch is the identity those stages build.
-        model_block = getattr(cfg, "model", None)
-        if model_block is not None:
-            arch_cfg = apply_model_block(arch_cfg, model_block)
+        # L6 Letter-parity threading (a loss whose class emits the
+        # atomic-total channel): the anchor set widens to EVERY neutral
+        # single-atom symbol of the pool (the Letter anchors all atoms at
+        # lambda_E = 0.01, cations excluded exactly as the anchor groups
+        # exclude them), the SI sec. II atomic-density set rides as
+        # h_species, and the pool's radical hills train at the radical rho
+        # weight. Scoped to the marker so every other loss keeps its
+        # byte-identical kwargs.
+        if getattr(LOSS_REGISTRY.get(cell.loss),
+                   "emits_eatom_channel", False):
+            neutral_atom_syms = tuple(sorted({
+                next(iter(dict(ms.atom_composition)))
+                for ms in mol_specs
+                if sum(dict(ms.atom_composition).values()) == 1
+                and int(getattr(ms, "charge", 0)) == 0
+            }))
+            loss_kwargs.update({
+                "regularize_atom_syms": neutral_atom_syms,
+                "h_species": tuple(DICK_ATOM_REGULARIZER_SYMS),
+                "radical_species": tuple(sorted(
+                    tp.name for tp in chosen_points
+                    if bool(tp.metadata.get("radical", False)))),
+            })
+
+        # The run's configuration on the named arch -- the run-level
+        # spin-polarized-correlation toggle (the zeta-dependent PW92c baseline
+        # for training and evaluation; default False leaves the registry arch
+        # unchanged) and the model block (the parent anchor, the descriptor
+        # coordinates, the gate) -- through the one resolver every reader of
+        # a run's architecture uses (the pretrain stage, the certificate and
+        # its readers, the run validator), so the spec's arch is the identity
+        # those stages build.
+        arch_cfg = apply_run_config(get_architecture(cell.arch), cfg)
 
         spec = TrainingSpec.from_dicts(
             arch=arch_cfg,
@@ -645,12 +776,15 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             solver_config=solver_cfg,
             # The pretrain stage writes one checkpoint per architecture to the
             # run-scoped ``<run_dir>/pretrain/<arch>/``; that directory IS this
-            # cell's pretrained checkpoint. Derived through the SAME helper the
-            # pretrain worker uses so the two sides cannot drift. validate()
-            # only checks the path when the dir exists, so building specs before
-            # the pretrain stage runs is fine, the preflight runs
-            # pretrain-then-validate.
-            pretrain_checkpoint=pretrain_checkpoint_dir(run_dir, cell.arch),
+            # cell's pretrained checkpoint, unless the config states a DONOR
+            # for the arch (an earlier run's product this run warm-starts
+            # from instead of pretraining). Derived through the ONE resolution
+            # helper so every consumer -- the worker, the gates, the
+            # validator -- sees the same directory. validate() only checks the
+            # path when the dir exists, so building specs before the pretrain
+            # stage runs is fine, the preflight runs pretrain-then-validate.
+            pretrain_checkpoint=pretrain_checkpoint_for(cfg, run_dir,
+                                                       cell.arch),
             checkpoint_dir=_checkpoint_dir(run_dir, idx, n),
             n_steps=hp.n_steps,
             lr_start=hp.lr_start,
@@ -679,6 +813,10 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             validate_every=hp.validate_every,
             patience=hp.patience,
             early_stop_min_delta=hp.early_stop_min_delta,
+            # 2026-10-28, the Letter-parity arms: the density term of the
+            # in-loop validation metric (0.0 = plain reaction MAE, the
+            # behavior of every earlier run).
+            validation_density_weight=hp.validation_density_weight,
             # WS5 (2026-06-20): periodic-resume checkpoint cadence, threaded like
             # validate_every. checkpoint_every=0 (default) is a no-op.
             checkpoint_every=hp.checkpoint_every,

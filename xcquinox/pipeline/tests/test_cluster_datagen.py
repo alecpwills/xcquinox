@@ -97,6 +97,9 @@ def test_main_polarized_svp_covers_all_archs(monkeypatch, tmp_path):
     assert data_dir == "/d/svp"
     assert kw == {"basis": "def2-svp", "grid_level": 2, "density_fit": False,
                   "auxbasis": None, "polarized": True, "descriptors": True,
+                  # the stems the eight architectures read: the cusp pair
+                  # and the density-matrix statistics
+                  "descriptor_stems": ("cusp", "dm"),
                   # The run's own orientation lock is part of the data's
                   # identity and is always stated (see the lock tests below).
                   "orientation_lock_strength": 0.0}
@@ -214,5 +217,19 @@ def test_datagen_call_is_the_stage_call(monkeypatch, tmp_path):
     # run is polarized, so the sweep requires exactly one file.
     assert len(calls) == 1
     assert calls[0] == datagen_call(cfg, True, "scan")
+
+
+# ---------------------------------------------------------------------------
+# Donor warm-starts: a donor arch consumes no pretrain data in this run
+# ---------------------------------------------------------------------------
+
+def test_required_data_specs_skip_donor_archs():
+    """A donor arch's warm start is the donor's own product, so the stage must
+    not build a data file for it: an auto-parent sweep that mixes a meta-GGA
+    arch with a GGA arch needs both the SCAN and PBE files on its own, and
+    drops to the PBE file alone when its only meta-GGA arch is a donor."""
+    cfg = _cfg2(["deep_mgga_3x16", "deep"], True, parent_density="auto",
+                donor_checkpoints={"deep_mgga_3x16": "/gpfs/donors/mgga"})
+    assert _datagen._required_data_specs(cfg) == [(True, "pbe")]
 
 

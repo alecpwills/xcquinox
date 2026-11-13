@@ -115,6 +115,44 @@ def converged_solver_config(sc):
         scf_loss_use_tail=False)
 
 
+def readout_solver_config(sc, *, density_fit, auxbasis,
+                          orientation_lock_strength):
+    """The inline readout's Coulomb-footing override of a trained solver
+    config: density fitting, its auxbasis and the orientation-lock strength,
+    and NOTHING else (the converged protocol rides on top through
+    :func:`converged_solver_config`, whose replace set is disjoint from this
+    triple, so each cell is read out on the readout's own footing -- e.g.
+    slim16 at def2-TZVP/DF even when training ran def2-SVP -- while every
+    other trained knob is preserved). One shared helper for the orchestrator
+    and the shard workers (``--solver-footing``), like the channel overrides;
+    applied before the channel override so the composed end state stays the
+    footing triple + the converged protocol whichever side grows a field."""
+    import dataclasses
+
+    return dataclasses.replace(
+        sc, density_fit=bool(density_fit), auxbasis=auxbasis,
+        orientation_lock_strength=float(orientation_lock_strength))
+
+
+#: The DFS Letter's Eq. 21 regression constant (kcal/mol): the zero-intercept
+#: fit over the six non-empirical density functionals of its Table I, fixed
+#: by the published (WTMAD-2, eps, ED) triples -- PBE (10.5, 0.0100) -> 10.7,
+#: SCAN (8.0, 0.0062) -> 7.3, xc-diff (7.3, 0.0052) -> 6.4, each reproduced
+#: to one decimal by this constant.
+DFS_LETTER_GAMMA = 1084.87
+
+
+def dfs_letter_ed(wtmad2, eps):
+    """The Letter's Eq. 21 combined energy-density score: the harmonic mean
+    of WTMAD-2 (kcal/mol) and gamma * eps, so a model must be good at BOTH
+    energies and densities to score well. NaN for a non-finite or non-positive
+    input (an empty readout has no score, not a zero one)."""
+    if not (math.isfinite(wtmad2) and wtmad2 > 0
+            and math.isfinite(eps) and eps > 0):
+        return float("nan")
+    return float(2.0 / (1.0 / wtmad2 + 1.0 / (DFS_LETTER_GAMMA * eps)))
+
+
 # One table from an override name (``holdout_channels.CHANNEL_OVERRIDE``) to
 # its solver override, shared by the orchestrator, the shard workers and the
 # retroactive tool.
@@ -410,8 +448,11 @@ def weighted_reaction_mae_kcalmol(
 def paper_wtmad2(rows: Sequence[Dict[str, Any]]
                  ) -> Tuple[float, Dict[str, Dict[str, float]]]:
     """The WTMAD-2 of the cloning paper (arXiv:2605.10331, its
-    ``evaluation_functions.py``) over the reactions of a Slim set, against a
-    reference functional rather than the benchmark values.
+    ``evaluation_functions.py``) over the reactions of a Slim set, against
+    whatever ``de_ref`` the rows carry: the paper's reference functional, or
+    the benchmark values. The scale is the kept reactions' own mean absolute
+    reference, not the 56.84 kcal/mol of the GMTKN55 WTMAD-2, so the number
+    is the paper's form and not the published one.
 
     Per subset i of the set's own reactions: N_i reactions, MAD_i the mean
     of ``abs(de_ref - de_nn)`` and m_i the mean of ``abs(de_ref)``; the subset
@@ -470,7 +511,8 @@ _DENSITY_RECORD_KEYS: Tuple[str, ...] = (
 
 
 def density_errors_for_record(model, md: Dict[str, Any], *,
-                              solver_config=None) -> Dict[str, Any]:
+                              solver_config=None,
+                              keep_rho: bool = False) -> Dict[str, Any]:
     """NN-vs-CCSD and PBE-vs-CCSD density errors for one held-out species.
 
     Returns ``{density_rmse, density_l1, density_rmse_pbe, density_l1_pbe,
@@ -481,6 +523,14 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
     (``rho_ref_grid is None``; e.g. the species' ``external_data_path`` was
     unresolved), so runs without benchmark refs are byte-identical to the
     historical all-None schema.
+
+    ``keep_rho`` (the slim16 density saving) additionally runs the NN forward
+    for reference-less molecules and attaches the converged NN grid density
+    as ``"rho_nn_grid"`` (numpy array) so the caller can write it to disk;
+    the scalar columns of a reference-less record stay all-None, so the
+    JSON schema never changes shape. The array NEVER belongs in a JSON
+    payload: every caller that sets ``keep_rho`` pops the key and hands it
+    to :func:`dump_density_arrays`.
 
     The NN channel reuses :class:`~xcquinox.pipeline.evaluation.DensityRMSEMetric`
     (solver-aware; with a FULL/FIXED_J ``solver_config`` this re-runs the SCF
@@ -500,15 +550,23 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
     if sum(n for _, n in comp) == 1:
         return none_result                      # atoms: density matching skipped
     if md.get("rho_ref_grid") is None:
-        return none_result
+        if not keep_rho:
+            return none_result
+        import xcquinox.pipeline.evaluation as evaluation
+        nn = evaluation.DensityRMSEMetric().compute(
+            model, md, solver_config=solver_config, keep_rho=True)
+        out = dict(none_result)
+        if nn.get("rho_nn_grid") is not None:
+            out["rho_nn_grid"] = nn["rho_nn_grid"]
+        return out
     import xcquinox.pipeline.evaluation as evaluation
-    nn = evaluation.DensityRMSEMetric().compute(model, md,
-                                                solver_config=solver_config)
+    nn = evaluation.DensityRMSEMetric().compute(
+        model, md, solver_config=solver_config, keep_rho=keep_rho)
     rmse_pbe, l1_pbe = evaluation.pbe_density_errors(md)
     eps_pbe, _, _ = evaluation.pbe_density_eps(md)
     _, n_e, wsum = evaluation.density_eps_terms(
         md["rho_ref_grid"], md["rho_ref_grid"], md["grid_weights"])
-    return {
+    out = {
         "density_rmse": nn.get("density_rmse"),
         "density_l1": nn.get("density_l1"),
         "density_rmse_pbe": rmse_pbe,
@@ -520,6 +578,157 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
         "ref_density_method": nn.get("ref_density_method")
                               or md.get("ref_density_method"),
     }
+    if keep_rho and nn.get("rho_nn_grid") is not None:
+        out["rho_nn_grid"] = nn["rho_nn_grid"]
+    return out
+
+
+def dump_density_arrays(out_dir, name, md: Dict[str, Any], rho_nn) -> str:
+    """Write one species' converged NN + PBE grid densities to
+    ``<out_dir>/<name>.npz`` (the slim16 density saving, 2026-10-28).
+
+    Keys: ``rho_nn`` (the passed converged NN grid density), ``rho_pbe``
+    (``md['rho_pbe_ref_grid']``, the reference calculation's own PBE density,
+    when present -- else the locally recomputed ``md['rho_grid']``; the
+    fallback is what a species without benchmark refs has, and the file is
+    for later CCSD comparison), ``grid_weights``, ``n_electrons`` (from the
+    record; the quadrature integral of rho_pbe when absent), ``name`` and
+    ``ref_density_method`` (provenance). The arrays are ~0.5-2 MB per species
+    at grid 4, so this is opt-in from the eval driver (``--dump-densities``).
+    Returns the path written."""
+    import numpy as _np
+
+    rho_pbe = md.get("rho_pbe_ref_grid")
+    if rho_pbe is None:
+        rho_pbe = md.get("rho_grid")
+    w = _np.asarray(md["grid_weights"])
+    n_e = md.get("n_electrons")
+    if n_e is None and rho_pbe is not None:
+        n_e = float(_np.sum(w * _np.asarray(rho_pbe)))
+    os.makedirs(str(out_dir), exist_ok=True)
+    path = os.path.join(str(out_dir), f"{name}.npz")
+    _np.savez(
+        path,
+        rho_nn=_np.asarray(rho_nn),
+        rho_pbe=rho_pbe,
+        grid_weights=w,
+        n_electrons=n_e,
+        name=str(name),
+        ref_density_method=md.get("ref_density_method"),
+    )
+    return path
+
+
+def write_readout_metrics(out_dir, pool_reactions, *, pool, footing,
+                          channel, model) -> Optional[dict]:
+    """Recompute the readout's paper tables from the written channel
+    artifacts and stamp them beside the channel's own outputs.
+
+    Reads back ``<out_dir>/per_reaction.json`` + ``<out_dir>/per_molecule.json``
+    (the serial/parallel driver's tables; an absent or empty artifact yields
+    no score, not a zero one), joins each reaction's ``subset`` BY NAME from
+    ``pool_reactions`` (the per-reaction records carry no subset of their
+    own), and writes ``<out_dir>/readout_metrics.json`` with the paper
+    WTMAD-2 (NN and its de_pbe twin), the finite-only eps means, the Eq. 21
+    ED pair and the readout's own identity (footing/channel/model, so a
+    number can never be read without the footing that produced it). Also
+    appends ``test_set_<pool>_wtmad2_paper(_pbe)`` rows to
+    ``<out_dir>/test_set.csv`` in the existing schema so the readout's
+    headline rides with the channel's MAE rows. Returns the metrics dict."""
+    out_dir = Path(out_dir)
+
+    def _read_json(name):
+        p = out_dir / name
+        if not p.is_file():
+            return []
+        with open(p) as f:
+            return json.load(f)
+
+    rxn_records = _read_json("per_reaction.json")
+    mol_records = _read_json("per_molecule.json")
+    subset_by_name = {str(r["name"]): str(r["subset"])
+                      for r in pool_reactions
+                      if r.get("name") is not None
+                      and r.get("subset") is not None}
+
+    def _wtmad2_rows(nn_key):
+        rows = []
+        for rec in rxn_records:
+            subset = subset_by_name.get(str(rec.get("name")))
+            if subset is None:
+                continue
+            rows.append({"subset": subset,
+                         "de_nn": rec.get(nn_key),
+                         "de_ref": rec.get("reaction_energy_ref_kcalmol")})
+        return rows
+
+    wtmad2, per_subset = paper_wtmad2(_wtmad2_rows("de_nn_kcalmol"))
+    wtmad2_pbe, _ = paper_wtmad2(_wtmad2_rows("de_pbe_kcalmol"))
+    n_reactions = int(sum(t["N_i"] for t in per_subset.values()))
+
+    def _eps_mean(key):
+        vals = [r[key] for r in mol_records
+                if isinstance(r.get(key), (int, float))
+                and math.isfinite(r[key])]
+        return (float(sum(vals) / len(vals)) if vals else float("nan"))
+
+    eps_mean = _eps_mean("density_eps_l1")
+    eps_mean_pbe = _eps_mean("density_eps_l1_pbe")
+    metrics = {
+        "pool": pool,
+        "basis": footing.get("basis"),
+        "grid_level": footing.get("grid_level"),
+        "orientation_lock": footing.get("orientation_lock"),
+        "density_fit": footing.get("density_fit"),
+        "auxbasis": footing.get("auxbasis"),
+        "refs_dir": footing.get("refs_dir"),
+        "channel": channel,
+        "model": model,
+        "wtmad2_paper": wtmad2,
+        "wtmad2_paper_pbe": wtmad2_pbe,
+        "wtmad2_per_subset": per_subset,
+        "eps_l1_mean": eps_mean,
+        "eps_l1_mean_pbe": eps_mean_pbe,
+        "gamma": DFS_LETTER_GAMMA,
+        "ed": dfs_letter_ed(wtmad2, eps_mean),
+        "ed_pbe": dfs_letter_ed(wtmad2_pbe, eps_mean_pbe),
+        "n_species": len(mol_records),
+        "n_species_with_refs": sum(
+            1 for r in mol_records if r.get("ref_density_method")),
+        "n_reactions": n_reactions,
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "readout_metrics.json", "w") as f:
+        json.dump(metrics, f, indent=2, sort_keys=True)
+
+    csv_path = out_dir / "test_set.csv"
+    if csv_path.is_file() and math.isfinite(wtmad2):
+        # the schema write_test_set_csv pins; appended so the readout's
+        # headline rides with the channel's own MAE rows in one file
+        fieldnames = ["set", "mae_nn_kcalmol", "mae_pbe_kcalmol",
+                      "delta_nn_minus_pbe", "n_reactions",
+                      "n_dropped_overlap", "n_dropped_nan", "note"]
+        with csv_path.open("a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            for set_name, nn_v, pbe_v in (
+                    (f"{pool}_wtmad2_paper", wtmad2,
+                     wtmad2_pbe if math.isfinite(wtmad2_pbe) else float("nan")),
+                    (f"{pool}_wtmad2_paper_pbe",
+                     wtmad2_pbe, float("nan"))):
+                w.writerow({
+                    "set": set_name,
+                    "mae_nn_kcalmol": f"{nn_v:.6f}"
+                                      if math.isfinite(nn_v) else "",
+                    "mae_pbe_kcalmol": f"{pbe_v:.6f}"
+                                       if math.isfinite(pbe_v) else "",
+                    "delta_nn_minus_pbe": "",
+                    "n_reactions": n_reactions,
+                    "n_dropped_overlap": 0,
+                    "n_dropped_nan": 0,
+                    "note": ("paper WTMAD-2 of the inline readout; "
+                             "eps/ED in readout_metrics.json"),
+                })
+    return metrics
 
 
 def make_per_molecule_record(
@@ -618,6 +827,11 @@ def make_per_molecule_record(
     elif scf is not None:
         record["cycles_run"] = int(scf.get("cycles_run", 0))
         record["scf_converged"] = bool(scf.get("converged", False))
+        _ever = scf.get("converged_ever")
+        record["scf_converged_ever"] = None if _ever is None else bool(_ever)
+        _dmr = scf.get("dm_residual")
+        record["scf_dm_residual"] = (float(_dmr) if _dmr is not None
+                                     and math.isfinite(float(_dmr)) else None)
         e_final = scf.get("total_energy")
         if e_final is not None and math.isfinite(float(e_final)):
             record["scf_total_energy"] = float(e_final)
@@ -834,9 +1048,16 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
                 else:
                     e = e_final
                 if scf_info_out is not None:
+                    _ever = getattr(result, "converged_ever", None)
+                    _dmr = getattr(result, "dm_residual", None)
                     scf_info_out[name] = {
                         "cycles_run": int(getattr(result, "cycles_run", 0)),
+                        # converged at the last cycle; converged_ever: at any
+                        # cycle; dm_residual: the last cycle's max-abs
+                        # density-matrix change (None where not reported)
                         "converged": bool(getattr(result, "converged", False)),
+                        "converged_ever": None if _ever is None else bool(_ever),
+                        "dm_residual": None if _dmr is None else float(_dmr),
                         # raw final-cycle energy, kept for forensics ...
                         "total_energy": e_final,
                         # ... alongside the energy the metric actually used.
@@ -1252,6 +1473,7 @@ def run_full_holdout_eval(
     out_dir: Path,
     *,
     mol_data: Optional[Dict[str, Any]] = None,
+    dump_densities: Optional[str] = None,
 ) -> Dict[str, Any]:
     """End-to-end held-out eval driver, what the cluster eval task calls.
 
@@ -1282,7 +1504,8 @@ def run_full_holdout_eval(
     log line.
     """
     per = compute_holdout_per_molecule(
-        training_spec, model, mol_specs, mol_data=mol_data)
+        training_spec, model, mol_specs, mol_data=mol_data,
+        dump_densities=dump_densities)
     require_precomputed_species(per["mol_records"], mol_specs)
     return _finalize_holdout_outputs(
         reactions, per["energies"], per["pbe_energies"], per["mol_records"],
@@ -1290,7 +1513,8 @@ def run_full_holdout_eval(
 
 
 def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any],
-                                 *, mol_data: Optional[Dict[str, Any]] = None
+                                 *, mol_data: Optional[Dict[str, Any]] = None,
+                                 dump_densities: Optional[str] = None,
                                  ) -> Dict[str, Any]:
     """Per-molecule stage of the held-out eval (the parallelizable part).
 
@@ -1299,6 +1523,14 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
     is pure of reaction aggregation and file IO, so a sharded driver can call it
     on a SUBSET of ``mol_specs`` and merge the returned maps (the loops iterate
     the dict, so a shard is just a smaller ``mol_specs``).
+
+    ``dump_densities`` (a directory, the slim16 density saving) writes each
+    molecule's converged NN + PBE grid densities to
+    ``<dump_densities>/<name>.npz`` via :func:`dump_density_arrays` -- the
+    density record is computed with ``keep_rho=True``, the array is popped
+    before the record enters ``mol_records``, and atoms (no NN density
+    computed) are simply not dumped. None (default) leaves every output
+    byte-identical.
 
     Returns a dict with: ``energies`` (name -> E_nn), ``pbe_energies``
     (name -> E_pbe), ``scf_info`` (name -> SCF convergence dict), ``mol_records``
@@ -1350,13 +1582,23 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
     training_cf = {str(t).casefold() for t in flag_names}
     mol_records: List[Dict[str, Any]] = []
     for name in sorted(mol_data):
+        density = density_errors_for_record(
+            model, mol_data[name], solver_config=spec_solver_config,
+            keep_rho=bool(dump_densities))
+        if dump_densities:
+            # The array goes to its npz, never into the JSON record: pop it
+            # here so mol_records (and every shard payload merged from them)
+            # stay scalar-only whatever the caller does with the dump.
+            rho_arr = density.pop("rho_nn_grid", None)
+            if rho_arr is not None:
+                dump_density_arrays(dump_densities, name, mol_data[name],
+                                    rho_arr)
         mol_records.append(make_per_molecule_record(
             name, mol_data[name], energies.get(name, float("nan")),
             in_training_subset=(str(name).casefold() in training_cf),
             scf=scf_info.get(name),
             # all-None without benchmark CCSD refs (rho_ref_grid is None then)
-            density=density_errors_for_record(
-                model, mol_data[name], solver_config=spec_solver_config),
+            density=density,
         ))
 
     return {

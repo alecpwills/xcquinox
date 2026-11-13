@@ -20,7 +20,8 @@ import traceback
 
 def compute_shard(run_dir, spec_idx, names, basis, grid_level,
                   model_name="model.eqx",
-                  channel=None, pools=("bh76", "w411")):
+                  channel=None, pools=("bh76", "w411"),
+                  dump_densities=None, solver_footing=None):
     """Evaluate ``names`` (a held-out molecule subset) for spec ``spec_idx`` of
     ``run_dir``. Returns ``{energies, pbe_energies, mol_records}``. ``pools``
     names the held-out pools whose union the shard's species are drawn from.
@@ -33,7 +34,11 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
     so a best-checkpoint pass shards the BEST weights, not the final ones.
     ``channel`` (``"coldstart"`` / ``"converged"`` / None) applies the named
     solver override from ``eval_holdout.CHANNEL_OVERRIDES`` to the reloaded
-    spec, the same helper the orchestrator applied before dispatch."""
+    spec, the same helper the orchestrator applied before dispatch.
+    ``dump_densities`` (a directory, the slim16 density saving) is threaded to
+    ``compute_holdout_per_molecule``: each molecule's converged NN + PBE grid
+    densities land in ``<dump_densities>/<name>.npz`` IN THIS PROCESS; the
+    arrays never enter the JSON payload the parent merges."""
     from pathlib import Path
 
     from xcquinox.pipeline.cluster._eval_one_spec import (
@@ -50,6 +55,24 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
     model_path = os.path.join(checkpoint_dir, model_name)
 
     training_spec = _load_spec(spec_path)
+    if solver_footing:
+        # The inline readout's Coulomb footing, threaded as a JSON string on
+        # the command line (a dict when called in process) because the shard
+        # reloads the TRAINING spec. Applied BEFORE the channel override
+        # below: the two replace sets are disjoint (the footing triple vs
+        # the converged protocol), so the order is byte-equivalent as the
+        # code stands -- footing-first is the guard against the channel
+        # override ever growing a footing field.
+        import dataclasses
+
+        from xcquinox.pipeline.eval_holdout import readout_solver_config
+        footing_kwargs = (json.loads(solver_footing)
+                          if isinstance(solver_footing, str)
+                          else dict(solver_footing))
+        training_spec = dataclasses.replace(
+            training_spec,
+            solver_config=readout_solver_config(
+                training_spec.solver_config, **footing_kwargs))
     if channel:
         # Shard subprocesses reload the spec themselves, so the orchestrator's
         # in-memory override cannot reach them; apply the SAME shared helper.
@@ -77,7 +100,8 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
             "driver disagree about the pool")
     subset = {n: full_specs[n] for n in names}
 
-    per = compute_holdout_per_molecule(training_spec, model, subset)
+    per = compute_holdout_per_molecule(training_spec, model, subset,
+                                       dump_densities=dump_densities)
     return {
         "energies": per["energies"],
         "pbe_energies": per["pbe_energies"],
@@ -113,6 +137,17 @@ def main(args=None):
                         help="comma-separated held-out pools whose union the "
                              "shard's species come from (default: the "
                              "benchmark pair)")
+    parser.add_argument("--dump-densities", default=None, metavar="DIR",
+                        help="write each molecule's converged NN + PBE grid "
+                             "densities to <DIR>/<name>.npz in-process (the "
+                             "slim16 density saving); the JSON payload stays "
+                             "scalar-only")
+    parser.add_argument("--solver-footing", default=None, metavar="JSON",
+                        help="the inline readout's Coulomb footing as JSON "
+                             "({density_fit, auxbasis, "
+                             "orientation_lock_strength}); applied to the "
+                             "reloaded spec's solver BEFORE the channel "
+                             "override (eval_holdout.readout_solver_config)")
     parsed = parser.parse_args(args)
     channel = parsed.channel or ("coldstart" if parsed.coldstart else None)
     pools = tuple(p.strip() for p in parsed.pools.split(",") if p.strip())
@@ -171,7 +206,9 @@ def main(args=None):
         shard = compute_shard(parsed.run_dir, parsed.spec_idx, names,
                               parsed.basis, parsed.grid_level,
                               model_name=parsed.model_name,
-                              channel=channel, pools=pools)
+                              channel=channel, pools=pools,
+                              dump_densities=parsed.dump_densities,
+                              solver_footing=parsed.solver_footing)
         with open(parsed.out_shard, "w") as f:
             json.dump(shard, f)
 

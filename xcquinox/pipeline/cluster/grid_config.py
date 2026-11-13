@@ -127,6 +127,13 @@ class SolverNamed:
     # ``inputs.orientation_lock_strength`` whenever a run supplies one, so the
     # run-level knob -- not this one -- is what a production sweep locks with.
     orientation_lock_strength: float = 0.0
+    # 2026-10-28: the executed protocol's degeneracy noise (SolverConfig
+    # .fock_noise_std / .fock_noise_seed): symmetrized half-normal noise on
+    # the assembled Fock, applied on the differentiable path only. 0.0 (the
+    # default) leaves every existing solver byte-identical; the v9
+    # Letter-parity solvers set 1e-5 (the vendored torch_routines.py value).
+    fock_noise_std: float = 0.0
+    fock_noise_seed: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +208,13 @@ class HyperParams:
     # Off by default: byte-identical to every existing sweep.
     respect_sc_flag: bool = False
     nonsc_weight: float = 1.0
+    # 2026-10-28, the Letter-parity arms: the density term of the in-loop
+    # validation metric. When > 0 and validation molecules carry rho_ref_grid,
+    # the metric is MAE(reactions) + sqrt(this) * mean relative density
+    # deviation over the reference-carrying species (the executed protocol's
+    # selection loss). Default 0.0 keeps every existing sweep's metric at the
+    # plain reaction MAE. Threaded onto TrainingSpec.validation_density_weight.
+    validation_density_weight: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +292,14 @@ class InputPaths:
     # validation-best selection. Mirrors ``benchmark_refs_dir``. None (default)
     # = no in-loop validation precompute.
     val_refs_dir: str | None = None
+    # 2026-10-28, the Letter-parity arms: a tracked validation manifest
+    # (pipeline/data/si_letter_validation.json form -- species with geometry
+    # sources, reactions with refs) REPLACES the held-out-pool split as the
+    # in-loop validation set. When set, the staged val_reactions.json is the
+    # manifest's reactions verbatim and the validation molecules are the
+    # manifest's species at the run footing; ``val_refs_dir`` then holds their
+    # density references. None (default) = the WS3 held-out-pool slice.
+    validation_manifest: str | None = None
     # Per-rung SCF seeding (2026-08-14). "pbe" (default) keeps every arch on
     # the converged-PBE seed -- byte-identical to the pre-seeding protocol,
     # and deliberately NOT "auto": an auto default would silently convert a
@@ -504,6 +526,17 @@ class PretrainConfig:
     # are not carried.
     points_per_system: int = 800
     sampling_seed: int = 0
+    # Optimization warm-starts from SPECIFIED pretrained networks:
+    # canonical arch name -> ABSOLUTE donor checkpoint directory (an earlier
+    # run's ``pretrain/<arch>/``, carrying xnet.eqx/cnet.eqx and its own
+    # certificate). An arch with a donor never pretrains in this run -- the
+    # pretrain array, the datagen requirements and every certificate read
+    # skip it, and each of its train specs warm-starts from the donor
+    # (``pretrain_checkpoint_for``). A key outside the sweep's archs and a
+    # relative value are refused at validation; existence is advisory, as for
+    # data_dir, because a /gpfs donor is not visible on the workstation and a
+    # missing donor is already loud at the fidelity gate.
+    donor_checkpoints: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +704,39 @@ class GridConfig:
     # DIIS, max_cycles=100, conv_tol=1e-8; mode stays FULL). Default False ->
     # byte-identical (the channel set as before).
     eval_converged: bool = False
+    # ``eval_pool`` (2026-10-29): when set, each spec's inline eval becomes a
+    # READOUT -- the named held-out pool evaluated at its own Coulomb footing
+    # under the converged channel only, in exactly two passes (the final
+    # checkpoint into eval_holdout_converged and, when it exists, the
+    # validation-best one into eval_holdout_converged_val_best). The other
+    # eval_* knobs state that footing; each None falls back to the knob's
+    # training twin (inputs.basis / inputs.grid_level / inputs.density_fit,
+    # and default_auxbasis(eval_basis) for the auxbasis under DF).
+    # eval_orientation_lock has NO fallback: readout mode states the lock
+    # once, beside the reference job's, so a training 3e-5 lock can never be
+    # silently inherited by an unlocked readout. eval_coldstart/eval_converged
+    # are inert in readout mode (the readout replaces the whole channel set).
+    # Default None -> the inline eval exactly as before.
+    eval_pool: str | None = None
+    eval_basis: str | None = None
+    eval_grid_level: int | None = None
+    eval_orientation_lock: float | None = None
+    # tri-state: None inherits inputs.density_fit; DF is stated explicitly by
+    # a readout because def2-TZVP without DF materializes a >200 GB ERI.
+    eval_density_fit: bool | None = None
+    eval_auxbasis: str | None = None
+    # the directory of precomputed CCSD reference densities the readout
+    # consumes (benchmark_refs --out-dir); the loud refs guard refuses a
+    # pass whose species lack a complete, footing-matching npz there.
+    eval_refs_dir: str | None = None
+    # waives the PREFLIGHT's readout-refs completeness gate: a non-empty
+    # string records why the run may start against a dir that is incomplete
+    # at submit time (e.g. a rebuild job that completes before the eval
+    # stage runs). The eval-time guard is NOT waived -- a run that reaches
+    # eval still refuses an incomplete dir on the node, so a broken promise
+    # fails loudly instead of yielding a silently reduced readout.
+    eval_refs_override_reason: str | None = None
+    eval_dump_densities: bool = False
     # Pretraining-fidelity certificate tolerances. Optional in the YAML: a
     # config written before the certificate existed loads at the binding
     # 1.0 kcal/mol / 1.0 mHa defaults rather than at no tolerance.
@@ -679,6 +745,48 @@ class GridConfig:
     # Optional in the YAML: a config written before the anchor existed loads
     # as the unanchored, legacy-coordinate class it was written for.
     model: ModelConfig = field(default_factory=ModelConfig)
+
+
+def _validate_eval_readout(cfg: GridConfig) -> None:
+    """Refuse a half-stated inline-readout block at load time.
+
+    A readout is stated by ``eval_pool`` alone; the block is validated here
+    so a mis-stated one fails at submit (and in every re-read of
+    resolved_config.yaml) instead of surfacing as a silently different
+    eval on the cluster:
+
+      - the pool must be a registered held-out pool;
+      - with no pool, any OTHER ``eval_*`` knob is dead text an operator may
+        edit to no effect -- refused, exactly like a duplicated bh76_mode;
+      - with a pool, ``eval_orientation_lock`` is REQUIRED and >= 0: the
+        readout lock has no fallback (a training 3e-5 lock silently inherited
+        by an unlocked readout is a wrong-physics result, not a default).
+    """
+    if cfg.eval_pool is None:
+        stray = sorted(
+            name for name in ("eval_basis", "eval_grid_level",
+                              "eval_orientation_lock", "eval_density_fit",
+                              "eval_auxbasis", "eval_refs_dir",
+                              "eval_refs_override_reason",
+                              "eval_dump_densities")
+            if getattr(cfg, name) not in (None, False))
+        if stray:
+            raise ValueError(
+                f"grid config carries {', '.join(stray)} without eval_pool: "
+                "the eval_* readout knobs are dead text unless eval_pool "
+                "names the pool the readout evaluates. State eval_pool or "
+                "remove them.")
+        return
+    if cfg.eval_pool not in _HELD_OUT_POOLS:
+        raise ValueError(
+            f"eval_pool {cfg.eval_pool!r} is not a held-out pool; the "
+            f"registered pools are {', '.join(_HELD_OUT_POOLS)}")
+    if cfg.eval_orientation_lock is None or cfg.eval_orientation_lock < 0:
+        raise ValueError(
+            "eval_orientation_lock is required in readout mode (eval_pool "
+            f"is {cfg.eval_pool!r}) and must be a float >= 0: the readout "
+            "lock is stated once, beside the reference job's, and never "
+            "inherited from the training configuration")
 
 
 # ---------------------------------------------------------------------------
@@ -1082,6 +1190,8 @@ def _build_solvers(d: dict) -> dict[str, SolverNamed]:
             freeze_on_convergence=bool(sd.get("freeze_on_convergence", True)),
             orientation_lock_strength=float(
                 sd.get("orientation_lock_strength", 0.0)),
+            fock_noise_std=float(sd.get("fock_noise_std", 0.0)),
+            fock_noise_seed=int(sd.get("fock_noise_seed", 0)),
         )
     return out
 
@@ -1117,6 +1227,8 @@ def _build_hyperparams(d: dict) -> HyperParams:
         seed_mix_atomic=bool(d.get("seed_mix_atomic", False)),
         respect_sc_flag=bool(d.get("respect_sc_flag", False)),
         nonsc_weight=float(d.get("nonsc_weight", 1.0)),
+        validation_density_weight=float(
+            d.get("validation_density_weight", 0.0)),
     )
 
 
@@ -1239,6 +1351,7 @@ def _build_inputs(d: dict) -> InputPaths:
         irreproducible_degenerate_reason=reason,
         benchmark_refs_dir=d.get("benchmark_refs_dir"),
         val_refs_dir=d.get("val_refs_dir"),
+        validation_manifest=d.get("validation_manifest"),
         seed_xc=seed_xc,
         seed_cache_dir=d.get("seed_cache_dir"),
         held_out_pools=pools,
@@ -1411,6 +1524,32 @@ def _build_pretrain_from(raw: dict, *, source=None) -> PretrainConfig:
     return cfg
 
 
+def _parse_donor_checkpoints(raw):
+    """The donor mapping as written, shape-checked and key-sorted.
+
+    Only the SHAPE is checked here (a mapping of strings to strings); the
+    key's membership in the sweep and the value's absoluteness are semantic
+    checks :func:`validate_grid_semantics` makes, where every other
+    cross-field rule of the config lives.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "grid config key 'pretrain.donor_checkpoints' must be a mapping "
+            "of architecture name -> absolute donor checkpoint directory, "
+            f"got {type(raw).__name__}")
+    out = {}
+    for arch, path in raw.items():
+        if not isinstance(arch, str) or not isinstance(path, str):
+            raise ValueError(
+                "grid config key 'pretrain.donor_checkpoints' must map "
+                "architecture names to absolute donor checkpoint directory "
+                f"strings; got {arch!r} -> {path!r}")
+        out[arch] = path
+    return dict(sorted(out.items()))
+
+
 def _build_pretrain(d: dict) -> PretrainConfig:
     ctx = "pretrain"
     _reject_unknown_keys(d, PretrainConfig, ctx,
@@ -1481,6 +1620,8 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         sampling_seed=_config_number(d, "sampling_seed", 0, whole=True,
                                      minimum=0, maximum=_MAX_SEED),
         slim_set=_pretrain_choice(d, "slim_set", "", _SLIM_SETS),
+        donor_checkpoints=_parse_donor_checkpoints(
+            d.get("donor_checkpoints")),
     )
     # The decay window is [lr_decay_start, lr_decay_end]; an end before the
     # start is not a schedule and is refused at load rather than at the node.
@@ -1956,7 +2097,10 @@ def load_grid_config(path: str) -> GridConfig:
     _reject_unknown_keys(raw, GridConfig, "<root>",
                          retired=_RETIRED_ROOT_KEYS)
 
-    return GridConfig(
+    # tri-state DF: None (unset, inherits inputs.density_fit) vs an explicit
+    # boolean, so bool() is applied only when the key was actually stated.
+    _eval_df = raw.get("eval_density_fit")
+    cfg = GridConfig(
         sweep=_build_sweep(_require(raw, "sweep", "<root>")),
         solvers=_build_solvers(_require(raw, "solvers", "<root>")),
         hyperparams=_build_hyperparams(_require(raw, "hyperparams", "<root>")),
@@ -1973,9 +2117,23 @@ def load_grid_config(path: str) -> GridConfig:
         inline_eval=bool(raw.get("inline_eval", False)),
         eval_coldstart=bool(raw.get("eval_coldstart", False)),
         eval_converged=bool(raw.get("eval_converged", False)),
+        eval_pool=raw.get("eval_pool"),
+        eval_basis=raw.get("eval_basis"),
+        eval_grid_level=(int(raw["eval_grid_level"])
+                         if raw.get("eval_grid_level") is not None else None),
+        eval_orientation_lock=(
+            float(raw["eval_orientation_lock"])
+            if raw.get("eval_orientation_lock") is not None else None),
+        eval_density_fit=(None if _eval_df is None else bool(_eval_df)),
+        eval_auxbasis=raw.get("eval_auxbasis"),
+        eval_refs_dir=raw.get("eval_refs_dir"),
+        eval_refs_override_reason=raw.get("eval_refs_override_reason"),
+        eval_dump_densities=bool(raw.get("eval_dump_densities", False)),
         fidelity=_build_fidelity(raw.get("fidelity")),
         model=_build_model_block(raw.get("model")),
     )
+    _validate_eval_readout(cfg)
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -2140,6 +2298,34 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                 f"sweep arch {a!r} is the shown name of the registry key "
                 f"{stored_key(a)!r}; configuration files name the registry key")
 
+    # --- donor warm-starts ---------------------------------------------------
+    # A donor key outside the sweep's canonical arch set is a typo: the arch
+    # would silently pretrain run-locally while the file reads as though it
+    # warm-started, which is the exact failure this check exists to catch.
+    donors = getattr(cfg.pretrain, "donor_checkpoints", None) or {}
+    swept = set(_canon_axis(cfg.sweep.arch))
+    for arch, path in donors.items():
+        if arch not in swept:
+            raise ValueError(
+                f"pretrain.donor_checkpoints names arch {arch!r}, which the "
+                f"sweep does not carry; the sweep is {sorted(swept)}. A key "
+                "outside the sweep warm-starts nothing and pretrains nothing")
+        if not os.path.isabs(path):
+            raise ValueError(
+                f"pretrain.donor_checkpoints[{arch!r}] must be an absolute "
+                f"donor checkpoint directory, got {path!r}; like "
+                "pretrain.data_dir it names a shared-filesystem path the "
+                "node stages read")
+        # Existence is advisory (a /gpfs donor is not visible on the
+        # workstation); a missing donor is already loud at the fidelity gate.
+        if not os.path.isdir(path):
+            warnings.warn(
+                f"pretrain.donor_checkpoints[{arch!r}] {path!r} not found on "
+                "the login node, this is advisory; the fidelity gate is "
+                "authoritative for the donor's certificate",
+                stacklevel=2,
+            )
+
     # --- the model block --------------------------------------------------
     # The parent anchor is a property of the model class the run builds, so
     # it is checked against every architecture the run resolves, at submit:
@@ -2164,6 +2350,19 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                     "formed against; a zeta-blind network disagrees with them "
                     "by 14.9 mHa on the N atom). Set "
                     "use_polarized_correlation: true at the run level.")
+    # The block is applied to every swept architecture here, at submit, so a
+    # combination the architecture refuses (a registry entry that requires
+    # the x2 gate under a block resolving the gate to tanh2) fails on the
+    # login node rather than in the pretrain worker on a compute node.
+    if model_block is not None:
+        from xcquinox.pipeline.config import apply_model_block
+        for a in _canon_axis(cfg.sweep.arch):
+            try:
+                apply_model_block(get_architecture(a), model_block)
+            except ValueError as exc:
+                raise ValueError(
+                    f"the model block cannot be applied to architecture "
+                    f"{a!r}: {exc}") from None
     run_coords = str(getattr(model_block, "descriptor_coordinates", "legacy"))
     if model_block is not None and (
             run_coords in ("dfs", "paper")
@@ -2666,3 +2865,62 @@ def pretrain_checkpoint_dir(run_dir: str, arch: str) -> str:
     all derive the path through THIS function so they cannot drift.
     """
     return os.path.join(os.path.abspath(run_dir), "pretrain", arch)
+
+
+def pretrain_stage_archs(cfg) -> list:
+    """The canonical archs the pretrain STAGE still runs for.
+
+    The sweep's deduplicated, sorted arch axis (``_canon_axis``, the exact
+    order ``expand_grid`` applies) with every DONOR arch removed: a donor
+    arch's warm start is the donor's own product, so this run neither
+    pretrains it nor builds its pretrain data. ``submit`` sizes the pretrain
+    array with this list and ``_pretrain._distinct_archs`` maps the array
+    index through it, so both sides see the same list in the same order.
+    """
+    donors = getattr(cfg.pretrain, "donor_checkpoints", None) or {}
+    return [a for a in _canon_axis(cfg.sweep.arch) if a not in donors]
+
+
+def pretrain_checkpoint_for(cfg, run_dir: str, arch: str) -> str:
+    """The one resolution rule every consumer shares: the donor stated for
+    ``arch``, else the run's own pretrain product.
+
+    ``spec_builder`` (the spec's warm start), the on-node and preflight
+    certificate gates, ``validate_run``'s certificate loop and the status
+    tally all resolve through this, so a donor arch is gated, validated and
+    reported on its DONOR rather than on a product this run never writes.
+    The fidelity module's own (run_dir, arch)-keyed bookkeeping (regate,
+    certificate paths) stays run-local by design: a donor is another run's
+    product and is not regated from this one.
+    """
+    donors = getattr(cfg.pretrain, "donor_checkpoints", None) or {}
+    donor = donors.get(arch)
+    if donor:
+        return donor
+    return pretrain_checkpoint_dir(run_dir, arch)
+
+
+#: The two spellings a run's resolved config can carry, in resolution order:
+#: a YAML-configured run writes the .yaml, a JSON-configured one (the
+#: ``_pretrain`` dispatch) writes the .json.
+_RESOLVED_CONFIG_NAMES = ("resolved_config.yaml", "resolved_config.json")
+
+
+def load_resolved_run_config(run_dir: str):
+    """Load a run's resolved config from whichever spelling it wrote.
+
+    A YAML-configured run writes ``resolved_config.yaml``; a JSON-configured
+    one (the ``_pretrain`` dispatch) writes ``resolved_config.json``. The
+    consumers that re-read the run's config on the node -- the train task's
+    fidelity gate, the status tally, the record layer -- accept both through
+    this one loader and are loud when neither exists, rather than silently
+    gating the run-local directory of a run that never wrote a config.
+    """
+    for name in _RESOLVED_CONFIG_NAMES:
+        path = os.path.join(run_dir, name)
+        if os.path.isfile(path):
+            return load_grid_config(path)
+    raise FileNotFoundError(
+        f"no resolved config under {run_dir!r}: expected one of "
+        f"{', '.join(_RESOLVED_CONFIG_NAMES)} (written by submit for every "
+        "run it stages)")

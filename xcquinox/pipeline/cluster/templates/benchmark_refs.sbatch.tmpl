@@ -6,6 +6,9 @@ ${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --output=${RUN_DIR}/logs/benchmark_refs_%j.out
 ${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
 set -euo pipefail
+# The node stages run at the checkout: sbatch's default working directory is
+# the submit directory, so a submit from elsewhere must not shift it.
+cd "${REPO_ROOT}"
 
 # --- conda activation ------------------------------------------------------
 ${CONDA_ACTIVATION}
@@ -27,13 +30,41 @@ export MKL_NUM_THREADS="$$PYSCF_THREADS"
 export OPENBLAS_NUM_THREADS="$$PYSCF_THREADS"
 echo "[thread-caps] allocation=$${SLURM_CPUS_PER_TASK:-unset} -> OMP/MKL/OPENBLAS=$$PYSCF_THREADS"
 
+# --- pyscf scratch off the node ---------------------------------------------
+# UCCSD on a DF mean field builds its four-center + DIIS scratch (187.6 GB
+# modeled for one open-shell 16-atom species) into PYSCF_TMPDIR, which defaults to
+# /tmp on the node -- cgroup-charged, and what killed two whole-node refs
+# jobs at rc 137. The run's own gpfs tree instead; a SIGKILL orphans it
+# inside the run dir.
+mkdir -p "${RUN_DIR}/pyscf_tmp"
+export PYSCF_TMPDIR="${RUN_DIR}/pyscf_tmp"
+
 # --- hold-out benchmark reference densities (single job, resumable) ---------
 # CCSD + PBE densities for the species of the held-out pools the run names
 # (no OEP stage), capped at the configured species size when one is stated;
 # every species' final npz is atomic + skip-if-complete, so a timeout/requeue
 # simply resumes. Starts once the train array has BEGUN (--dependency=after).
-python -m xcquinox.pipeline.benchmark_refs \
-  --out-dir "${BENCH_REFS_DIR}" \
-  --pool ${BENCH_POOLS} \
-  --basis "${BASIS}" \
-  --grid-level ${GRID_LEVEL}${BENCH_DF_FLAGS}
+# A species that KILLS its process is deferred to the end of the next
+# attempt's queue (its _inflight marker is the death certificate), and this
+# bounded retry then banks every other species before re-entering it.
+ATTEMPTS=3
+rc=1
+attempt=0
+while [ "$$attempt" -lt "$$ATTEMPTS" ]; do
+  attempt=$$((attempt + 1))
+  rc=0
+  python -m xcquinox.pipeline.benchmark_refs \
+    --out-dir "${BENCH_REFS_DIR}" \
+    --pool ${BENCH_POOLS} \
+    --basis "${BASIS}" \
+    --grid-level ${GRID_LEVEL}${BENCH_DF_FLAGS} || rc=$$?
+  n_ok=$$(ls "${BENCH_REFS_DIR}" 2>/dev/null | grep -c '\.npz$$' || true)
+  echo "[benchmark-refs] attempt $${attempt}/$${ATTEMPTS} rc=$${rc} complete npz=$${n_ok}"
+  if [ "$$rc" -eq 0 ]; then break; fi
+done
+if [ "$$rc" -ne 0 ]; then
+  echo "[benchmark-refs] FAILED rc=$${rc} after $${attempt} attempt(s)"
+  rm -rf "${RUN_DIR}/pyscf_tmp"
+  exit "$$rc"
+fi
+rm -rf "${RUN_DIR}/pyscf_tmp"

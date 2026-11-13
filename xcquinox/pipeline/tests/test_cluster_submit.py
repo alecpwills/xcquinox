@@ -416,6 +416,28 @@ def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Submit from any directory: the node stages run at the checkout
+# ---------------------------------------------------------------------------
+
+def test_submit_anywhere_rendered_scripts_cd_to_the_checkout(
+        tmp_path, monkeypatch):
+    """Every rendered script pins its working directory to the checkout, so
+    the node stages never inherit the submit-time CWD (sbatch's default
+    working directory is the submission directory)."""
+    from xcquinox.pipeline.cluster import submit as submit_mod
+    checkout = tmp_path / "fake_checkout"
+    (checkout / "hpcjobs").mkdir(parents=True)
+    (checkout / "pyproject.toml").write_text("# fake checkout\n", encoding="utf-8")
+    monkeypatch.setattr(submit_mod, "_repo_root", lambda: str(checkout))
+    cfg = _make_cfg(tmp_path)
+    for kind, kw in (("datagen", {}), ("pretrain", {"array_max": 0}),
+                     ("preflight", {}), ("train", {"array_max": 39}),
+                     ("eval", {"array_max": 39})):
+        text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
+        assert f'cd "{checkout}"' in text, kind
+
+
+# ---------------------------------------------------------------------------
 # Train worker is exec'd so it receives the SLURM B:TERM grace signal
 # ---------------------------------------------------------------------------
 
@@ -430,3 +452,245 @@ def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Donor warm-starts: the pretrain stage covers only the archs without one
+# --------------------------------------------------------------------------- #
+
+def _donor_cfg(tmp_path, archs, donors):
+    """A config whose sweep carries ``archs`` and whose pretrain section
+    states ``donors`` (arch -> absolute donor dir)."""
+    d = _base_config_dict()
+    d["sweep"]["arch"] = archs
+    d["pretrain"]["donor_checkpoints"] = donors
+    p = tmp_path / f"grid_donor_{len(archs)}_{len(donors)}.json"
+    p.write_text(json.dumps(d))
+    return load_grid_config(str(p))
+
+
+def test_all_donor_run_omits_the_pretrain_stage(tmp_path, monkeypatch):
+    """Donors for every arch -> no pretrain job at all: no script written,
+    no sbatch, no jobs.json record, preflight hangs off datagen alone and
+    train off preflight alone. The dry-run record states pretrain_array_max
+    None rather than an array range nothing backs."""
+    cfg = _donor_cfg(tmp_path, ["medium"],
+                     {"medium": "/gpfs/donors/run_1/pretrain/medium"})
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory(ids=["6000", "6001", "6002", "6003"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=True)
+
+    assert result["n_archs"] == 1
+    assert result["pretrain_array_max"] is None
+    assert "pretrain" not in result["job_ids"]
+    assert not os.path.exists(os.path.join(run_dir, "scripts",
+                                           "pretrain.sbatch"))
+    kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
+    assert kinds == ["datagen", "eval", "preflight", "train"]
+    sbatch_calls = [" ".join(c) for c in fake.calls
+                    if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch_calls) == 4
+    assert "--dependency" not in sbatch_calls[0]      # datagen
+    assert "--dependency=afterok:6000" in sbatch_calls[1]   # preflight
+    assert "--dependency=afterok:6001" in sbatch_calls[2]   # train: no pretrain id
+    assert "--dependency=aftercorr:6002" in sbatch_calls[3]  # eval
+    cmds = open(os.path.join(run_dir, "submit_commands.txt")).read()
+    assert "pretrain.sbatch" not in cmds
+
+
+def test_partial_donor_run_shrinks_the_pretrain_array(tmp_path, monkeypatch):
+    """Donors for SOME archs -> the pretrain array covers only the rest, in
+    the canonical order, while n_archs still counts the sweep's distinct
+    archs (the donor arch trains too, it just never pretrains here)."""
+    cfg = _donor_cfg(
+        tmp_path, ["medium", "deep_3x16"],
+        {"medium": "/gpfs/donors/run_1/pretrain/medium"})
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=False)
+
+    assert result["n_archs"] == 2
+    assert result["pretrain_array_max"] == 0   # deep_3x16 alone remains
+    pretrain_text = open(os.path.join(run_dir, "scripts",
+                                      "pretrain.sbatch")).read()
+    assert "--array=0-0%" in pretrain_text
+
+
+# --------------------------------------------------------------------------- #
+# Stage-selective submission: stages="pretrain" / stages="optimize"
+# --------------------------------------------------------------------------- #
+
+def test_stages_pretrain_submits_only_datagen_and_pretrain(tmp_path,
+                                                           monkeypatch):
+    """``stages="pretrain"`` renders and submits ONLY the datagen -> pretrain
+    prefix of the graph. Oracle: the sbatch call sequence, jobs.json, the
+    scripts/ directory listing and submit_commands.txt -- an unselected stage
+    left as a script, a cmds line or a record would read downstream as a
+    stage that failed rather than one that was never requested."""
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory(ids=["8000", "8001"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=True, stages="pretrain")
+
+    sbatch_calls = [" ".join(c) for c in fake.calls
+                    if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch_calls) == 2
+    # datagen first, no dependency; pretrain afterok on the datagen id.
+    assert "--dependency" not in sbatch_calls[0]
+    assert sbatch_calls[0].endswith("datagen.sbatch")
+    assert "--dependency=afterok:8000" in sbatch_calls[1]
+    assert sbatch_calls[1].endswith("pretrain.sbatch")
+    # jobs.json records exactly the two submitted stages, in submit order.
+    kinds = [r["kind"] for r in jt.read_job_records(run_dir)]
+    assert kinds == ["datagen", "pretrain"]
+    assert set(result["job_ids"]) == {"datagen", "pretrain"}
+    assert set(result["scripts"]) == {"datagen", "pretrain"}
+    # scripts/ carries ONLY the selected stages' scripts (the base config
+    # has no benchmark_refs and no defer/inline, so nothing else may appear).
+    assert sorted(os.listdir(os.path.join(run_dir, "scripts"))) == [
+        "datagen.sbatch", "pretrain.sbatch"]
+    cmds = open(os.path.join(run_dir, "submit_commands.txt")).read()
+    for absent in ("preflight.sbatch", "train_array.sbatch",
+                   "eval_array.sbatch"):
+        assert absent not in cmds
+
+
+def test_stages_pretrain_refused_when_nothing_to_pretrain(tmp_path,
+                                                          monkeypatch):
+    """G2: a pretrain-only submission of a config whose every arch has a
+    donor has no pretrain stage to run; the refusal names the state rather
+    than submitting a datagen job that generates nothing and a pretrain
+    array no arch backs. The guard must fire before any sbatch."""
+    cfg = _donor_cfg(tmp_path, ["medium"],
+                     {"medium": "/gpfs/donors/run_1/pretrain/medium"})
+    fake = _fake_slurm_factory()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    with pytest.raises(ValueError, match="nothing to pretrain"):
+        submit_jobs(cfg, str(tmp_path / "run"), submit=True, stages="pretrain")
+
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("eval_kw", [{"defer_eval": True},
+                                     {"inline_eval": True}])
+def test_stages_pretrain_refuses_defer_and_inline_eval(tmp_path, monkeypatch,
+                                                       eval_kw):
+    """G3: defer_eval and inline_eval both configure how the EVAL stage is
+    submitted; a pretrain-only run has no eval stage to shape, so an EXPLICIT
+    choice is refused rather than silently ignored (an operator reading the
+    flag back out of the shell history would believe eval is arranged)."""
+    cfg = _make_cfg(tmp_path)
+    fake = _fake_slurm_factory()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    with pytest.raises(ValueError, match="eval"):
+        submit_jobs(cfg, str(tmp_path / "run"), stages="pretrain", **eval_kw)
+
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "switch", [pytest.param({"inline_eval": True}, id="inline"),
+               pytest.param({"defer_eval": True}, id="defer")])
+def test_stages_pretrain_ignores_config_borne_eval_switches(tmp_path,
+                                                            monkeypatch,
+                                                            switch):
+    """The arm configs carry top-level eval-mode switches for their
+    OPTIMIZATION runs (``inline_eval: true``; ``defer_eval`` the same shape);
+    their pretraining still submits pretrain-only from the same file. The
+    config-borne switch is inert in a group with no eval stage for BOTH
+    modes: no eval_launcher script, no eval entry in result["scripts"], no
+    manual_eval_command, and the result's defer_eval/inline_eval fields report
+    what THIS submission did (False). Only an explicit defer/inline CHOICE is
+    refused -- reading the config here would block the primary use case."""
+    d = _base_config_dict()
+    d.update(switch)
+    p = tmp_path / f"grid_{'_'.join(sorted(switch))}.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory(ids=["8100", "8101"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=True, stages="pretrain")
+
+    kinds = [r["kind"] for r in jt.read_job_records(run_dir)]
+    assert kinds == ["datagen", "pretrain"]
+    assert set(result["job_ids"]) == {"datagen", "pretrain"}
+    assert set(result["scripts"]) == {"datagen", "pretrain"}
+    assert sorted(os.listdir(os.path.join(run_dir, "scripts"))) == [
+        "datagen.sbatch", "pretrain.sbatch"]
+    assert result["defer_eval"] is False
+    assert result["inline_eval"] is False
+    assert "manual_eval_command" not in result
+
+
+def test_stages_optimize_submits_preflight_train_eval_only(tmp_path,
+                                                           monkeypatch):
+    """``stages="optimize"`` renders and submits ONLY preflight -> train ->
+    eval, re-rooted on preflight: with every arch donated, no pretrain data
+    is this run's to generate, so datagen is skipped and preflight carries
+    NO dependency; train is afterok on preflight alone; eval aftercorr on
+    train. Oracle: the sbatch sequence, jobs.json kinds and the scripts/
+    listing -- a datagen or pretrain artifact left behind would read as a
+    dependency this graph does not have."""
+    cfg = _donor_cfg(tmp_path, ["medium"],
+                     {"medium": "/gpfs/donors/run_1/pretrain/medium"})
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory(ids=["7000", "7001", "7002"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=True, stages="optimize")
+
+    sbatch_calls = [" ".join(c) for c in fake.calls
+                    if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch_calls) == 3
+    assert "--dependency" not in sbatch_calls[0]
+    assert sbatch_calls[0].endswith("preflight.sbatch")
+    assert "--dependency=afterok:7000" in sbatch_calls[1]
+    assert sbatch_calls[1].endswith("train_array.sbatch")
+    assert "--dependency=aftercorr:7001" in sbatch_calls[2]
+    assert sbatch_calls[2].endswith("eval_array.sbatch")
+    kinds = [r["kind"] for r in jt.read_job_records(run_dir)]
+    assert kinds == ["preflight", "train", "eval"]
+    assert set(result["job_ids"]) == {"preflight", "train", "eval"}
+    scripts = os.listdir(os.path.join(run_dir, "scripts"))
+    assert "datagen.sbatch" not in scripts
+    assert "pretrain.sbatch" not in scripts
+
+
+def test_stages_optimize_refused_when_any_arch_lacks_donor(tmp_path,
+                                                           monkeypatch):
+    """G4: an optimize-only run trains every arch warm-started from a donor
+    checkpoint (it never pretrains), so an arch without a donor would train
+    from a checkpoint that does not exist. The refusal must NAME the
+    uncovered archs; the guard fires before any sbatch."""
+    cfg = _donor_cfg(
+        tmp_path, ["medium", "deep_3x16"],
+        {"medium": "/gpfs/donors/run_1/pretrain/medium"})
+    fake = _fake_slurm_factory()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    with pytest.raises(ValueError, match="deep_3x16"):
+        submit_jobs(cfg, str(tmp_path / "run"), submit=True, stages="optimize")
+
+    assert fake.calls == []
+
+
+def test_submit_jobs_rejects_unknown_stages_value(tmp_path, monkeypatch):
+    """G1: an unrecognized ``stages`` value is a typo that must not fall back
+    to the full graph (a mistyped mode word would submit a whole campaign);
+    it is refused before any script is rendered or sbatch called."""
+    cfg = _make_cfg(tmp_path)
+    fake = _fake_slurm_factory()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    with pytest.raises(ValueError, match="stages"):
+        submit_jobs(cfg, str(tmp_path / "run"), stages="everything")
+
+    assert fake.calls == []

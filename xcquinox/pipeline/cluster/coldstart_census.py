@@ -37,8 +37,8 @@ import time
 import numpy as np
 
 #: The keys every row carries.
-ROW_KEYS = ("name", "converged", "cycles_run", "total_energy", "finite",
-            "last_delta_e", "energy_trace", "wall_s")
+ROW_KEYS = ("name", "converged", "converged_ever", "dm_residual", "cycles_run",
+            "total_energy", "finite", "last_delta_e", "energy_trace", "wall_s")
 
 
 def census_solver_config(sc):
@@ -88,9 +88,17 @@ def _row(name, result, wall_s):
     last = (abs(trace[-1] - trace[-2])
             if len(trace) >= 2 and trace[-1] is not None
             and trace[-2] is not None else None)
+    # converged: at the last cycle; converged_ever: the criterion fired at
+    # some cycle (they differ when every cycle runs and the energy moves
+    # again after converging); dm_residual: the last cycle's max-abs
+    # density-matrix change. None where the backend reports neither.
+    ever = getattr(result, "converged_ever", None)
+    dm_res = getattr(result, "dm_residual", None)
     return {
         "name": str(name),
         "converged": bool(result.converged),
+        "converged_ever": None if ever is None else bool(ever),
+        "dm_residual": None if dm_res is None else _finite(dm_res),
         "cycles_run": int(result.cycles_run),
         "total_energy": energy,
         "finite": energy is not None and all(x is not None for x in trace),
@@ -140,12 +148,23 @@ def census_rows(spec, model=None):
 
 
 def _cell(spec_path, spec, rows=None, error=None):
+    """One cell of the census: the architecture, the spec, the counts, the
+    rows, and the solver's tolerance, budget and whether it froze on
+    convergence, which say what a row's ``cycles_run`` means (a solver that
+    does not freeze runs its whole budget on every species)."""
     rows = list(rows or [])
+    try:
+        sc = _solver_config_of(spec)
+    except Exception:  # noqa: BLE001 -- a cell is recorded whatever its spec lacks
+        sc = getattr(spec, "solver_config", None)
     return {
         "arch": spec.arch.name,
         "spec_path": spec_path,
         "n_species": len(spec.molecules),
         "n_converged": sum(1 for r in rows if r["converged"]),
+        "conv_tol": getattr(sc, "conv_tol", None),
+        "max_cycles": getattr(sc, "max_cycles", None),
+        "freeze_on_convergence": getattr(sc, "freeze_on_convergence", None),
         "error": error,
         "rows": rows,
     }

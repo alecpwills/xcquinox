@@ -124,6 +124,7 @@ import jax
 import jax.numpy as jnp
 
 from xcquinox.pipeline.config import ArchitectureConfig
+from xcquinox.pipeline.gradient_expansion import MU_GE, PBE_BETA, PBE_MU
 from xcquinox.utils import pw92c_polarized_scalar
 
 #: Parent functionals an architecture can be anchored to, by rung.
@@ -135,8 +136,8 @@ PARENTS = ("pbe", "scan")
 # relative off it, and the paper's mu = 0.21951 is 2.3e-5 off beta pi^2 / 3,
 # which puts F_x 2.6e-6 relative off libxc at s = 1 (measured).
 PBE_KAPPA = 0.804
-PBE_BETA = 0.06672455060314922
-PBE_MU = PBE_BETA * math.pi ** 2 / 3.0          # 0.2195149727645171
+# PBE_BETA and PBE_MU (beta pi^2 / 3 = 0.2195149727645171) are defined in
+# gradient_expansion.py and imported above.
 PBE_GAMMA = (1.0 - math.log(2.0)) / math.pi ** 2  # 0.031090690869654901
 
 #: libxc's zeta_threshold: ``1 -+ zeta`` is floored here before a fractional
@@ -164,7 +165,14 @@ def _floor_as_libxc(x, threshold):
     a floored channel (its expression is differentiated at the clamped
     density). Below the threshold the function is therefore evaluated at the
     threshold and its derivative there is returned, finite, rather than the
-    zero a plain clamp would give."""
+    zero a plain clamp would give.
+
+    The returned derivative is a SURROGATE: the derivative of the unclamped
+    expression evaluated at the clamped point (libxc's reporting convention),
+    not the derivative of the clamped value, which is zero below the bound.
+    A finite difference of the clamped function therefore does not reproduce
+    it below the threshold: the value is flat there while the surrogate is
+    not."""
     return x + jax.lax.stop_gradient(jnp.maximum(x, threshold) - x)
 
 # --- PW92 on libxc's LDA_C_PW_MOD parameters --------------------------------
@@ -277,7 +285,8 @@ def pbe_fc(rho, sigma, zeta):
 # Sun, Ruzsinszky and Perdew, Phys. Rev. Lett. 115, 036402 (2015), eqs. 2-4
 # and the supplemental material, at the values of libxc 7.0.0 (maple sources
 # named in the module docstring). Exchange: eqs. S6-S13 of the supplement.
-MU_GE = 10.0 / 81.0                    # second-order gradient expansion
+# MU_GE, the second-order gradient expansion 10/81, is defined in
+# gradient_expansion.py and imported above.
 SCAN_K1 = 0.065
 SCAN_H0X = 1.174                       # h_x^0, the exchange ceiling
 SCAN_A1 = 4.9479
@@ -331,7 +340,12 @@ def _clip_as_libxc(x, lo=None, hi=None):
     """``x`` held to ``[lo, hi]`` in value with the derivative taken at the
     clipped point and passed through unscaled (:func:`_floor_as_libxc` with
     an upper bound as well), which is how libxc reports its potentials for a
-    sanitized input."""
+    sanitized input.
+
+    As there, the returned derivative is a SURROGATE: the derivative of the
+    unclamped expression at the clipped point, not the derivative of the
+    clipped value, which is zero outside ``[lo, hi]``. A finite difference of
+    the clipped function does not reproduce it below ``lo`` or above ``hi``."""
     y = x
     if lo is not None:
         y = jnp.maximum(y, lo)

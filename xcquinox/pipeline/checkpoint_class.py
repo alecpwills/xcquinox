@@ -55,6 +55,37 @@ Payload, in the vocabulary of the records it sits beside
                                       as "tanh2"
     descriptor_log_transform   bool   the class, compared by the readers WHEN
                                       THE RECORD STATES IT (below)
+    gea_mu                     float  the class, compared by the readers; the
+                                      gradient-expansion coefficient the
+                                      exchange curvature is fixed at, null
+                                      for a network without the term, and a
+                                      record that states nothing states null
+    activation                 str    the class: the MLP activation of both
+                                      networks ("gelu" or "sine")
+    omega_0                    float  the class: the sine network's frequency
+    fourier_features           int    the class: m, the size of the Fourier
+                                      map in front of both MLPs (0: no map)
+    fourier_scale              float  the class: sigma of the map's draws
+    fourier_seed               int    the class: the draw of the map
+    fourier_digest             str    the class: the digest of the frequency
+                                      matrices the networks hold, which follow
+                                      the resolved architecture (the
+                                      coordinate set, the transform, the
+                                      polarization); null without a map
+    network                    str    the class: the network behind the front
+                                      end, "mlp" or "kan" (a Kolmogorov-Arnold
+                                      network of B-spline edge functions on
+                                      fixed grids, xcquinox.pipeline.kan)
+    kan_grid                   int    the class: the spline grid's intervals
+                                      per edge, 0 for the MLP
+    kan_order                  int    the class: the spline degree, 0 for the
+                                      MLP
+    kan_digest                 str    the class: the digest of every layer's
+                                      bounds (the knots), which follow the
+                                      resolved architecture as the Fourier
+                                      digest does; null for the MLP. A record
+                                      that states none of these ten states
+                                      the library MLP (DEFAULT_MLP)
     arch_name                  str    provenance
     meta_gga                   bool   provenance (ArchitectureConfig.is_meta_gga)
     use_polarized_correlation  bool   provenance (a shape-CHANGING flag, which
@@ -169,6 +200,156 @@ LOG_TRANSFORM_FIELD = "descriptor_log_transform"
 #: as ``tanh2``, the gate every model before the field carried; a static field
 #: of both networks that changes no parameter shape.
 UEG_GATE_FIELD = "ueg_gate"
+
+#: The record field naming the gradient-expansion coefficient the exchange
+#: network's curvature is fixed at (``ArchitectureConfig.gea_mu``, resolved
+#: to a number), ``None`` for a network without the term. A record that
+#: states nothing states ``None``: no record written before the field can
+#: describe a network with the term, and the term changes no parameter
+#: shape, so a skeleton carrying it refuses such a record while the plain
+#: class accepts it (the uniform-gas gate's rule, not the log transform's).
+GEA_MU_FIELD = "gea_mu"
+
+#: The record fields naming the front end of both networks
+#: (``ArchitectureConfig.activation``, ``omega_0``, ``fourier_features``,
+#: ``fourier_scale``, ``fourier_seed``, and ``fourier_digest``, the digest of
+#: the Fourier matrices the networks carry; ``network``, ``kan_grid``,
+#: ``kan_order`` and ``kan_digest``, the digest of the spline grids' bounds),
+#: each a top-level field of the record like the gate. A record that states
+#: none of them states the library MLP (:data:`DEFAULT_MLP`): every record
+#: written before the fields described one, and the front end changes the
+#: function (the map and the spline network also the shapes), so a skeleton
+#: carrying another refuses such a record.
+MLP_FIELDS = ("activation", "omega_0", "fourier_features", "fourier_scale",
+              "fourier_seed", "fourier_digest", "network", "kan_grid",
+              "kan_order", "kan_digest")
+DEFAULT_MLP = {"activation": "gelu", "omega_0": 1.0, "fourier_features": 0,
+               "fourier_scale": 1.0, "fourier_seed": 0, "fourier_digest": None,
+               "network": "mlp", "kan_grid": 0, "kan_order": 0,
+               "kan_digest": None}
+
+
+def normalize_mlp(mapping) -> dict:
+    """The ten front-end fields read off ``mapping`` (a record, a metadata
+    file, a certificate, a class dict, or ``None``) with their types, the
+    defaults for what is absent."""
+    value = mapping if isinstance(mapping, dict) else {}
+    out = {
+        "activation": str(value.get("activation", DEFAULT_MLP["activation"])),
+        "omega_0": float(value.get("omega_0", DEFAULT_MLP["omega_0"])),
+        "fourier_features": int(value.get("fourier_features", 0)),
+        "fourier_scale": float(value.get("fourier_scale", 1.0)),
+        "fourier_seed": int(value.get("fourier_seed", 0)),
+    }
+    digest = value.get("fourier_digest")
+    out["fourier_digest"] = None if digest is None else str(digest)
+    out["network"] = str(value.get("network", DEFAULT_MLP["network"]))
+    out["kan_grid"] = int(value.get("kan_grid", 0))
+    out["kan_order"] = int(value.get("kan_order", 0))
+    digest = value.get("kan_digest")
+    out["kan_digest"] = None if digest is None else str(digest)
+    return out
+
+
+def mlp_class_of(arch) -> dict:
+    """The ten front-end fields ``arch`` (an ``ArchitectureConfig``) states,
+    the digest of its Fourier matrices and the digest of its spline grids'
+    bounds computed from the resolved fields alone (:mod:`fourier_features`,
+    :mod:`kan`); the defaults for an architecture from before the fields."""
+    from xcquinox.pipeline import fourier_features as ff
+    m = int(getattr(arch, "fourier_features", 0) or 0)
+    scale = float(getattr(arch, "fourier_scale", 1.0))
+    seed = int(getattr(arch, "fourier_seed", 0))
+    network = str(getattr(arch, "network", "mlp"))
+    coordinates = str(getattr(arch, "descriptor_coordinates", "legacy"))
+    log_transform = bool(getattr(arch, LOG_TRANSFORM_FIELD, False))
+    polarized = bool(getattr(arch, "use_polarized_correlation", False))
+    kan_digest = None
+    if network == "kan":
+        from xcquinox.pipeline import kan
+        try:
+            kan_digest = kan.digest_for(
+                network, coordinates, log_transform, polarized,
+                tuple(getattr(arch, "extra_feature_bounds", ())),
+                int(getattr(arch, "depth")), int(getattr(arch, "nodes")))
+        except ValueError as exc:
+            raise UnresolvableFrontEnd("kan_digest", str(exc)) from exc
+    fourier_digest = None
+    if m:
+        try:
+            fourier_digest = ff.digest_for(
+                m, scale, seed, tuple(getattr(arch, "extra_feature_ranges", ())),
+                coordinates, log_transform, polarized)
+        except ValueError as exc:
+            raise UnresolvableFrontEnd("fourier_digest", str(exc)) from exc
+    return normalize_mlp({
+        "activation": getattr(arch, "activation", "gelu"),
+        "omega_0": getattr(arch, "omega_0", 1.0),
+        "fourier_features": m, "fourier_scale": scale, "fourier_seed": seed,
+        "fourier_digest": fourier_digest,
+        "network": network,
+        "kan_grid": getattr(arch, "kan_grid", 0),
+        "kan_order": getattr(arch, "kan_order", 0),
+        "kan_digest": kan_digest,
+    })
+
+
+class UnresolvableFrontEnd(ValueError):
+    """A front-end digest that cannot be computed for the resolved
+    architecture: the Fourier map or the spline grids on a row that cannot
+    carry them (an unpolarized correlation network on the paper coordinates,
+    the legacy coordinates without the log transform). ``field`` names the
+    digest, so a reader reports the refusal under the right name."""
+
+    def __init__(self, field: str, message: str):
+        super().__init__(message)
+        self.field = field
+
+
+def mlp_mismatches(got, want) -> list:
+    """``[(field, recorded, wanted), ...]`` over the ten front-end fields of
+    two normalized readings, in the fields' order."""
+    return [(key, got[key], want[key]) for key in MLP_FIELDS
+            if got[key] != want[key]]
+
+
+def _spline_layer_bounds(net):
+    """The bounds of every layer of a network's spline network, in order;
+    ``None`` for an MLP."""
+    inner = getattr(net, "net", None)
+    layers = getattr(inner, "layers", None) or ()
+    bounds = [getattr(layer, "bounds", None) for layer in layers]
+    if not bounds or any(b is None for b in bounds):
+        return None
+    return tuple(bounds)
+
+
+def mlp_class_of_model(model) -> dict:
+    """The front end a BUILT model carries, read off its two networks' static
+    fields, the matrices they hold and the grids their splines sit on."""
+    from xcquinox.pipeline import fourier_features as ff
+    xnet = getattr(model, "xnet", None)
+    cnet = getattr(model, "cnet", None)
+    network = str(getattr(xnet, "network", "mlp"))
+    kan_digest = None
+    if network == "kan":
+        from xcquinox.pipeline import kan
+        xb = _spline_layer_bounds(xnet)
+        cb = _spline_layer_bounds(cnet)
+        kan_digest = kan.digest(*xb, *cb) if xb and cb else None
+    return normalize_mlp({
+        "activation": getattr(xnet, "activation", "gelu"),
+        "omega_0": getattr(xnet, "omega_0", 1.0),
+        "fourier_features": getattr(xnet, "fourier_features", 0),
+        "fourier_scale": getattr(xnet, "fourier_scale", 1.0),
+        "fourier_seed": getattr(xnet, "fourier_seed", 0),
+        "fourier_digest": ff.digest(getattr(xnet, "fourier_b", None),
+                                    getattr(cnet, "fourier_b", None)),
+        "network": network,
+        "kan_grid": getattr(xnet, "kan_grid", 0),
+        "kan_order": getattr(xnet, "kan_order", 0),
+        "kan_digest": kan_digest,
+    })
 
 
 class ModelClassMismatch(ValueError):
@@ -388,7 +569,15 @@ def model_class_of_arch(arch) -> dict:
         UEG_GATE_FIELD: str(getattr(arch, UEG_GATE_FIELD, "tanh2")),
         LOG_TRANSFORM_FIELD: bool(
             getattr(arch, LOG_TRANSFORM_FIELD, False)),
+        GEA_MU_FIELD: _gea_value(getattr(arch, "resolved_gea_mu", None)),
+        **mlp_class_of(arch),
     }
+
+
+def _gea_value(value):
+    """``value`` as the record states a gradient-expansion coefficient: a
+    float, or ``None`` for a network without the term."""
+    return None if value is None else float(value)
 
 
 def model_class_of_model(model) -> dict:
@@ -410,13 +599,17 @@ def model_class_of_model(model) -> dict:
         UEG_GATE_FIELD: str(getattr(xnet, UEG_GATE_FIELD, "tanh2")),
         LOG_TRANSFORM_FIELD: bool(
             getattr(xnet, LOG_TRANSFORM_FIELD, False)),
+        GEA_MU_FIELD: _gea_value(getattr(xnet, GEA_MU_FIELD, None)),
+        **mlp_class_of_model(model),
     }
 
 
 def is_legacy_class(model_class) -> bool:
     """Whether ``model_class`` is the unanchored legacy class.
 
-    The anchor, the coordinates and the uniform-gas gate. The descriptor log
+    The anchor, the coordinates, the uniform-gas gate, no gradient-expansion
+    term and the library MLP front end (every record before those fields
+    described them). The descriptor log
     transform is deliberately no part of this: what it decides is whether a
     checkpoint with NO record beside it may be read, and the campaigns that
     left those checkpoints set the transform on most of their architectures,
@@ -426,21 +619,29 @@ def is_legacy_class(model_class) -> bool:
     """
     return (not model_class["parent_anchor"]
             and model_class["descriptor_coordinates"] == "legacy"
-            and model_class.get(UEG_GATE_FIELD, "tanh2") == "tanh2")
+            and model_class.get(UEG_GATE_FIELD, "tanh2") == "tanh2"
+            and model_class.get(GEA_MU_FIELD) is None
+            and normalize_mlp(model_class) == DEFAULT_MLP)
 
 
 def describe_class(model_class) -> str:
     """One line naming a class, in the loaders' shared vocabulary.
 
-    The three fields every record states (the gate read at its default where
-    a record predates it). The descriptor log transform is not named here
-    because it is compared only where the record carries it, and its refusal
+    The fields every record states (the gate read at its default where a
+    record predates it; the gradient-expansion coefficient read as none
+    there). The descriptor log transform is not named here because it is
+    compared only where the record carries it, and its refusal
     (:func:`require_matching_log_transform`) names both values itself.
     """
+    mlp = normalize_mlp(model_class)
+    front = "" if mlp == DEFAULT_MLP else "".join(
+        f", {key}={mlp[key]!r}" for key in MLP_FIELDS
+        if mlp[key] != DEFAULT_MLP[key])
     return (f"parent_anchor={model_class['parent_anchor']}, "
             f"descriptor_coordinates="
             f"{model_class['descriptor_coordinates']!r}, "
-            f"ueg_gate={model_class.get(UEG_GATE_FIELD, 'tanh2')!r}")
+            f"ueg_gate={model_class.get(UEG_GATE_FIELD, 'tanh2')!r}, "
+            f"gea_mu={model_class.get(GEA_MU_FIELD)!r}{front}")
 
 
 def class_record(arch, *, sha256, size) -> dict:
@@ -714,10 +915,11 @@ def require_matching_class(checkpoint_path, want_class, *,
 
     ``want_class`` is the class of the skeleton about to be filled, from
     :func:`model_class_of_arch` (a spec's arch) or
-    :func:`model_class_of_model` (a built skeleton). Returns the three fields
-    every record states (the gate at its default where a record predates it)
-    -- :data:`LEGACY_CLASS` when there is no record -- so a caller can log
-    what it accepted.
+    :func:`model_class_of_model` (a built skeleton). Returns the class fields
+    the record states (the gate at its default and the gradient-expansion
+    coefficient as none where a record predates them) --
+    :data:`LEGACY_CLASS` when there is no record -- so a caller can log what
+    it accepted.
 
     The record is held to the ``.eqx`` on disk BEFORE the classes are
     compared (:func:`require_matching_digest`): a record that does not
@@ -756,9 +958,18 @@ def require_matching_class(checkpoint_path, want_class, *,
         # A record written before the gate existed states nothing and is
         # read at the gate every model before the field carried.
         UEG_GATE_FIELD: str(record.get(UEG_GATE_FIELD, "tanh2")),
+        # A record that states no coefficient states a network without the
+        # term (GEA_MU_FIELD); one that states no front end states the
+        # library MLP (MLP_FIELDS).
+        GEA_MU_FIELD: _gea_value(record.get(GEA_MU_FIELD)),
+        **normalize_mlp(record),
     }
-    if got_class != {key: want_class.get(key, LEGACY_CLASS[key])
-                     for key in got_class}:
+    want = {key: want_class.get(key, LEGACY_CLASS[key])
+            for key in got_class
+            if key != GEA_MU_FIELD and key not in MLP_FIELDS}
+    want[GEA_MU_FIELD] = _gea_value(want_class.get(GEA_MU_FIELD))
+    want.update(normalize_mlp(want_class))
+    if got_class != want:
         raise ModelClassMismatch(
             f"refusing to load the {what} {path!r}: it was written as "
             f"{describe_class(got_class)}, but the model being built is "

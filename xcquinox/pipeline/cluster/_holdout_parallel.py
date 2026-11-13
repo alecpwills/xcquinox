@@ -61,6 +61,7 @@ def run_holdout_with_escalation(
     run_dir, spec_idx, training_spec, model, reactions, full_specs, out_dir, *,
     basis, grid_level, n_workers_top, total_cpus,
     model_name="model.eqx", channel=None, pools=("bh76", "w411"),
+    dump_densities=None, solver_footing=None,
 ):
     """Run the held-out eval in parallel with adaptive degradation.
 
@@ -78,6 +79,18 @@ def run_holdout_with_escalation(
     (``"coldstart"`` / ``"converged"`` / None) is the solver override the pass
     runs under; the workers reload the spec themselves and apply it from the
     name. Returns the same summary dict as ``run_full_holdout_eval``.
+    ``dump_densities`` (a directory) threads ``--dump-densities`` onto every
+    shard worker and into the serial leftover tier, so the slim16 density
+    saving writes each molecule's NN + PBE grid densities there; None
+    (default) changes nothing. ``solver_footing`` (a JSON dict of
+    ``density_fit``/``auxbasis``/``orientation_lock_strength``) is the inline
+    readout's Coulomb footing: the workers reload the TRAINING spec, so the
+    footing rides the command line as ``--solver-footing`` exactly as the
+    channel name does, and they apply it before the channel override;
+    without it a parallel tier would evaluate at the training footing while
+    the serial tiers ran the readout's. The in-process serial leftover tier
+    needs nothing: the caller already replaced its spec's solver. None
+    (default) changes nothing.
     """
     from xcquinox.pipeline import eval_holdout
 
@@ -85,6 +98,12 @@ def run_holdout_with_escalation(
     shard_dir = out_dir / "_shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
     script = parallel.worker_script_path("eval_holdout_worker")
+    # canonical JSON on the command line whatever the caller passed (a dict
+    # from the orchestrator); the repr of a dict is not JSON and the worker
+    # parses with json.loads
+    footing_json = (solver_footing if isinstance(solver_footing, str)
+                    else (json.dumps(solver_footing) if solver_footing
+                          else None))
 
     remaining = list(full_specs.keys())
     shard_payloads = []
@@ -109,7 +128,11 @@ def run_holdout_with_escalation(
                 "--basis", str(basis), "--grid-level", str(grid_level),
                 "--threads", str(threads), "--model-name", str(model_name),
                 "--pools", ",".join(str(p) for p in pools),
-            ] + (["--channel", str(channel)] if channel else [])
+            ] + (["--channel", str(channel)] if channel else []) \
+              + (["--dump-densities", str(dump_densities)]
+                 if dump_densities else []) \
+              + (["--solver-footing", footing_json]
+                 if footing_json else [])
             jobs.append(parallel.WorkerJob(
                 name=f"eval_t{tier_no}_s{si}", cmd=cmd,
                 # The shard worker writes no progress file, so the watchdog
@@ -151,7 +174,7 @@ def run_holdout_with_escalation(
         _log(f"serial fallback for {len(remaining)} remaining molecule(s)")
         subset = {n: full_specs[n] for n in remaining}
         per = eval_holdout.compute_holdout_per_molecule(
-            training_spec, model, subset)
+            training_spec, model, subset, dump_densities=dump_densities)
         shard_payloads.append({
             "energies": per["energies"],
             "pbe_energies": per["pbe_energies"],

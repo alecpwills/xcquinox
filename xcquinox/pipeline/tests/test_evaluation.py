@@ -564,6 +564,11 @@ def test_scf_convergence_metric_records_residual_trace(tiny_model, h2o_data):
     assert "cycles_run" in out
     assert "scf_converged" in out
     assert "scf_total_energy" in out
+    # the final-cycle and any-cycle flags and the last density change are
+    # reported separately (the manual backend reports all three)
+    assert isinstance(out["scf_converged_ever"], bool)
+    assert out["scf_converged_ever"] or not out["scf_converged"]
+    assert out["scf_dm_residual"] is not None and out["scf_dm_residual"] >= 0.0
     # Per-cycle residual fields when the backend recorded a trace
     residual_keys = [k for k in out if k.startswith("scf_energy_residual_")]
     assert residual_keys, (
@@ -673,3 +678,32 @@ def test_density_error_terms_closed_form_and_shape_guard():
     with pytest.raises(ValueError, match="shape mismatch"):
         density_error_terms(np.array([2.5, 0.5, 0.1]), np.array([2.0, 1.0]),
                             np.array([3.0, 1.0]))
+
+
+def test_atomization_energy_metric_network_atoms_form(monkeypatch):
+    """ae_form='network_atoms' computes sum_Z n_Z E_nn[atom_Z] - E_nn[mol]
+    through the solver seam (the L6 channel's quantity), never reading the
+    anchor dict; a missing element raises before any evaluation."""
+    import xcquinox.pipeline.evaluation as ev
+
+    energies = {"H": -0.5, "O": -75.0, "h2o": -76.4}
+
+    def fake_total_energy(model, md, solver_config=None, forward_only=False):
+        return energies[md["name"]]
+
+    monkeypatch.setattr(ev, "total_energy_for_solver", fake_total_energy)
+    metric = ev.AtomizationEnergyMetric(
+        atom_energies={"H": -1000.0},       # present, must NOT be read
+        ae_form="network_atoms",
+        atom_mol_data={"H": {"name": "H"}, "O": {"name": "O"}})
+    result = metric.compute(
+        object(), {"name": "h2o",
+                   "atom_composition": (("H", 2), ("O", 1))},
+        solver_config=None)
+    assert result["AE_nn"] == pytest.approx(0.4, abs=1e-6)
+    assert metric.ae_definition == "network_atoms"
+    with pytest.raises(ValueError, match="Cl"):
+        metric.compute(
+            object(), {"name": "hcl",
+                       "atom_composition": (("H", 1), ("Cl", 1))},
+            solver_config=None)

@@ -12,6 +12,7 @@ import os
 import pickle  # noqa: S403 -- only used for the trusted legacy local .pkl fallback below
 import tempfile
 import time
+from types import SimpleNamespace
 
 import equinox as eqx
 import jax
@@ -22,6 +23,8 @@ from equinox._filters import is_array_like
 
 import xcquinox.net
 
+from xcquinox.pipeline.checkpoint_class import (mlp_class_of, model_class_of_arch,
+                                                model_class_of_model, normalize_mlp)
 from xcquinox.pipeline.config import ArchitectureConfig, PretrainSpec
 from xcquinox.pipeline.networks import AlecGGA_XNet, AlecGGA_CNet, create_network_pair
 from xcquinox.utils import lda_x, pw92c_unpolarized_scalar
@@ -114,14 +117,19 @@ def _compute_integration_weights(rho, grid_weights=None):
             where w_i = |ρ_i · ε_LDA_i|   (or  |ρ_i · ε_LDA_i| · w_grid_i
                                              when grid_weights is supplied).
 
-    This is NOT the squared integrated XC-energy residual.  A true
-    integrated-energy L2 loss would require the square of the energy-density
-    weight, i.e.  ``w_i = (ρ_i · ε_LDA_i · w_grid_i)²``.  The linear form
-    was retained because it is the established convention in the codebase
-    (all prior pretrain runs used it) and existing tests pin this behavior.
-    The ``|ρ · ε_LDA|`` factor still steers gradient attention toward
-    energetically important regions without the large dynamic range that the
-    squared form would introduce.
+    This is NOT the squared integrated XC-energy residual, and neither would
+    the squared weights be: with ``a_i = ρ_i · ε_LDA_i · w_grid_i`` and
+    ``r_i = F_nn_i - F_ref_i`` the integrated-energy L2 is
+    ``(Σ_i a_i r_i)²``, a square of a sum whose cross terms ``a_i a_j r_i r_j``
+    couple every pair of points, whereas ``Σ_i a_i² r_i²`` is a different
+    per-point objective (the diagonal alone). The per-system energy term of
+    this module, where a run enables it, is the integrated one
+    ``(Σ_i a_i r_i)²`` formed per system. The linear form was retained for
+    the per-point term because it is the established convention in the
+    codebase (all prior pretrain runs used it) and existing tests pin this
+    behavior. The ``|ρ · ε_LDA|`` factor still steers gradient attention
+    toward energetically important regions without the large dynamic range
+    that a squared weight would introduce.
 
     When ``grid_weights`` is supplied the weights incorporate the quadrature
     measure ``dr_i``, improving the energy-density calibration relative to the
@@ -1035,18 +1043,31 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
         if zeta_all is None:
             zeta_all = jnp.zeros_like(pretrain_data["rho_all"])
         cols.append(zeta_all)
-    # Map descriptor.name -> the pretrain_data column STEM; the block suffix
-    # is appended, so one map serves both row blocks.
-    _key_map = {"dm_statistics": "dm", "cusp": "cusp", "rung35": "rung35",
-                "rung35_multishell": "rung35ms", "metagga": "metagga"}
+    # Map descriptor.name -> the pretrain_data column STEM (the generator's
+    # own map); the block suffix is appended, so one map serves both row
+    # blocks.
+    from xcquinox.pipeline.descriptors import LAP_SCALE
+    from xcquinox.pipeline.pretrain_data_gen import DESCRIPTOR_STEM_OF
     for spec in arch.descriptors:
-        stem = _key_map.get(spec.name)
+        stem = DESCRIPTOR_STEM_OF.get(spec.name)
         if stem is None:
             raise KeyError(
                 f"_assemble_pretrain_descriptors: no pretrain_data key "
                 f"mapping registered for descriptor {spec.name!r}; update "
-                f"_key_map in pretrain.py"
+                f"DESCRIPTOR_STEM_OF in pretrain_data_gen.py"
             )
+        if spec.name == "lap":
+            # A pretraining file carries the Laplacian column at the module's
+            # scale only (descriptors.LAP_SCALE, recorded in its manifest as
+            # lap_definition); a descriptor at another scale would read a
+            # column the SCF does not feed it.
+            scale = float(spec.as_kwargs().get("scale", LAP_SCALE))
+            if scale != float(LAP_SCALE):
+                raise ValueError(
+                    "_assemble_pretrain_descriptors: the pretraining file "
+                    f"carries the Laplacian column at scale {LAP_SCALE!r}, "
+                    f"and descriptor 'lap' asks for scale {scale!r}; a "
+                    "pretraining at another scale needs a column written at it")
         key = stem + suffix
         arr = pretrain_data[key]
         # Width gate. A stale .npz written before a descriptor's feature count
@@ -1444,6 +1465,22 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             "footing. Regenerate the file with "
             "pretrain_data_gen.ensure_pretrain_data."
         )
+    # The Laplacian column's definition: a file written under another
+    # definition (another scale, another compression) carries other values
+    # in the column, so an architecture reading it is held to the manifest's
+    # statement, as the certificate holds the file to its parent.
+    if any(getattr(s, "name", None) == "lap" for s in spec.arch.descriptors):
+        from xcquinox.pipeline.descriptors import LAP_DEFINITION
+        stated = (_manifest or {}).get("lap_definition")
+        if stated != LAP_DEFINITION:
+            raise ValueError(
+                f"run_pretrain: architecture {spec.arch.name!r} reads the "
+                f"Laplacian column, and {npz_path!r} states its definition as "
+                f"{stated!r} where this version computes {LAP_DEFINITION!r} "
+                "(a file without the statement was written before the "
+                "column). Regenerate the file with "
+                "pretrain_data_gen.ensure_pretrain_data."
+            )
     energy_weight = float(getattr(spec, "energy_term_weight", 0.0))
     # The footing the run records: the manifest's where there is one (the
     # published footing shares the total block layout, so the block alone
@@ -1561,6 +1598,18 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     # --- Create network pair (or use the caller-supplied override) ---
     if networks is not None:
         xnet, cnet = networks
+        # The metadata describes spec.arch; a supplied pair must be of that
+        # class, or the record would state a class the leaves are not.
+        stated = model_class_of_arch(spec.arch)
+        supplied = model_class_of_model(SimpleNamespace(xnet=xnet, cnet=cnet))
+        if supplied != stated:
+            differing = sorted(k for k in stated if stated[k] != supplied.get(k))
+            raise ValueError(
+                "run_pretrain: the supplied networks are not of spec.arch's "
+                f"class; fields {differing}: the networks carry "
+                f"{[supplied.get(k) for k in differing]!r}, spec.arch states "
+                f"{[stated[k] for k in differing]!r}, and the metadata would "
+                "state a class the checkpoint is not")
     else:
         xnet, cnet = create_network_pair(spec.arch, seed=spec.seed)
 
@@ -1993,6 +2042,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "lr_decay_end": getattr(spec, "lr_decay_end", 1.0),
         "grad_clip": spec.grad_clip,
         "loss_weighting": spec.loss_weighting,
+        # The seed the two networks were built from (create_network_pair
+        # above); None when the caller supplied them. It is this record's
+        # statement of the initialization, compared with nothing: an arm can
+        # take its clones from pretraining runs at different seeds.
+        "seed": int(spec.seed) if networks is None else None,
         # The SAVED network's loss, and the last step's beside it.
         "final_loss_x": final_loss_x,
         "final_loss_c": final_loss_c,
@@ -2012,6 +2066,14 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "descriptor_coordinates": str(
             getattr(spec.arch, "descriptor_coordinates", "legacy")),
         "ueg_gate": str(getattr(spec.arch, "ueg_gate", "tanh2")),
+        # The gradient-expansion coefficient the exchange curvature is fixed
+        # at (resolved; None without the term), a static field like the gate.
+        "gea_mu": getattr(spec.arch, "resolved_gea_mu", None),
+        # The MLP front end (the activation, its frequency, the Fourier map
+        # and the digest of its matrices), six static fields of both networks
+        # the loaders compare; metadata that states none states the library
+        # MLP.
+        **mlp_class_of(spec.arch),
         # The descriptor log transform, recorded for the same reason: a static
         # field of both networks and of the cusp descriptor
         # (ArchitectureConfig.materialize_descriptors ->
@@ -2031,6 +2093,20 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # legacy warning rather than a failure.
         "meta_gga": ArchitectureConfig.is_meta_gga(spec.arch),
         "n_extra_features": int(spec.arch.n_extra_features),
+        # The two STATIC registry fields, recorded as provenance and
+        # cross-checked by the run validator (validate_run.py). Only the
+        # clamp permission reaches the loader's model-class gate
+        # (train._require_matching_model_class): dm_entropy_intensive has
+        # scaled nothing since 2026-08-06 and survives in the registry only
+        # so live spec files unpickle, so it is stated here and compared
+        # nowhere downstream of this file's own validator read. Like the
+        # shape keys above the two are fixed per architecture name, change
+        # no parameter shape, and read at the registry default (False) in
+        # files written before the keys existed.
+        "dm_entropy_intensive": bool(
+            getattr(spec.arch, "dm_entropy_intensive", False)),
+        "double_lob_clamp_allowed": bool(
+            getattr(spec.arch, "double_lob_clamp_allowed", False)),
         # Whether the (s, alpha) parameter mesh was appended to this
         # pretrain's inputs -- checkpoint provenance the run validator
         # cross-checks (a meta-GGA checkpoint trained WITHOUT the mesh has
@@ -2155,19 +2231,29 @@ def _metadata_preflight(
     want_anchor = bool(getattr(arch, "parent_anchor", False))
     want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
     want_gate = str(getattr(arch, "ueg_gate", "tanh2"))
+    want_gea = getattr(arch, "resolved_gea_mu", None)
+    want_mlp = mlp_class_of(arch)
     got_anchor = bool(md.get("parent_anchor", False))
     got_coords = str(md.get("descriptor_coordinates", "legacy"))
     got_gate = str(md.get("ueg_gate", "tanh2"))
+    # A metadata file that states no coefficient states networks without the
+    # term; the term changes no parameter shape either. A file that states
+    # no front end states the library MLP.
+    got_gea = md.get("gea_mu")
+    got_mlp = normalize_mlp(md)
     if (got_anchor != want_anchor or got_coords != want_coords
-            or got_gate != want_gate):
+            or got_gate != want_gate or got_gea != want_gea
+            or got_mlp != want_mlp):
         raise ValueError(
             f"legacy checkpoint metadata {metadata_path}: networks recorded "
             f"as parent_anchor={got_anchor}, descriptor_coordinates="
-            f"{got_coords!r}, ueg_gate={got_gate!r}, but the arch to load "
-            f"them into is parent_anchor={want_anchor}, "
-            f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}; "
-            "the two model classes share their parameter "
-            "shapes and cannot be told apart from the leaves"
+            f"{got_coords!r}, ueg_gate={got_gate!r}, gea_mu={got_gea!r}, "
+            f"mlp={got_mlp!r}, but the arch to load them into is "
+            f"parent_anchor={want_anchor}, descriptor_coordinates="
+            f"{want_coords!r}, ueg_gate={want_gate!r}, gea_mu={want_gea!r}, "
+            f"mlp={want_mlp!r}; the two model classes share their "
+            "parameter shapes (or differ in them through the front end) and "
+            "cannot be told apart from the leaves"
         )
     return md
 

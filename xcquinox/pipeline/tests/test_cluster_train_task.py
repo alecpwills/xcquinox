@@ -230,6 +230,85 @@ def test_unenforced_failure_lets_the_worker_run(run_dir, monkeypatch,
 
 
 # ---------------------------------------------------------------------------
+# The gate reads the SPEC's checkpoint (a donor arch certifies on its donor)
+# ---------------------------------------------------------------------------
+
+def _donor_run(tmp_path, *, with_donor_certificate):
+    """A run whose resolved config states a donor for its one arch; the donor
+    dir (outside the run) carries a PASS certificate or nothing, and the run
+    has NO run-local pretrain dir at all."""
+    run_dir = tmp_path / "run_donor"
+    run_dir.mkdir()
+    rd = str(run_dir)
+    _write_manifest(rd)
+    _write_spec(rd, 0)
+    donor = tmp_path / "donors" / "pretrain" / "deep_3x16"
+    donor.mkdir(parents=True)
+    if with_donor_certificate:
+        with open(donor / "fidelity_certificate.json", "w") as f:
+            json.dump({"verdict": "PASS", "arch": "deep_3x16",
+                       "summary": {"max_atom_mHa": 0.1,
+                                   "max_dAE_kcalmol": 0.2}}, f)
+    # The resolved config the gate re-reads; the .json spelling is what a
+    # JSON-configured run writes, so this exercises that dispatch too.
+    raw = {
+        "sweep": {"arch": ["deep_3x16"], "loss": ["delta_ae"],
+                  "metric": ["l2"], "subset_size": [4], "solver": ["fast"]},
+        "solvers": {"fast": {"mode": "fixed_density", "max_cycles": 1}},
+        "hyperparams": {"n_steps": 200, "lr_start": 1e-3, "lr_end": 1e-5,
+                        "lr_decay_start": 0.2, "grad_clip": 1.0,
+                        "gradnorm_alpha": 1.5, "vxc_weight": 1.0,
+                        "density_weight": 0.5},
+        "inputs": {"external_refs_dir": "/shared/refs",
+                   "subset_ledger_path": "/shared/ledger.json",
+                   "basis": "def2-tzvp", "grid_level": 3,
+                   "output_root": "/shared/runs"},
+        "pretrain": {"data_dir": "/shared/pretrain_data",
+                     "donor_checkpoints": {"deep_3x16": str(donor)}},
+        "cluster": {"partition": "long-40core", "time": "12:00:00",
+                    "mem": "32G", "cpus_per_task": 4, "array_throttle": 4,
+                    "eval_array_throttle": 8, "max_concurrent_tasks": 40},
+        "domain_profile": "gmtkn55_subset",
+    }
+    with open(os.path.join(rd, "resolved_config.json"), "w") as f:
+        json.dump(raw, f)
+    return rd, str(donor)
+
+
+def test_donor_arch_is_gated_on_the_donor_certificate(tmp_path,
+                                                      monkeypatch, capsys):
+    """A donor-backed spec certifies on its DONOR's certificate: the gate
+    reads the spec's actual checkpoint (resolved from the run's config), not
+    the run-local product a donor arch never writes."""
+    rd, donor = _donor_run(tmp_path, with_donor_certificate=True)
+    assert not os.path.exists(os.path.join(rd, "pretrain"))
+
+    def fake_worker(spec_path, device):
+        _write_model(rd, 0)
+        return 0, "ok"
+
+    monkeypatch.setattr(tt, "_run_worker", fake_worker)
+    assert tt.main([rd, "0"]) == 0
+    out = capsys.readouterr().out
+    assert donor in out, "the released gate must name the donor it read"
+
+
+def test_donor_arch_without_a_certificate_refuses_naming_the_donor(
+        tmp_path, monkeypatch):
+    """The refusal names the DONOR dir (the checkpoint the spec would load),
+    not a run-local product that was never going to exist."""
+    rd, donor = _donor_run(tmp_path, with_donor_certificate=False)
+    calls = []
+    monkeypatch.setattr(tt, "_run_worker",
+                        lambda s, d: calls.append(1) or (0, "ok"))
+    assert tt.main([rd, "0"]) == 3
+    assert calls == []
+    failure = _read_failure(rd, 0)
+    assert failure["classification"] == "fidelity_certificate_missing"
+    assert donor in failure["log_excerpt"]
+
+
+# ---------------------------------------------------------------------------
 # One document per refusal record
 # ---------------------------------------------------------------------------
 

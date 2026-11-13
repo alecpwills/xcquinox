@@ -71,7 +71,8 @@ def _live_fns(model, md):
         n_grid=int(np.asarray(md["grid_weights"]).shape[0]),
         cusp_features=md.get("cusp_features"),
         rung35_proj_ao=md.get("rung35_proj_ao"),
-        rung35ms_proj_ao=md.get("rung35ms_proj_ao"))
+        rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+        ao_lapl=md.get("ao_grid_lapl"))
 
 
 def _precompute_blocks(model, md):

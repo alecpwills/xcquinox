@@ -66,7 +66,8 @@ import dataclasses
 import json
 import os
 
-from xcquinox.pipeline.cluster.grid_config import expand_grid, load_grid_config
+from xcquinox.pipeline.cluster.grid_config import (expand_grid, load_grid_config,
+                                                   pretrain_checkpoint_for)
 from xcquinox.pipeline.cluster.fidelity import (CERTIFICATE_FILENAME,
                                             VERDICT_PASS,
                                             checkpoint_digest_findings,
@@ -121,7 +122,10 @@ def _check_solver(spec, named, inputs, arch_name, idx, failures):
 
 def validate_run(run_dir: str, config_path: str | None = None):
     """Return ``(failures, warnings, n_specs)`` for the run at ``run_dir``."""
-    from xcquinox.pipeline.config import apply_model_block, get_architecture
+    from xcquinox.pipeline.checkpoint_class import (mlp_class_of,
+                                                    mlp_mismatches,
+                                                    normalize_mlp)
+    from xcquinox.pipeline.config import apply_run_config, get_architecture
 
     failures: list[str] = []
     warnings: list[str] = []
@@ -184,15 +188,11 @@ def validate_run(run_dir: str, config_path: str | None = None):
         except KeyError:
             failures.append(f"spec {idx}: arch {arch.name!r} not in registry")
             continue
-        # One-directional, matching spec_builder: the sweep-level flag OVERRIDES
-        # to True but never forces False onto an arch that defaults polarized.
-        if cfg.use_polarized_correlation:
-            expected = dataclasses.replace(
-                expected, use_polarized_correlation=True)
-        # The run's model block, as spec_builder applied it.
-        model_block = getattr(cfg, "model", None)
-        if model_block is not None:
-            expected = apply_model_block(expected, model_block)
+        # The run's configuration as spec_builder applied it
+        # (config.apply_run_config): the sweep-level flag OVERRIDES to True
+        # but never forces False onto an arch that defaults polarized, then
+        # the model block.
+        expected = apply_run_config(expected, cfg)
         if arch != expected:
             diffs = [f.name for f in dataclasses.fields(arch)
                      if getattr(arch, f.name) != getattr(expected, f.name)]
@@ -261,13 +261,32 @@ def validate_run(run_dir: str, config_path: str | None = None):
         # report that mixes them -- a reason taken from the file as it was
         # beside a finding taken from the file as it became -- describing no
         # document that ever existed on disk.
-        pretrain_dir = os.path.join(run_dir, "pretrain", arch_name)
+        #
+        # The directory is the config's DONOR for the arch when one is stated,
+        # the run's own pretrain product otherwise -- the one resolution rule
+        # every consumer shares. A donor's certificate and metadata are a
+        # foreign run's product: the comparisons that presuppose THIS run made
+        # them (its identity, its code version, its step count) do not apply
+        # and are skipped with a warning; the ones about the networks
+        # themselves (the verdict, the arch, the parent functional, the model
+        # class, the digests) bind exactly as for a run-local product.
+        donors = getattr(cfg.pretrain, "donor_checkpoints", None) or {}
+        donor = donors.get(arch_name)
+        pretrain_dir = pretrain_checkpoint_for(cfg, run_dir, arch_name)
+        if donor:
+            warnings.append(
+                f"pretrain/{arch_name}: warm-starts from donor {donor}; the "
+                "donor's own certificate and metadata stand in for this "
+                "run's pretrain product, and the provenance that presupposes "
+                "this run produced them (identity, code version, step "
+                "count) is not compared")
         status, status_reason, cert = read_certificate_status_in(pretrain_dir)
         if status == "MISSING":
+            where = (f" in the donor directory {donor}" if donor
+                     else " -- the architecture was never shown to "
+                          "reproduce its parent functional")
             failures.append(
-                f"pretrain/{arch_name}: no {CERTIFICATE_FILENAME} -- the "
-                "architecture was never shown to reproduce its parent "
-                "functional")
+                f"pretrain/{arch_name}: no {CERTIFICATE_FILENAME}{where}")
         elif cert is None:
             failures.append(
                 f"pretrain/{arch_name}: {CERTIFICATE_FILENAME} is not "
@@ -322,12 +341,15 @@ def validate_run(run_dir: str, config_path: str | None = None):
                         f"pretrain/{arch_name}: certificate parent "
                         f"{recorded_parent!r}, but this architecture's rung "
                         f"is pretrained against {expected_parent!r}")
-            for key, got, want in identity_mismatches(cfg, cert):
-                failures.append(
-                    f"pretrain/{arch_name}: certificate identity "
-                    f"{key}={show_identity(got)} but the config says "
-                    f"{show_identity(want)} -- the certificate was not "
-                    "computed at this run's identity")
+            # A donor certificate was computed at the DONOR run's identity;
+            # only a run-local product must carry this run's.
+            if not donor:
+                for key, got, want in identity_mismatches(cfg, cert):
+                    failures.append(
+                        f"pretrain/{arch_name}: certificate identity "
+                        f"{key}={show_identity(got)} but the config says "
+                        f"{show_identity(want)} -- the certificate was not "
+                        "computed at this run's identity")
             # The model class the certified networks were built as (the
             # parent anchor, the descriptor coordinates): a static property
             # the checkpoint's leaves do not reveal, so the certificate's
@@ -340,7 +362,11 @@ def validate_run(run_dir: str, config_path: str | None = None):
                     "certified networks are not the model class this run "
                     "trains")
             cert_version = cert.get("xcquinox_version")
-            if manifest_version is None:
+            if donor:
+                # A donor certificate names the code that wrote IT, which is
+                # not this run's and is not a defect of the warm start.
+                pass
+            elif manifest_version is None:
                 warnings.append(
                     f"pretrain/{arch_name}: manifest.json records no "
                     "xcquinox_version, so the certificate's code version "
@@ -387,8 +413,7 @@ def validate_run(run_dir: str, config_path: str | None = None):
                         f"certificate measured ({str(want)[:12]}...) -- "
                         "the checkpoint changed after it was certified")
 
-        meta_path = os.path.join(run_dir, "pretrain", arch_name,
-                                 "pretrain_metadata.json")
+        meta_path = os.path.join(pretrain_dir, "pretrain_metadata.json")
         if not os.path.isfile(meta_path):
             warnings.append(f"pretrain/{arch_name}: no pretrain_metadata.json")
             continue
@@ -445,10 +470,24 @@ def validate_run(run_dir: str, config_path: str | None = None):
                           == ("metagga",))),
                       # The step count has always been written as
                       # "pretrain_steps", so it is checkable on legacy files
-                      # that predate the shape keys.
-                      ("pretrain_steps", int(cfg.pretrain.n_steps)
-                       if getattr(cfg.pretrain, "n_steps", None) is not None
-                       else None))
+                      # that predate the shape keys. NOT checked for a donor
+                      # arch: the donor was pretrained to the donor run's
+                      # protocol, and that is the point of reusing it.
+                      ("pretrain_steps",
+                       int(cfg.pretrain.n_steps)
+                       if (getattr(cfg.pretrain, "n_steps", None)
+                           is not None and not donor) else None))
+        # The two registry fields, stated as provenance: the run validator
+        # holds them here, and only the clamp permission is a model-class
+        # field the loader gates on (train._require_matching_model_class);
+        # dm_entropy_intensive has scaled nothing since 2026-08-06 (config.py
+        # keeps the field so live spec files unpickle), so it is recorded and
+        # compared as provenance only. Both are static per architecture, so
+        # a donor's metadata is held to them exactly as a run-local
+        # product's is.
+        provenance += (
+            ("dm_entropy_intensive", bool(reg.dm_entropy_intensive)),
+            ("double_lob_clamp_allowed", bool(reg.double_lob_clamp_allowed)))
         for key, want in provenance:
             got = meta.get(key)
             if got is None:
@@ -460,6 +499,42 @@ def validate_run(run_dir: str, config_path: str | None = None):
                 failures.append(
                     f"pretrain/{arch_name}: metadata {key} = {got!r}, "
                     f"expected {want!r}")
+        # The gradient-expansion coefficient of the architecture the run
+        # builds: the registry entry under the run's configuration
+        # (config.apply_run_config; an anchored run drops the term), a static
+        # field of the networks. Metadata that states none states networks
+        # without the term, so the two are compared outright and an absent
+        # key is no warning.
+        try:
+            built = apply_run_config(reg, cfg)
+        except ValueError as exc:
+            failures.append(
+                f"pretrain/{arch_name}: the model block cannot be applied to "
+                f"the registry entry ({exc})")
+            continue
+        want_gea = getattr(built, "resolved_gea_mu", None)
+        got_gea = meta.get("gea_mu")
+        if got_gea != want_gea:
+            failures.append(
+                f"pretrain/{arch_name}: metadata gea_mu = {got_gea!r}, the "
+                f"architecture this run builds has {want_gea!r}")
+        # The front end, ten fields of the same kind: metadata that states
+        # none states the library MLP. The digests follow the resolved
+        # correlation row; a row that cannot carry the map or the spline
+        # grids leaves the digest undefined, which is a failure of the
+        # configuration, reported under the digest's own name.
+        try:
+            want_mlp = mlp_class_of(built)
+        except ValueError as exc:
+            failures.append(
+                f"pretrain/{arch_name}: the architecture this run builds "
+                f"has no {getattr(exc, 'field', 'fourier_digest')} ({exc})")
+            continue
+        for key, got_value, want_value in mlp_mismatches(
+                normalize_mlp(meta), want_mlp):
+            failures.append(
+                f"pretrain/{arch_name}: metadata {key} = {got_value!r}, the "
+                f"architecture this run builds has {want_value!r}")
 
     return failures, warnings, n_checked
 

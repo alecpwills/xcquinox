@@ -2,10 +2,12 @@
 
 Library-side single source of truth for classifying a registered
 architecture by its physics ingredients: the meta-GGA iso-orbital
-descriptor (``metagga`` descriptor / ``meta_gga`` flag) and the rung-3.5
-localized-DM occupancy descriptors (any ``rung35*`` descriptor name).
-Consumers hold registry NAMES (sweep cells, run validation, figure
-labels), so :func:`rung_of` takes the name and resolves it through
+descriptor (``metagga`` descriptor / ``meta_gga`` flag), the rung-3.5
+localized-DM occupancy descriptors (any ``rung35*`` descriptor name) and
+the density Laplacian (the ``lap`` descriptor), which sits between the GGA
+and the meta-GGA rungs: no orbital dependence, the next derivative of the
+density. Consumers hold registry NAMES (sweep cells, run validation,
+figure labels), so :func:`rung_of` takes the name and resolves it through
 ``get_architecture``; an unregistered name raises ``KeyError`` rather
 than guessing from name tokens. The analysis-side ``arch_style`` module
 imports this taxonomy and adds a token fallback only for legacy
@@ -20,22 +22,26 @@ from __future__ import annotations
 from typing import Dict, Tuple
 
 RUNG_GGA = "GGA"
+RUNG_LAP = "Laplacian"
 RUNG_MGGA = "meta-GGA"
 RUNG_R35 = "rung-3.5"
 RUNG_R35_MGGA = "rung-3.5+meta-GGA"
-RUNG_ORDER: Tuple[str, ...] = (RUNG_GGA, RUNG_MGGA, RUNG_R35, RUNG_R35_MGGA)
+RUNG_ORDER: Tuple[str, ...] = (RUNG_GGA, RUNG_LAP, RUNG_MGGA, RUNG_R35,
+                               RUNG_R35_MGGA)
 RUNG_RANK: Dict[str, int] = {r: i for i, r in enumerate(RUNG_ORDER)}
 
 # Seed policies: which registry ingredients pull an arch onto the SCAN
 # seed. "mgga_scan" is the production phase-1 policy (rung-3.5-only archs
 # keep the PBE seed, so their v4 results carry over); "beyond_gga_scan"
-# extends SCAN seeding to any beyond-GGA ingredient (the rung-3.5
-# control-arm policy).
+# extends SCAN seeding to any orbital-dependent ingredient (the rung-3.5
+# control-arm policy). The Laplacian rung keeps the PBE seed under both: its
+# parent is PBE and it carries no orbital-dependent ingredient.
 SEED_POLICIES: Tuple[str, ...] = ("mgga_scan", "beyond_gga_scan")
 
 
-def arch_ingredients(name: str) -> Tuple[bool, bool]:
-    """``(has_meta_gga, has_rung35)`` for registry arch ``name``.
+def arch_ingredients(name: str) -> Tuple[bool, bool, bool]:
+    """``(has_meta_gga, has_rung35, has_laplacian)`` for registry arch
+    ``name``.
 
     Strictly registry-derived; raises ``KeyError`` for unregistered names.
     """
@@ -48,17 +54,23 @@ def arch_ingredients(name: str) -> Tuple[bool, bool]:
     has_meta = ArchitectureConfig.is_meta_gga(cfg)
     # by prefix: the registry names both rung35 and rung35_multishell
     has_r35 = any(n and n.startswith("rung35") for n in desc)
-    return has_meta, has_r35
+    has_lap = "lap" in desc
+    return has_meta, has_r35, has_lap
 
 
-def rung_from_ingredients(has_meta: bool, has_r35: bool) -> str:
-    """Map the two ingredient flags onto a rung label."""
+def rung_from_ingredients(has_meta: bool, has_r35: bool,
+                          has_lap: bool = False) -> str:
+    """Map the ingredient flags onto a rung label. The Laplacian ranks below
+    the iso-orbital indicator and the rung-3.5 occupancy: an architecture
+    carrying either keeps its rung whatever else it reads."""
     if has_meta and has_r35:
         return RUNG_R35_MGGA
     if has_meta:
         return RUNG_MGGA
     if has_r35:
         return RUNG_R35
+    if has_lap:
+        return RUNG_LAP
     return RUNG_GGA
 
 
@@ -68,7 +80,7 @@ def rung_of(name: str) -> str:
 
 
 def rung_rank(name: str) -> int:
-    """Ladder rank of ``name`` (0=GGA .. 3=combined), for sorting."""
+    """Ladder rank of ``name`` (0=GGA .. 4=combined), for sorting."""
     return RUNG_RANK[rung_of(name)]
 
 
@@ -77,12 +89,13 @@ def seed_xc_for_arch(name: str, policy: str = "mgga_scan") -> str:
 
     ``"mgga_scan"`` (production phase 1): SCAN iff the arch carries the
     meta-GGA ingredient. ``"beyond_gga_scan"`` (control-arm follow-up):
-    SCAN for any beyond-GGA ingredient.
+    SCAN for any orbital-dependent ingredient (the iso-orbital indicator or
+    the rung-3.5 occupancy); the Laplacian rung keeps PBE, its parent.
     """
     if policy not in SEED_POLICIES:
         raise ValueError(f"unknown seed policy: {policy!r} "
                          f"(expected one of {SEED_POLICIES})")
-    has_meta, has_r35 = arch_ingredients(name)
+    has_meta, has_r35, _has_lap = arch_ingredients(name)
     if policy == "mgga_scan":
         return "scan" if has_meta else "pbe"
     return "scan" if (has_meta or has_r35) else "pbe"

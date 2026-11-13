@@ -57,13 +57,15 @@ except Exception:  # pragma: no cover - only if arch_style is missing/broken
 _FALLBACK_CMAP = plt.get_cmap("tab10")
 # Linestyle by rung so GGA / meta-GGA / rung-3.5 / combined read apart even in
 # grayscale (pretraining has no solver axis to map to linestyle).
-_RUNG_LS = {"GGA": "-", "meta-GGA": "--", "rung-3.5": ":", "rung-3.5+meta-GGA": "-."}
+_RUNG_LS = {"GGA": "-", "meta-GGA": "--", "rung-3.5": ":", "rung-3.5+meta-GGA": "-.",
+            # the Laplacian rung: dash-dot-dot, the fifth pattern
+            "Laplacian": (0, (3, 1, 1, 1, 1, 1))}
 
 
 def _shown(arch: str) -> str:
     """The shown name of a pre-training DIRECTORY (a stored key), mapped
-    explicitly: a stored key that is also a shown name (``deep_3x16``) cannot
-    be told apart by inspection."""
+    explicitly through ``display_name`` (a self-named key maps to itself):
+    the stored and shown spellings cannot be told apart by inspection."""
     return arch_style.display_name(arch) if arch_style is not None else arch
 
 

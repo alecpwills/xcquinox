@@ -8,6 +8,8 @@ import struct
 import time
 from typing import ClassVar
 
+import numpy as np
+
 import jax.numpy as jnp
 import equinox as eqx
 
@@ -118,24 +120,85 @@ class TotalEnergyMetric(Metric):
 
 @register_metric("atomization_energy")
 class AtomizationEnergyMetric(Metric):
+    """Atomization energy of one molecule, in either convention.
+
+    ``ae_form='fixed_atom_anchors'`` (the default):
+    ``AE_nn = sum_Z n_Z atom_energies[Z] - E_nn[molecule]`` -- the sum of the
+    FIXED atomic reference totals (the anchor dict, Chakravorty values under
+    the dfs_step7 profile) minus the network's molecular energy. The
+    network's own atomic totals are never evaluated, so this AE DIFFERS from
+    the network-atoms AE that the L6 loss channel trains and the
+    reaction-form held-out evaluations report: the two agree only when the
+    network's atomic totals equal the anchors.
+
+    ``ae_form='network_atoms'``:
+    ``AE_nn = sum_Z n_Z E_nn[atom_Z] - E_nn[molecule]`` -- the L6 channel's
+    quantity. Requires ``atom_mol_data``, one precomputed mol_data record
+    per ELEMENT (the inline evaluator builds it from the spec's own neutral
+    single-atom records, first per element, the training groups'
+    convention); a spec that carries no neutral atom record for an element
+    of a evaluated molecule is refused before evaluation, so a held-out set
+    without atoms asks for the anchors form instead.
+
+    ``ae_definition`` names the convention of this instance for a reader of
+    the output.
+    """
     required_mol_keys: ClassVar[tuple[str, ...]] = (
         "rho_grid", "sigma_grid", "grid_weights", "E_non_xc", "atom_composition",
     )
 
     def __init__(self, atom_energies: dict[str, float],
-                 reference_ae_kcalmol: dict[str, float] | None = None):
+                 reference_ae_kcalmol: dict[str, float] | None = None,
+                 ae_form: str = "fixed_atom_anchors",
+                 atom_mol_data: dict | None = None):
+        if ae_form not in ("fixed_atom_anchors", "network_atoms"):
+            raise ValueError(
+                f"ae_form must be 'fixed_atom_anchors' or 'network_atoms', "
+                f"not {ae_form!r}")
         self.atom_energies = atom_energies
         self.reference_ae_kcalmol = reference_ae_kcalmol or {}
+        self.ae_form = ae_form
+        # The AE convention of this metric instance: fixed atomic anchors or
+        # the network's own atomic totals.
+        self.ae_definition = ae_form
+        self.atom_mol_data = dict(atom_mol_data) if atom_mol_data else None
 
     def compute(self, model, mol_data, solver_config=None):
         # Same solver-mode-aware rule as TotalEnergyMetric: FULL uses the
         # self-consistent run_scf energy, ONESHOT/FIXED_J/None the one-shot
-        # fixed-density functional. AE = sum(atom_energies) - E_mol; the
-        # atom-energy anchors are fixed references.
-        E_mol = float(total_energy_for_solver(model, mol_data, solver_config,
-                                              forward_only=True))
+        # fixed-density functional.
         comp = mol_data["atom_composition"]
-        E_atoms_sum = sum(self.atom_energies[sym] * n for sym, n in comp)
+        if self.ae_form == "network_atoms":
+            # Refuse on missing elements BEFORE any energy is evaluated.
+            if not self.atom_mol_data:
+                raise ValueError(
+                    "ae_form='network_atoms' needs atom_mol_data (one "
+                    "precomputed mol_data record per element); none was "
+                    "supplied")
+            missing = sorted({sym for sym, _n in comp
+                              if sym not in self.atom_mol_data})
+            if missing:
+                raise ValueError(
+                    f"ae_form='network_atoms' lacks a mol_data record for "
+                    f"{missing}; the spec carries no neutral "
+                    "single-atom record for the element(s)")
+            E_mol = float(total_energy_for_solver(model, mol_data,
+                                                  solver_config,
+                                                  forward_only=True))
+            # One evaluation per ELEMENT, multiplied by its count: identical
+            # to evaluating each atom instance, at a fraction of the cost.
+            E_atoms_sum = sum(
+                n * float(total_energy_for_solver(
+                    model, self.atom_mol_data[sym], solver_config,
+                    forward_only=True))
+                for sym, n in comp)
+        else:
+            E_mol = float(total_energy_for_solver(model, mol_data,
+                                                  solver_config,
+                                                  forward_only=True))
+            # Fixed atom-energy anchors: the references are data, never
+            # evaluated through the network.
+            E_atoms_sum = sum(self.atom_energies[sym] * n for sym, n in comp)
         AE_nn = E_atoms_sum - E_mol  # positive for bound molecule
         result = {"AE_nn": AE_nn}
         mol_name = mol_data.get("name", "")
@@ -254,7 +317,7 @@ class DensityRMSEMetric(Metric):
         "is_unrestricted", "atom_composition",
     )
 
-    def compute(self, model, mol_data, solver_config=None):
+    def compute(self, model, mol_data, solver_config=None, keep_rho=False):
         comp = mol_data["atom_composition"]
         total_atoms = sum(n for _, n in comp)
         if total_atoms == 1:
@@ -277,6 +340,11 @@ class DensityRMSEMetric(Metric):
         # accepts ``solver_config=None`` for the back-compat oneshot path.
         rho_nn = oneshot_grid_density(model, mol_data, solver_config=solver_config,
                                       forward_only=True)
+        # keep_rho (the slim16 density saving): hand the converged NN grid
+        # density back as a numpy array under "rho_nn_grid" so the caller can
+        # write it to disk. Off by default -- every historical caller gets the
+        # scalar-only dict and no array ever enters a JSON payload.
+        rho_arr = np.asarray(rho_nn) if keep_rho else None
         rho_ref = mol_data["rho_ref_grid"]
         if rho_ref is None:
             # External CCSD reference density not loaded for this species
@@ -284,7 +352,7 @@ class DensityRMSEMetric(Metric):
             # didn't carry rho_ref_grid).  Skip gracefully, matches the
             # existing pattern in losses._grid_term which skips when
             # rho_ref is None.
-            return {
+            out = {
                 "density_rmse": None,
                 "density_l1": None,
                 "density_rmse_pbe": None,
@@ -297,6 +365,9 @@ class DensityRMSEMetric(Metric):
                 "skip_reason": "no_rho_ref_grid",
                 "ref_density_method": mol_data.get("ref_density_method"),
             }
+            if keep_rho:
+                out["rho_nn_grid"] = rho_arr
+            return out
         if rho_nn.shape != rho_ref.shape:
             raise ValueError(
                 f"density shape mismatch: rho_nn {rho_nn.shape} vs "
@@ -317,7 +388,7 @@ class DensityRMSEMetric(Metric):
         rmse_pbe, l1_pbe = pbe_density_errors(mol_data)
         eps_nn, n_e, wsum = density_eps_terms(rho_nn, rho_ref, w)
         eps_pbe, _, _ = pbe_density_eps(mol_data)
-        return {
+        out = {
             "density_rmse": rmse,
             "density_l1": l1,
             # model-free PBE-vs-CCSD baseline on the same grid/weights, so
@@ -330,6 +401,9 @@ class DensityRMSEMetric(Metric):
             "grid_weight_sum": wsum,
             "ref_density_method": mol_data.get("ref_density_method"),
         }
+        if keep_rho:
+            out["rho_nn_grid"] = rho_arr
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +451,20 @@ class PBEReferenceMetric(Metric):
 # SCFConvergenceMetric
 # ---------------------------------------------------------------------------
 
+def _optional_bool(x):
+    """``bool(x)``, or None where the backend does not report ``x``."""
+    return None if x is None else bool(x)
+
+
+def _optional_float(x):
+    """``float(x)``, or None where the backend does not report ``x`` or it is
+    not finite (the records are JSON)."""
+    if x is None:
+        return None
+    x = float(x)
+    return x if math.isfinite(x) else None
+
+
 @register_metric("scf_convergence")
 class SCFConvergenceMetric(Metric):
     """Run one SCF solve and report the cycles taken + converged flag.
@@ -405,7 +493,16 @@ class SCFConvergenceMetric(Metric):
         result = run_scf(solver_config, model, mol_data, forward_only=True)
         out = {
             "cycles_run": int(result.cycles_run),
+            # converged at the last cycle; converged_ever is the criterion
+            # having fired at any cycle (the two differ only when the solver
+            # keeps cycling after convergence), dm_residual the last cycle's
+            # max-abs density-matrix change. Backends that do not report the
+            # latter two give None.
             "scf_converged": bool(result.converged),
+            "scf_converged_ever": _optional_bool(
+                getattr(result, "converged_ever", None)),
+            "scf_dm_residual": _optional_float(
+                getattr(result, "dm_residual", None)),
             "scf_total_energy": float(result.total_energy),
         }
         if getattr(result, "energy_trace", None) is not None:
@@ -557,6 +654,54 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
                 else "eri")
             solver_keys.add("ao_grid_deriv")
     required_keys = tuple(metric_keys | descriptor_keys | solver_keys)
+
+    # A network_atoms atomization metric evaluates the network's own atomic
+    # totals, so it needs one precomputed mol_data record per element: the
+    # spec's own neutral single-atom records, first record per element (the
+    # training groups' convention in train._training_groups), precomputed
+    # on the same required keys as the evaluated molecules. An element no
+    # spec molecule supplies as a neutral atom is refused here, before any
+    # molecule is evaluated. EVERY network_atoms metric is wired (a spec
+    # may legitimately list atomization_energy twice).
+    _atoms = None
+    for metric in metrics:
+        if getattr(metric, "ae_form", None) == "network_atoms":
+            if _atoms is None:
+                _atoms = {}
+                _neutral = {}
+                for m in spec.molecules:
+                    m_comp = dict(m.atom_composition)
+                    if (sum(m_comp.values()) == 1
+                            and int(getattr(m, "charge", 0)) == 0):
+                        _neutral.setdefault(next(iter(m_comp)), m)
+                for m in spec.molecules:
+                    for sym in dict(m.atom_composition):
+                        if sym in _atoms:
+                            continue
+                        if sym not in _neutral:
+                            raise ValueError(
+                                f"the atomization_energy metric in form "
+                                f"'network_atoms' has no neutral single-atom "
+                                f"record for {sym!r} in spec.molecules; add "
+                                "the atom(s) to the evaluation spec or use "
+                                "the fixed_atom_anchors form")
+                        _sc = spec.solver_config
+                        _atoms[sym] = precompute_fixed_density_data(
+                            _neutral[sym],
+                            required_keys=required_keys,
+                            descriptors=spec.arch.materialize_descriptors(),
+                            auxbasis=(getattr(_sc, "auxbasis", None)
+                                      if getattr(_sc, "density_fit", False)
+                                      else None),
+                            orientation_lock_strength=getattr(
+                                _sc, "orientation_lock_strength", 0.0),
+                            seed_source=getattr(_sc, "seed_source", "pbe"),
+                            seed_cache_dir=getattr(
+                                _sc, "seed_cache_dir", None),
+                            seed_density_fit=bool(getattr(
+                                _sc, "density_fit", False)),
+                        )
+            metric.atom_mol_data = _atoms
 
     # 6. Evaluate each molecule
     per_molecule = []

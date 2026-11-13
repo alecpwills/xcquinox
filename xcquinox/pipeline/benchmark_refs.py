@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -53,6 +54,7 @@ from xcquinox.pipeline.external_refs import (
     SpeciesEntry,
     _fsync_dir,
     _fsync_file,
+    _peak_rss_mb,
     run_ccsd_with_cache,
     run_scf_with_cache,
 )
@@ -73,7 +75,7 @@ POOL_CHOICES: Tuple[str, ...] = ("bh76", "w411", "all")
 _DENSITY_NPZ_KEYS: frozenset = frozenset(
     {"rho_ref_grid", "rho_pbe_grid", "grid_weights",
      "ref_density_method", "grid_level_used", "basis_used",
-     "orientation_lock_strength", "density_fit_used"})
+     "orientation_lock_strength", "density_fit_used", "auxbasis_used"})
 
 #: Every key a final reference npz may carry: the density block above plus
 #: the two optional stamps (the CCSD-convergence provenance and the T1
@@ -141,17 +143,22 @@ def _atomic_savez(path, **arrays) -> None:
 
 def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int,
                                orientation_lock_strength: float = 0.0,
-                               density_fit: bool = False) -> bool:
+                               density_fit: bool = False,
+                               auxbasis: Optional[str] = None) -> bool:
     """True iff ``path`` is a readable density-only reference matching this
-    run's basis + grid_level + orientation-lock strength + DF setting.
-    Deliberately NOT ``external_refs._npz_is_complete`` (that demands the OEP
-    keys vxc_ref/dm_target). A corrupt or partial file reads as incomplete ->
-    regenerated. A legacy file with no stored strength is treated as
-    strength 0.0, so an unlocked cache matches only an unlocked request and
-    turning the lock on (or changing its strength) forces regeneration. A
-    legacy file with no ``density_fit_used`` stamp matches either DF setting
-    (the stamp post-dates the existing caches); once stamped, a DF reference
-    is never silently reused by a non-DF run or vice versa."""
+    run's basis + grid_level + orientation-lock strength + DF setting (+
+    auxbasis under DF). Deliberately NOT ``external_refs._npz_is_complete``
+    (that demands the OEP keys vxc_ref/dm_target). A corrupt or partial file
+    reads as incomplete -> regenerated. A legacy file with no stored
+    strength is treated as strength 0.0, so an unlocked cache matches only
+    an unlocked request and turning the lock on (or changing its strength)
+    forces regeneration. A legacy file with no ``density_fit_used`` stamp
+    matches either DF setting (the stamp post-dates the existing caches);
+    once stamped, a DF reference is never silently reused by a non-DF run
+    or vice versa. ``auxbasis_used`` follows the same rule: absent from
+    legacy files, compared when present, so a def2-tzvp-jkfit reference is
+    never silently reused by a readout running another jkfit mesh (the DF
+    density resolves on the auxbasis's Coulomb mesh)."""
     p = Path(path)
     if not p.is_file():
         return False
@@ -173,6 +180,9 @@ def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int,
                 return False
             if ("density_fit_used" in files
                     and bool(z["density_fit_used"]) != bool(density_fit)):
+                return False
+            if ("auxbasis_used" in files
+                    and str(z["auxbasis_used"]) != str(auxbasis or "")):
                 return False
     except Exception:
         return False
@@ -225,6 +235,29 @@ def load_benchmark_species(pool: str = "all", *, basis: str = "def2-svp",
                   f"{int(max_atoms)} atoms get no reference: "
                   f"{', '.join(dropped)}", flush=True)
         mol_specs = {n: ms for n, ms in mol_specs.items() if n not in dropped}
+    return dict(sorted(mol_specs.items()))
+
+
+def load_manifest_species(manifest_path: str, *, basis: str,
+                          grid_level: int) -> Dict[str, MoleculeSpec]:
+    """Sorted ``{name: MoleculeSpec}`` for every species of a VALIDATION
+    MANIFEST (the ``pipeline/data/si_letter_validation.json`` form), built
+    by the same geometry-source resolver the spec builder's validation
+    attach uses (``cluster.spec_builder._manifest_val_mol_spec``).
+
+    The Letter's validation compounds (BeH, PF3 among them) appear in no
+    held-out pool, so pool mode cannot reach this set; ``--manifest`` reads
+    the geometry sources -- g2_97 frames by xyz_idx, unit atoms, named
+    held-out-pool species -- straight from the tracked manifest."""
+    import json
+    from xcquinox.pipeline.cluster.spec_builder import _manifest_val_mol_spec
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    mol_specs = {
+        str(sp["name"]): _manifest_val_mol_spec(
+            sp, basis=basis, grid_level=grid_level, val_refs_dir=None)
+        for sp in manifest["species"]
+    }
     return dict(sorted(mol_specs.items()))
 
 
@@ -286,7 +319,8 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
                         spin=int(ms.spin), source="benchmark")
     if _benchmark_npz_is_complete(final, basis=basis, grid_level=grid_level,
                                   orientation_lock_strength=orientation_lock_strength,
-                                  density_fit=density_fit):
+                                  density_fit=density_fit,
+                                  auxbasis=auxbasis):
         if not t1_backfill:
             return "SKIP"
         with np.load(final, allow_pickle=False) as z:
@@ -347,6 +381,9 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
         basis_used=np.array(str(basis)),
         orientation_lock_strength=np.array(float(orientation_lock_strength)),
         density_fit_used=np.array(bool(density_fit)),
+        # the jkfit mesh the DF density resolved on; compared by
+        # _benchmark_npz_is_complete when present (legacy files match any)
+        auxbasis_used=np.array(str(auxbasis or "")),
         # Optional provenance stamp (True by construction: an unconverged
         # CCSD refuses in external_refs._require_ccsd_converged). NOT in
         # _DENSITY_NPZ_KEYS: files written before the check stay valid.
@@ -394,6 +431,22 @@ def _fmt_hms(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{sec:02d}"
 
 
+def _inflight_marker_path(out_dir, name: str) -> Path:
+    """The in-flight marker of a species: present exactly while THIS process
+    is computing it, left behind by a kill (SIGKILL runs no cleanup)."""
+    return Path(out_dir) / "_inflight" / f"{name}.json"
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
+
 def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
               out_dir, basis: str, grid_level: int, density_fit: bool = False,
               auxbasis: Optional[str] = None,
@@ -409,13 +462,33 @@ def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
     ledger_dir = (Path(out_dir) / "_runlogs"
                   / f"shard_{shard_label.replace('/', '_of_')}")
     log = RunLog(cache_dir=ledger_dir)
+    # Kill deferral: a species whose in-flight marker is present at entry was
+    # being computed by a process that died (SIGKILL runs no cleanup, so the
+    # marker IS the death certificate). Attempt it LAST: a restart then banks
+    # every other species before re-entering the one that kills its process,
+    # so one unkillable molecule costs its own partial work, never the
+    # remaining pool (slim16 refs jobs 2374667/2386472: killed twice in
+    # flight on the same species, the second run banked nothing).
+    stale = [n for n in names if _inflight_marker_path(out_dir, n).is_file()]
+    if stale:
+        names = [n for n in names if n not in set(stale)] + stale
+        print(f"benchmark_refs: {len(stale)} species carried a stale "
+              f"in-flight marker (a process died on them; deferred to the "
+              f"end of this attempt): {', '.join(stale)}", flush=True)
     log.start(names)
+    marker_dir = Path(out_dir) / "_inflight"
+    marker_dir.mkdir(parents=True, exist_ok=True)
     n = len(names)
     t0 = time.monotonic()
     n_fail = 0
+    failed: List[str] = []
     for k, name in enumerate(names, 1):
         ms = mol_specs[name]
         t1 = time.monotonic()
+        marker = _inflight_marker_path(out_dir, name)
+        _atomic_write_json(marker, {
+            "name": name, "host": socket.gethostname(), "pid": os.getpid(),
+            "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
         err: Optional[str] = None
         try:
             status = generate_one(ms, out_dir=out_dir, basis=basis,
@@ -427,18 +500,34 @@ def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
             status = "FAIL"      # sink the whole shard's remaining work
             err = f"{type(exc).__name__}: {exc}"
             n_fail += 1
+            failed.append(name)
+        # the process SURVIVED this species -- generate_one returned, or the
+        # failure was caught and logged -- so the marker is no longer a
+        # death certificate. A propagating BaseException (KeyboardInterrupt,
+        # SystemExit) never reaches this line, and SIGKILL/SIGTERM run no
+        # cleanup at all: in every death case the marker stays behind and
+        # the next attempt defers the species the process died on.
+        if marker.is_file():
+            marker.unlink()
         wall = time.monotonic() - t1
+        peak = _peak_rss_mb()
+        if err and peak is not None:
+            err = f"{err} [peakRSS={peak}MB]"
         log.record_result(name=name, charge=ms.charge, spin=ms.spin,
                           status=status, wall_clock_s=wall, error_msg=err)
         if progress:
             elapsed = time.monotonic() - t0
             eta = elapsed / k * (n - k)
+            rss = f" peakRSS={peak}MB" if peak is not None else ""
             print(f"[gen {k}/{n} shard {shard_label}] {name} "
                   f"(q={ms.charge},2S={ms.spin}) status={status} "
-                  f"wall={wall:.1f}s | elapsed {_fmt_hms(elapsed)} "
+                  f"wall={wall:.1f}s{rss} | elapsed {_fmt_hms(elapsed)} "
                   f"ETA {_fmt_hms(eta)}", flush=True)
             if err:
                 print(f"    {err}", flush=True)
+    if failed:
+        print(f"benchmark_refs: shard {shard_label}: {len(failed)}/{n} "
+              f"species FAILED: {', '.join(failed)}", flush=True)
     log.finalize()
     return n_fail
 
@@ -473,6 +562,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="orientation-lock h_core bias strength (orientation_lock.py); "
                         "MUST match the run's inputs.orientation_lock_strength so the "
                         "held-out refs lock the same degenerate component as training")
+    p.add_argument("--manifest", default=None, metavar="MANIFEST.json",
+                   help="generate references for the SPECIES of a validation "
+                        "manifest (Letter-parity arms: geometry sources are "
+                        "read from the manifest itself) instead of a held-out "
+                        "pool; mutually exclusive with --pool")
     p.add_argument("--shard", default=None,
                    help="i/N: run the i-th of N disjoint slices (1-based)")
     p.add_argument("--species-slice", default=None,
@@ -493,10 +587,28 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.auxbasis and not args.density_fit:
         p.error("--auxbasis only makes sense with --density-fit")
+    if args.manifest and args.pool != "all":
+        raise ValueError(
+            "--manifest and --pool are mutually exclusive: --manifest reads "
+            "the species from the manifest itself, --pool from the held-out "
+            "pools")
 
-    mol_specs = load_benchmark_species(args.pool, basis=args.basis,
-                                       grid_level=args.grid_level,
-                                       max_atoms=args.max_atoms)
+    if args.manifest:
+        mol_specs = load_manifest_species(args.manifest, basis=args.basis,
+                                          grid_level=args.grid_level)
+        if args.max_atoms is not None:
+            dropped = sorted(n for n, ms in mol_specs.items()
+                             if n_atoms_of(ms) > int(args.max_atoms))
+            if dropped:
+                print(f"benchmark_refs: {len(dropped)} species above the cap "
+                      f"of {int(args.max_atoms)} atoms get no reference: "
+                      f"{', '.join(dropped)}", flush=True)
+            mol_specs = {n: ms for n, ms in mol_specs.items()
+                         if n not in dropped}
+    else:
+        mol_specs = load_benchmark_species(args.pool, basis=args.basis,
+                                           grid_level=args.grid_level,
+                                           max_atoms=args.max_atoms)
     if args.list_species:
         print(species_listing(mol_specs), flush=True)
         return 0
@@ -505,7 +617,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                        species_slice=args.species_slice)
     names = all_names[sl]
     shard_label = args.shard or "1/1"
-    print(f"benchmark_refs: pool={args.pool} ({len(all_names)} species), "
+    src_label = (f"manifest={args.manifest}" if args.manifest
+                 else f"pool={args.pool}")
+    print(f"benchmark_refs: {src_label} ({len(all_names)} species), "
           f"slice [{sl.start}:{sl.stop}] -> {len(names)} this task, "
           f"basis={args.basis} grid_level={args.grid_level} "
           f"density_fit={args.density_fit} auxbasis={args.auxbasis} "

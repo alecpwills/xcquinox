@@ -55,7 +55,8 @@ class Chunk:
     ``paths`` are repository-relative test directories or modules; ``keyword`` is a
     pytest ``-k`` expression selecting test functions of the one module in ``paths``;
     ``peak`` is the interpreter's mapping count at the end of the chunk as measured on
-    2026-09-22 (informative; the ceiling is 65530).
+    2026-09-22, chunk C again on 2026-10-10 when five new modules joined it (informative;
+    the ceiling is 65530).
     """
     name: str
     paths: tuple[str, ...]
@@ -70,7 +71,8 @@ def _pipeline(*names: str) -> tuple[str, ...]:
 CHUNKS: tuple[Chunk, ...] = (
     Chunk("A", ("xcquinox/tests", "tools", "notebooks", "hpcjobs"), peak=2223),
     Chunk("B", _pipeline(
-        "test_arch_names.py", "test_balancing.py", "test_benchmark_refs.py",
+        "test_arch_names.py", "test_atom_context.py", "test_balancing.py",
+        "test_benchmark_refs.py",
         "test_bh76w411_pool.py", "test_certificate_two_tier_gate.py",
         "test_checkpoint_class.py", "test_closed_shell_byte_identity.py",
         "test_cluster_analyze.py", "test_cluster_cli.py", "test_cluster_datagen.py",
@@ -95,13 +97,16 @@ CHUNKS: tuple[Chunk, ...] = (
         "test_discovery_probes.py", "test_eval_holdout_parallel.py",
         "test_eval_holdout.py", "test_eval_probes.py", "test_evaluation.py",
         "test_external_refs_df.py", "test_external_refs.py", "test_features.py",
+        "test_fractional_occupation.py", "test_front_ends.py",
         "test_full_benchmark_pools.py", "test_generate_polarized_script.py",
         "test_generate_step7_subsets.py", "test_gmtkn55_sets.py",
+        "test_gradient_expansion.py",
         "test_holdout_channels.py", "test_integration_end_to_end.py",
+        "test_kan.py", "test_lap.py",
         "test_losses.py", "test_losses_step7.py",
         "test_metagga_indicator_domain.py", "test_metagga_pretrain.py",
         "test_metagga.py", "test_models.py",
-        "test_networks.py", "test_oep_per_species_emit_overrides.py"), peak=27624),
+        "test_networks.py", "test_oep_per_species_emit_overrides.py"), peak=25212),
     Chunk("D", _pipeline(
         "test_oep_per_species_tune.py", "test_oep.py", "test_oep_uks.py",
         "test_oneshot.py", "test_orientation_lock.py", "test_padding.py",
@@ -211,6 +216,10 @@ def main(argv=None) -> int:
         return 0
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
+    # pytest deletes and re-creates --basetemp itself but never creates its parents, so on
+    # a fresh machine every tmp_path fixture errors with FileNotFoundError until it exists.
+    # The chunks run from --root, which is where pytest resolves a relative --basetemp.
+    (Path(args.root) / args.basetemp).parent.mkdir(parents=True, exist_ok=True)
     failed = []
     for chunk, line in zip(CHUNKS, lines):
         log = log_dir / f"{chunk.name}.log"

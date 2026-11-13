@@ -1317,9 +1317,12 @@ def system_names(systems, count):
 
 
 def ensure_data(data_dir, *, polarized, reference_xc, basis, grid_level,
-                lock_strength, smoke_atoms=None):
+                lock_strength, smoke_atoms=None, archs=()):
     """Generate (or reuse) one pretraining file and return the path
-    ``run_pretrain`` will open for it.
+    ``run_pretrain`` will open for it. ``archs`` are the architecture
+    configurations the file serves: the descriptor column stems they read
+    are stated to the currency check (``descriptor_stems_for``), so a file
+    written before a column one of them needs is regenerated, never served.
 
     The file lives in its own ``parent_<reference_xc>`` subdirectory so the two
     parent densities never share a ``data_dir``, and it is written under the
@@ -1335,7 +1338,8 @@ def ensure_data(data_dir, *, polarized, reference_xc, basis, grid_level,
     EXERCISED rather than whether it was offered, so it reads false here in
     either case; what is pinned by test is the argument passed.)
     """
-    from xcquinox.pipeline.pretrain_data_gen import ensure_pretrain_data
+    from xcquinox.pipeline.pretrain_data_gen import (descriptor_stems_for,
+                                                     ensure_pretrain_data)
 
     target_dir = os.path.join(data_dir, f"parent_{reference_xc}")
     os.makedirs(target_dir, exist_ok=True)
@@ -1346,7 +1350,8 @@ def ensure_data(data_dir, *, polarized, reference_xc, basis, grid_level,
                   exchange_footing="spin_channel",
                   orientation_lock_strength=lock_strength,
                   allow_irreproducible_degenerate=False,
-                  progress=True)
+                  progress=True,
+                  descriptor_stems=descriptor_stems_for(archs))
     if smoke_atoms is not None:
         kwargs.update(atoms=tuple(smoke_atoms), dfs_set=False,
                       pool_atoms=False)
@@ -1799,7 +1804,8 @@ def main(argv=None):
             paths[key] = ensure_data(
                 args.data_dir, polarized=polarized, reference_xc=parent,
                 basis=args.basis, grid_level=args.grid_level,
-                lock_strength=lock, smoke_atoms=smoke_atoms)
+                lock_strength=lock, smoke_atoms=smoke_atoms,
+                archs=[a for _n, a in archs])
         log(f"[probe] data: {paths[key]} "
             f"({time.time() - started:.1f}s, total {time.time() - t0:.1f}s)")
 

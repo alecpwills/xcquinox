@@ -26,6 +26,7 @@ import pickle  # noqa: S403, saving trusted aux_log data only
 import struct
 import time
 import warnings
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -33,8 +34,10 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from xcquinox.pipeline.checkpoint_class import (ModelClassMismatch,
+from xcquinox.pipeline.checkpoint_class import (DEFAULT_MLP,
+                                            ModelClassMismatch,
                                             class_record_path,
+                                            mlp_class_of, normalize_mlp,
                                             commit_class_record,
                                             discard_staged_record,
                                             discard_temporaries,
@@ -50,11 +53,14 @@ from xcquinox.pipeline.checkpoint_class import (ModelClassMismatch,
 from xcquinox.pipeline.config import TrainingSpec, ArchitectureConfig
 from xcquinox.pipeline.solver import SolverConfig, SolverMode
 from xcquinox.pipeline.data import precompute_fixed_density_data
-from xcquinox.pipeline.losses import make_loss
+from xcquinox.pipeline.losses import GroupView, make_loss
 from xcquinox.pipeline.models import AlecGGAModel
-from xcquinox.pipeline.oneshot import ONESHOT_AT_REFERENCE_KEY
+from xcquinox.pipeline.oneshot import (
+    ONESHOT_AT_REFERENCE_KEY,
+    oneshot_grid_density,
+)
 from xcquinox.pipeline.networks import create_network_pair
-from xcquinox.pipeline.defused_grad import defused_value_and_grad
+from xcquinox.pipeline.defused_grad import defused_value, defused_value_and_grad
 from xcquinox.pipeline.padding import common_pad_target
 from xcquinox.pipeline.procmem import read_rss_gb
 
@@ -506,7 +512,20 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
 
     The uniform-gas gate (``ueg_gate``) is the third such field: a record
     that states it is held to it, and a record written before the field is
-    read at ``tanh2``, the gate every model before it carried.
+    read at ``tanh2``, the gate every model before it carried. The
+    gradient-expansion coefficient (``gea_mu``) is the fourth: a record that
+    states none describes networks without the term, and is refused by an
+    architecture that carries it. The registry's
+    ``double_lob_clamp_allowed`` is the same class of static field (a Lieb-
+    Oxford ceiling without it is refused at construction, networks.py) and is
+    read the same way: a record written before the key existed is read at the
+    registry default, False, so every existing checkpoint loads exactly as it
+    did and a configuration that sets the flag is refused against it.
+    ``dm_entropy_intensive`` is deliberately NOT compared here: the quantity
+    it scaled was removed (2026-08-06) and the field survives only so live
+    spec files unpickle (config.py's materialize_descriptors says so), so
+    loading across it cannot produce a model that is neither. It is recorded
+    by the writer and cross-checked by the run validator as provenance.
     ``descriptor_log_transform`` is the fourth such field and is compared ONLY
     WHERE THE RECORD STATES IT, as the trained checkpoints' own record
     compares it (``checkpoint_class.require_matching_log_transform``): every
@@ -524,18 +543,32 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     want_anchor = bool(getattr(arch, "parent_anchor", False))
     want_coords = str(getattr(arch, "descriptor_coordinates", "legacy"))
     want_gate = str(getattr(arch, "ueg_gate", "tanh2"))
+    want_lob = bool(getattr(arch, "double_lob_clamp_allowed", False))
+    # The gradient-expansion coefficient (resolved; None without the term),
+    # a static field like the gate: a record that states none states
+    # networks without the term.
+    want_gea = getattr(arch, "resolved_gea_mu", None)
+    # The MLP front end, the same kind of field: a record that states none
+    # describes the library MLP.
+    want_mlp = mlp_class_of(arch)
     md_path = os.path.join(pretrain_checkpoint, "pretrain_metadata.json")
     if not os.path.isfile(md_path):
-        if want_anchor or want_coords != "legacy" or want_gate != "tanh2":
+        if (want_anchor or want_coords != "legacy" or want_gate != "tanh2"
+                or want_lob or want_gea is not None
+                or want_mlp != DEFAULT_MLP):
             raise ValueError(
                 f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r} "
                 f"into a model with parent_anchor={want_anchor}, "
-                f"descriptor_coordinates={want_coords!r} and "
-                f"ueg_gate={want_gate!r}: the directory carries "
-                "no pretrain_metadata.json recording the model class its "
-                "networks were written as, and the checkpoint's leaves do not "
-                "reveal it (the anchor, the coordinates and the uniform-gas "
-                "gate are static fields with no parameters of their own)")
+                f"descriptor_coordinates={want_coords!r}, "
+                f"ueg_gate={want_gate!r}, gea_mu={want_gea!r}, "
+                f"mlp={want_mlp!r} and "
+                f"double_lob_clamp_allowed={want_lob}: the directory "
+                "carries no pretrain_metadata.json recording the model class "
+                "its networks were written as, and the checkpoint's leaves "
+                "do not reveal it (the anchor, the coordinates, the "
+                "uniform-gas gate, the gradient-expansion coefficient, the "
+                "MLP front end and the clamp permission are static fields "
+                "with no parameters of their own)")
         return
     try:
         with open(md_path) as f:
@@ -549,21 +582,33 @@ def _require_matching_model_class(pretrain_checkpoint: str, arch) -> None:
     # A metadata file written before the gate existed states nothing about
     # it and is read at the gate every model before the field carried.
     got_gate = str(md.get("ueg_gate", "tanh2"))
+    # The clamp permission likewise reads at its default (False) in a record
+    # written before the key existed.
+    got_lob = bool(md.get("double_lob_clamp_allowed", False))
+    got_gea = md.get("gea_mu")
+    got_mlp = normalize_mlp(md)
     if (got_anchor != want_anchor or got_coords != want_coords
-            or got_gate != want_gate):
+            or got_gate != want_gate
+            or got_lob != want_lob or got_gea != want_gea
+            or got_mlp != want_mlp):
         raise ValueError(
             f"refusing to load pretrain_checkpoint {pretrain_checkpoint!r}: "
             f"its networks were written as parent_anchor={got_anchor}, "
-            f"descriptor_coordinates={got_coords!r}, ueg_gate={got_gate!r} "
+            f"descriptor_coordinates={got_coords!r}, ueg_gate={got_gate!r}, "
+            f"gea_mu={got_gea!r}, mlp={got_mlp!r}, "
+            f"double_lob_clamp_allowed={got_lob} "
             "(pretrain_metadata.json"
             + ("" if "parent_anchor" in md else
                ", which predates the fields and so records the unanchored "
                "legacy class")
             + f"), but the model being built is parent_anchor={want_anchor}, "
-            f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}. "
-            "The two are different "
-            "model classes with identical parameter shapes; loading across "
-            "them would silently produce a model that is neither.")
+            f"descriptor_coordinates={want_coords!r}, ueg_gate={want_gate!r}, "
+            f"gea_mu={want_gea!r}, mlp={want_mlp!r}, "
+            f"double_lob_clamp_allowed={want_lob}. "
+            "The two are different model classes (identical parameter "
+            "shapes, or shapes that differ through the front end alone); "
+            "loading across them would silently produce a model that is "
+            "neither.")
     # The descriptor log transform, compared where the record states it. A
     # value of ``None`` -- the key absent, or present and null -- is not a
     # statement about the networks and is not treated as one.
@@ -655,19 +700,48 @@ def _build_batch(spec: TrainingSpec, loss) -> dict:
         for m in spec.molecules
     ]
     return {
-        "mol_data": tuple(mol_data_list),
+        "mol_data": tuple(_stamp_fock_noise_mol_ids(mol_data_list)),
         "targets": spec.targets_dict,
         "atom_energies": spec.atom_energies_dict,
     }
 
 
+def _stamp_fock_noise_mol_ids(mol_data_list):
+    """Each molecule's index in the run's molecule list (``spec.molecules``
+    order, the order of ``batch['mol_data']``) as its Fock-noise molecule id,
+    a 0-d int32 array under ``solver_manual.FOCK_NOISE_MOL_ID_KEY``. The
+    per-group sub-batches and the superset union batch draw their records
+    from this tuple, so every group sees the same id for a molecule. Traced
+    under the per-molecule jit: the value never keys a recompile."""
+    from xcquinox.pipeline.solver_manual import FOCK_NOISE_MOL_ID_KEY
+    return [dict(md, **{FOCK_NOISE_MOL_ID_KEY: jnp.asarray(i, dtype=jnp.int32)})
+            for i, md in enumerate(mol_data_list)]
+
+
+def _stamp_fock_noise_update(batch, update):
+    """``batch`` with every molecule carrying ``update`` as its Fock-noise
+    update counter (``solver_manual.FOCK_NOISE_UPDATE_KEY``, a 0-d int32
+    array, so a new value per step is a new traced value and never a
+    recompile). The reference protocol draws fresh Fock noise on every
+    training call; folding the counter into the key gives every update its
+    own draw. Only the record dicts are copied; every array is shared."""
+    from xcquinox.pipeline.solver_manual import FOCK_NOISE_UPDATE_KEY
+    stamp = jnp.asarray(update, dtype=jnp.int32)
+    stamped = tuple(dict(md, **{FOCK_NOISE_UPDATE_KEY: stamp})
+                    for md in batch["mol_data"])
+    return {**batch, "mol_data": stamped}
+
+
 class _BestModelTracker:
     """Tracks the model snapshot at the minimum trailing-mean loss so a best-loss
-    checkpoint can be saved ALONGSIDE the final one. The window smooths per-step
-    noise (the per-molecule scheme's per-group losses are noisy; a one-epoch
-    window gives a stable estimate). This protects against a run that converges
-    then destabilizes late and ends on a high-loss snapshot -- observed for
-    deep_attn at large subset sizes (final loss ~1e4x its own best-ever)."""
+    checkpoint can be saved ALONGSIDE the final one. The score passed to
+    ``update`` must be the score OF the model passed with it: the full-batch
+    loops pass the pre-step parameters the loss was taken at, and the
+    per-molecule loop passes the epoch-end parameters with their exact score
+    over every group (:func:`_epoch_end_score`, window 1). This protects
+    against a run that converges then destabilizes late and ends on a
+    high-loss snapshot -- observed for deep_attn at large subset sizes (final
+    loss ~1e4x its own best-ever)."""
 
     def __init__(self, window: int = 1):
         self.window = max(1, int(window))
@@ -704,30 +778,36 @@ class _BestValidationTracker:
 
     ``update(metric, model)`` records one validation check (the metric is the
     val MAE; ``model`` is the live snapshot, JAX arrays are immutable so the
-    reference snapshots the current params). Non-finite metrics are IGNORED:
-    they update neither the best snapshot nor the no-improvement streak (a NaN
-    val score is a transient, not evidence of non-improvement).
+    reference snapshots the current params). An INELIGIBLE check -- a
+    non-finite metric, which :func:`_validation_parity_metric` returns as
+    +inf when any reaction identity or any reference-carrying density
+    species of the validation set failed -- is recorded as a NON-IMPROVING
+    check: it never becomes the best and it advances the no-improvement
+    streak, so ``patience`` is also the budget of consecutive failed checks
+    and a validation set that stops evaluating stops the run.
 
     ``should_stop(patience, min_delta)`` returns True once the last ``patience``
-    consecutive FINITE checks each failed to improve the running best by more
-    than ``min_delta`` (the streak is computed from the recorded finite-metric
-    history, so ``min_delta`` lives entirely in ``should_stop`` and a single
-    tracker can be probed at different thresholds). ``patience <= 0`` => never
-    stops (the documented no-op).
+    consecutive checks each failed to improve the running best by more than
+    ``min_delta`` (the streak is computed from the recorded metric history,
+    so ``min_delta`` lives entirely in ``should_stop`` and a single tracker
+    can be probed at different thresholds). The first check improves iff it
+    is finite. ``patience <= 0`` => never stops (the documented no-op).
     """
 
     def __init__(self):
         self.best_mae = float("inf")
         self.best_model = None
-        # Finite val metrics in arrival order; the no-improvement streak that
-        # drives early-stop is derived from this (using should_stop's min_delta),
-        # NOT stored, so min_delta is a should_stop-only concern.
+        # Val metrics in arrival order (+inf for an ineligible check; the
+        # attribute keeps its historical name for the resume set); the
+        # no-improvement streak that drives early-stop is derived from this
+        # (using should_stop's min_delta), NOT stored, so min_delta is a
+        # should_stop-only concern.
         self._finite_metrics: list = []
 
     def update(self, metric: float, model) -> None:
         m = float(metric)
         if not np.isfinite(m):
-            return                       # transient NaN/inf: ignore entirely
+            m = float("inf")             # ineligible: recorded, never the best
         self._finite_metrics.append(m)
         # The best SNAPSHOT is the numerically-lowest val metric seen so far
         # (the best-generalizing model), even when the last drop was tiny.
@@ -740,12 +820,18 @@ class _BestValidationTracker:
             return False                 # no-op: early-stop disabled
         patience = int(patience)
         md = float(min_delta)
-        # No-improvement streak: count trailing finite checks that each failed to
-        # beat the best-so-far (over the prefix BEFORE that check) by > min_delta.
+        # No-improvement streak: count trailing checks that each failed to
+        # beat the best-so-far (over the prefix BEFORE that check) by more
+        # than min_delta; an inf entry never beats anything, and the first
+        # check counts as an improvement only when it is finite.
         streak = 0
-        for i in range(len(self._finite_metrics) - 1, 0, -1):
-            best_prefix = min(self._finite_metrics[:i])
-            if self._finite_metrics[i] < best_prefix - md:
+        for i in range(len(self._finite_metrics) - 1, -1, -1):
+            m = self._finite_metrics[i]
+            if i == 0:
+                improved = bool(np.isfinite(m))
+            else:
+                improved = m < min(self._finite_metrics[:i]) - md
+            if improved:
                 break                    # this check improved -> streak ends
             streak += 1
             if streak >= patience:
@@ -835,7 +921,8 @@ def _build_validation_data(spec):
 
 
 def _validation_reaction_mae(model, val_mol_data, val_reactions,
-                             solver_config=None, *, energy_fn=None) -> float:
+                             solver_config=None, *, energy_fn=None,
+                             return_coverage=False):
     """In-loop held-out VALIDATION reaction-energy MAE (kcal/mol). WS3.
 
     For every species in ``val_mol_data`` compute a total energy via
@@ -846,11 +933,17 @@ def _validation_reaction_mae(model, val_mol_data, val_reactions,
     (the converged energy is identical). Then aggregate per-reaction errors against
     ``reaction_energy_ref`` with :func:`eval_holdout.reaction_mae_kcalmol`. A
     species whose energy is non-finite drops its reaction; with no finite
-    reactions the MAE is NaN (the tracker ignores it).
+    reactions the MAE is NaN (an all-NaN check is INELIGIBLE, +inf at the
+    caller, and advances the tracker's patience streak).
 
     ``energy_fn(model, mol_data)`` is an injectable seam: the default is
     ``total_energy_for_solver`` bound to ``solver_config``; tests pass a stub so
-    the pure MAE assembly runs with NO PySCF. Returns a Python float.
+    the pure MAE assembly runs with NO PySCF. Returns a Python float, or
+    ``(mae, n_used, n_expected)`` with ``return_coverage=True`` -- the counts
+    are reaction IDENTITIES (permuted/duplicate twins collapse to one), the
+    same denominator the MAE itself averages over, so ``n_used <
+    n_expected`` names exactly the loss of coverage that makes a check
+    ineligible.
     """
     from xcquinox.pipeline.eval_holdout import reaction_mae_kcalmol
     if energy_fn is None:
@@ -875,8 +968,109 @@ def _validation_reaction_mae(model, val_mol_data, val_reactions,
         except Exception:  # noqa: BLE001 -- a diverged species drops its reaction
             e = float("nan")
         energies_ha[name] = e if math.isfinite(e) else float("nan")
-    mae, _n_used, _n_nan = reaction_mae_kcalmol(energies_ha, val_reactions)
+    mae, n_used, n_dropped = reaction_mae_kcalmol(energies_ha, val_reactions)
+    if return_coverage:
+        return float(mae), int(n_used), int(n_used + n_dropped)
     return float(mae)
+
+
+class ValidationScore(NamedTuple):
+    """One validation check's metric with its coverage.
+
+    ``mae`` is ``+inf`` on an INELIGIBLE check -- any reaction identity lost
+    to a diverged species, or any reference-carrying density species whose
+    density pass failed -- so the tracker records the check as non-improving
+    and it advances the patience streak; the counts still state what was
+    lost. The density counts are ``(0, 0)`` when the check carries no
+    density term (weight 0, or no species holds a reference density), and
+    ``None`` when coverage is unknown (an injected stub returned the bare
+    MAE); unknown coverage never makes a check ineligible.
+    """
+
+    mae: float
+    reactions_used: int | None
+    reactions_expected: int | None
+    density_used: int
+    density_expected: int
+
+
+def _validation_score(mae, n_used, n_expected, density_used,
+                      density_expected) -> ValidationScore:
+    """Assemble a :class:`ValidationScore`, forcing ``+inf`` on incomplete
+    coverage (the eligibility rule above)."""
+    incomplete = (
+        (n_used is not None and n_expected is not None
+         and n_used < n_expected)
+        or density_used < density_expected
+    )
+    return ValidationScore(
+        float("inf") if incomplete else float(mae),
+        n_used, n_expected, density_used, density_expected)
+
+
+def _validation_parity_metric(model, spec, val_mol_data,
+                              val_reactions) -> ValidationScore:
+    """Executed-protocol validation metric: MAE + sqrt(w_rho) * density term.
+
+    The published validation loss (Dick & Fernandez-Serra 2021, the executed
+    form) is the mean absolute reaction-energy error PLUS sqrt(lambda_n)
+    times the mean over the density-carrying validation species of the
+    predicted-norm-relative density deviation
+    ``sqrt(sum_g w_g drho_g^2) / sum_g w_g rho_nn_g``, both evaluated on a
+    forward-only pass. ``spec.validation_density_weight`` is lambda_n
+    (20.0 in the v9 arms, the training density weight).
+
+    Returns a :class:`ValidationScore`. A check that LOSES coverage -- a
+    reaction identity dropped because a species diverged, or a
+    reference-carrying density species whose density pass failed -- is
+    INELIGIBLE (``mae = inf``): the surviving MAE would read as an
+    improvement while measuring less than the record states, so it never
+    becomes the best model and it advances the tracker's patience streak
+    (patience doubles as the budget of consecutive failed checks). The
+    density term is dropped entirely when the weight is 0 or no validation
+    species carries ``rho_ref_grid`` -- the byte-identical pre-L6 behavior
+    -- with density coverage ``(0, 0)``. The solver config is resolved
+    exactly as the training groups resolve it (loss kwargs override, spec
+    fallback), so the validation energy path equals the loss energy path.
+    """
+    w = float(getattr(spec, "validation_density_weight", 0.0) or 0.0)
+    lk = getattr(spec, "loss_kwargs_dict", None) or {}
+    solver_config = lk.get("solver_config") or getattr(
+        spec, "solver_config", None)
+    base = _validation_reaction_mae(
+        model, val_mol_data, val_reactions, solver_config=solver_config,
+        return_coverage=True)
+    if isinstance(base, tuple):
+        mae, n_used, n_expected = base
+    else:
+        # An injected seam (the tracked test stubs this function's callee
+        # with a bare float): coverage unknown, never ineligible.
+        mae, n_used, n_expected = float(base), None, None
+    if w <= 0.0:
+        return _validation_score(mae, n_used, n_expected, 0, 0)
+    with_refs = [(name, md) for name, md in val_mol_data.items()
+                 if md.get("rho_ref_grid") is not None]
+    if not with_refs:
+        return _validation_score(mae, n_used, n_expected, 0, 0)
+    terms = []
+    for _name, md in with_refs:
+        try:
+            rho_ref = jnp.asarray(md["rho_ref_grid"])
+            grid_w = jnp.asarray(md["grid_weights"])
+            rho_nn = oneshot_grid_density(
+                model, md, solver_config=solver_config, forward_only=True)
+            dev = float(
+                jnp.sqrt(jnp.sum(grid_w * (rho_nn - rho_ref) ** 2))
+                / jnp.sum(grid_w * rho_nn))
+        except Exception:  # noqa: BLE001 -- a failed species loses its term
+            continue
+        if math.isfinite(dev):
+            terms.append(dev)
+    if not terms:
+        return _validation_score(mae, n_used, n_expected, 0, len(with_refs))
+    score = mae + math.sqrt(w) * (sum(terms) / len(terms))
+    return _validation_score(score, n_used, n_expected,
+                             len(terms), len(with_refs))
 
 
 def _discard(path) -> None:
@@ -1502,6 +1696,11 @@ def _run_static_loop(spec, model, batch, loss, progress_callback):
     )
 
     for step in range(spec.n_steps):
+        batch = _stamp_fock_noise_update(batch, step)
+        # The loss is evaluated at the pre-step parameters; the tracker pairs
+        # the score with the snapshot that produced it, not with the updated
+        # parameters the step returns.
+        scored_model = model
         model, opt_state, loss_value, aux, grads = _train_step(
             model, opt_state, batch, loss, optimizer
         )
@@ -1509,7 +1708,7 @@ def _run_static_loop(spec, model, batch, loss, progress_callback):
         _abort_if_nonfinite(loss_value, aux, loop="batched/static", step=step,
                             grads=grads)
         losses.append(loss_py)
-        tracker.update(loss_py, model)
+        tracker.update(loss_py, scored_model)
         aux_log.append({"step": step, "loss": loss_py, "aux": aux})
         if progress_hook is not None:
             progress_hook(step + 1, spec.n_steps, loss_py)
@@ -1554,13 +1753,15 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
     aux_log = []
     tracker = _BestModelTracker()
     for step in range(spec.n_steps):
+        batch = _stamp_fock_noise_update(batch, step)
+        scored_model = model          # the parameters the loss is taken at
         model, opt_state, loss_value, components, grads = _normed_step(
             model, opt_state, batch)
         loss_py = float(loss_value)
         _abort_if_nonfinite(loss_value, components, loop="batched/lossnorm",
                             step=step, grads=grads)
         losses.append(loss_py)
-        tracker.update(loss_py, model)
+        tracker.update(loss_py, scored_model)
         eff_weights = {k: float(1.0 / norms[k]) for k in component_keys}
         aux_log.append({
             "step": step, "loss": loss_py, "aux": components,
@@ -1615,13 +1816,15 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
     opt_state = phase1_optimizer.init(eqx.filter(model, eqx.is_array))
 
     for step in range(balancing.phase1_steps):
+        batch = _stamp_fock_noise_update(batch, step)
+        scored_model = model          # the parameters the loss is taken at
         model, opt_state, loss_value, aux, grads = _train_step(
             model, opt_state, batch, phase1_loss, phase1_optimizer)
         loss_py = float(loss_value)
         _abort_if_nonfinite(loss_value, aux, loop="batched/twophase", step=step,
                             grads=grads)
         losses.append(loss_py)
-        tracker.update(loss_py, model)
+        tracker.update(loss_py, scored_model)
         aux_log.append({
             "step": step, "loss": loss_py, "aux": aux,
             "balancing_info": {"strategy": "two_phase", "phase": 1},
@@ -1640,13 +1843,15 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
 
     for step in range(phase2_steps):
         global_step = balancing.phase1_steps + step
+        batch = _stamp_fock_noise_update(batch, global_step)
+        scored_model = model          # the parameters the loss is taken at
         model, opt_state, loss_value, aux, grads = _train_step(
             model, opt_state, batch, loss, phase2_optimizer)
         loss_py = float(loss_value)
         _abort_if_nonfinite(loss_value, aux, loop="batched/twophase",
                             step=global_step, grads=grads)
         losses.append(loss_py)
-        tracker.update(loss_py, model)
+        tracker.update(loss_py, scored_model)
         aux_log.append({
             "step": global_step, "loss": loss_py, "aux": aux,
             "balancing_info": {"strategy": "two_phase", "phase": 2},
@@ -1810,6 +2015,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
     aux_log = []
     tracker = _BestModelTracker()
     for step in range(spec.n_steps):
+        batch = _stamp_fock_noise_update(batch, step)
         weights = jax.nn.softmax(log_weights) * n_tasks
         components, comp_values, model_grads = _model_grad_step(
             model, batch, weights)
@@ -1822,6 +2028,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
                 _task_gnorm_jits[k](model, batch, weights[i])
             )
         G = jnp.stack(per_task_gnorms)
+        scored_model = model          # the parameters the loss is taken at
         (model, opt_state, log_weights,
          weight_opt_state, loss_value) = _apply_updates(
             model, opt_state, log_weights, weight_opt_state,
@@ -1830,7 +2037,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
         _abort_if_nonfinite(loss_value, components, loop="batched/gradnorm",
                             step=step, grads=model_grads)
         losses_list.append(loss_py)
-        tracker.update(loss_py, model)
+        tracker.update(loss_py, scored_model)
         eff = {k: float(weights[i]) for i, k in enumerate(component_keys)}
         gn = {k: float(G[i]) for i, k in enumerate(component_keys)}
         aux_log.append({
@@ -1856,13 +2063,18 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
 # Density-dominant fixed channel weights (dpyscf: density L_n weight ~20,
 # atomization/reaction L_RE ~1, total-energy L_E ~0.01). Energy channels at 1.0,
 # density at 20.0, vxc at 1.0. Used when update_scheme="per_molecule" and the
-# spec sets no explicit channel_weights.
+# spec sets no explicit channel_weights. loss_Eatom defaults to 1.0 because the
+# L6 loss emits the atomic-anchor residual RAW (the 0.01 lambda_E is a yaml
+# channel weight there, not a default); it is NOT an energy channel below, so a
+# non-self-consistent group's nonsc scaling leaves the anchor at its own
+# weight, matching the executed protocol's unscaled atomic energy terms.
 _DEFAULT_CHANNEL_WEIGHTS = {
     "loss_AE": 1.0,
     "loss_BH76": 1.0,
     "loss_IP13": 1.0,
     "loss_vxc": 1.0,
     "loss_rho": 20.0,
+    "loss_Eatom": 1.0,
 }
 
 #: The energy channels: the ones a non-self-consistent group's ``nonsc_weight``
@@ -1933,6 +2145,22 @@ def _training_groups(spec: TrainingSpec) -> list:
                        "bh76": (), "ip13": (p,), "sc": sc,
                        "nonsc_species": marks})
 
+    # A loss that forms the atomization energy from the network's own atomic
+    # totals (L6) needs the compound's atoms IN the ae group: scoped to the
+    # compound alone, its AE term has no atom record to subtract and is
+    # skipped, so an ae group would train the compound's density and
+    # potential but never its atomization energy. The anchor-dict losses
+    # (L5, A/B/C) form the AE from fixed atomic totals and keep the compound
+    # alone. Neutral records only, the convention of the anchor groups.
+    from xcquinox.pipeline.losses import LOSS_REGISTRY
+    network_ae = bool(getattr(LOSS_REGISTRY.get(spec.loss_name),
+                              "forms_ae_from_network_atoms", False))
+    neutral_atoms: dict = {}
+    for m in spec.molecules:
+        comp = dict(m.atom_composition)
+        if sum(comp.values()) == 1 and int(getattr(m, "charge", 0)) == 0:
+            neutral_atoms.setdefault(next(iter(comp)), m)
+
     for m in spec.molecules:
         # Skip aux-forced polyatomics: a reaction-form AE compound
         # (ae_as_reactions=True) or a BH76/IP13 reaction intermediate carries a
@@ -1943,7 +2171,19 @@ def _training_groups(spec: TrainingSpec) -> list:
         if (_n_atoms(m) > 1 and m.name in targets
                 and m.name not in aux_only):
             sc, marks = _flag(m.name)
-            groups.append({"label": f"ae:{m.name}", "species": (m,),
+            species = (m,)
+            if network_ae:
+                elements = list(dict(m.atom_composition))
+                missing = [Z for Z in elements if Z not in neutral_atoms]
+                if missing:
+                    raise ValueError(
+                        f"ae:{m.name}: the loss {spec.loss_name!r} forms the "
+                        "atomization energy from the network's atomic totals, "
+                        f"and spec.molecules carries no neutral single-atom "
+                        f"record for {missing}; add the atom(s) or list the "
+                        "compound in aux_only_names")
+                species = (m, *(neutral_atoms[Z] for Z in elements))
+            groups.append({"label": f"ae:{m.name}", "species": species,
                            "bh76": (), "ip13": (), "sc": sc,
                            "nonsc_species": marks})
 
@@ -1972,10 +2212,143 @@ def _training_groups(spec: TrainingSpec) -> list:
     return groups
 
 
+def _channel_pre_weights(spec: TrainingSpec) -> tuple:
+    """``(vxc_weight, density_weight)`` for a per-molecule group loss: 1.0 for
+    a channel the run's effective channel weights keep, 0.0 for one they
+    zero. The outer channel weights are the sole weighting control, but a
+    zero-weighted channel must not be BUILT either: the loss gates its
+    potential and density terms on a positive pre-weight, so a channel whose
+    weight is 0 costs no SCF and cannot poison the total with a non-finite
+    term that 0 times NaN would carry. The nonsc scaling of the loop touches
+    energy channels only, so the merged weights decide here. A spec stub
+    without the dict (a TrainingSpec always carries it) reads as the merged
+    defaults: both channels kept, the pre-C2 forced 1.0."""
+    cw = _effective_channel_weights(
+        getattr(spec, "channel_weights_dict", None) or {})
+    return (1.0 if float(cw.get("loss_vxc", 1.0)) > 0.0 else 0.0,
+            1.0 if float(cw.get("loss_rho", 1.0)) > 0.0 else 0.0)
+
+
+def _superset_loss_and_batch(spec: TrainingSpec, batch: dict):
+    """ONE loss + the UNION batch for the masked-superset assembly.
+
+    The per-group scoping that ``_build_group_loss_and_batch`` bakes into
+    each group's loss STATIC (reactions, pairs, anchor allowlist, aux and
+    radical lists -- one compiled assembly per group) is recast here as
+    per-group traced masks over a single run-level loss, so the assembly
+    compiles ONCE for the whole run (the group axis stops multiplying the
+    process mapping working set). Numerically the channels reduce as
+    sum(mask*term)/sum(mask) with the all-masked -> exactly-0.0 rule --
+    the semantics the scoped losses produced by construction (proven by
+    the equivalence suite; see losses.GroupView for the alignments).
+
+    Requires ``pad_group_to_common_shape`` (the union species must share
+    jit classes) and REFUSES ``respect_sc_flag``: the non-self-consistent
+    marker selects the ENERGY GRAPH per (group, species) -- a record copy
+    flagged one-shot in one group and self-consistent in another cannot be
+    one pytree -- so those runs keep the scoped path unchanged.
+    """
+    if bool(getattr(spec, "respect_sc_flag", False)):
+        raise ValueError(
+            "superset_assembly cannot run under respect_sc_flag: the "
+            "non-self-consistent marker selects the energy graph per "
+            "(group, species) and is not expressible as a traced mask; "
+            "the per-group scoped path is used instead")
+    if not bool(getattr(spec, "pad_group_to_common_shape", False)):
+        raise ValueError(
+            "superset_assembly requires pad_group_to_common_shape: the "
+            "union species must collapse to one jit class per spin type")
+    lk = dict(spec.loss_kwargs_dict)
+    # The masked channels are L6_letter_parity's (the Letter objective's
+    # own loss); other losses keep the scoped path.
+    from xcquinox.pipeline.losses import LOSS_REGISTRY
+    if not getattr(LOSS_REGISTRY.get(spec.loss_name),
+                   "supports_group_view", False):
+        raise ValueError(
+            f"superset_assembly requires a loss whose compute_components "
+            f"accepts group_view (L6_letter_parity); {spec.loss_name!r} "
+            f"keeps the per-group scoped path")
+    lk["vxc_weight"], lk["density_weight"] = _channel_pre_weights(spec)
+    lk["solver_config"] = (spec.loss_kwargs_dict.get("solver_config")
+                           or spec.solver_config)
+    lk.pop("pbe_anchor_weight", None)
+    lk.pop("pbe_anchor_sample", None)
+    union_loss = make_loss(spec.loss_name, molecules=spec.molecules, **lk)
+    union_batch = {
+        "mol_data": batch["mol_data"],
+        "targets": batch["targets"],
+        "atom_energies": batch["atom_energies"],
+    }
+    return union_loss, union_batch
+
+
+def _group_view(spec: TrainingSpec, group: dict, union_loss, batch: dict):
+    """The per-group traced mask bundle aligned to the union loss's
+    structures. Mirrors the scoping rules of _build_group_loss_and_batch
+    exactly: the group's reactions/pairs/compounds/anchors/records keep
+    their scoped-loss participation, everything else zeroes out."""
+    species = group["species"]
+    present = {s.name for s in species}
+    group_atoms = {
+        next(iter(dict(s.atom_composition)))
+        for s in species
+        if sum(dict(s.atom_composition).values()) == 1
+    }
+
+    def jmask(flags):
+        return jnp.asarray([1.0 if f else 0.0 for f in flags])
+
+    # bh76 / ip13: the group's entries (static None-ref skips mirrored --
+    # the masked channels index masks in post-skip order)
+    rxn_names = {r["name"] for r in group["bh76"]}
+    bh76 = jmask([(_rname in rxn_names)
+                  for (_rname, _r, _p, _c, e_ref) in union_loss.bh76_reactions
+                  if e_ref is not None]) \
+        if union_loss.bh76_reactions else jnp.zeros((0,))
+    ip_names = {p["name"] for p in group["ip13"]}
+    ip13 = jmask([(_pname in ip_names)
+                  for (_pname, _n, _c, ip_ref) in union_loss.ip13_pairs
+                  if ip_ref is not None]) \
+        if union_loss.ip13_pairs else jnp.zeros((0,))
+
+    # AE: compounds of the group that pass the GROUP's atom-availability
+    # rule (the scoped loss judged availability against the group's atoms;
+    # an ae group carries its compound's neutral atoms, see _training_groups,
+    # so its compound trains the AE; a reaction group's compound does so only
+    # when the reaction happens to carry every atom)
+    ae = jmask([
+        (union_loss.mol_names[i] in present)
+        and (set(dict(union_loss.compositions[i])) <= group_atoms)
+        for i in union_loss.compound_idx
+    ]) if union_loss.compound_idx else jnp.zeros((0,))
+
+    # eatom: the group's unmarked atoms inside the run allowlist, in the
+    # union anchor order
+    run_reg = spec.loss_kwargs_dict.get("regularize_atom_syms")
+    allowed = (None if run_reg is None else set(run_reg))
+    eatom = jmask([
+        (Z in group_atoms) and (allowed is None or Z in allowed)
+        for Z in union_loss.ordered_anchor_syms()
+    ])
+
+    # rho: the group's records, in rho_records order
+    rho = jmask([union_loss.mol_names[i] in present
+                 for i, _factor in union_loss.rho_records])
+
+    # vxc: the group's species, in the aux-channel iteration order minus
+    # the static ONESHOT skips (none under this path -- respect_sc refused)
+    vxc_idx = union_loss._iter_idx_for_aux_channels()
+    vxc_records = jmask([union_loss.mol_names[i] in present for i in vxc_idx])
+
+    return GroupView(ae=ae, bh76=bh76, ip13=ip13, eatom=eatom,
+                     rho=rho, vxc_records=vxc_records)
+
+
 def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     """Scoped loss + sub-batch for one group. Channels are RAW (vxc/density
-    pre-weights forced to 1.0), the outer fixed ``channel_weights`` are the
-    sole weighting control in per-molecule mode."""
+    pre-weights 1.0, or 0.0 for a channel the run's channel weights zero, see
+    :func:`_channel_pre_weights`); the outer fixed ``channel_weights`` are the
+    sole weighting control in per_molecule mode."""
     name_to_idx = {m.name: i for i, m in enumerate(spec.molecules)}
     species = group["species"]
     sub_mol_data = tuple(batch["mol_data"][name_to_idx[s.name]] for s in species)
@@ -1996,8 +2369,7 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
             for s, md in zip(species, sub_mol_data))
 
     lk = dict(spec.loss_kwargs_dict)
-    lk["vxc_weight"] = 1.0
-    lk["density_weight"] = 1.0
+    lk["vxc_weight"], lk["density_weight"] = _channel_pre_weights(spec)
     lk["bh76_reactions"] = list(group["bh76"])
     lk["ip13_pairs"] = list(group["ip13"])
     lk["solver_config"] = (spec.loss_kwargs_dict.get("solver_config")
@@ -2029,17 +2401,33 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     if lk.get("aux_only_names"):
         lk["aux_only_names"] = tuple(a for a in lk["aux_only_names"]
                                      if a in present)
+    # Scoped to the group exactly as aux_only_names is: the run-level list
+    # names radicals of the WHOLE pool, and under per-molecule updates a
+    # group missing one refused its sub-loss outright (cluster job 2374311,
+    # the v9 preflight compile-smoke). Inside the loss the list only sets
+    # rho-record weights for compounds in the set, so the group's sub-loss
+    # equals the full-pool semantics restricted to the group; run-level
+    # construction still validates the whole list against the whole pool,
+    # so a typo'd name keeps refusing there.
+    if lk.get("radical_species"):
+        lk["radical_species"] = tuple(r for r in lk["radical_species"]
+                                      if r in present)
     lk.pop("pbe_anchor_weight", None)
     lk.pop("pbe_anchor_sample", None)
 
     sub_loss = make_loss(spec.loss_name, molecules=species, **lk)
     nonsc_weight = float(getattr(spec, "nonsc_weight", 1.0))
-    if marked and lk.get("regularize_atom_syms") and nonsc_weight > 0.0:
+    if (marked and lk.get("regularize_atom_syms") and nonsc_weight > 0.0
+            and not getattr(sub_loss, "emits_eatom_channel", False)):
         # The loop scales this group's energy channels by nonsc_weight, and
         # the atomic regularizer of the group's unmarked atoms rides in the
         # AE channel; the published script adds those atoms' energy terms
         # unscaled, so the regularizer's weight is raised by the same factor
-        # and the term stays at the run's own value.
+        # and the term stays at the run's own value. Skipped for a loss
+        # with emits_eatom_channel (L6): its anchor residual is a separate
+        # loss_Eatom channel outside _ENERGY_CHANNELS -- already unscaled,
+        # and its 0.01 lives in the channel weights, so dividing w_atomic
+        # by nonsc_weight would double-compensate.
         w_atomic = getattr(sub_loss, "w_atomic", None)
         if w_atomic is not None:
             lk["w_atomic"] = float(w_atomic) / nonsc_weight
@@ -2057,7 +2445,8 @@ def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
 def _require_minao_seed(prepared) -> None:
     """seed_mix_atomic needs dm_minao on every molecule of every group; a missing
     one is refused before the first update, by name."""
-    for label, _gloss, gbatch, _gcw in prepared:
+    for entry in prepared:
+        label, gbatch = entry[0], entry[2]
         for md in gbatch["mol_data"]:
             if md.get("dm_minao") is None:
                 raise ValueError(
@@ -2105,6 +2494,50 @@ def _mix_seed_batch(gbatch: dict, rng) -> dict:
     out = dict(gbatch)
     out["mol_data"] = tuple(mixed)
     return out
+
+
+def _epoch_end_score(prepared, model, relative, pad_target, superset) -> float:
+    """The exact epoch-end score of ``model``: the mean over every training
+    group of its channel-weighted total, from a value-only pass at fixed
+    inputs.
+
+    The per-update group losses are each taken at a different parameter
+    vector, on a mixed seed and a fresh Fock-noise draw, so neither their
+    trailing mean nor the last of them scores the parameters an epoch ends
+    with. This pass scores those parameters on the prepared group batches as
+    built -- the unmixed seed, no update counter stamped, so the Fock-noise
+    draw is the keyless one and identical from epoch to epoch -- and the
+    scores of successive epochs are therefore comparable. ``prepared`` is
+    the loop's own list of ``(label, loss, batch, [view,] weights)`` tuples.
+    """
+    totals = []
+    for entry in prepared:
+        if superset:
+            _label, gloss, gbatch, gview, gcw = entry
+        else:
+            _label, gloss, gbatch, gcw = entry
+            gview = None
+        total, _comps = defused_value(gloss, model, gbatch, gcw, relative,
+                                      pad_target=pad_target, group_view=gview)
+        totals.append(float(total))
+    return float(np.mean(totals))
+
+
+def _rebuild_epoch_tracker(tracker):
+    """The restored train-loss tracker at window 1, the epoch-score window.
+
+    A set written by a loop that tracked the trailing mean of the per-group
+    losses carries a window of the group count and a best that is not an
+    epoch score; carrying that best over would let two scores of different
+    definitions compete. Only a window-1 set keeps its best."""
+    if tracker.window == 1:
+        return tracker
+    warnings.warn(
+        f"the resume set's train-loss tracker has window {tracker.window} "
+        "(the trailing mean of per-group losses); the best-loss snapshot is "
+        "restarted on the exact epoch-end score (window 1)",
+        RuntimeWarning, stacklevel=2)
+    return _BestModelTracker(window=1)
 
 
 def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
@@ -2160,7 +2593,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     resume_enabled = checkpoint_every > 0
     checkpoint_dir = spec.checkpoint_dir
 
-    def _step(model, opt_state, gbatch, gloss, gcw):
+    def _step(model, opt_state, gbatch, gloss, gcw, group_view=None):
         # De-fused value-and-gradient: identical (loss, grads) to the fused
         # eqx.filter_value_and_grad(scalar_loss) but each molecule's SCF compiles
         # at per-molecule size, so the 6-311++G(3df,2pd)+grid3 groups no longer
@@ -2168,8 +2601,15 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         # filter_jit -- the group-wide fusion is exactly what is removed; the
         # utility jits per molecule internally (see xcquinox.pipeline.defused_grad),
         # and is loss-agnostic (any AlecLoss, via the shared energy-stack hook).
-        (loss_val, comps), grads = defused_value_and_grad(
-            gloss, model, gbatch, gcw, relative, pad_target=pad_target)
+        # group_view: the masked-superset path's per-group masks (None keeps
+        # the scoped-loss behavior).
+        if group_view is None:
+            (loss_val, comps), grads = defused_value_and_grad(
+                gloss, model, gbatch, gcw, relative, pad_target=pad_target)
+        else:
+            (loss_val, comps), grads = defused_value_and_grad(
+                gloss, model, gbatch, gcw, relative, pad_target=pad_target,
+                group_view=group_view)
         updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         model = eqx.apply_updates(model, updates)
         return model, opt_state, loss_val, comps, grads
@@ -2183,11 +2623,24 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                     for k, v in cw.items()}
         return cw
 
-    prepared = [
-        (g["label"], *_build_group_loss_and_batch(spec, g, batch),
-         _group_weights(g))
-        for g in groups
-    ]
+    # The masked-superset assembly: one union loss serves every group,
+    # each group carrying a traced GroupView (the scoping recast as data;
+    # compiled once per run instead of once per group). Refused specs keep
+    # the scoped path -- _superset_loss_and_batch raises on entry.
+    superset = bool(getattr(spec, "superset_assembly", False))
+    if superset:
+        union_loss, union_batch = _superset_loss_and_batch(spec, batch)
+        prepared = [
+            (g["label"], union_loss, union_batch,
+             _group_view(spec, g, union_loss, batch), _group_weights(g))
+            for g in groups
+        ]
+    else:
+        prepared = [
+            (g["label"], *_build_group_loss_and_batch(spec, g, batch),
+             _group_weights(g))
+            for g in groups
+        ]
 
     mix_seed = bool(getattr(spec, "seed_mix_atomic", False))
     if mix_seed:
@@ -2202,20 +2655,20 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     order = np.arange(n_groups)
     losses_list: list = []
     aux_log: list = []
-    tracker = _BestModelTracker(window=n_groups)  # epoch-scale trailing mean
+    # One entry per epoch: the exact epoch-end score of _epoch_end_score.
+    tracker = _BestModelTracker(window=1)
     update = 0
     loss_py = float("nan")
 
     # WS3: held-out validation -> early-stop + validation-best snapshot. A no-op
     # when validate_every<=0 / no val data (_build_validation_data -> None,None):
-    # the loop is then byte-identical to before. solver_config matches training
-    # so the val energy path == the loss energy path.
+    # the loop is then byte-identical to before. The metric resolves the solver
+    # config exactly as the training groups do, so the val energy path == the
+    # loss energy path.
     val_every = int(getattr(spec, "validate_every", 0))
     val_mol_data, val_reactions = _build_validation_data(spec)
     val_enabled = val_every > 0 and val_mol_data is not None
     val_tracker = _BestValidationTracker() if val_enabled else None
-    val_solver_config = (spec.loss_kwargs_dict.get("solver_config")
-                         or spec.solver_config)
     early_stopped = False
     epochs_run = 0
 
@@ -2267,7 +2720,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             if mix_rng is not None:
                 mix_rng.set_state(restored["mix_rng_state"])
             order[:] = restored["order"]     # continue the killed run's perm
-            tracker = restored["train_tracker"]
+            tracker = _rebuild_epoch_tracker(restored["train_tracker"])
             losses_list = restored["losses"]
             aux_log = restored["aux_log"]
             early_stopped = restored["early_stopped"]
@@ -2349,16 +2802,20 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         for epoch in range(start_epoch, n_epochs):
             rng.shuffle(order)
             for gi in order:
-                label, gloss, gbatch, gcw = prepared[gi]
+                if superset:
+                    label, gloss, gbatch, gview, gcw = prepared[gi]
+                else:
+                    label, gloss, gbatch, gcw = prepared[gi]
+                    gview = None
                 if mix_seed:
                     gbatch = _mix_seed_batch(gbatch, mix_rng)
+                gbatch = _stamp_fock_noise_update(gbatch, update)
                 model, opt_state, loss_val, comps, grads = _step(
-                    model, opt_state, gbatch, gloss, gcw)
+                    model, opt_state, gbatch, gloss, gcw, group_view=gview)
                 loss_py = float(loss_val)
                 _abort_if_nonfinite(loss_val, comps, loop="per_molecule",
                                     step=update, group=label, grads=grads)
                 losses_list.append(loss_py)
-                tracker.update(loss_py, model)
                 # Per-update RSS/HWM snapshot: aux_log.pkl then carries the
                 # full memory-vs-update curve (retention shows in rss_gb,
                 # transient peaks in hwm_gb) for post-mortem OOM diagnosis.
@@ -2403,20 +2860,36 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                     "lr": new_lr,
                     "update_scheme": "per_molecule",
                 })
+            # The best-loss snapshot: the parameters this epoch ends with,
+            # scored on every group at fixed inputs (the plateau controller
+            # above keeps the epoch mean of the group losses, the reference
+            # protocol's scheduler input).
+            epoch_score = _epoch_end_score(prepared, model, relative,
+                                           pad_target, superset)
+            tracker.update(epoch_score, model)
+            aux_log.append({
+                "step": update, "epoch": epoch, "group": "__epoch_score__",
+                "epoch_score": epoch_score,
+                "update_scheme": "per_molecule",
+            })
             # Validation check every `validate_every` epochs.
             if val_enabled and (epoch + 1) % val_every == 0:
                 # RSS bracketing the validation eval: a boundary memory burst
                 # (fresh kernels for the val set) appears as post-minus-pre.
                 rss_pre_val, _ = read_rss_gb()
-                val_mae = _validation_reaction_mae(
-                    model, val_mol_data, val_reactions,
-                    solver_config=val_solver_config)
+                score = _validation_parity_metric(
+                    model, spec, val_mol_data, val_reactions)
+                val_mae = score.mae
                 rss_post_val, hwm_post_val = read_rss_gb()
                 val_tracker.update(val_mae, model)
                 aux_log.append({
                     "step": update, "epoch": epoch, "group": "__validation__",
                     "val_mae_kcalmol": (float(val_mae)
                                         if np.isfinite(val_mae) else None),
+                    "val_reactions_used": score.reactions_used,
+                    "val_reactions_expected": score.reactions_expected,
+                    "val_density_used": score.density_used,
+                    "val_density_expected": score.density_expected,
                     "update_scheme": "per_molecule",
                     "rss_gb_pre_val": rss_pre_val,
                     "rss_gb_post_val": rss_post_val,
@@ -2484,9 +2957,77 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
 # run_training -- dispatcher
 # ---------------------------------------------------------------------------
 
+def _batched_vxc_weight(spec: TrainingSpec) -> float:
+    """The vxc pre-weight a BATCHED loss builds from: the spec's
+    ``vxc_weight`` loss kwarg, else the loss class's declared default.
+
+    ``channel_weights`` is documented per-molecule-only and ignored by the
+    batched loops (TrainingSpec's own note), so the batched knob is the loss
+    constructor's. Every loss that carries the kwarg today defaults it to
+    0.0; a loss without the kwarg cannot build the channel at all, and an
+    unreadable signature reads as 0 rather than refusing a legitimate run.
+    """
+    import inspect
+
+    from xcquinox.pipeline.losses import LOSS_REGISTRY
+
+    lk = getattr(spec, "loss_kwargs_dict", None) or {}
+    if "vxc_weight" in lk:
+        return float(lk["vxc_weight"])
+    cls = LOSS_REGISTRY.get(getattr(spec, "loss_name", ""))
+    if cls is None:
+        return 0.0
+    try:
+        default = inspect.signature(cls).parameters["vxc_weight"].default
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    if default is inspect.Parameter.empty:
+        return 0.0
+    return float(default)
+
+
+def _preflight_refusals(spec: TrainingSpec) -> None:
+    """Refuse, before any model or batch is built, settings combinations
+    that cannot train as configured.
+
+    A nonzero vxc channel with a density-matrix-dependent descriptor: the
+    vxc supervision target is built at frozen descriptor features, but a
+    DM-dependent descriptor's features respond to the density matrix the
+    solver is solving for, so the channel would supervise toward a surrogate
+    of the executed protocol. The knob read is the one the scheme actually
+    builds the channel from -- the effective channel weights in the
+    per-molecule scheme (the outer weights are the sole control there; the
+    group losses take their pre-weights from them), the loss's own
+    ``vxc_weight`` in the batched schemes. A zero weight passes in both: a
+    zero-weight channel is never built at all.
+    """
+    dm = [d.describe() for d in spec.arch.materialize_descriptors()
+          if getattr(d, "density_matrix_dependent", False)]
+    if not dm:
+        return
+    if getattr(spec, "update_scheme", "batched") == "per_molecule":
+        cw = _effective_channel_weights(spec.channel_weights_dict)
+        vxc = float(cw.get("loss_vxc", 1.0))
+        knob = "effective channel weight loss_vxc"
+    else:
+        vxc = _batched_vxc_weight(spec)
+        knob = ("loss kwarg vxc_weight (channel_weights is ignored in "
+                "the batched schemes)")
+    if vxc > 0.0:
+        raise ValueError(
+            f"loss_vxc is active at {vxc:g} ({knob}) while the architecture "
+            f"declares density-matrix-dependent descriptors "
+            f"({'; '.join(dm)}): the vxc supervision target is built at "
+            "frozen features, but these descriptors' features respond to "
+            "the density matrix the solver is solving for, so the channel "
+            "would train toward a surrogate. Set the vxc weight to 0 or "
+            "use geometry-only descriptors.")
+
+
 def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
     """Train AlecGGAModel end-to-end. Dispatches to strategy-specific loop."""
     spec.validate()
+    _preflight_refusals(spec)
     model = _build_model(spec)
     loss = make_loss(
         spec.loss_name,

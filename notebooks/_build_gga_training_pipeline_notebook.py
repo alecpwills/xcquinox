@@ -1074,6 +1074,76 @@ print(f"Built {{len(specs)}} training specs")
     return new_code_cell(source)
 
 
+def build_cell_17b_fidelity_certificate():
+    """Code cell between the specs and the training loop: the fidelity
+    certificates the training stage requires beside each pretrain checkpoint.
+
+    ``run_training`` refuses a pretrain checkpoint without a certificate
+    (``train._require_fidelity_certificate``), the gate the cluster harness
+    applies, so the notebook writes one the way the anchor notebook does: the
+    pretrained pair is measured against its parent functional on the three
+    training entities at the run's identity, the verdict is written beside the
+    checkpoint, and enforcement is off with the reason on the record because
+    the example pretrains on grid samples to demonstrate the flow. The
+    on-node gate proceeds on the waiver; the record layers (validate_run, the
+    figure suite) still require PASS and refuse a run certified this way.
+    """
+    source = r"""# The training stage refuses a pretrain checkpoint without a fidelity
+# certificate (train._require_fidelity_certificate), the gate the cluster
+# harness applies: the pretrained pair is measured against its parent
+# functional on a set of systems at the run's identity, and the verdict is
+# written beside the checkpoint (cluster/fidelity.py). The certificate reads
+# the run identity and the tolerances off a grid configuration; this
+# notebook has none, so that surface is supplied directly. The oracle set is
+# the three training entities of Cell 14 without their external data (the
+# certificate builds the parent's own record), the free atoms under the
+# certificate's canonical names so the atomization terms can be formed. The
+# example pretrains on the samples of the training grid to demonstrate the
+# flow, so enforcement is off with the reason on the record: the verdict is
+# computed, written and printed, the on-node gate proceeds on the waiver, and
+# a run certified this way cannot enter the record layers (validate_run, the
+# figure suite), which require PASS.
+import dataclasses as _dc
+from types import SimpleNamespace as _NS
+from xcquinox.pipeline.cluster import fidelity as _fidelity
+
+_CERT_OVERRIDE_REASON = (
+    "step-4 example: the networks are pretrained on the samples of the "
+    "training grid to demonstrate the flow; the certificate is recorded, "
+    "not enforced")
+
+def _certificate_config(arch_name):
+    return _NS(
+        sweep=_NS(arch=(arch_name,)),
+        inputs=_NS(basis=BASIS, grid_level=GRID_LEVEL, density_fit=False,
+                   auxbasis=None, orientation_lock_strength=0.0),
+        pretrain=_NS(seed=42),
+        fidelity=_NS(tol_AE=1.0, tol_atom=1.0, tol_AE_aggregate="max",
+                     tol_AE_max_backstop=2.0,
+                     override_reason=_CERT_OVERRIDE_REASON, enforce=False),
+        use_polarized_correlation=False,
+        model=None,
+    )
+
+def _certificate_name(_ms):
+    if len(_ms.atom_composition) == 1 and _ms.atom_composition[0][1] == 1:
+        return _fidelity.atom_system_name(_ms.atom_composition[0][0], 0)
+    return _ms.name
+
+_certificate_oracle_set = tuple(
+    _dc.replace(_ms, name=_certificate_name(_ms), external_data_path=None)
+    for _ms in mol_specs)
+
+for arch_name in ARCH_NAMES:
+    _cert = _fidelity.fidelity_certificate(
+        _certificate_config(arch_name), CHECKPOINT_BASE, arch_name,
+        oracle_set=_certificate_oracle_set, log=print)
+    print(f"[{arch_name}] fidelity certificate: {_cert['verdict']} -- "
+          f"{_cert['summary']}")
+"""
+    return new_code_cell(source)
+
+
 def build_cell_18_training_loop():
     """Section 5 Cell 18 -- serial training loop over all 72 specs.
 
@@ -2208,6 +2278,7 @@ def main(
         build_cell_15_precompute_sanity(),
         build_cell_16_training_md(),
         build_cell_17_training_specs(loss_names),
+        build_cell_17b_fidelity_certificate(),
         build_cell_18_training_loop(),
         build_cell_19_training_loss_plot(),
         build_cell_20_aux_inspection(),

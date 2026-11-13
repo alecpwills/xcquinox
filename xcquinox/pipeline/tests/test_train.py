@@ -1900,6 +1900,52 @@ def test_a_zero_weight_drops_the_non_sc_group(training_batch_info,
         assert not any(m["has_mark"] for m in rec["molecules"])
 
 
+def test_a_group_slices_radical_species_to_its_own_members():
+    """Under per-molecule updates every group's sub-loss is built from the
+    run-level loss kwargs, so run-level radical_species naming radicals that
+    sit outside a group used to refuse that group's build outright (the v9
+    parity preflight: ['CH', 'HO'] refused in the loss's own pool check).
+    The builder slices the tuple to the species the group actually carries
+    -- the aux_only_names idiom -- so an empty scope stays empty, while a
+    name absent from the whole pool is still refused at the loss level and
+    the run-level typo guard keeps its teeth."""
+    from types import SimpleNamespace
+
+    from xcquinox.pipeline.losses import make_loss
+    from xcquinox.pipeline.train import _build_group_loss_and_batch
+
+    ch = MoleculeSpec(name="CH", atom="C 0 0 0; H 0 0 1.1",
+                      atom_composition=(("C", 1), ("H", 1)))
+    ho = MoleculeSpec(name="HO", atom="O 0 0 0; H 0 0 0.97",
+                      atom_composition=(("O", 1), ("H", 1)))
+    pool = (h2o_molecule(), h_atom(), o_atom(), ch, ho)
+    spec = SimpleNamespace(
+        molecules=pool, loss_name="L6_letter_parity",
+        loss_kwargs_dict={"radical_species": ("CH", "HO")},
+        solver_config=None, respect_sc_flag=False, nonsc_weight=1.0)
+    batch = {"mol_data": tuple({"name": m.name} for m in pool),
+             "targets": {}, "atom_energies": {}}
+
+    # the reaction group carries CH but not HO
+    group = {"label": "bh76:r1", "sc": True,
+             "species": (h2o_molecule(), h_atom(), o_atom(), ch),
+             "bh76": [], "ip13": []}
+    loss, _ = _build_group_loss_and_batch(spec, group, batch)
+    assert loss.radical_species == ("CH",)
+
+    # a group carrying neither radical slices to the empty tuple
+    atoms_only = {"label": "bh76:r1", "sc": True,
+                  "species": (h2o_molecule(), h_atom(), o_atom()),
+                  "bh76": [], "ip13": []}
+    loss_none, _ = _build_group_loss_and_batch(spec, atoms_only, batch)
+    assert loss_none.radical_species == ()
+
+    # a name in no group is still refused by the loss's own validation
+    with pytest.raises(ValueError, match="radical_species"):
+        make_loss("L6_letter_parity", molecules=pool,
+                  radical_species=("CH", "XXNOPE"))
+
+
 def test_a_marked_group_scopes_its_regularizer_and_keeps_its_weight(
         training_batch_info):
     """The group builder marks only the species the spec lists for a
@@ -2563,3 +2609,223 @@ def test_per_molecule_loop_steps_the_plateau_on_the_epoch_mean(
     assert meta_off["optimizer"] == "adamw_linear"
 
 
+
+
+# ---------------------------------------------------------------------------
+# Fock-noise keys: the molecule id at the batch build, the update counter per
+# step, both as traced 0-d int32 arrays.
+# ---------------------------------------------------------------------------
+
+def test_fock_noise_stamps_mol_ids_and_update_counter():
+    import jax.numpy as jnp
+    from xcquinox.pipeline.solver_manual import (
+        FOCK_NOISE_MOL_ID_KEY, FOCK_NOISE_UPDATE_KEY)
+    from xcquinox.pipeline.train import (
+        _stamp_fock_noise_mol_ids, _stamp_fock_noise_update)
+    arr = np.ones((2, 2))
+    records = [{"name": "A", "dm_seed": arr}, {"name": "B", "dm_seed": arr}]
+    stamped = _stamp_fock_noise_mol_ids(records)
+    assert [int(md[FOCK_NOISE_MOL_ID_KEY]) for md in stamped] == [0, 1]
+    for md in stamped:
+        assert md[FOCK_NOISE_MOL_ID_KEY].dtype == jnp.int32
+        assert md[FOCK_NOISE_MOL_ID_KEY].shape == ()
+        assert md["dm_seed"] is arr          # arrays shared, dicts copied
+    assert FOCK_NOISE_MOL_ID_KEY not in records[0]
+    batch = {"mol_data": tuple(stamped), "targets": {}}
+    out = _stamp_fock_noise_update(batch, 7)
+    assert all(int(md[FOCK_NOISE_UPDATE_KEY]) == 7 for md in out["mol_data"])
+    assert all(md[FOCK_NOISE_UPDATE_KEY].dtype == jnp.int32 for md in out["mol_data"])
+    assert all(md[FOCK_NOISE_MOL_ID_KEY] is s[FOCK_NOISE_MOL_ID_KEY]
+               for md, s in zip(out["mol_data"], stamped))
+    assert out["targets"] is batch["targets"]
+    assert FOCK_NOISE_UPDATE_KEY not in stamped[0]
+
+
+def test_per_molecule_loop_stamps_one_update_counter_per_step(
+        training_batch_info, monkeypatch):
+    """Every update of the per-molecule loop stamps its own counter, in
+    order, on a batch whose records carry the molecule ids of the build."""
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.solver_manual import FOCK_NOISE_MOL_ID_KEY
+    from xcquinox.pipeline.train import run_training, _training_groups
+    seen = []
+    real = train_mod._stamp_fock_noise_update
+
+    def _recording(batch, update):
+        seen.append((int(update),
+                     [int(md[FOCK_NOISE_MOL_ID_KEY]) for md in batch["mol_data"]]))
+        return real(batch, update)
+
+    monkeypatch.setattr(train_mod, "_stamp_fock_noise_update", _recording)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=2, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False,
+        )
+        n_groups = len(_training_groups(spec))
+        run_training(spec)
+    assert [u for u, _ids in seen] == list(range(2 * n_groups))
+    n_mol = len(spec.molecules)
+    for _u, ids in seen:
+        assert ids and all(0 <= i < n_mol for i in ids)
+
+
+# ---------------------------------------------------------------------------
+# C2: validation eligibility, the training-entry preflight, the epoch score,
+# the L6 ae-group composition, the PYSCFAD+FULL refusal
+# ---------------------------------------------------------------------------
+
+_KCAL_PER_HA = 627.5094740631
+
+
+def test_validation_check_that_loses_a_reaction_is_ineligible(monkeypatch):
+    """A diverged validation species drops its reaction identity; the check
+    is INELIGIBLE (mae +inf, coverage counts reported), the tracker never
+    takes it as best, and it advances the no-improvement streak."""
+    from types import SimpleNamespace
+
+    from xcquinox.pipeline import oneshot as oneshot_mod
+    from xcquinox.pipeline import train as train_mod
+
+    energies = {"A": -1.0, "B": -1.5, "C": float("nan"), "D": -2.0}
+    mol_data = {n: {"tag": n} for n in energies}
+
+    def fake_total_energy(model, md, solver_config=None, forward_only=False):
+        return energies[md["tag"]]
+
+    monkeypatch.setattr(oneshot_mod, "total_energy_for_solver",
+                        fake_total_energy)
+    reactions = [
+        {"name": "r1", "reactants": ["A"], "products": ["B"],
+         "coeffs": [-1.0, 1.0],
+         "reaction_energy_ref": (-0.5) * _KCAL_PER_HA + 4.0},
+        {"name": "r2", "reactants": ["C"], "products": ["D"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0},
+    ]
+    spec = SimpleNamespace(validation_density_weight=0.0,
+                           loss_kwargs_dict={}, solver_config=None)
+    score = train_mod._validation_parity_metric(
+        object(), spec, mol_data, reactions)
+    assert score.mae == float("inf")
+    assert (score.reactions_used, score.reactions_expected) == (1, 2)
+    assert (score.density_used, score.density_expected) == (0, 0)
+    tracker = train_mod._BestValidationTracker()
+    tracker.update(12.0, object())
+    tracker.update(score.mae, object())
+    assert math.isfinite(tracker.best_mae) and tracker.best_mae == 12.0
+    assert tracker.should_stop(patience=3, min_delta=0.0) is False
+    tracker.update(score.mae, object())       # a second ineligible check
+    assert tracker.should_stop(patience=2, min_delta=0.0) is True
+
+
+def test_preflight_refuses_active_vxc_with_dm_descriptor():
+    """A density-matrix-dependent descriptor with an ACTIVE vxc channel is
+    refused: per_molecule reads the effective channel weights, the batched
+    schemes the loss's own vxc_weight kwarg; weight 0 passes in both (the
+    channel is never built)."""
+    from types import SimpleNamespace
+    from typing import ClassVar
+
+    import equinox as eqx
+    import jax.numpy as jnp
+
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.descriptors import Descriptor
+
+    class _DM(Descriptor):
+        n_features: int = eqx.field(default=1, static=True)
+        required_mol_keys: ClassVar[tuple] = ()
+        spin_mol_keys: ClassVar[tuple] = ("dm_a", "dm_b")
+        density_matrix_dependent: ClassVar[bool] = True
+        registry_name: ClassVar[str] = "dummy_dm"
+
+        def compute(self, mol_data):
+            return jnp.zeros((0, self.n_features))
+
+    def _spec(scheme, cw, lk):
+        return SimpleNamespace(
+            channel_weights_dict=dict(cw), loss_kwargs_dict=dict(lk),
+            update_scheme=scheme, loss_name="L6_letter_parity",
+            arch=SimpleNamespace(
+                materialize_descriptors=lambda: (_DM(),)))
+
+    with pytest.raises(ValueError, match="dummy_dm"):
+        train_mod._preflight_refusals(
+            _spec("per_molecule", {"loss_vxc": 1.0}, {}))
+    with pytest.raises(ValueError, match="vxc_weight"):
+        train_mod._preflight_refusals(
+            _spec("batched", {"loss_vxc": 0.0}, {"vxc_weight": 1.0}))
+    train_mod._preflight_refusals(
+        _spec("per_molecule", {"loss_vxc": 0.0}, {}))
+    train_mod._preflight_refusals(
+        _spec("batched", {"loss_vxc": 1.0}, {"vxc_weight": 0.0}))
+
+
+def test_per_molecule_epoch_score_is_recorded_per_epoch(
+        training_batch_info, tmp_path):
+    """The per-molecule loop scores the epoch's final parameters on every
+    group at fixed inputs and records one __epoch_score__ aux entry per
+    epoch (the best-loss snapshot is selected on that score)."""
+    from xcquinox.pipeline import train as train_mod
+    from xcquinox.pipeline.train import run_training
+
+    spec = _make_live_spec(
+        training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+        n_steps=2, tmpdir=str(tmp_path), update_scheme="per_molecule",
+        require_atom_anchors=False,
+    )
+    run_training(spec)
+    with open(os.path.join(spec.checkpoint_dir, "aux_log.pkl"), "rb") as fh:
+        aux = pickle.load(fh)
+    scores = [e for e in aux if e.get("group") == "__epoch_score__"]
+    assert len(scores) == int(spec.n_steps)
+    assert all(np.isfinite(e["epoch_score"]) for e in scores)
+
+
+def test_ae_group_carries_its_network_atoms():
+    """L6LetterParity forms the AE from the network's atomic totals, so an
+    ae group scoped to the compound alone would train no AE; the builder
+    attaches the compound's neutral atoms and refuses when they are
+    missing."""
+    from types import SimpleNamespace
+
+    from xcquinox.pipeline import train as train_mod
+
+    def _spec(mols):
+        return SimpleNamespace(
+            molecules=mols, loss_name="L6_letter_parity",
+            targets_dict={"h2o": 0.1}, loss_kwargs_dict={},
+            bh76_reactions_dict=(), ip13_pairs_dict=(), nonsc_names=(),
+            update_scheme="per_molecule", channel_weights_dict={})
+
+    compound = SimpleNamespace(name="h2o",
+                               atom_composition={"H": 2, "O": 1}, charge=0)
+    h = SimpleNamespace(name="H", atom_composition={"H": 1}, charge=0)
+    o = SimpleNamespace(name="O", atom_composition={"O": 1}, charge=0)
+    groups = train_mod._training_groups(_spec((compound, h, o)))
+    ae = [g for g in groups if g["label"] == "ae:h2o"][0]
+    assert {m.name for m in ae["species"]} == {"h2o", "H", "O"}
+    with pytest.raises(ValueError, match="neutral single-atom"):
+        train_mod._training_groups(_spec((compound,)))
+
+
+def test_pyscfad_full_training_spec_is_refused(tmp_path):
+    """run_pyscfad_scf requires concrete arrays and the training step traces
+    them, so the spec is refused at validate() instead of dying mid-run."""
+    from xcquinox.pipeline.config import TrainingSpec, get_architecture
+    from xcquinox.pipeline.solver import SolverBackend
+    from xcquinox.pipeline.tests.fixtures.molecules import h2_molecule, h_atom
+
+    sc = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FULL,
+                      max_cycles=3)
+    spec = TrainingSpec.from_dicts(
+        arch=get_architecture("deep_combined"),
+        molecules=(h_atom(), h2_molecule()),
+        targets={"H": -0.5, "H2": 0.17}, atom_energies={"H": -0.5},
+        loss_name="A_atomization", loss_kwargs={"solver_config": sc},
+        require_atom_anchors=False, n_steps=1, lr_start=1e-3,
+        lr_end=1e-5, lr_decay_start=0.0, grad_clip=1.0,
+        checkpoint_dir=str(tmp_path), seed=0)
+    with pytest.raises(ValueError, match="pyscfad"):
+        spec.validate()
