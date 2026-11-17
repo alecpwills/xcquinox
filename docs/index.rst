@@ -27,6 +27,7 @@ certificate and a density channel supervised against coupled-cluster references.
    :caption: Documentation
 
    getting_started
+   prong_walkthrough
    api
 
 Indices and tables
