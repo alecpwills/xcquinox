@@ -233,7 +233,7 @@ def test_pyscfad_refuses_dm_dependent_descriptors_under_reassemble(monkeypatch):
     three arrays alone, so there is no channel for the global
     ``sum_g w_g (de/dfeatures)_g . dfeatures_g/dP`` term that any DM-dependent
     descriptor contributes. Returning V_xc without it means the SCF converges a
-    density that does not minimise its own energy.
+    density that does not minimize its own energy.
 
     FROZEN is exempt: the features are constant in P, so the term is identically
     zero and the existing callback is already exact.

@@ -1434,7 +1434,7 @@ def test_resubmit_preflight_recovers_the_optimize_group(tmp_path,
     # The recovery re-submits preflight dependency-free (no datagen before it).
     assert "--dependency" not in sbatch[3]
     assert sbatch[3].endswith("preflight.sbatch")
-    # The old train and eval arrays are cancelled (preflight is a single job
+    # The old train and eval arrays are canceled (preflight is a single job
     # the recovery has never tracked for superseding).
     scancels = [c for c in fake.calls if os.path.basename(c[0]) == "scancel"]
     assert scancels == [["scancel", "4001"], ["scancel", "4002"]]

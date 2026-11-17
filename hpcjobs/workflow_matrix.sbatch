@@ -102,7 +102,7 @@
 # 51.8), an order of magnitude inside the cap. The tail is what the two caps
 # disagree about: the same logs record a FAILED N2O attempt at 2558 s (and
 # F2O at 11623 s, not in this pool), which would be killed at 1800 s and
-# survive at 3600 s. That is the intended behaviour -- a non-converging OEP
+# survive at 3600 s. That is the intended behavior -- a non-converging OEP
 # cascade is the hang this cap detects -- and the signal is rc 124 on
 # `preflight` for the first architecture of a work root. If a preflight
 # genuinely needs longer, raise MATRIX_TIMEOUT_S and the --time request

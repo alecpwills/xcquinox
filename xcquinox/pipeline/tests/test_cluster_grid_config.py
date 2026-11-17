@@ -1007,7 +1007,7 @@ def test_the_held_out_pools_knob_defaults_to_the_pair_and_parses_a_list():
 
 def test_the_reference_size_cap_is_absent_or_a_positive_whole_number():
     """The cap drops the species the reference generator would spend the longest on. It
-    is absent by default -- the historical behaviour, every species generated -- and a
+    is absent by default -- the historical behavior, every species generated -- and a
     zero, a negative or a fractional cap is refused: each of the three would either
     empty the reference set or truncate to a bound other than the one written.
 

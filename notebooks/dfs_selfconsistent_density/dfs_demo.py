@@ -74,7 +74,7 @@ DEFAULT_MOLECULE_HILLS: tuple[str, ...] = ("H2O", "HLi", "HO", "HN")
 #: Smallest end-to-end subset for the SMOKE path (one closed- + one open-shell).
 SMOKE_MOLECULE_HILLS: tuple[str, ...] = ("H2O", "HO")
 
-#: The architectures featured by the notebook (swap your own here). Two GGA-ladder
+#: The architectures featured by the notebook (swap in a different set here). Two GGA-ladder
 #: nets (plain GGA, GGA+cusp+rung-3.5) plus two meta-GGA nets (pure DFS meta-GGA,
 #: and the combined cusp+rung-3.5+meta-GGA). The meta-GGA nets pretrain to SCAN
 #: (arch.meta_gga=True routes the target), so the notebook can ask whether a

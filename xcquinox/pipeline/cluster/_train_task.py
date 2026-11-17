@@ -23,7 +23,7 @@ It is the thin harness layer between SLURM and the existing per-spec worker
     states no verdict is distinguishable from one that was never written.
   - Run the worker as a subprocess (``_run_worker``: the single test seam),
     consuming its JSON progress stream and emitting a throttled human
-    readable progress line to our stdout (which IS the SLURM ``.out`` log).
+    readable progress line to the task's own stdout (which IS the SLURM ``.out`` log).
   - Install a SIGTERM handler so a SLURM wall-clock pre-kill grace signal
     (``--signal=B:TERM@<grace>``) is recorded as a ``killed_by_signal``
     failure before the process exits.
@@ -31,7 +31,7 @@ It is the thin harness layer between SLURM and the existing per-spec worker
     write an atomic ``failure.json`` that ``job_tracking.reduce_outcomes``
     can read.
 
-DO NOT echo raw worker lines wholesale to our stdout, the SLURM log would
+DO NOT echo raw worker lines wholesale to the task's stdout, the SLURM log would
 balloon on long runs. Only the throttled progress line and a bounded tail
 (on failure) are emitted.
 """
@@ -232,13 +232,13 @@ def _read_failure_classification(checkpoint_dir):
 
 
 def _log(idx, message):
-    """Emit one harness log line (tagged) to our stdout, the SLURM log."""
+    """Emit one harness log line (tagged) to the task's stdout, the SLURM log."""
     sys.stdout.write(f"[harness idx={idx}] {message}\n")
     sys.stdout.flush()
 
 
 def _dump_tail(idx, tail):
-    """Emit the bounded worker tail, framed, to our stdout."""
+    """Emit the bounded worker tail, framed, to the task's stdout."""
     sys.stdout.write(f"[harness idx={idx}] --- worker tail begin ---\n")
     if tail:
         for line in tail.splitlines():
@@ -271,7 +271,7 @@ def _run_worker(spec_path, device):
 
     Spawned with ``env=None`` (full inheritance): the sbatch thread-cap
     env vars (OMP/MKL/OPENBLAS_NUM_THREADS) MUST reach the worker. The
-    ``--no-progress`` flag is intentionally NOT passed, we want the JSON
+    ``--no-progress`` flag is intentionally NOT passed, so the JSON
     progress stream so the throttled SLURM heartbeat below can be emitted.
     """
     cmd = [
@@ -389,7 +389,7 @@ def _write_signal_failure(run_dir, idx, rc):
 
     Called from the SIGTERM handler. SLURM sends SIGTERM ``<grace>`` seconds
     before the wall-clock SIGKILL (the train-array template requests
-    ``--signal=B:TERM@<grace>``), so we get a short window to record why the
+    ``--signal=B:TERM@<grace>``), giving a short window to record why the
     task is about to die.
 
     NOTE: a cgroup memory-OOM kill is an immediate SIGKILL with NO grace
@@ -403,7 +403,7 @@ def _write_signal_failure(run_dir, idx, rc):
     except (OSError, ValueError, KeyError):
         width = None
     if width is None:
-        # Best-effort: without the manifest we cannot pad the dir name; skip.
+        # Best-effort: without the manifest the dir name cannot be padded; skip.
         return
     checkpoint_dir = _checkpoint_dir(run_dir, idx, width)
     _write_failure_json(checkpoint_dir, {
@@ -432,7 +432,7 @@ def _install_sigterm_handler(run_dir, idx):
             except OSError:
                 pass
             # WS5-SIG-4: the worker installs its OWN SIGTERM handler that flushes
-            # the in-flight epoch's resume checkpoint before exiting. We MUST give
+            # the in-flight epoch's resume checkpoint before exiting. The child MUST be given
             # that best-effort flush time to finish before this parent exits,
             # otherwise the parent's exit cuts the flush off. Bounded so a hung
             # child can never wedge the parent past its own grace window.

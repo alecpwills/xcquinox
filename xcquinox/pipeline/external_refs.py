@@ -197,7 +197,7 @@ def _converge_scf_tiered(base_builder, *, dm0=None, is_uks: bool,
         return mf
 
     def _kernel(mf, fresh=False):
-        # fresh=True IGNORES dm0 (minao guess). We only escalate because the plain
+        # fresh=True IGNORES dm0 (minao guess). The escalation exists because the plain
         # SCF diverged, so its dm0 can be garbage and poison the robust tiers.
         if dm0 is not None and not fresh:
             mf.kernel(dm0=dm0)
@@ -912,7 +912,7 @@ def run_ccsd_with_cache(
     dm_cc = np.asarray(mycc.make_rdm1(ao_repr=True))
 
     # Spin-sum the AO-basis DM for grid evaluation.  The unrestricted DM
-    # may be (2, n_ao, n_ao); we keep both spin channels in dm_ao for
+    # may be (2, n_ao, n_ao); both spin channels are kept in dm_ao for
     # the V_xc shape contract but build a SCALAR grid density via the
     # spin-summed total (data.py:296-299 pattern).
     if is_uks and dm_cc.ndim == 3:
@@ -1366,7 +1366,7 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     # (POSIX rename is atomic per-file but not durable until parent fsync).
     # Only catch AttributeError (Windows lacks O_DIRECTORY); let real
     # OSErrors (ENOSPC, EIO) bubble, durability failures should fail
-    # loudly so the user can intervene before SCF results land in a
+    # loudly so intervention is possible before SCF results land in a
     # broken filesystem state.
     if hasattr(os, "O_DIRECTORY"):
         dir_fd = os.open(str(inter), os.O_DIRECTORY)

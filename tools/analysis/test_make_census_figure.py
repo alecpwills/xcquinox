@@ -3,7 +3,7 @@
 ``make_census_figure.main`` on a hand census whose cells are out of order:
 one column per cell at its architecture's tick, the ticks in ``arch_style``
 order; per column the converged species as filled markers in the
-architecture's colour at their cycle count (x jittered inside the column),
+architecture's color at their cycle count (x jittered inside the column),
 the unconverged as open markers at theirs, ``converged/species`` written at
 the column; an errored cell draws no marker and carries its error. Two
 title lines in the main copy, none in the plain copy. Two census files with
@@ -12,7 +12,7 @@ a tolerance when asked, or when a cell records that its solver ran its whole
 budget without freezing on convergence.
 
 Oracle: the hand census and hand traces (closed forms); ``arch_style``'s
-order and colours; the figures read back as each file is written
+order and colors; the figures read back as each file is written
 (``Figure.savefig`` spied), never from the printed manifest.
 """
 from __future__ import annotations

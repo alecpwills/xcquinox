@@ -35,7 +35,7 @@ Figures written (PNG):
   D. ``holdout_energy_mae_vs_subset.png``-- MAE vs subset_size, one line per arch.
   E. ``holdout_w411_ae_parity.png``    -- HELD-OUT atomization-energy parity (W4-11,
      the held-out set's atomization-energy pool): predicted vs reference AE with
-     PBE drawn as the baseline (grey × + dashed). Panel (a) by architecture,
+     PBE drawn as the baseline (gray × + dashed). Panel (a) by architecture,
      panel (b) colored by training-subset size with an NN-MAE-vs-subset inset.
      The AE analog of the held-out reaction parity (A).
 
@@ -412,7 +412,7 @@ def assert_channel_not_sliced(spec_dir: Path, eval_subdir: str) -> None:
     BH76 + W4-11 pool the architectures are compared on, so its MAE is a
     different quantity and averaging one into a figure would redefine the
     metric silently. Every reader of a held-out channel -- this suite, the
-    merge / parity / re-eval drivers, the diagnosis scripts -- honours the
+    merge / parity / re-eval drivers, the diagnosis scripts -- honors the
     same two on-disk marks through that one implementation, and the two
     loaders below call this before their first read of a channel.
 
@@ -936,7 +936,7 @@ def _validate_archs(archs) -> Optional[Tuple[str, ...]]:
     """Normalize an architecture restriction to an ordered, deduplicated tuple.
 
     ``None`` passes through as ``None`` (no restriction). Every name must be in
-    :data:`ARCH_ORDER`: the per-arch plots order and colour by it, so a name
+    :data:`ARCH_ORDER`: the per-arch plots order and color by it, so a name
     outside it renders nothing at all, and an unchecked typo would produce a
     silently empty figure set rather than a refusal. An empty restriction is
     refused for the same reason."""
@@ -957,7 +957,7 @@ def _validate_archs(archs) -> Optional[Tuple[str, ...]]:
     if unknown:
         raise ValueError(
             f"unknown architecture name(s) in archs: {unknown}; the per-arch "
-            "figures order and colour by ARCH_ORDER, so a name outside it "
+            "figures order and color by ARCH_ORDER, so a name outside it "
             "renders nothing. Known names: " + ", ".join(ARCH_ORDER))
     return tuple(ordered)
 
@@ -1964,7 +1964,7 @@ def arch_reference_kinds(archs) -> Dict[str, str]:
 # must carry _CELL_ROWS_GLYPH_NOTE.
 _CELL_ROWS_GLYPH_NOTE = (
     "Capped horizontal spans across each subset-size group mark the "
-    "group's cell-slice reference value (black = PBE, grey = SCAN, "
+    "group's cell-slice reference value (black = PBE, gray = SCAN, "
     "reduced over the cell's full test slice -- every slice reaction "
     "with a finite comparator leg, independent of NN convergence); a "
     "group whose cells disagree (a degraded comparator) shows per-bar "
@@ -1990,7 +1990,7 @@ def _group_span_points(by_cell: Optional[Dict[Tuple[str, int], float]],
     every present cell agrees within :data:`_GROUP_ANCHOR_REL_TOL`
     (relative); the drawn value is the first present cell's own value,
     never a synthetic mean. A disagreeing group falls back to per-bar
-    spans (bar-width, slightly shrunk so neighbours stay separable), so a
+    spans (bar-width, slightly shrunk so neighbors stay separable), so a
     divergent anchor stays visible instead of being averaged away.
     ``(xs, ys, half_widths)`` for ``ax.errorbar(..., xerr=half_widths)``."""
     xs_out: List[float] = []
@@ -2476,7 +2476,7 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
             xs_b += list(xx); ys_b += list(yy)
             axb.scatter(xx, yy, s=14, alpha=0.55, color=arch_color(arch),
                         edgecolor="none", zorder=3, label=arch)
-        # PBE-vs-ref as a single grey baseline series (same for every arch).
+        # PBE-vs-ref as a single gray baseline series (same for every arch).
         pbe_pts = [(r["ref_kcalmol"], r["de_pbe_kcalmol"]) for r in sel
                    if _is_num(r.get("ref_kcalmol"))
                    and _is_num(r.get("de_pbe_kcalmol"))]
@@ -2804,7 +2804,7 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
             # distinction stated where they are read.
             ref_note = ("Reference lines: reduced over this figure's own "
                         "deduped held-out rows (PBE always; SCAN when "
-                        "row-matched); the grey footer's PBE/SCAN values "
+                        "row-matched); the gray footer's PBE/SCAN values "
                         "are full-pool.")
             note = (note + "  " + ref_note) if note else ref_note
         if _is_num(pbe_vs_ref):
@@ -3120,7 +3120,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
     NN-vs-PBE comparison is explicit.
 
     Panel (a) colors points by architecture (each arch's largest-subset spec),
-    overlays PBE as grey ×, and shows a per-arch NN-vs-ref MAE inset with the
+    overlays PBE as gray ×, and shows a per-arch NN-vs-ref MAE inset with the
     PBE-vs-ref MAE as the dashed baseline. Panel (b) colors every held-out
     W4-11 point by training-subset size with an NN-MAE-vs-subset inset that
     also draws the PBE baseline."""
@@ -3232,7 +3232,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
             fontsize=11, y=0.985)
         fig.text(0.5, 0.925,
                  "W4-11 (held-out): each reaction is a molecule->atoms "
-                 "atomization energy. PBE (grey ×, dashed baseline) is the bar "
+                 "atomization energy. PBE (gray ×, dashed baseline) is the bar "
                  "to beat; points above/below the diagonal over/under-bind.",
                  ha="center", fontsize=7.5, style="italic", color="#444444")
         top = _stamp_provenance(fig, 0.016, provenance, fontsize=6,
@@ -3271,7 +3271,7 @@ def _present_subsets(rows: List[Dict[str, Any]]) -> List[int]:
 def _pool_parity_limits(rows: List[Dict[str, Any]], pool: str
                         ) -> Optional[Tuple[float, float]]:
     """Robust square parity window for ONE pool, over ref + de_nn + de_pbe (so
-    the grey PBE cloud stays on-frame). Each pool gets its own scale -- the fix
+    the gray PBE cloud stays on-frame). Each pool gets its own scale -- the fix
     for BH76 (+-150 kcal/mol) being crushed by W4-11 (0..1300)."""
     pr = [r for r in rows if r.get("pool") == pool]
     vals: List[Any] = []
@@ -3285,7 +3285,7 @@ def _parity_scatter(ax, panel_rows: List[Dict[str, Any]], *, color_by: str,
                     subset_values: Optional[List[int]] = None,
                     draw_pbe: bool = True, point_size: float = 11.0):
     """Draw one parity panel: NN de_nn (y) vs reference (x), colored by ``arch``
-    (discrete ``ARCH_COLOR``) or ``subset`` (viridis ``Normalize``). PBE grey-x
+    (discrete ``ARCH_COLOR``) or ``subset`` (viridis ``Normalize``). PBE gray-x
     drawn once. y=x clipped to ``limits`` via :func:`_diagonal`; off-axis count
     annotated. Returns ``(n_out, mappable)`` -- ``mappable`` is the viridis
     scatter (for a colorbar) or None."""
@@ -3379,7 +3379,7 @@ def plot_parity_by_class(reaction_rows: List[Dict[str, Any]], out_path: Path,
                          dataset: Optional[str] = None) -> Path:
     """Held-out parity split by reaction class -- W4-11 atomization | BH76
     barriers | total -- predicted vs benchmark reference. Top row: by
-    architecture (each arch's largest-subset spec, PBE as grey x); bottom
+    architecture (each arch's largest-subset spec, PBE as gray x); bottom
     row: every cell's points colored by training subset_size with one
     shared colorbar. Each class column carries its own square limits
     (:func:`_pool_parity_limits` -- the fix for BH76's +-150 kcal/mol being
@@ -5653,7 +5653,7 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     cells disagree -- shows the anchor while the dash-dot pooled line stays
     for cross-cell scale. Cells score training-subset-dependent slices, so
     the pooled line alone over- or under-states PBE on individual cells.
-    ``scan_by_cell`` draws the SCAN twins as grey capped spans
+    ``scan_by_cell`` draws the SCAN twins as gray capped spans
     (coverage-gated per cell by the caller) and relabels the pooled dotted
     line "SCAN (pooled)". Bars whose cell is in ``incomplete_cells`` (the
     NN scored fewer reactions than the cell's slice) carry a star above the
@@ -5860,8 +5860,8 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
     comparable). The subset trend is the x-axis. WTMAD-2 here = 2-subset, NOT
     full GMTKN55. Green beats markers are judged against each architecture's
     OWN-RUNG reference's cell-slice anchor (black capped spans for GGA
-    archs' PBE anchors, grey spans for meta-GGA/rung-3.5's SCAN anchors;
-    ``scan_errors`` supplies the per-reaction SCAN errors behind the grey
+    archs' PBE anchors, gray spans for meta-GGA/rung-3.5's SCAN anchors;
+    archs' PBE anchors, gray spans for meta-GGA/rung-3.5's SCAN anchors;
     spans; bars whose NN scored fewer reactions than the cell's slice carry
     the incomplete-eval star), and a dotted SCAN full-pool reference line is
     added to the MAE panel when ``scan_baseline`` carries a finite combined
@@ -5957,7 +5957,7 @@ def _insample_density_lines_panel(ax, density_rows: List[Dict[str, Any]], *,
                                                 "(per arch)"),
                                   pbe_label: str = "PBE vs CCSD") -> None:
     """Per-arch mean in-sample density error vs subset_size (n annotated:
-    trained species in the cell), with the grey dashed PBE-vs-CCSD line
+    trained species in the cell), with the gray dashed PBE-vs-CCSD line
     over subset_size when the model-free ``pbe_key`` column is present.
     Panel body shared by ``plot_insample_density_ccsd`` and
     ``plot_insample_overview``. The keyword defaults are the strings the
@@ -5979,7 +5979,7 @@ def _insample_density_lines_panel(ax, density_rows: List[Dict[str, Any]], *,
                             color=arch_color(a), xytext=(0, 4),
                             textcoords="offset points")
     # PBE-vs-CCSD baseline (arch-independent): the species-mean over the
-    # molecules present at each subset_size, grey dashed
+    # molecules present at each subset_size, gray dashed
     pbe_by_s: Dict[int, Dict[str, List[float]]] = {}
     for r in density_rows:
         if _is_num(r.get(pbe_key)) and r.get("subset_size") is not None:
@@ -6038,7 +6038,7 @@ def _insample_density_strip_panel(ax, density_rows: List[Dict[str, Any]], *,
                                                     "{n} trained species)")
                                   ) -> None:
     """Per-molecule in-sample density strip (every point, arch-jittered) with
-    one grey PBE x per species when the ``pbe_key`` column is present. Panel
+    one gray PBE x per species when the ``pbe_key`` column is present. Panel
     body shared by ``plot_insample_density_ccsd`` and
     ``plot_insample_overview``. The keyword defaults are the strings the
     shipped figures carry; ``title_fmt`` receives the species count as
@@ -6056,7 +6056,7 @@ def _insample_density_strip_panel(ax, density_rows: List[Dict[str, Any]], *,
         ax.scatter(mol_x[cf] + jit, r[key], s=18,
                    alpha=0.75, color=ARCH_COLOR.get(r.get("arch"), "0.5"),
                    edgecolor="none")
-    # PBE baseline per species (arch-independent -> one grey x each)
+    # PBE baseline per species (arch-independent -> one gray x each)
     pbe_by_mol: Dict[str, List[float]] = {}
     for r in density_rows:
         cf = _mol_cf(r.get("molecule"))
@@ -6130,7 +6130,7 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
     NN/PBE ratio -- the in-sample counterpart of the held-out family's parity
     reading. Labeled IN-SAMPLE. Rows carrying ``density_rmse_pbe`` (the
     model-free PBE-vs-CCSD baseline on the same grid; emitted by newer
-    evals) add a grey dashed PBE baseline to the first two panels and the
+    evals) add a gray dashed PBE baseline to the first two panels and the
     ratio line to the third; older runs without the column render the ratio
     panel empty. When every needed row carries the DFS Eq. 20 eps columns
     (``density_eps_l1`` and ``density_eps_l1_pbe``, any row), the same
@@ -6213,7 +6213,7 @@ def _holdout_density_lines_panel(ax, density_rows: List[Dict[str, Any]],
                                  scan_records: Optional[
                                      Dict[str, Dict[str, Any]]] = None) -> None:
     """Per-arch mean held-out density RMSE vs subset_size (n annotated) with
-    the grey dashed PBE pool-mean line, and -- when a SCAN density cache is
+    the gray dashed PBE pool-mean line, and -- when a SCAN density cache is
     present -- the dotted SCAN meta-GGA line over the SAME species. Panel body
     shared by ``plot_holdout_density_ccsd`` and
     ``plot_density_energy_overview``. The SCAN line is the comparator the
@@ -6337,7 +6337,7 @@ def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
                                   Dict[str, Dict[str, Any]]] = None,
                               dataset: Optional[str] = None) -> Path:
     """HELD-OUT density error vs CCSD on the W4-11+BH76 benchmark species:
-    (left) per-arch weighted-mean grid RMSE vs subset_size with the grey
+    (left) per-arch weighted-mean grid RMSE vs subset_size with the gray
     dashed PBE-vs-CCSD pool baseline; (right) per-species NN-vs-PBE parity
     (log-log; below the diagonal = the NN density is closer to CCSD than PBE
     is). The PBE channel is model-free and shared across every spec --
@@ -6546,7 +6546,7 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str,
 def _ed_decomposition_panel(ax, summary: Dict[str, Any]) -> None:
     """Per-cell decomposition in the (E, gamma*D) plane, log-log: dotted y=x
     self-calibration locus (PBE sits on it exactly under self-calibration,
-    off it under a fixed gamma -- the label branches on ``gamma_mode``; grey
+    off it under a fixed gamma -- the label branches on ``gamma_mode``; gray
     x), thin iso-ED harmonic contours at {0.5, 1, 2} x the PBE ED,
     subset_size digits on the cell points; below the locus =
     density-limited, above = energy-limited. Panel body shared by
@@ -6824,7 +6824,7 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
     such), (C) the genuine 2-subset WTMAD-2, (D) per-species NN-vs-PBE density
     parity, (E) the per-cell (E, gamma*D) iso-ED decomposition, (F) the DFS
     Eq. 21 ED headline. (E)/(F) take ``ed_summary`` (a ``combined_ed_by_cell``
-    output) and degrade to grey placeholders when it is missing/empty. The
+    output) and degrade to gray placeholders when it is missing/empty. The
     per-arch density-vs-subset trend lives in its own figure
     (``plot_holdout_density_per_arch``) and in the left panel of
     ``plot_holdout_density_ccsd``. Panel bodies are the same ax-level helpers
@@ -6990,7 +6990,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
     deduplicated anchor; overlap species contribute to both single-pool
     columns, stated in the caveat); row 3 = the DFS Eq. 21 combined metric
     per channel as bars (PBE dashed at its own combined value, the gamma
-    stamp in-panel). Channels missing data render grey placeholders. The
+    stamp in-panel). Channels missing data render gray placeholders. The
     per-species parity view lives in its own figure,
     :func:`plot_density_parity_by_channel`.
 
@@ -7250,7 +7250,7 @@ def plot_insample_overview(ae_rows: List[Dict[str, Any]],
     no in-sample ED exists: no PBE energy anchor to self-calibrate gamma);
     (B) per-molecule |AE error| strip; (C) in-sample density RMSE vs
     subset_size with the PBE dashed line when the model-free column is
-    present; (D) per-molecule density strip with one grey PBE x per molecule.
+    present; (D) per-molecule density strip with one gray PBE x per molecule.
     ``eval/`` has no val-best variant, so the panels are identical in the
     final-step and val-best output dirs -- only the title's checkpoint stamp
     differs (stated in the caveat). Panel bodies are the same ax-level
@@ -7784,7 +7784,7 @@ def _heldout_pbe_ratio(cell: Dict[str, Any]) -> Optional[float]:
     the per-cell PBE -- NOT a cohort mean -- is the honest denominator and the one
     :func:`_classify_cell` uses. ``> 1`` <=> worse than PBE (a failure);
     ``<= 1`` <=> beats PBE (pass), so the ratio's side of 1.0 matches the cell's
-    pass/fail colour exactly. None if either MAE is missing or PBE <= 0."""
+    pass/fail color exactly. None if either MAE is missing or PBE <= 0."""
     hm, pm = cell.get("heldout_mae"), cell.get("pbe_mae")
     return hm / pm if _is_num(hm) and _is_num(pm) and pm > 0 else None
 
@@ -7894,7 +7894,7 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
 
         # --- Panel A: decoupling scatter. y = each cell's held-out MAE RELATIVE
         # TO ITS OWN PBE (per-cell, since the held-out set differs per spec), so
-        # PBE parity is a single exact line at 1.0 and the pass/fail COLOUR matches
+        # PBE parity is a single exact line at 1.0 and the pass/fail COLOR matches
         # the point's side of the line (green below, orange/red above). A cohort
         # mean-PBE line was misleading: a cell can sit below the mean yet still
         # lose to its own (lower) PBE. ---
@@ -7947,7 +7947,7 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
         present = {c["arch"] for c in cells}
         archs = arch_style.order_known(present)
         archs += sorted(present - set(archs))
-        # GLOBAL ss scale (over BOTH bases) so the viridis subset colours match
+        # GLOBAL ss scale (over BOTH bases) so the viridis subset colors match
         # between the two sub-panels.
         ss_vals = sorted({c["subset_size"] for c in cells
                           if _is_num(c.get("subset_size"))})
@@ -9895,7 +9895,7 @@ def _build_all_inner(run_dir: Path, outdir: Path, eval_subdir: str,
         prov = prov + " " + restriction
     # These five figures stamp their footers with bespoke fig.text stacks (no
     # _stamp_parity_footer dataset slot), so the dataset sentence rides the
-    # grey provenance line instead of a dedicated line.
+    # gray provenance line instead of a dedicated line.
     ds_e = _holdout_eval_note(reaction_rows, [])
     if ds_e:
         prov = prov + " " + ds_e
@@ -9988,7 +9988,7 @@ def figure_cell_coverage(run_dir: Path,
     """What the figures will actually render for a run: every held-out (arch,
     subset_size) cell, plus a guard list ``archs_not_in_order`` of archs present
     in the data but absent from ``ARCH_ORDER`` (the per-arch plots cannot
-    order/colour those, so they would be silently dropped). ``archs``
+    order/color those, so they would be silently dropped). ``archs``
     restricts the report to the architectures a restricted build renders."""
     restriction = _validate_archs(archs)
     mae = reaction_mae_by_arch_subset(filter_rows_by_arch(

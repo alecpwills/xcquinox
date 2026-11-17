@@ -353,7 +353,7 @@ def exact_fractional_reference(n_values) -> dict:
 def select_networks(manifest: dict, labels=None) -> dict:
     """One network per architecture, the first in manifest order, or the
     networks named by ``labels``: ``{label: {"index", "arch_name"}}``. A
-    network without an architecture name is refused: the figure colours by
+    network without an architecture name is refused: the figure colors by
     it and the selection groups by it."""
     networks = list(manifest["networks"])
     nameless = [n.get("label") for n in networks if not n.get("arch_name")]

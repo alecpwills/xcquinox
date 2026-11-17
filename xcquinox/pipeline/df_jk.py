@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 
 # Orbital-basis -> standard JK fitting basis. Explicit pairs avoid surprises for
-# the bases we actually run. The per-basis ``-jkfit`` sets are the tighter
+# the bases actually run. The per-basis ``-jkfit`` sets are the tighter
 # matched fits and are preferred where they exist; the diffuse/large def2 bases
 # (def2-svpd, def2-tzvpd, def2-tzvppd, def2-qzvp) have no dedicated ``-jkfit``
 # and use the Weigend universal Coulomb-fitting set ``def2-universal-jkfit``,

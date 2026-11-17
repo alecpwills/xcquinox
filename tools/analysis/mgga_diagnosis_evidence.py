@@ -19,7 +19,7 @@ Sections, in the order the argument runs:
      (pretrain.py selects Fx_scan_all for meta_gga archs), NOT to PBE, so the
      oracle here is libxc MGGA_X_SCAN. Comparing against PBE instead is the
      mistake this diagnosis had to correct: SCAN's F_x really is nearly flat in
-     s, so "flat in s" is correct meta-GGA behaviour and not a defect.
+     s, so "flat in s" is correct meta-GGA behavior and not a defect.
   5. SCF CONVERGENCE -- the 3-cycle solver's converged fraction and last-cycle
      energy drift per arch, which bounds how much of the gap the protocol owns.
 

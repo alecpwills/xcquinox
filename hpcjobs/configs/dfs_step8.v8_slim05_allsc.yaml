@@ -25,7 +25,7 @@
 #
 # The training identity's references do not exist at def2-TZVP and grid 4 and
 # the Slim optimization is a later item, so the preflight, train and reference
-# jobs are cancelled at submission and datagen and pretrain run alone.
+# jobs are canceled at submission and datagen and pretrain run alone.
 # =============================================================================
 
 sweep:

@@ -88,7 +88,7 @@ def _write_metadata(path, record):
     on a value that helper does not know about, which is a defect rather than
     a datum.
     """
-    # Atomic like every neighbouring writer (tmp + os.replace):
+    # Atomic like every neighboring writer (tmp + os.replace):
     # completed_pretraining's ordering rule -- a certificate on disk implies
     # readable metadata beside it -- is void if a torn metadata file can
     # satisfy the existence check while being unparseable.
@@ -981,7 +981,7 @@ def _fail_a_pretrain(message, *, network, arch_name, checkpoint_dir, reason,
 # library defaults (the step3b notebook never configured
 # `double_lob_clamp_allowed` because that field does not exist on the
 # notebook's architecture), so hardcoding the legacy values is
-# semantically correct, we are loading bytes that were written with
+# semantically correct: the bytes being loaded were written with
 # these values, not configuring a fresh network. The pipeline-side
 # `create_network_pair` still honors `arch.resolved_xnet_lob_lim` (which
 # may be `None`); the library -> pipeline
@@ -2365,7 +2365,7 @@ def from_legacy_step3b(
 
     Raises:
         ValueError: ambiguous layout (both present), or metadata mismatch.
-        FileNotFoundError: no recognised layout found.
+        FileNotFoundError: no recognized layout found.
         OSError: file exists but cannot be read.
     """
     pretrain_x_path = os.path.join(legacy_dir, "xnet.eqx")

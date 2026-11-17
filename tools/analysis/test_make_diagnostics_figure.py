@@ -3,8 +3,8 @@
 ``make_diagnostics_figure.main`` on a run holding a hand ``diagnostics_curves.json``:
 per panel (H2 against R, the H atom against N) one line per curve whose y
 data are the curve's deviation from the panel's reference in kcal/mol, the
-networks solid in their architecture's colour, the comparators dashed in the
-Slim16 figure's greys (PBE in PBE-DF's), a zero line in each panel, the
+networks solid in their architecture's color, the comparators dashed in the
+networks solid in their architecture's color, the comparators dashed in the
 legend naming every curve; the main copy carries three title lines and the
 plain copy none; the printed manifest names every curve, its largest
 deviation and the output paths. The network selection of the module is held
@@ -13,7 +13,7 @@ to a hand manifest.
 Oracle: the hand deviations of ``_DEV``, from which the payload's energies
 are built (the reference plus the deviation in Hartree), read back from the
 figure as each file is written (``Figure.savefig`` spied), never from the
-manifest the tool prints; the colours of ``arch_style`` and
+manifest the tool prints; the colors of ``arch_style`` and
 ``make_slim16_figure``. Bound: 1e-9 on the read-back deviations (the energies
 round-trip through Hartree at 7e-14 kcal/mol).
 """
@@ -295,7 +295,7 @@ def _dashes(line):
 def test_an_unconverged_point_is_marked_and_a_missing_one_leaves_a_gap(tmp_path, open_figures):
     """A missing energy (None) and a non-finite one leave gaps in the line
     (NaN in its y data, the manifest naming the x values); an unconverged
-    point carries an open circle in the curve's colour at its position; the
+    point carries an open circle in the curve's color at its position; the
     manifest holds no NaN once cleaned."""
     tool = _load("make_diagnostics_figure")
     h2 = {"S_deep_3x16": {"E": [-1.1 + 1.0 / _KCAL, None, -1.0 + 3.0 / _KCAL],
@@ -325,7 +325,7 @@ def test_an_unconverged_point_is_marked_and_a_missing_one_leaves_a_gap(tmp_path,
 
 def test_networks_of_one_architecture_read_apart_by_rank_and_comparators_by_dashes(
         tmp_path, open_figures):
-    """Two networks of one architecture share the colour but not the line
+    """Two networks of one architecture share the color but not the line
     style (the first solid, the second, by its rank, dashed with a
     pattern of its own); the four comparators carry four distinct dash
     patterns; the zero line is lighter than any curve; more networks of

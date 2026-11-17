@@ -7,7 +7,7 @@ pure parts of that workflow:
   - :func:`build_rsync_command`: assemble the exact ``rsync`` argv for a
     (host, remote-root, local-root, run-id, profile, dry-run) tuple, including
     the right ``--filter='. <pkg>/filters/<profile>.filter'`` invocation.
-  - :func:`resolve_run_id`: normalize the user's ``run_id`` argument:
+  - :func:`resolve_run_id`: normalize the ``run_id`` argument as given:
     pass a well-formed ``run_YYYYmmddTHHMMSSZ`` stamp through unchanged; turn
     the literal ``"latest"`` into the newest such stamp under ``remote_root``
     (resolved via an injected ``ssh_runner`` callable so tests stay offline).
@@ -91,7 +91,7 @@ def _join_run_path(root: str, category: str, run_id: str) -> str:
     mirrors the remote category layout (avoids collisions when the same
     ``run_<UTC>Z`` stamp appears in two different categories). ``posixpath``
     is correct for both: the remote is always Linux, and the local POSIX
-    machines we ship to also use ``/`` (Windows is not a supported caller).
+    machines receiving the shipment also use ``/`` (Windows is not a supported caller).
     """
     parts = [root.rstrip("/")]
     if category:
@@ -266,7 +266,7 @@ def resolve_run_id(
 
     "Latest" is resolved by ``ls -1tr <remote_root>/<category>``: ``ls -t``
     sorts by mtime descending, ``-r`` reverses to ascending, so the last line
-    is the most recently modified entry. We additionally filter the listing
+    is the most recently modified entry. The listing is additionally filtered
     to lines matching :data:`_RUN_ID_RE` so stray files (e.g. an old
     ``runs.tar.gz`` snapshot) cannot trick us.
 
@@ -333,11 +333,11 @@ def discover_runs(
              -name 'run_*Z' -prune -print
 
     The ``-prune`` flag is critical, it stops descent into matched dirs so
-    we do not accidentally pick up anything inside ``run_<UTC>Z/checkpoints``
+    nothing inside ``run_<UTC>Z/checkpoints`` is accidentally picked up
     or similar.
 
     Returns a dict mapping the relative parent directory (the "category"
-    you would pass to :func:`build_rsync_command`, e.g. ``"alpha_off/runs"``
+    passed to :func:`build_rsync_command`, e.g. ``"alpha_off/runs"``
     or ``""`` if the run lives directly under ``remote_root``) to the list of
     run-id basenames found there, sorted oldest-first (so ``groups[cat][-1]``
     is the latest run for that category).
@@ -350,7 +350,7 @@ def discover_runs(
     ssh_runner
         Injected SSH wrapper; see :func:`resolve_run_id`.
     remote_root
-        Base scratch directory; the same value you pass to
+        Base scratch directory; the same value passed to
         :func:`build_rsync_command` / :func:`resolve_run_id`.
     max_depth
         Maximum directory levels to descend below ``remote_root``. The
@@ -360,7 +360,7 @@ def discover_runs(
         enclosing experiment-batch segment) without forcing every caller to
         override. ``-prune`` short-circuits descent into matched run dirs,
         so the cost of a higher cap is just ``find`` walking through
-        unmatched directories, bounded by the user's xcquinox scratch
+        unmatched directories, bounded by the account's xcquinox scratch
         root.
 
     Returns

@@ -388,7 +388,7 @@ def _manifest_val_mol_spec(sp, *, basis, grid_level, val_refs_dir):
     --manifest job writes the 8 AE compounds' CCSD density references there,
     and the parity validation metric needs ``rho_ref_grid`` to score the
     density term. A species whose reference has not been generated yet
-    attaches with ``None`` and simply drops out of the density term (the
+    attaches with ``None`` and drops out of the density term (the
     metric averages over the reference-carrying species). This is the ONE
     validation path where ``external_data_path`` may be non-None: the
     held-out-pool mode scores energies only, while the Letter-parity arms

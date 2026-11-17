@@ -81,7 +81,7 @@ def _build_pyscfad_mf(mol, mol_data: dict):
     ``dm.ndim == 2``. That means pyscfad's UKS grid retains more points
     than pyscf's post-SCF grid, and the precomputed FROZEN features (which
     were assembled on pyscf's post-prune grid) would mismatch pyscfad's
-    rho at eval_xc time. To fix this, for UKS we pre-build and prune
+    rho at eval_xc time. To fix this, the UKS path pre-builds and prunes
     pyscfad's grid using the total DM stashed in ``mol_data`` before
     ``mf.kernel`` runs. The RKS path is left untouched so pyscfad's usual
     initialization flow (including ``non0tab`` bookkeeping inside
@@ -199,7 +199,7 @@ def _reassemble_features_on_grid(
     pyscfad's actual grid coords. DM-statistics features are grid-
     agnostic (tiled), so they are recomputed at ``len(grid_coords)``.
 
-    For UKS, ``dm`` may have shape ``(2, nao, nao)``. We pass the
+    For UKS, ``dm`` may have shape ``(2, nao, nao)``. The
     spin-resolved DM unchanged to ``DMStatisticsDescriptor.compute_from_dm``
     so the underlying ``compute_dm_features`` picks its UKS branch
     (Pople-Nesbet 1954: D_sigma S D_sigma = D_sigma per spin). Summing
@@ -719,7 +719,7 @@ def _reject_dm_dependent_descriptors(model, policy) -> None:
         "assembles V_xc through a per-point libxc-style eval_xc callback that "
         "cannot carry the de/dfeatures . dfeatures/dP term. The returned V_xc "
         "would not be the functional derivative of E_xc, so the SCF would "
-        "converge a density that does not minimise its own energy. Use "
+        "converge a density that does not minimize its own energy. Use "
         "SolverBackend.MANUAL, which assembles this term exactly, or "
         "FeaturePolicy.FROZEN, where the term vanishes by construction."
     )
@@ -765,8 +765,8 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     # so descriptor features must live on pyscfad's actual grid. We
     # install a ``feature_holder`` closure shared with the eval_xc
     # callback. For UKS, _build_pyscfad_mf already built + pruned
-    # mf.grids. For RKS we eagerly call initialize_grids here so
-    # mf.grids.coords is populated before we wrap get_veff.
+    # mf.grids. For RKS initialize_grids is called eagerly here so
+    # mf.grids.coords is populated before get_veff is wrapped.
     #
     # FROZEN: features are computed once from dm_pbe on pyscfad's grid
     #         and never updated.
@@ -884,7 +884,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     # pyscfad's SCF kernel does not persist the actual iteration count on
     # the mean-field object (``mf.cycles`` is the input parameter that
     # pyscfad reads as an upper bound, not a tracker, it stays at its
-    # initial value 0 after kernel()). We install a callback into pyscfad's
+    # initial value 0 after kernel()). A callback is installed into pyscfad's
     # inner _scf loop to count iterations directly. The callback runs once
     # per cycle and sees the loop-local ``cycle`` index in its ``envs`` dict.
     cycle_counter = [0]
@@ -895,7 +895,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         # count so that a successful single-iteration convergence reports 1.
         cycle_counter[0] = int(envs.get("cycle", cycle_counter[0] - 1)) + 1
         # Capture per-cycle total energy when pyscfad exposes it. Different
-        # pyscfad/pyscf versions key this as ``e_tot`` or ``etot``; we accept
+        # pyscfad/pyscf versions key this as ``e_tot`` or ``etot``; both are accepted
         # either and silently skip if neither is present (the metric falls
         # back to a degenerate trace in that case).
         e_step = envs.get("e_tot", envs.get("etot"))

@@ -8,7 +8,7 @@ makes the single-determinant density on a fixed grid reproducible across
 processes/machines (the energy is degeneracy-invariant either way).
 
 These tests pin the operator's contract (determinism, symmetry, linearity,
-geometry/basis-consistency), its physical behaviour (lifts p/pi degeneracy for
+geometry/basis-consistency), its physical behavior (lifts p/pi degeneracy for
 any orientation), and its calibration (negligible energy impact on closed-shell
 systems at the demo default strength).
 """

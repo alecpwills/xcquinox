@@ -78,7 +78,7 @@ If this work is useful to you, cite it with the metadata in
 
 ## Copyright
 
-Copyright (c) 2024-2026, Alec Wills. Released under the MIT licence; see
+Copyright (c) 2024-2026, Alec Wills. Released under the MIT licens; see
 [LICENSE](LICENSE).
 
 #### Acknowledgements

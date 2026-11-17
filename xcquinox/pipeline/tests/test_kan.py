@@ -37,7 +37,7 @@ from xcquinox.pipeline.tests import test_validate_run as _vrt  # noqa: E402
 
 
 def _arch_style():
-    """``tools/analysis/arch_style.py``, the figure tools' order and colour
+    """``tools/analysis/arch_style.py``, the figure tools' order and color
     table, loaded by path (the directory is not a package)."""
     path = Path(__file__).resolve().parents[3] / "tools" / "analysis" / "arch_style.py"
     spec = importlib.util.spec_from_file_location("arch_style", path)
@@ -91,12 +91,12 @@ _CUSP = ((0.0, 1.0), (-1.0, 1.0))
 _RUNG35 = ((0.0, 1.0), (0.0, 1.0))
 _EXPANDED = ("Kolmogorov-Arnold network, cubic B-splines on 5 intervals per "
              "edge, SiLU base")
-#: The colours chosen as the front ends' were, by the largest worst-case
-#: CIEDE2000 separation from every colour a same-figure architecture, rung
+#: The colors chosen as the front ends' were, by the largest worst-case
+#: CIEDE2000 separation from every color a same-figure architecture, rung
 #: accent or band can carry: tab20c's #e6550d (12.49, against tab10's
 #: orange) and, with it carried, tab20c's #bdbdbd (12.40, against the GGA
 #: rung band).
-_COLOUR = {"deep_kan_2x6": "#e6550d", "deep_kan_geom_2x6": "#bdbdbd"}
+_COLOR = {"deep_kan_2x6": "#e6550d", "deep_kan_geom_2x6": "#bdbdbd"}
 #: Parameters per network: (6 d_in + 36 + 6) edges times G + k + 1 = 9,
 #: (exchange, correlation) per entry, coordinate set and polarization. The
 #: exchange row has d_in 1, 3 with the cusp pair; the correlation row 2
@@ -733,8 +733,8 @@ def test_the_registry_entries_are_the_stated_ones():
     rung; the expanded key naming the
     network; describe() carrying the three fields (the MLP entries the
     configuration's defaults, "mlp", 0, 0); both figure orders with the two
-    after deep_sine_3x16; the stated colours, each carried by no other
-    architecture, rung accent or band; every ordered name coloured."""
+    after deep_sine_3x16; the stated colors, each carried by no other
+    architecture, rung accent or band; every ordered name colored."""
     from xcquinox.pipeline import arch_names, rungs
     for name in _NEW:
         entry = C.ARCHITECTURES[name]
@@ -749,18 +749,18 @@ def test_the_registry_entries_are_the_stated_ones():
                for k, v in dict(network="mlp", kan_grid=0, kan_order=0).items())
     accents = {v.lower() for v in AS.RUNG_ACCENT.values()}
     bands = {v.lower() for v in AS.RUNG_BAND.values()} | {"#ffffff"}
-    for name, colour in _COLOUR.items():
-        assert AS.arch_color(name).lower() == colour, (name, AS.arch_color(name))
+    for name, color in _COLOR.items():
+        assert AS.arch_color(name).lower() == color, (name, AS.arch_color(name))
         others = {v.lower() for k, v in AS.ARCH_COLOR.items()
                   if k != name and not name.startswith(k + "_")}
-        assert colour not in others | accents | bands, name
+        assert color not in others | accents | bands, name
     for order in (AS._STORED_ORDER, AS._DISPLAY_ORDER, AS.ARCH_ORDER):
         i = order.index("deep_sine_3x16")
         assert tuple(order[i:i + 3]) == ("deep_sine_3x16", *_NEW), order
     assert [n for n in AS.ARCH_ORDER if n not in AS.ARCH_COLOR] == []
     # a sized name outside the figure orders keeps its rung's accent (the
     # meta-GGA capacity probes); only the ordered sized names inherit a base
-    # colour, so the probes stay apart from deep_mgga_3x16
+    # color, so the probes stay apart from deep_mgga_3x16
     for probe in ("deep_mgga_3x32", "deep_mgga_4x16", "deep_mgga_4x32"):
         assert AS.arch_color(probe) == AS.RUNG_ACCENT[AS.rung_of(probe)], probe
         assert AS.arch_color(probe) != AS.arch_color("deep_mgga_3x16"), probe

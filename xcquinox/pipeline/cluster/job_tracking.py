@@ -10,7 +10,7 @@ This module owns three things:
 
   - ``jobs.json``: an append-only submission log living at
     ``<run_dir>/jobs.json``. Append-only because the log is the record of
-    every array we ever submitted; ``resubmit`` only ever marks old records
+    every array ever submitted; ``resubmit`` only ever marks old records
     superseded, it never deletes them.
   - ``_run_slurm``: the single subprocess seam through which EVERY SLURM
     command runs. Centralizing it (a) gives one place to apply timeouts and
@@ -102,7 +102,7 @@ def _run_slurm(cmd: list[str], *, retries: int = 3) -> subprocess.CompletedProce
     if verb in _MUTATING_VERBS:
         # Mutating verb: run exactly once. check=True turns a non-zero exit
         # into CalledProcessError; a hang turns into TimeoutExpired. Either
-        # way it propagates, we must NOT retry a job-submitting command.
+        # way it propagates, a job-submitting command must NOT be retried.
         return subprocess.run(
             cmd, capture_output=True, text=True, check=True,
             timeout=_SLURM_TIMEOUT_S,
@@ -361,7 +361,7 @@ def _classify_sacct_state(state: str, exit_code: str) -> str:
     - ``CANCELLED`` (not OOM) / ``FAILED`` / ``NODE_FAIL`` / empty / unknown
                    -> ``"dependency_never_satisfied"``: for a newest
       non-superseded generation this almost always means the train -> eval
-      dependency never cleared (the upstream array was cancelled), so the
+      dependency never cleared (the upstream array was canceled), so the
       task never ran.
     """
     norm = (state or "").strip().upper()

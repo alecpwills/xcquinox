@@ -190,7 +190,7 @@ class GGA_FxNet_s(eqx.Module):
         key = jax.random.PRNGKey(self.seed)
         keys = jax.random.split(key, 2)
 
-        # to constrain this, we require only gradient inputs
+        # to constrain this, only gradient inputs are required
         self.net = eqx.nn.MLP(in_size=1,  # Input is ONLY gradient_descriptor
                               out_size=1,  # Output is Fx
                               depth=self.depth,
@@ -374,7 +374,7 @@ class GGA_FxNet_G(eqx.Module):
         key = jax.random.PRNGKey(self.seed)
         keys = jax.random.split(key, 2)
 
-        # to constrain this, we require only gradient inputs
+        # to constrain this, only gradient inputs are required
         self.net = eqx.nn.MLP(in_size=1,  # Input is ONLY s
                               out_size=1,  # Output is Fx
                               depth=self.depth,
@@ -571,7 +571,7 @@ class GGA_FxNet_sigma(eqx.Module):
         key = jax.random.PRNGKey(self.seed)
         keys = jax.random.split(key, 2)
 
-        # to constrain this, we require only gradient inputs
+        # to constrain this, only gradient inputs are required
         self.net = eqx.nn.MLP(in_size=1,  # Input is ONLY gradient_descriptor
                               out_size=1,  # Output is Fx
                               depth=self.depth,
@@ -593,7 +593,7 @@ class GGA_FxNet_sigma(eqx.Module):
 
         *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). Automatic derivatives with respect to sigma are directly available this way, so v_sigma can be generated and used in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
 
         :param inputs: _description_
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
@@ -704,7 +704,7 @@ class GGA_FcNet_sigma(eqx.Module):
 
         *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). Automatic derivatives with respect to sigma are directly available this way, so v_sigma can be generated and used in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
 
         :param inputs: _description_
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
@@ -986,7 +986,7 @@ class GGA_FcNet_sigma_transform(eqx.Module):
 
 def save_xcquinox_model(model, path: str = '', fixing: Union[str, None] = None,
                         tail_info: Union[str, None] = None, loss: Union[list[float], None] = None):
-    """Save our NN model to a file.
+    """Save the NN model to a file.
 
     :param model: The model to save.
     :type model: eqx.Module.
@@ -1027,7 +1027,7 @@ def load_xcquinox_model(path: str):
     """Load a model from a file.
 
     Give the path where the model is stored, without the extension.
-    I.e, in path, we should have the files path.eqx and path.json.
+    I.e, in path, the files path.eqx and path.json should be present.
     """
     jax.config.update("jax_enable_x64", True)  # Ensure 64-bit is enabled first
 
@@ -1125,7 +1125,7 @@ class GGA_FxNet_sigma_UNC(eqx.Module):
 
         *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). Automatic derivatives with respect to sigma are directly available this way, so v_sigma can be generated and used in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
 
         :param inputs: _description_
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
@@ -1222,7 +1222,7 @@ class GGA_FcNet_sigma_UNC(eqx.Module):
 
         *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). Automatic derivatives with respect to sigma are directly available this way, so v_sigma can be generated and used in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
 
         :param inputs: _description_
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
@@ -1308,7 +1308,7 @@ class MGGA_FxNet_sigma(eqx.Module):
         key = jax.random.PRNGKey(self.seed)
         keys = jax.random.split(key, 2)
 
-        # to constrain this, we require only gradient inputs
+        # to constrain this, only gradient inputs are required
         self.net = eqx.nn.MLP(in_size=2,  # Input is gradient_descriptor, tau_descriptor
                               out_size=1,  # Output is Fx
                               depth=self.depth,
@@ -1331,7 +1331,7 @@ class MGGA_FxNet_sigma(eqx.Module):
 
         *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). Automatic derivatives with respect to sigma are directly available this way, so v_sigma can be generated and used in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
 
         :param inputs: A one-dimensional list/array of inputs [rho, sigma, laplacian_rho, alpha]
         :type inputs: tuple, list, one-dimensional array of size 4 in order [rho, sigma, laplacian_rho, alpha]
@@ -1422,7 +1422,7 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         key = jax.random.PRNGKey(self.seed)
         keys = jax.random.split(key, 2)
 
-        # to constrain this, we require only gradient inputs
+        # to constrain this, only gradient inputs are required
         self.net = eqx.nn.MLP(in_size=2,  # Input is gradient_descriptor, tau_descriptor
                               out_size=1,  # Output is Fx
                               depth=self.depth,
@@ -1445,7 +1445,7 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
 
         *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). Automatic derivatives with respect to sigma are directly available this way, so v_sigma can be generated and used in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
 
         :param inputs: A one-dimensional list/array of inputs [rho, sigma, laplacian_rho, alpha]
         :type inputs: tuple, list, one-dimensional array of size 4 in order [rho, sigma, laplacian_rho, alpha]
@@ -1470,7 +1470,7 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
-        # here we log-transform our descriptors to see if it improves convergence
+        # the descriptors are log-transformed here to test whether it improves convergence
         x0 = jnp.log(rho**(1/3)+1e-5)
         x1 = (1-jnp.exp(-s**2))*jnp.log(s+1)
         x2 = jnp.log((alpha+1)/2)
@@ -1539,7 +1539,7 @@ class MGGA_FcNet_sigma(eqx.Module):
         key = jax.random.PRNGKey(self.seed)
         keys = jax.random.split(key, 2)
 
-        # to constrain this, we require only gradient inputs
+        # to constrain this, only gradient inputs are required
         self.net = eqx.nn.MLP(in_size=3,  # Input is all rho, gradient, tau descriptors
                               out_size=1,  # Output is Fx
                               depth=self.depth,
@@ -1562,7 +1562,7 @@ class MGGA_FcNet_sigma(eqx.Module):
 
         *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). Automatic derivatives with respect to sigma are directly available this way, so v_sigma can be generated and used in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
 
         :param inputs: A one-dimensional list/array of inputs [rho, sigma, laplacian_rho, alpha]
         :type inputs: tuple, list, one-dimensional array of size 4 in order [rho, sigma, laplacian_rho, alpha]
@@ -1651,7 +1651,7 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
         key = jax.random.PRNGKey(self.seed)
         keys = jax.random.split(key, 2)
 
-        # to constrain this, we require only gradient inputs
+        # to constrain this, only gradient inputs are required
         self.net = eqx.nn.MLP(in_size=3,  # Input is all rho, gradient, tau descriptors
                               out_size=1,  # Output is Fx
                               depth=self.depth,
@@ -1674,7 +1674,7 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
 
         *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). Automatic derivatives with respect to sigma are directly available this way, so v_sigma can be generated and used in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
 
         :param inputs: A one-dimensional list/array of inputs [rho, sigma, laplacian_rho, alpha]
         :type inputs: tuple, list, one-dimensional array of size 4 in order [rho, sigma, laplacian_rho, alpha]
@@ -1699,7 +1699,7 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
-        # here we log-transform our descriptors to see if it improves convergence
+        # the descriptors are log-transformed here to test whether it improves convergence
         x0 = jnp.log(rho**(1/3)+1e-5)
         x1 = (1-jnp.exp(-s**2))*jnp.log(s+1)
         x2 = jnp.log((alpha+1)/2)

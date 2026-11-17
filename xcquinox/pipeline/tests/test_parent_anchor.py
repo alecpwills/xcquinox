@@ -21,7 +21,7 @@ over the registry, which carries no anchored entry: anchoring is a run-level
 switch, not a registry name.
 
 The configuration layer -- ``model.parent_anchor`` parsed, refused where it
-cannot be honoured, and carried into the training specs, the manifest and the
+cannot be honored, and carried into the training specs, the manifest and the
 checkpoint loader's identity check.
 
 Environment the numbers quoted below were measured on: pyscf 2.11.0, libxc

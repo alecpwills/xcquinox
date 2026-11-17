@@ -99,7 +99,7 @@ def arch_class(cfg) -> str:
 
 def unlisted_configs() -> dict:
     """The four architectures that are not registry entries, built field for
-    field as the registry builds its neighbours: the KAN fields of the
+    field as the registry builds its neighbors: the KAN fields of the
     registry's KAN entries (cubic B-splines on five intervals), the meta-GGA
     fields of ``deep_mgga_3x16``, and the log transform and intensive DM
     entropy every deep entry carries."""

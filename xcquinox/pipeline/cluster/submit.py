@@ -152,7 +152,7 @@ def _conda_activation_block(conda_profile: str, conda_env: str) -> str:
 
     A blank ``conda_profile`` must NEVER emit a bare ``source`` line, under the
     template's ``set -euo pipefail`` that is broken bash. When ``conda_profile``
-    is set we ``source`` it before ``conda activate``; when it is empty we skip
+    is set it is ``source``-ed before ``conda activate``; when it is empty the step is skipped
     the ``source`` entirely and assume ``conda`` is already on ``PATH``.
     """
     conda_profile = (conda_profile or "").strip()
@@ -783,7 +783,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         raise RuntimeError(
             f"submit_jobs: {run_dir}/jobs.json already records live (non-"
             "superseded) jobs; refusing to submit again. Pass force=True to "
-            "override (e.g. after manually cancelling the prior graph)."
+            "override (e.g. after manually canceling the prior graph)."
         )
 
     submitted_ids: list[str] = []  # ids returned in THIS call, for rollback.
@@ -909,7 +909,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             print(
                 "submit_jobs: WARNING, scancel FAILED for job id(s) "
                 f"{rollback_failed}; these arrays may be ORPHANED and must be "
-                "cancelled manually (scancel <id>).",
+                "canceled manually (scancel <id>).",
                 flush=True,
             )
         # Surface sbatch's actual stderr/stdout when present, CalledProcessError's

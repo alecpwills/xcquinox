@@ -57,7 +57,7 @@ _STORED_ORDER: Tuple[str, ...] = (
     # the 3x16 family; deep_gea_3x16, deep_ff_3x16 and deep_sine_3x16 are the
     # plain network with one change each (the gradient-expansion coefficient
     # fixed by construction, the Fourier-feature map, the sine activation; no
-    # 4x32 sibling; the base colours are set below), the 2x6 pair the
+    # 4x32 sibling; the base colors are set below), the 2x6 pair the
     # Kolmogorov-Arnold network in place of the MLP, plain and geometric, and
     # deep_atomctx_3x16 the atom-context descriptor arm
     "deep_3x16", "deep_attn_3x16", "deep_gea_3x16", "deep_ff_3x16",
@@ -71,7 +71,7 @@ _STORED_ORDER: Tuple[str, ...] = (
     "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
     "deep_cusp_mgga_3x16", "deep_rung35ms_mgga_3x16",
     # the v8 geometric pair: the cusp columns on the 3x16 network, without and
-    # with attention (no 4x32 sibling; the base colours are set below)
+    # with attention (no 4x32 sibling; the base colors are set below)
     "deep_geom_3x16", "deep_geom_attn_3x16",
 )
 
@@ -104,8 +104,8 @@ assert sorted(_DISPLAY_ORDER) == sorted(_STORED_ORDER), "the two orders differ i
 ARCH_ORDER: Tuple[str, ...] = tuple(display_name(a) for a in _DISPLAY_ORDER)
 
 _ARCH_TAB = plt.get_cmap("tab10")
-# colours are assigned per STORED key (the historical palette, the width twins
-# inheriting their 4x32 sibling's colour) and re-keyed by the shown name below
+# colors are assigned per STORED key (the historical palette, the width twins
+# inheriting their 4x32 sibling's color) and re-keyed by the shown name below
 _STORED_COLOR: Dict[str, str] = {
     a: matplotlib.colors.to_hex(_ARCH_TAB(i)) for i, a in enumerate(_STORED_ORDER[:8])
 }
@@ -126,7 +126,7 @@ ARCH_COLOR["deep_rung35ms"] = "#6b6ecf"
 ARCH_COLOR["deep_cusp_mgga"] = "#bd9e39"
 ARCH_COLOR["deep_rung35ms_mgga"] = "#a55194"
 # v6 G1 ladder archs: green-family entries chosen by worst-case CIEDE2000
-# distance against every colour a same-figure architecture or rung accent can
+# distance against every color a same-figure architecture or rung accent can
 # carry -- tab10[2] #2ca02c (deep_cusp, its 3x16 twin, and the rung-3.5
 # accent) is itself a green, so proximity to it is the binding constraint.
 # shallow pair (tab20b[4]/[5]): worst cross-family separation 13.22
@@ -140,35 +140,35 @@ ARCH_COLOR["medium"] = "#98df8a"
 ARCH_COLOR["medium_attn"] = "#c7e9c0"
 # v8 geometric pair base names (no 4x32 sibling to inherit from): tab20b's red
 # pair, the attention twin the lighter shade of its base, chosen by worst-case
-# CIEDE2000 separation against every colour above and the rung accents: 14.54
+# CIEDE2000 separation against every color above and the rung accents: 14.54
 # (#d6616b against tab10's red, deep_dm and its twin), the largest among the
 # six tab20b pairs no architecture carries (the magenta pair sits 4.84 from
 # tab10's pink); base-twin separation 13.57.
 ARCH_COLOR["deep_geom"] = "#d6616b"
 ARCH_COLOR["deep_geom_attn"] = "#e7969c"
-# The gradient-expansion architecture: tab20c's #fdd0a2, the colour no
+# The gradient-expansion architecture: tab20c's #fdd0a2, the color no
 # architecture carries with the largest worst-case CIEDE2000 separation
 # (19.17, against deep_cusp_mgga's #bd9e39) when the GGA rung band and white
 # are in the compared set as well (23.63 and 20.35).
 ARCH_COLOR["deep_gea"] = "#fdd0a2"
 # The two MLP front ends, by the same criterion with the gradient-expansion
-# colour carried: tab20c's #9e9ac8 (worst case 16.52, against tab10's purple)
+# color carried: tab20c's #9e9ac8 (worst case 16.52, against tab10's purple)
 # for the Fourier features and, with it carried too, tab20c's #9ecae1
 # (13.97, against tab10's cyan) for the sine network.
 ARCH_COLOR["deep_ff"] = "#9e9ac8"
 ARCH_COLOR["deep_sine"] = "#9ecae1"
 # The Kolmogorov-Arnold pair, by the same criterion with the two front-end
-# colours carried: tab20c's #e6550d (worst case 12.49, against tab10's
+# colors carried: tab20c's #e6550d (worst case 12.49, against tab10's
 # orange) for the plain network and, with it carried too, tab20c's #bdbdbd
 # (12.40, against the GGA rung band) for the geometric one.
 ARCH_COLOR["deep_kan"] = "#e6550d"
 ARCH_COLOR["deep_kan_geom"] = "#bdbdbd"
-# The Laplacian pair, by the same criterion with every colour above carried:
+# The Laplacian pair, by the same criterion with every color above carried:
 # #636363 (worst case 11.04) for the plain network and, with it carried too,
 # tab20c's #bcbddc (10.37) for the geometric one.
 ARCH_COLOR["deep_lap"] = "#636363"
 ARCH_COLOR["deep_lap_geom"] = "#bcbddc"
-# The atom-context arm, by the same criterion with every colour above
+# The atom-context arm, by the same criterion with every color above
 # carried: tab20's #dbdb8d (worst case 12.20, against deep_rung35's tab10
 # olive #bcbd22).
 ARCH_COLOR["deep_atomctx"] = "#dbdb8d"
@@ -181,7 +181,7 @@ for _small in _STORED_ORDER[8:]:
     if _base == _small:
         continue
     _STORED_COLOR[_small] = _STORED_COLOR.get(_base, "#333333")
-# re-keyed by the shown name; the colour-only base names (deep_rung35,
+# re-keyed by the shown name; the color-only base names (deep_rung35,
 # deep_mgga, ...: never registry keys) keep their stored spelling
 ARCH_COLOR: Dict[str, str] = {display_name(k): v for k, v in _STORED_COLOR.items()}
 
@@ -203,9 +203,9 @@ from xcquinox.pipeline.rungs import (  # noqa: E402
 
 # Saturated accent per rung (per-rung summary bars, legend section swatches) and a
 # light background tint (axvspan rung bands behind per-arch bars). The
-# Laplacian accent is tab20c's #fdae6b, the colour no architecture carries
+# Laplacian accent is tab20c's #fdae6b, the color no architecture carries
 # with the largest worst-case CIEDE2000 separation (10.13) from every
-# architecture colour and accent in use; its band is that accent at 15
+# architecture color and accent in use; its band is that accent at 15
 # percent over white, 6.5 from white and 3.7 from the nearest band (the
 # meta-GGA one), 10.1 or more from the other bands.
 RUNG_ACCENT: Dict[str, str] = {
@@ -242,7 +242,7 @@ def base_name(arch: str) -> str:
 def in_order(arch: str) -> bool:
     """Whether ``arch`` (either spelling, tagged or not) is an ARCH_ORDER
     member once its tag is dropped: the axis the per-arch figures order and
-    colour by."""
+    color by."""
     return base_name(arch) in ARCH_ORDER
 
 
@@ -307,9 +307,9 @@ def arch_color(arch: str) -> str:
     if name in ARCH_COLOR:
         return ARCH_COLOR[name]
     key = stored_key(name)
-    if key in _STORED_COLOR:              # a tagged shown name: its architecture's colour
+    if key in _STORED_COLOR:              # a tagged shown name: its architecture's color
         return _STORED_COLOR[key]
-    # Only a width twin inherits its base's colour here; a sized name outside
+    # Only a width twin inherits its base's color here; a sized name outside
     # the orders (the capacity probes deep_mgga_3x32, deep_mgga_4x16 and
     # deep_mgga_4x32) keeps the rung accent, as it has since the probes were
     # registered.

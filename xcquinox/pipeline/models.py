@@ -103,7 +103,7 @@ class AlecGGAModel(eqx.Module):
         """Constrained exchange enhancement. Shapes: (N,) -> (N,).
 
         The constraint chain is applied INSIDE the network forward, so this is
-        simply the batched network apply."""
+        the batched network apply, nothing more."""
         return _batched_network_apply(self.xnet, rho, sigma, features)
 
     def eval_Fc(self, rho, sigma, features, zeta=0.0):

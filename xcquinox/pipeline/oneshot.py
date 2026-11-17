@@ -205,7 +205,7 @@ def _compute_vxc_nn_core(
     # high-symmetry systems, and identically on a zero-occupation spin
     # channel) slip through: its NaN v_sigma is NOT masked and spreads
     # through V_sigma -> Fock -> energy/grad. So the sanitize predicate (and
-    # the v_sigma mask) ALSO require sigma > _V_SIGMA_THRESHOLD. We use the
+    # the v_sigma mask) ALSO require sigma > _V_SIGMA_THRESHOLD. The
     # standard "safe value under where, then mask the output with where"
     # double-where trick so that BOTH the forward value and the reverse-mode
     # (VJP/JVP) gradient are NaN-free: the masked-out points feed safe
@@ -362,7 +362,7 @@ def feature_energy_derivative(model, rho, sigma, features, part="xc",
     else:
         # Polarized correlation: de_c/df must be taken at the SAME zeta the
         # energy uses, or the accumulated derivative belongs to a different
-        # functional than the one being minimised.
+        # functional than the one being minimized.
         if part != "c":
             raise ValueError(
                 "feature_energy_derivative: zeta applies to the correlation "
@@ -404,7 +404,7 @@ def feature_response_vxc(dedf, grid_weights, features_of_dm, dm):
     This is the term omitted by the per-point JVP formulation: ``v_rho`` and
     ``v_sigma`` are partial derivatives at FIXED features, so for any descriptor
     that depends on the density matrix the assembled V_xc is not dE_xc/dP and the
-    SCF minimises an energy whose gradient it does not have.
+    SCF minimizes an energy whose gradient it does not have.
 
     Only the ``P -> features`` map is differentiated here, so this returns
     exactly the missing chain-rule term and nothing else -- the ``rho(P)`` and
@@ -1290,7 +1290,7 @@ def _nn_fx_local_uks(model, rho_alpha: jnp.ndarray,
 
     Step-6 PBE-anchor helper. AlecGGA_XNet.__call__ is a single-grid-point
     evaluator taking a 1-D input tensor ``[rho, sigma, *extras]`` and
-    returning a scalar F_x. We therefore vmap over N sample points.
+    returning a scalar F_x. The evaluation therefore vmaps over N sample points.
 
     Spin-scaled UKS approximation (matches ``_uks_spin_resolved_vxc`` at
     SCF time):

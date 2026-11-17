@@ -78,7 +78,7 @@ def _diagonalize_roothaan_unrestricted(
     mask at every integer.
 
     When ``nocc == 0`` (beta channel of a UKS atom with one unpaired electron,
-    e.g., H spin=1) we bypass eigh entirely and return a zero DM. Otherwise
+    e.g., H spin=1) eigh is bypassed entirely and a zero DM returned. Otherwise
     use an occupation-mask ``(C * occ) @ C.T`` instead of ``C[:, :nocc] @
     C[:, :nocc].T``. The slice form is algebraically equivalent but its
     reverse-mode gradient through multi-cycle ``lax.scan`` (multi-cycle
@@ -347,7 +347,7 @@ def _iterate_scf(config: SolverConfig, body, init_state, forward_only: bool):
     reused across cycles / same-shape molecules. Numerically identical to the scan
     (same ``body``, same post-convergence ``jnp.where(already, ...)`` freeze, same
     stacked energy trace). Valid ONLY because eval never differentiates -- a Python
-    loop under ``jax.grad`` would build exactly the reverse tape we are avoiding, so
+    loop under ``jax.grad`` would build exactly the reverse tape being avoided, so
     this path must never be taken in a grad context.
     """
     if forward_only:

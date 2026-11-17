@@ -18,7 +18,7 @@ marked on the bar; the title states what a bar and a mark are, then lists
 the exceptions one indented line per distinct case -- the reactions scored
 without convergence with the subsets that have none, the reactions reported
 without a finite energy, and the subsets whose references
-average to zero (no weight in either total). Bars are coloured by
+average to zero (no weight in either total). Bars are colored by
 architecture (``arch_style.arch_color``) and hatched by network group, the
 group being the label's leading token (``S``, ``slim05``, ``v7``); two
 networks of one group and one architecture draw alike. A network that draws
@@ -28,8 +28,8 @@ reported energy. The
 row assembly is ``slim16_table``'s own, so the figure and the metrics CSV
 state one set of numbers. A run carrying the comparator tables
 (``functionals_df.json``, ``hpcjobs/slim16_eval.py comparators-df``) draws,
-after the PBE-DF bar, one grey bar per comparator (r2SCAN, B3LYP, wB97M-V in
-that order, the greys of ``COMPARATOR_COLORS``), each scored as PBE-DF is
+after the PBE-DF bar, one gray bar per comparator (r2SCAN, B3LYP, wB97M-V in
+after the PBE-DF bar, one gray bar per comparator (r2SCAN, B3LYP, wB97M-V in
 over every reaction its table covers and read in the legend as ``label
 (WTMAD-2)``; the title names the reactions a comparator's table leaves
 without an energy and a comparator whose table scores no reaction, which
@@ -71,14 +71,14 @@ OUT_NAME = "slim16_wtmad2.png"
 SETS_PER_ROW = 13
 PBE_LABEL = "PBE-DF"
 PBE_COLOR = "#7f7f7f"
-#: one grey per comparator, keyed by its libxc name (the job's COMPARATORS):
-#: the triple of the 256-level grey ramp with the largest worst-case CIEDE2000
-#: separation (9.68) from every architecture colour, the rung accents, PBE-DF's
-#: grey, white, the black converged-only mark and each other, above the
+#: one gray per comparator, keyed by its libxc name (the job's COMPARATORS):
+#: one gray per comparator, keyed by its libxc name (the job's COMPARATORS):
+#: separation (9.68) from every architecture color, the rung accents, PBE-DF's
+#: one gray per comparator, keyed by its libxc name (the job's COMPARATORS):
 #: palette's own closest pair (8.15)
 COMPARATOR_COLORS = {"r2scan": "#464646", "b3lyp": "#9b9b9b", "wb97m-v": "#282828"}
 if set(COMPARATOR_COLORS) != set(slim16_table.COMPARATOR_ORDER):
-    raise RuntimeError("the comparator greys and slim16_table.COMPARATOR_ORDER name "
+    raise RuntimeError("the comparator grays and slim16_table.COMPARATOR_ORDER name "
                        f"different functionals: {sorted(COMPARATOR_COLORS)} against "
                        f"{sorted(slim16_table.COMPARATOR_ORDER)}")
 #: one hatch per network group, in order of first appearance; the first
@@ -266,7 +266,7 @@ def plot_slim16_set_errors(order: list, records: dict, pbe: dict,
     y scale and the y cap, and ``comparators`` (key, label, color, WTMAD-2,
     reaction count and unscored reactions of each comparator drawn). Per
     subset the comparators' bars follow the PBE-DF bar in the order given,
-    in their own greys, each with a legend line ``label (WTMAD-2)``. With
+    in their own grays, each with a legend line ``label (WTMAD-2)``. With
     ``log`` the y axis is logarithmic from half the smallest drawn value, so
     the small bars read; a zero bar then draws nothing."""
     comparators = list(comparators)

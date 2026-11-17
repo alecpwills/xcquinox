@@ -481,7 +481,7 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
     (Dick & Fernandez-Serra 2021, og_dpyscf/ogdpyscf/losses.py:62:
     ``drho = sqrt(sum((rho-rho_ref)^2 w) / n_elec^2)``, then MSE vs 0 ==
     ``sum w (drho)^2 / N^2``); deviation: dpyscf normalizes per spin channel
-    by N_sigma^2 (og_dpyscf/ogdpyscf/losses.py:70-73), we carry a spin-summed
+    by N_sigma^2 (og_dpyscf/ogdpyscf/losses.py:70-73), a spin-summed
     density so the total N_e^2 is used.
     """
     terms = []
@@ -1130,7 +1130,7 @@ class DeltaAEPlusGridLoss(AlecLoss):
 # Ha; IPs ~0.3-1.6 Ha). A reference above this almost certainly means a
 # kcal/mol value was passed WITHOUT the kcal/mol->Ha conversion (a ~627x error;
 # e.g. a forgotten /KCAL_PER_HA in the pool builder makes every value huge), so
-# we fail loud at construction rather than silently train on it.
+# construction fails loud rather than silently training on it.
 _HA_REF_SANITY_MAX = 10.0
 
 
@@ -1500,7 +1500,7 @@ class L5GradnormVxcStep7(AlecLoss):
                 "compute_components requires a real `molecules` set."
             )
         atom_idx = dict(self.atom_mol_idx)
-        # Restrict `_atomic_reg` to the user-specified atom set when
+        # Restrict `_atomic_reg` to the specified atom set when
         # `regularize_atom_syms` is configured (e.g., the Dick 2021 SI §II
         # H/Li set). When None, regularize every single-atom MoleculeSpec
         # (kept for back-compat).

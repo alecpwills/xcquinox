@@ -26,7 +26,7 @@ at the production basis and grid. The prior assembly is emulated by disabling
 the descriptor-response predicate, which removes exactly the term the fix
 added.
 
-LEG 3 (measurement): SCF convergence behaviour, corrected vs prior -- cycles
+LEG 3 (measurement): SCF convergence behavior, corrected vs prior -- cycles
 run, converged flag, and the energy at increasing cycle caps (a coarse
 oscillation profile). A more correct potential that converges worse would be
 worth knowing before any of the 55 affected cells is re-run.
@@ -205,13 +205,13 @@ def leg2_potential_effect(run_dir, grid_level, cycles, report):
                   f"shift={shift:+.4e} kcal/mol", flush=True)
 
 
-def leg3_convergence_behaviour(run_dir, grid_level, report,
+def leg3_convergence_behavior(run_dir, grid_level, report,
                                caps=(3, 5, 10, 15, 20, 25)):
     # cap 3 first: the sweep trains AND evals at 3 cycles (full_3), so the
     # 3-cycle point is the one the production cells actually live at; the
     # longer caps profile the instability regime the full_25 follow-up
     # would enter.
-    print("[leg3] convergence behaviour, corrected vs prior", flush=True)
+    print("[leg3] convergence behavior, corrected vs prior", flush=True)
     for arch_name in ARCHS:
         model = load_pretrained(run_dir, arch_name)
         for name, atom, spin, comp in SPECIES:
@@ -256,7 +256,7 @@ def main(argv=None):
     ok = leg1_gradient_finiteness(args.run_dir, args.grid_level, args.cycles,
                                   report)
     leg2_potential_effect(args.run_dir, args.grid_level, args.cycles, report)
-    leg3_convergence_behaviour(args.run_dir, args.grid_level, report)
+    leg3_convergence_behavior(args.run_dir, args.grid_level, report)
 
     out = args.out or os.path.join(
         args.run_dir, f"nan_verify_report_grid{args.grid_level}.json")

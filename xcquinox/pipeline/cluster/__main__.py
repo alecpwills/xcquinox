@@ -112,7 +112,7 @@ def _on_login_node() -> bool:
     """True iff this process is NOT inside a SLURM allocation.
 
     SLURM sets ``$SLURM_JOB_ID`` for every job step (batch and interactive
-    ``salloc``). Its absence means we are on a login node, where heavy compute
+    ``salloc``). Its absence means a login node, where heavy compute
     is forbidden by cluster fair-use policy.
     """
     return not os.environ.get("SLURM_JOB_ID")
@@ -455,7 +455,7 @@ _NO_EVIDENCE_OUTCOMES = {"dependency_never_satisfied", "unknown_sacct_purged"}
 # "killed_by_signal": it is a timeout in all but name (the job ran out of
 # wall), so route it like a timeout (longer-wall ``timeout_retry`` resources)
 # -- UNLESS a resumable checkpoint also exists (see _classify_failure: the
-# resume path wins so we continue rather than restart from scratch).
+# resume path wins so the run continues rather than restart from scratch).
 _FAILURE_CLASS_ALIASES = {"killed_by_signal": "timeout"}
 
 
@@ -1211,7 +1211,7 @@ def _make_run_dir(root: str) -> str:
 
     Name is ``run_<UTC-timestamp>`` with a ``_<counter>`` suffix appended on a
     same-second collision. ``os.makedirs(exist_ok=False)`` guarantees the dir
-    is brand-new (so we never overwrite a prior run's artifacts).
+    is brand-new (so a prior run's artifacts are never overwritten).
     """
     runs_root = os.path.join(root, "runs")
     os.makedirs(runs_root, exist_ok=True)
@@ -1892,7 +1892,7 @@ def cmd_resubmit(args) -> int:
         # train+eval pair. Both are replayed as captured, so a template fix
         # made after this run was submitted is NOT picked up -- said out loud
         # below, because it is the one thing a fresh `submit` does that a
-        # resubmit cannot, and it is now a judgement for the operator rather
+        # resubmit cannot, and it is now a judgment for the operator rather
         # than a blanket refusal.
         try:
             train_script, eval_script = _resolve_train_scripts(run_dir, cfg)
@@ -2330,16 +2330,16 @@ def cmd_resubmit_preflight(args) -> int:
                  "then scancel + mark_superseded the old recorded arrays.")
             if old_datagen:
                 _log(f"  old datagen job {old_datagen['array_job_id']} "
-                     f"(gen {old_datagen['generation']}) would be cancelled.")
+                     f"(gen {old_datagen['generation']}) would be canceled.")
             if old_pretrain:
                 _log(f"  old pretrain array {old_pretrain['array_job_id']} "
-                     f"(gen {old_pretrain['generation']}) would be cancelled.")
+                     f"(gen {old_pretrain['generation']}) would be canceled.")
             if old_train:
                 _log(f"  old train array {old_train['array_job_id']} "
-                     f"(gen {old_train['generation']}) would be cancelled.")
+                     f"(gen {old_train['generation']}) would be canceled.")
             if old_eval:
                 _log(f"  old eval array {old_eval['array_job_id']} "
-                     f"(gen {old_eval['generation']}) would be cancelled.")
+                     f"(gen {old_eval['generation']}) would be canceled.")
             _log("resubmit-preflight: no SLURM call made; pass --submit.")
             return 0
 
@@ -2387,7 +2387,7 @@ def cmd_resubmit_preflight(args) -> int:
             job_tracking.mark_superseded(run_dir, rec["kind"],
                                          rec["generation"])
         _log("resubmit-preflight: old datagen/pretrain/train/eval arrays "
-             "cancelled and marked superseded.")
+             "canceled and marked superseded.")
         return 0
     finally:
         if lock_path is not None:
@@ -2426,7 +2426,7 @@ def cmd_repair_manifest(args) -> int:
     except Exception as exc:
         # ANY failure to parse/build the resolved config (ValueError, a YAML
         # ParserError, an OSError, ...) means it is unrecoverable, the grid
-        # cannot be reconstructed, so direct the user to a fresh run dir.
+        # cannot be reconstructed, so point to a fresh run dir instead.
         _log(f"repair-manifest: {cfg_path} is unrecoverable ({exc}); start a "
              "fresh run dir with `submit`.")
         return 1
@@ -2773,7 +2773,7 @@ def cmd_pull(args) -> int:
     category = args.category.strip("/")
 
     # --specs 0,1,5 -> [0, 1, 5]; empty/blank entries are skipped; any
-    # non-numeric entry aborts with a clear error before we hit rsync.
+    # non-numeric entry aborts with a clear error before rsync runs.
     spec_indices: list[int] = []
     if getattr(args, "specs", None):
         for tok in args.specs.split(","):
@@ -2846,7 +2846,7 @@ def cmd_list_runs(args) -> int:
 
     Read-only; issues a single ``find -prune`` over SSH and groups results by
     category (relative parent directory). Use this to figure out what to
-    pass to ``pull --category`` when your sweep layout has experiment-series
+    pass to ``pull --category`` when a sweep layout has experiment-series
     subdirs (``alpha_off/runs``, ``polarized/alpha_on``, ...).
     """
     host = args.host

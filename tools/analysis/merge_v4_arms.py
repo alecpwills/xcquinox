@@ -33,7 +33,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-# v5 era (2026-08-14): the retired v4 mgga arms (PBE-seeded, cancelled
+# v5 era (2026-08-14): the retired v4 mgga arms (PBE-seeded, canceled
 # mid-array) are EXCLUDED; the roster is the still-valid GGA/rung-3.5 arm
 # plus the two SCAN-seeded v5 arms. Per-arch seed provenance is VALIDATED
 # against the rung-baseline policy, and every registry architecture must

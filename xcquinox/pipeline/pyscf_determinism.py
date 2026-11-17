@@ -284,7 +284,7 @@ def pin_xc_block_size(mf, blksize: int = REFERENCE_XC_BLKSIZE) -> int | None:
     size explicitly (no caller on the SCF path does; PySCF's callers pass
     ``max_memory``) runs at ``blksize`` regardless of ``max_memory`` and of
     the process's memory. A caller that passes ``blksize`` itself is
-    honoured, because such a caller has sized its own ``buf`` for it.
+    honored, because such a caller has sized its own ``buf`` for it.
 
     Returns the block size applied, or None when ``mf`` has no ``_numint``
     (Hartree-Fock: no grid quadrature, nothing to pin). Pinning an already

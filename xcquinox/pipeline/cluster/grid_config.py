@@ -16,7 +16,7 @@ Design note, the ``domain`` dependency:
     ``validate_grid_semantics`` needs the size of the training-point pool to
     bound ``subset_size``. That pool lives in the not-yet-built ``domain.py``
     module. To avoid a hard import dependency on a module that does not exist,
-    the domain object is received as a parameter; we depend only on it
+    the domain object is received as a parameter; the module depends only on it
     exposing an integer ``pool_size`` attribute. See the function docstring.
 """
 from dataclasses import asdict, dataclass, field, fields
@@ -972,7 +972,7 @@ def _cluster_block(text: str):
     elsewhere in the document, a document-wide scan accepts it as the literal
     behind an authored ``time: 28800`` -- 28800 minutes rendered as an 8-hour
     wall. None (rather than the whole text) is therefore returned when no
-    header is recognised.
+    header is recognized.
     """
     match = _CLUSTER_HEADER_RE.search(text)
     if match is None:
@@ -1839,7 +1839,7 @@ def _parse_mixer_kwargs(raw, ctx):
     """Normalize a named solver's ``mixer_kwargs`` to a hashable, sorted
     tuple-of-(str, float) pairs, or ``None`` when absent.
 
-    Accepts either a ``{name: value}`` dict (the user-authored YAML form) or a
+    Accepts either a ``{name: value}`` dict (the hand-authored YAML form) or a
     list/tuple of ``[name, value]`` pairs -- the latter is the round-tripped
     ``resolved_config.yaml`` form: ``submit`` serializes ``SolverNamed`` via
     ``dataclasses.asdict`` (keeping the tuple-of-pairs) and ``yaml.safe_dump``

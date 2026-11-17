@@ -903,7 +903,7 @@ ARCHITECTURES = {
                               dm_entropy_intensive=True,
                               descriptor_log_transform=False),
     # 2026-06-20: depth-3/width-16 twins of the 8 dfs_step7 sweep archs. The
-    # 2026-06-20 review found our 4x32 nets (~3.3k params) overfit
+    # 2026-06-20 review found the 4x32 nets (~3.3k params) overfit
     # the tiny 26-point DFS pool; DFS used 3 hidden layers x 16 nodes (~0.6k).
     # Each twin mirrors its 4x32 sibling's flags EXACTLY, changing only capacity.
     "deep_3x16":                ArchitectureConfig.from_spec("deep_3x16",               3, 16,

@@ -10,12 +10,12 @@ straight lines between the exact energies at the integers as a function of
 the electron number, where a negative bow is the delocalization error (in
 def2-TZVP the anion is unbound, so between one and two electrons a
 functional's deviation carries its anion error with its curvature). Both
-deviations in kcal/mol. A network draws a line in its architecture's colour
+deviations in kcal/mol. A network draws a line in its architecture's color
 (``arch_style.arch_color``) under its manifest label, solid for the first
 network of an architecture and with a dash pattern of its own for each
-further one, so that networks sharing a colour read apart; a missing energy
+further one, so that networks sharing a color read apart; a missing energy
 leaves a gap in a line and an unconverged point carries an open circle. A
-comparator draws a dashed line in the grey of the Slim16 figure
+comparator draws a dashed line in the gray of the Slim16 figure
 (``make_slim16_figure``) with a dash pattern of its own, and the reference
 is the light zero line. Three title lines explain the panels; ``--plain``
 writes a second file without them.
@@ -31,7 +31,7 @@ through the module when absent, with ``--recompute``, or when
 ``--networks``, ``--r-step`` or ``--n-step`` is given. The PNG is written as
 ``diagnostics.png`` beside the
 run unless ``--out`` says otherwise, the plain copy as ``<stem>_plain.png``;
-the render manifest (one entry per line with its panel, colour, style,
+the render manifest (one entry per line with its panel, color, style,
 points and largest deviation, the references, the title lines, the output
 paths) is printed.
 """
@@ -58,13 +58,13 @@ from xcquinox.pipeline import diagnostics  # noqa: E402
 from xcquinox.pipeline.eval_holdout import KCAL_PER_HA  # noqa: E402
 
 OUT_NAME = "diagnostics.png"
-#: one dash pattern per comparator label, so two greys nine CIEDE2000 units
+#: one dash pattern per comparator label, so two grays nine CIEDE2000 units
 #: apart still read apart as thin lines
 COMPARATOR_DASHES = {"PBE": (0, (4, 2)), "r2SCAN": (0, (1, 1.5)),
                      "B3LYP": (0, (6, 2, 1, 2)), "wB97M-V": (0, (2, 1))}
 #: one line style per network of an architecture, by its rank among the
 #: payload's networks of that architecture (the first solid), so networks
-#: sharing a colour read apart; an architecture with more networks than
+#: sharing a color read apart; an architecture with more networks than
 #: styles is refused
 NETWORK_DASHES = ("solid", (0, (6, 3)), (0, (5, 2, 1, 2)), (0, (3, 1)), (0, (8, 2, 2, 2)),
                   (0, (1, 3)))
@@ -83,7 +83,7 @@ TITLE_LINES = (
 
 
 def comparator_color(label: str) -> str:
-    """The grey of a comparator label: PBE-DF's for PBE, the Slim16 figure's
+    """The gray of a comparator label: PBE-DF's for PBE, the Slim16 figure's
     for the three others; a label that is neither a network of the payload
     nor a comparator is refused by name."""
     by_label = {text: xc for xc, text in diagnostics.COMPARATORS}

@@ -4,7 +4,7 @@
 #    GGA rung, 40core queue scheme,
 #    4 architectures x 11 subset sizes = 44 cells.
 #
-# THE QUESTION: does the baseline behaviour survive at the smaller network
+# THE QUESTION: does the baseline behavior survive at the smaller network
 # sizes -- medium (3x16) and shallow (2x8), each with and without
 # attention.
 #

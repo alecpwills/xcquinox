@@ -152,7 +152,7 @@ def main(argv=None) -> int:
     # Enable float64 BEFORE jax is imported. JAX defaults to float32; setting
     # ``jax_enable_x64`` after ``import jax`` works in some configurations but
     # is unreliable because equinox / pyscfad / other importers may capture
-    # the default dtype before our update runs. The env-var approach is the
+    # the default dtype before the update runs. The env-var approach is the
     # only universally reliable switch.
     #
     # Every other entry point in the codebase enables x64 (notebook cell 0,
@@ -217,7 +217,7 @@ def main(argv=None) -> int:
         sys.stdout.flush()
 
     try:
-        # Lazy import keeps startup fast if anything fails before we need pipeline.
+        # Lazy import keeps startup fast if anything fails before the pipeline is needed.
         import xcquinox.pipeline as pipeline  # noqa: E402
 
         cb = None if args.no_progress else _progress_callback

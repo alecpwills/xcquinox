@@ -94,8 +94,8 @@ TRAINED_SUBSET_SIZE = 18
 STAGES = ("pretrained", "optimized")
 CHANNELS = ("fx", "fc")
 
-#: Qualitative colours from the Okabe-Ito colour-blind-safe set (Okabe and Ito,
-#: "Color Universal Design", 2008), plus a neutral grey for the oldest
+#: Qualitative colors from the Okabe-Ito color-blind-safe set (Okabe and Ito,
+#: Qualitative colors from the Okabe-Ito color-blind-safe set (Okabe and Ito,
 #: generation. Series here are GENERATIONS rather than architectures, so the
 #: per-arch palette of ``arch_style`` is deliberately not used: two of the four
 #: curves share an architecture family and would collide there.
@@ -104,7 +104,7 @@ _BLUE = "#0072b2"
 _GREEN = "#009e73"
 _PURPLE = "#cc79a7"
 #: Anchoring is carried by linestyle (solid = anchored, dashed = unanchored) so
-#: the split survives a grey-scale print. The two unanchored generations get
+#: the split survives a gray-scale print. The two unanchored generations get
 #: DIFFERENT dash periods: their pretrained curves coincide to about 1e-5
 #: (same pretraining protocol and seed), and one dash pattern over another
 #: reads as a single curve where two identical ones would read as one series.

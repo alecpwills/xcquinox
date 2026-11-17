@@ -126,8 +126,8 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
                 sigma_spin_eff: np.ndarray,
                 fallback_fx: np.ndarray) -> np.ndarray:
         # libxc GGA spin=0 input is shape (n_components, n_grid). Components
-        # are (rho, drho_x, drho_y, drho_z, [lapl, tau]); we only need the
-        # first 4 for GGA. To pass a known sigma value, we set
+        # are (rho, drho_x, drho_y, drho_z, [lapl, tau]); only the
+        # first 4 are needed for GGA. To pass a known sigma value, the code sets
         # drho_x = sqrt(sigma) and drho_y = drho_z = 0, so that
         # sigma_libxc = drho_x^2 + drho_y^2 + drho_z^2 = sigma. Slot 1 is
         # less ambiguous than slot 3 (gradient_z) for this magnitude-only

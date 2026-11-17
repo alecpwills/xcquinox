@@ -11,7 +11,7 @@ this module; the tests beside it state the contract cell by cell.
 
 Naming convention: each builder returns an ``nbformat.notebooknode.NotebookNode``
 (a code cell or a markdown cell). Cell-index order in ``main()`` is the order
-the notebook presents to the user.
+the notebook presents.
 """
 import os
 
@@ -164,16 +164,16 @@ PRETRAIN_PARALLEL = False
 # Flip to True to skip pretraining for any arch that already has both
 # ``xnet.eqx`` and ``cnet.eqx`` at ``CHECKPOINT_BASE/pretrain/<arch>/``. Cell 8
 # re-loads those checkpoints downstream (Cell 10 parity / Section 5 training),
-# so skipping is safe as long as the existing files match your current
+# so skipping is safe as long as the existing files match the current
 # architecture registry. Default is False (always re-pretrain) to match the
-# step3b-era behaviour.
+# step3b-era behavior.
 PRETRAIN_SKIP_IF_EXISTS = False
 
 # Flip to True to skip the main training loop for any (arch, loss) run that
 # already has a ``model.eqx`` at
 # ``CHECKPOINT_BASE/train/<arch>/<loss_name>/``. Cell 18 re-uses those
 # checkpoints via the Section 6+ evaluation cells, so skipping is safe as
-# long as the existing files match your current ARCH_NAMES * LOSS_NAMES
+# long as the existing files match the current ARCH_NAMES * LOSS_NAMES
 # combo. Default is False (always re-train).
 TRAIN_SKIP_IF_EXISTS = False
 
@@ -232,7 +232,7 @@ def build_cell_scf_config_example():
 
     The cell only documents the API; it does not rewire the training
     pipeline. Running the cell has no side effect on the rest of the
-    notebook unless the user plugs `_scf_config` into a training/test spec.
+    notebook unless `_scf_config` is plugged into a training/test spec.
     """
     source = """# Example SolverConfig -- replace the default ONESHOT path with a real SCF loop.
 # To use, pass this as solver_config=... to TrainingSpec or TestSpec.
@@ -604,7 +604,7 @@ Fc_target = _data["Fc_all"]
 # Build per-architecture descriptor input inline. Column order MUST match
 # the library's private _assemble_pretrain_descriptors helper:
 #   [rho, sigma, dm_all columns (if use_dm), cusp_all[:, 0:2] (if use_cusp)]
-# dm comes BEFORE cusp. The helper is private -- we reproduce the logic here.
+# dm comes BEFORE cusp. The helper is private; its logic is reproduced here.
 def _build_input_array(arch):
     cols = [_rho, _sigma]
     _use_dm = any(s.name == "dm_statistics" for s in arch.descriptors)
@@ -731,7 +731,7 @@ atom_energies_literature = {"H": -0.5, "O": -75.0673}
 
 # targets dict: validator requires an entry for every molecule in TrainingSpec.molecules
 # (config.py:523-525). Atom entries are never dereferenced at training time but must be
-# finite floats -- we set them to the literature atomic totals for consistency.
+# finite floats -- they are set to the literature atomic totals for consistency.
 # The H2O entry is the POSITIVE-for-bound atomization energy in Hartree:
 #   AE = E_atoms_sum - E_mol > 0 for a bound molecule
 # Literature: AE(H2O) ~ 974.94 kJ/mol = 974.94 / 2625.5 Ha.
@@ -771,7 +771,7 @@ _mols = [
 ]
 
 # Accumulates PBE atomic total energies (one entry per element symbol) so
-# that at the end of this cell we can bind `atom_energies` to a
+# so that `atom_energies` can be bound at the end of this cell to a
 # PBE-consistent dict. Using PBE here rather than literature values keeps
 # the NN's required XC correction on the order of single kcal/mol in the
 # post-hoc fixed-density framework; literature anchors would demand a
@@ -936,7 +936,7 @@ def build_cell_15_precompute_sanity():
     The negative atom assertions guard against a Cell 13 regression that would
     accidentally write dm_target / rho_ref_grid into the atom .npz.
     """
-    source = """# Union of descriptor required_mol_keys across every arch we will train.
+    source = """# Union of descriptor required_mol_keys across every arch slated for training.
 # Ensures mol_data_list carries cusp_features / dm_features for any arch the
 # downstream Section 7 visualization cells (26, 27) may later pass to
 # oneshot_dm_prediction_fast / oneshot_grid_density. Derive from ARCH_NAMES
@@ -1710,7 +1710,7 @@ comparison against PBE / CCSD / HF / chemical-accuracy reference lines.
 
 To re-parameterise this section for a different molecule:
 
-1. **Update `new_mol_spec`** (Cell 31) with your target's `name`, `atom`,
+1. **Update `new_mol_spec`** (Cell 31) with the target's `name`, `atom`,
    `basis=BASIS`, `charge`, `spin`, `atom_composition`, `grid_level=GRID_LEVEL`,
    and an `external_data_path` under `{ext_data_dir}`.
 
@@ -1727,7 +1727,7 @@ To re-parameterise this section for a different molecule:
 
 4. **Cell 31 step 6 is commented** so a bare re-run of the notebook does not
    train/test on the new molecule. Cell 32 is the end-to-end sweep: uncomment
-   Cell 31 step 6 only if you want a single best-D2 model run outside the
+   Cell 31 step 6 only for a single best-D2 model run outside the
    full sweep.
 """
     return new_markdown_cell(source)
@@ -1818,7 +1818,7 @@ for _name, _atom, _spin in _entities:
         _ao = _mf_pbe._numint.eval_ao(_mol, _coords, deriv=0)
         _rho_hf = np.einsum("ij,gi,gj->g", _dm_hf_total, _ao, _ao)
 
-        # PBE density on the same grid (mf_pbe already converged) so we can
+        # PBE density on the same grid (mf_pbe already converged) so the
         # report the PBE|HF weighted-RMSE reference for Cell 32's density panel.
         _dm_pbe = _mf_pbe.make_rdm1()
         _dm_pbe_total = _dm_pbe[0] + _dm_pbe[1] if _dm_pbe.ndim == 3 else _dm_pbe
@@ -1868,7 +1868,7 @@ new_test_spec = pipeline.TestSpec.from_dicts(
     output_dir=f"{CHECKPOINT_BASE}/test_new/CH4",
 )
 
-# 6. Run it (commented out -- uncomment once you trust the template). Cell 32
+# 6. Run it (commented out -- uncomment once the template is trusted). Cell 32
 #    runs the full sweep over every trained (arch, loss) combination to
 #    produce the comparison plot.
 # pipeline.run_test(new_test_spec)
@@ -2062,7 +2062,7 @@ what is being compared and how to read it.
 
 The next cell renders a **grouped bar chart** of `|AE error|` (kcal/mol, log
 scale). Each of the 6 loss families (A, B, C, D1, D2, D3) forms an x-axis
-group; each of the 12 architectures contributes one coloured bar inside
+group; each of the 12 architectures contributes one colored bar inside
 every group. Error bars are the per-molecule RMSE from the evaluation set
 (currently a single H2O geometry, so they're small).
 
@@ -2103,7 +2103,7 @@ common `vmax`, so bar magnitudes across panels are directly comparable.
 Panels also report the Frobenius density-matrix RMSE below the figure as a
 quantitative summary of each residual.
 
-**How to read it:** panels whose colours are mostly white (near-zero) match
+**How to read it:** panels whose colors are mostly white (near-zero) match
 HF better than the PBE baseline. Diverging blue/red patches show where the
 network systematically over- or under-predicts a density-matrix element.
 """
@@ -2126,7 +2126,7 @@ $\\rho_{\\mathrm{NN}} - \\rho_{\\mathrm{HF}}$.
 - Each panel title reports the library density RMSE and the step3b
   $|\\Delta\\rho|_1$ metric as a quantitative summary.
 
-**How to read it:** a tight, centred distribution means the NN grid density
+**How to read it:** a tight, centered distribution means the NN grid density
 matches HF closely on the grid used for evaluation. A distribution that
 leans left or right indicates a systematic over- or under-prediction of
 density across the molecule.
@@ -2150,7 +2150,7 @@ subplot shows:
   over-predicts atomization energy, negative means it under-predicts.
 
 **How to read it:** attention improves accuracy whenever the attention bar
-is closer to the zero line than its non-attention neighbour. If both bars
+is closer to the zero line than its non-attention neighbor. If both bars
 sit on the same side of zero the attention variant is merely a different
 amount of the same bias; if they straddle zero the attention module is
 changing the sign of the bias.
@@ -2172,7 +2172,7 @@ descriptor set helps:
   $[f_{idem}, f_{entropy}, f_{offdiag}]$.
 - `deep_combined` -- adds both extended descriptor sets.
 
-Each subplot group is one architecture on the x-axis; coloured bars within
+Each subplot group is one architecture on the x-axis; colored bars within
 a group are the 6 loss families. The y-axis is **signed** AE error in
 kcal/mol, so positive and negative biases are directly comparable. A
 horizontal line at zero marks perfect agreement with the literature AE.
@@ -2208,8 +2208,8 @@ generalises best.
   this grid, so PBE is the only reference).
 
 **How to read it:** within each panel the x-axis enumerates `(arch, loss)`
-combinations, so you can spot which checkpoint transfers best for AE,
-total energy, and density simultaneously. Bars below the coloured
+combinations, making it plain which checkpoint transfers best for AE,
+total energy, and density simultaneously. Bars below the colored
 reference lines show genuine improvement over the corresponding reference
 method on the new molecule.
 """

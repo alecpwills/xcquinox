@@ -245,7 +245,7 @@ def _make_pretraining_suite(results_root, basis, stamp):
 
 def test_the_suite_draws_the_named_run_of_a_base(tmp_path, monkeypatch,
                                                  capsys):
-    """The suite draws the run named for a base, and a name it cannot honour
+    """The suite draws the run named for a base, and a name it cannot honor
     is refused before any figure is drawn.
 
     A pretraining suite submitted after a base's evaluated run sorts after it
@@ -409,7 +409,7 @@ def test_the_tool_consumers_take_their_channels_from_the_vocabulary(tmp_path):
     _v7_root, v7_run = _make_run(tmp_path, _V7_CHANNELS, name="v7")
 
     # the detector answers on the run's directories, before the vocabulary is
-    # consulted: a cold-start run validated, and its record must be honoured
+    # consulted: a cold-start run validated, and its record must be honored
     assert FIG._run_used_validation(cold_run) is True
     assert FIG._run_used_validation(v7_run) is True
 

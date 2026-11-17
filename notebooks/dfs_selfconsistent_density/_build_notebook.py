@@ -284,7 +284,7 @@ md(r"""
 
 `deep_3x16` (plain GGA) and `deep_rung35_3x16` (cusp + rung-3.5 localized-DM occupancy), both with
 spin-polarized correlation. Change `ARCH_NAMES` (setup cell) or pass a custom `ArchitectureConfig` to
-`build_dfs_training_spec` to use your own.
+`build_dfs_training_spec` to use a different one.
 """)
 
 code(r"""
@@ -333,9 +333,9 @@ md(r"""
 Each architecture under each solver. Every optimizer step differentiates through the full KS SCF.
 `full_25` (25 SCF cycles) is the slow path.
 
-> **One-time reset if you trained before the orientation lock:** the lock is now on, so a fresh run
+> **One-time reset for runs from before the orientation lock:** the lock is now on, so a fresh run
 > trains against the locked OH reference. CCSD references self-heal (they carry the lock strength and
-> regenerate automatically). Training checkpoints do **not** auto-invalidate, so if you have
+> regenerate automatically). Training checkpoints do **not** auto-invalidate, so an existing
 > `runs/*__*/model.eqx` from an earlier *unlocked* run, delete them (keep `runs/pretrain/`, which is
 > orientation-invariant) to retrain consistently: `rm runs/*__*/model.eqx`.
 """)

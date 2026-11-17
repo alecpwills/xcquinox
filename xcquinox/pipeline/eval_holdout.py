@@ -1529,7 +1529,7 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
     ``<dump_densities>/<name>.npz`` via :func:`dump_density_arrays` -- the
     density record is computed with ``keep_rho=True``, the array is popped
     before the record enters ``mol_records``, and atoms (no NN density
-    computed) are simply not dumped. None (default) leaves every output
+    computed) are not dumped. None (default) leaves every output
     byte-identical.
 
     Returns a dict with: ``energies`` (name -> E_nn), ``pbe_energies``
@@ -1714,7 +1714,7 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
     reactions outside that slice, so the reported number carries no
     early-stop selection, and a ``<pool>_with_validation`` row beside it
     averages the whole set."""
-    # Partition reactions by source_pool so we can write per-pool rows.
+    # Partition reactions by source_pool so per-pool rows can be written.
     by_pool: Dict[str, List[Dict[str, Any]]] = {}
     for r in reactions:
         by_pool.setdefault(r.get("source_pool", "unknown"), []).append(r)

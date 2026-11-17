@@ -141,7 +141,7 @@ def _ae_reaction_point_from_atoms(compound: Atoms) -> TrainingPoint:
     ``products=(elements...)``, ``coeffs=(-1, n_Z...)``. This is the form
     both dpyscf (Dick & Fernandez-Serra 2021: atoms enter the AE assembly
     as predicted energies, their fixed totals never enter the loss,
-    E_weight=0) and our converged bh76w411_step7 runs use; the dfs_step7
+    E_weight=0) and the project's converged bh76w411_step7 runs use; the dfs_step7
     forensics traced the Na2 blowup to the fixed-anchor relative AE form.
 
     The point NAME equals ``_ae_point_from_atoms``'s, so name-keyed subset
@@ -416,7 +416,7 @@ def build_dfs_pool_points(
     from .dfs_pool import _g297_traj_path
     pool = build_dfs_pool()
     # BH76 reactants/products may be molecules NOT in the AE pool (CH3, CH4,
-    # HF, etc.); load the full g2_97 trajectory so we can resolve them.
+    # HF, etc.); the full g2_97 trajectory is loaded to resolve them.
     g297 = _ase_read(str(_g297_traj_path()), ":")
     atoms_by_name: dict = {a.get_chemical_formula(): a for a in g297}
     # AE pool entries take precedence (they have richer info attached).

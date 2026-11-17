@@ -1245,7 +1245,7 @@ def test_the_registry_entries_are_the_stated_ones():
 
     The figure layer: both orders and ARCH_ORDER carry the pair directly
     after deep_notransform_attn_3x16 and before deep_rung35_3x16; each name
-    has its own colour, not the unknown-architecture grey and carried by no
+    has its own color, not the unknown-architecture gray and carried by no
     other architecture, rung accent or band; the Laplacian rung has an
     accent and a band of its own. The matrix reads the registry's 43
     names."""
@@ -1313,14 +1313,14 @@ def test_the_registry_entries_are_the_stated_ones():
     def own(key):
         return AS._SIZE_SUFFIX.sub("", AS.stored_key(key)) in lap_bases
 
-    colours = {name: AS.arch_color(name).lower() for name in _NEW}
+    colors = {name: AS.arch_color(name).lower() for name in _NEW}
     accents = {v.lower() for v in AS.RUNG_ACCENT.values()}
     bands = {v.lower() for v in AS.RUNG_BAND.values()}
     others = {v.lower() for k, v in AS.ARCH_COLOR.items() if not own(k)}
-    assert len(set(colours.values())) == 2, colours
-    for name, colour in colours.items():
-        assert colour != "#333333", name
-        assert colour not in others | accents | bands, (name, colour)
+    assert len(set(colors.values())) == 2, colors
+    for name, color in colors.items():
+        assert color != "#333333", name
+        assert color not in others | accents | bands, (name, color)
     every = {v.lower() for v in AS.ARCH_COLOR.values()}
     accent = AS.RUNG_ACCENT[rungs.RUNG_LAP].lower()
     band = AS.RUNG_BAND[rungs.RUNG_LAP].lower()

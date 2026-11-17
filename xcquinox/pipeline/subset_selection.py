@@ -178,11 +178,11 @@ def _to_pmf(h: np.ndarray) -> np.ndarray:
     Lin's JSD (Lin 1991, IEEE Trans. Inf. Theory 37, 145) is defined on
     PMFs that SUM to 1, not probability densities (which integrate to 1
     via the bin width, so their raw sum is bin-width-dependent and their
-    individual values can exceed 1). We divide by the total mass so the
+    individual values can exceed 1). Division by the total mass keeps the
     result sums to 1; this also makes the divergence invariant to a
     uniform rescale (e.g. differing per-descriptor bin widths). A
     descriptor whose grid points all fall outside the histogram range has
-    zero total mass; we return an all-zero vector for it. Callers
+    zero total mass; an all-zero vector is returned for it. Callers
     (:func:`metric_jsd`, :func:`_metric_jsd_batch`) detect a zero-mass
     CANDIDATE marginal directly and treat it as maximally divergent
     (``+inf``) so it is never selected, ``_kl`` itself does not flag it.
@@ -273,7 +273,7 @@ def _prebin_pool(pool, edges: dict) -> tuple[dict, dict]:
     dropped by ``np.histogram`` and excluded from its normalization).
     The in-range weight differs across descriptors because the (rho^1/3,
     s, alpha) ranges are picked independently from the [0.1, 99.9]
-    percentiles in ``build_reference_histograms``, so we must store
+    percentiles in ``build_reference_histograms``, so both must be stored
     a separate W_in_range[k] vector per descriptor.
 
     Returns (per_key_counts, W_in_range) where:
@@ -533,7 +533,7 @@ def select_subset(
     # the C(npool, r) enumeration (which can be ~40M combinations for
     # r=14 over npool=28). The caller invalidates by deleting the file
     # (same pattern as the SCF/CCSD caches in external_refs.py).
-    # We sanity-check the cache's shape against the requested (r, n_combos)
+    # The cache's shape is sanity-checked against the requested (r, n_combos)
     # so a mismatch (e.g., pool size or r changed) raises loudly rather
     # than returning stale results silently.
     if return_all and distribution_path is not None:
@@ -632,7 +632,7 @@ def select_subset(
             # and is degenerate (empty candidate). Flag it for
             # disqualification rather than dividing by a fudged W=1.0,
             # which previously made an empty candidate score a
-            # misleadingly-moderate ~0.5*ln2 JSD. We still compute a
+            # misleadingly-moderate ~0.5*ln2 JSD. A
             # finite (all-zero) histogram here to keep the metric
             # vectorized, then overwrite the score with +inf below.
             empty_in_range |= (W_combo_k <= 0.0)
@@ -891,7 +891,7 @@ def extract_descriptors_for_molspecs(
     """Per-:class:`MoleculeSpec` ``(ρ^{1/3}, s, α, weights)`` descriptors, cached
     by ``(name, charge, spin)``.
 
-    The :func:`extract_descriptors_for_species` analogue for
+    The :func:`extract_descriptors_for_species` analog for
     ``full_benchmark_pools`` held-out species: each ``MoleculeSpec`` carries a
     pyscf-format ``.atom`` string plus ``.charge``/``.spin``, so the pyscf mol is
     built directly (no ASE round-trip). ``basis``/``grid_level`` are taken from
@@ -943,7 +943,7 @@ def extract_descriptors_for_molspecs(
 
 def concatenate_reaction_descriptors(reactions, species_descriptors, specs_by_name):
     """For each reaction, concatenate descriptors across its participating
-    species (``reactants + products``), the reaction-pool analogue of
+    species (``reactants + products``), the reaction-pool analog of
     :func:`concatenate_point_descriptors`.
 
     ``reactions`` are ``full_benchmark_pools`` reaction dicts (species-name

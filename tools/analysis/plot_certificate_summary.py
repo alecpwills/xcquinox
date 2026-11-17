@@ -102,12 +102,12 @@ def _display_order(stored_keys):
 # under CIEDE2000 with the Vienot 1999 protan model the same pair measures
 # ~48.5 normal / ~57.3 protan -- different formulations, both comfortably
 # above their guidelines; any quoted number must name its metric. The second
-# four (brown, pink, grey, dark grey) extend the palette to eight labels, a
+# four (brown, pink, gray, dark gray) extend the palette to eight labels, a
 # figure of several pretraining rounds beside their predecessors; they were
 # chosen from a candidate list by the smallest pairwise CIEDE2000 (Sharma, Wu
 # and Dalal 2005) over every pair under normal vision and under the Vienot
 # 1999 protan and deutan simulations: the eight colors' closest pair
-# measures 18.8 under normal vision (the two greys), 9.7 under protan (blue
+# measures 18.8 under normal vision (the two grays), 9.7 under protan (blue
 # against pink) and 9.4 under deutan (the first four's orange against
 # yellow, the palette's floor before and after the extension). More labels
 # than colors are refused; color follows the label and is never reused.
@@ -328,13 +328,13 @@ def plot_certificate_summary(records, out_path):
     for label, _arch, _r in records:
         if label not in labels:
             labels.append(label)
-    # Colour follows the label: more labels than the palette holds would
-    # reuse a colour, so such a figure is refused rather than drawn.
+    # Color follows the label: more labels than the palette holds would
+    # reuse a color, so such a figure is refused rather than drawn.
     if len(labels) > len(_LABEL_COLORS):
         raise ValueError(
             f"{len(labels)} labels for a palette of {len(_LABEL_COLORS)} "
-            "colours; colour follows the label, so a figure with more labels "
-            "than colours is not drawn")
+            "colors; color follows the label, so a figure with more labels "
+            "than colors is not drawn")
     # the axis runs in the figures' display order of the SHOWN names (the
     # ticks are labelled with them), not in the sorted order of the
     # directory keys
@@ -410,7 +410,7 @@ def plot_certificate_summary(records, out_path):
             # not the record has atomization rows for the upper one. A record
             # without a free-atom value has no bar to hatch, so its note
             # carries the verdict, as the upper panel's does; the reason is
-            # wrapped so that the notes of neighbouring records stay apart.
+            # wrapped so that the notes of neighboring records stay apart.
             if r["max_atom"] is None:
                 text = f"{r['verdict']}\nno free-atom\nvalue"
                 ax_atom.annotate(text, (x, 0.0), xytext=(0, 6),
@@ -544,7 +544,7 @@ def plot_potential_summary(records, out_path):
     certificate that carries a measured potential record of its own
     checkpoint, the record's largest |dV_xc| on an occupied orbital (mHa)
     as the bar with its largest occupied-level shift as the marker above
-    it, hatched by the energy verdict (the record gates nothing). Colour
+    it, hatched by the energy verdict (the record gates nothing). Color
     follows the label exactly as the main figure paints it, so a bar here
     is the same certificate as its bar there. Returns the render manifest,
     or ``None`` when no certificate carries a measured record -- nothing
@@ -554,7 +554,7 @@ def plot_potential_summary(records, out_path):
             if r["max_dV"] is not None]
     if not have:
         return None
-    # Label order and colour follow the MAIN figure (first-seen order over
+    # Label order and color follow the MAIN figure (first-seen order over
     # all records), so the two figures name a campaign identically.
     labels = []
     for label, _arch, _r in records:

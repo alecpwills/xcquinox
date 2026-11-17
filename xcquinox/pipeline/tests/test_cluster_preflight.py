@@ -8,7 +8,7 @@ runs without real CCSD / SCF / DFS-pool work.
 Subset selection is a finished pre-process, the preflight consumes the
 existing subset ledger read-only and does NOT run descriptor extraction,
 reference histograms, ``select_subset``, or any ``regenerate``/``reuse`` mode
-toggle. Those behaviours were removed and are no longer tested.
+toggle. Those behaviors were removed and are no longer tested.
 
 The materialization seam is left REAL in the happy-path tests (it only writes
 small serialized stub specs) so the self-check exercises actual on-disk files;

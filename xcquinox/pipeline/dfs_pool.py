@@ -283,8 +283,8 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 # DEVIATION from Dick & Fernandez-Serra 2021: their SI (Sec. I) added the
 # *barrier heights* of these three BH76 reactions (which require TS
 # geometries and were treated non-self-consistently on a SCAN density).
-# We stage no TS geometries and the loss is a reactant->product
-# stoichiometric sum, so we instead train the GMTKN55-BH76RC *reaction
+# No TS geometries are staged and the loss is a reactant->product
+# stoichiometric sum, so the GMTKN55-BH76RC *reaction
 # energies* (approved 2026-05-24). Each entry below
 # therefore carries BOTH numbers:
 #   - ``barrier_ref``: the forward barrier height (kept for
@@ -660,7 +660,7 @@ def build_dfs_pool() -> dict:
             a = Atoms(sym, positions=[(0.0, 0.0, 0.0)])
         # Always set explicit spin/charge from the canonical ref entry
         # (NIST ASD ground-state).  Even when g2_97.traj happens to carry
-        # an Atoms for the bare atom, it has no spin info, so we set it
+        # an Atoms for the bare atom, it has no spin info, so it is set
         # here unconditionally.
         a.info["spin"] = int(ref["spin"])
         a.info["charge"] = int(ref.get("charge", 0))

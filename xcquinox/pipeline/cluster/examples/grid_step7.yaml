@@ -222,7 +222,7 @@ cluster:
 # ``dfs_step7`` is the only profile registered in cluster/domain.py.
 domain_profile: dfs_step7
 
-# --- grid-level behaviour knobs --------------------------------------------
+# --- grid-level behavior knobs --------------------------------------------
 on_precompute_failure: abort
 bh76_mode: reaction_energy
 # Spin-polarized correlation: when true, every arch in the run is built

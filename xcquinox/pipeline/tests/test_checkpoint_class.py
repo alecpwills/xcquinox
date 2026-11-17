@@ -193,7 +193,7 @@ def _make_training_spec(arch, checkpoint_dir):
 def test_save_artifacts_records_the_class_of_every_checkpoint_it_writes(tmp_path):
     """The final, best-loss and validation-best checkpoints each get the
     record, with the class the spec's arch states and the provenance keys the
-    neighbouring records use."""
+    neighboring records use."""
     from xcquinox.pipeline.cluster.materialize import running_xcquinox_version
     from xcquinox.pipeline.train import _save_artifacts
 

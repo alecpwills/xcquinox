@@ -198,13 +198,13 @@ RS_VALUES = (0.5, 2.0, 5.0)
 #: PRL 115, 036402 (2015), Fig. 1).
 ALPHA_VALUES = (0.0, 1.0)
 #: One lightness step per r_s (sequential: r_s is a magnitude), anchored to
-#: the model's arch colour via alpha; the parent counterparts are grey steps.
+#: the model's arch color via alpha; the parent counterparts are gray steps.
 RS_ALPHA = {0.5: 1.0, 2.0: 0.72, 5.0: 0.45}
 RS_GREY = {0.5: "0.15", 2.0: "0.45", 5.0: "0.65"}
 #: Linestyle per alpha slice where both share an axis (model curves; the
 #: F_c panels split by PANEL instead, one per alpha, and keep solid lines).
 ALPHA_LINESTYLE = {0.0: "-", 1.0: "-."}
-#: Parent counterparts of the two alpha slices (both grey, so the linestyle
+#: Parent counterparts of the two alpha slices (both gray, so the linestyle
 #: is what separates them).
 _PARENT_ALPHA_LINESTYLE = {0.0: "--", 1.0: ":"}
 _PARENT_STYLE = dict(color="0.25", linestyle="--", linewidth=2.0, zorder=1)

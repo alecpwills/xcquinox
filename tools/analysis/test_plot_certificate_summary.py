@@ -196,7 +196,7 @@ def _number(cell: str):
 
 def _drawn(axes) -> dict:
     """What ``axes`` shows, read from its own artists: the bars as
-    ``{x centre: (height, face colour, hatched)}``, the heights of the
+    ``{x center: (height, face color, hatched)}``, the heights of the
     horizontal lines spanning it, the annotation texts, the two ranges, the
     x tick labels with their rotations, and the y label."""
     return {
@@ -215,7 +215,7 @@ def _drawn(axes) -> dict:
 
 
 def _bar_x(panel: dict, height: float) -> float:
-    """The x centre of the one bar of ``panel`` that has this height."""
+    """The x center of the one bar of ``panel`` that has this height."""
     (x,) = [x for x, bar in panel["bars"].items() if bar[0] == height]
     return x
 
@@ -253,13 +253,13 @@ def test_a_failure_on_the_free_atoms_is_drawn_against_its_gate(tmp_path,
     1.54 against the 2.0 backstop), the form of the failed
     ``deep_geom_3x16`` certificate. The records carry each largest free-atom
     deviation and the recorded tolerance. The lower axes hold one bar per
-    certificate, at the x position and in the colour of that certificate's
+    certificate, at the x position and in the color of that certificate's
     bar in the upper panel and as tall as its atom value, the FAIL alone
     hatched; one horizontal line at 1.0 (two certificates recording one
     value share one line) with its caption and no other text; and a y range
     that is the stated cap and reaches the 1.685 bar. The two panels share
     the architecture axis, whose name stands on the lower axes, slanted so
-    that neighbouring names stay apart, and the lower axis is labelled in
+    that neighboring names stay apart, and the lower axis is labelled in
     mHa. The upper panel keeps its own two gate lines and hatches the FAIL
     there too. The CSV keeps its twelve columns in place and appends the atom
     value and the tolerance. The summary is the only source of the atom
@@ -377,7 +377,7 @@ def test_the_atom_value_falls_back_to_the_free_atom_rows(tmp_path, render):
         ("null_summary", _ARCH): 0.9}
 
     _manifest, _upper, lower = render(records, tmp_path / "summary.png")
-    assert sorted(height for height, _colour, _hatched
+    assert sorted(height for height, _color, _hatched
                   in lower["bars"].values()) == [0.6, 0.9, 0.9]
 
 
@@ -454,7 +454,7 @@ def test_a_certificate_without_the_atom_value_is_noted_not_drawn(tmp_path,
     assert all(r["verdict"] in manifest["atom_notes"][(label, arch)]
                for label, arch, r in records if (label, arch) in without)
     assert [value for value, _text in manifest["atom_gate_lines"]] == [0.5]
-    assert [(height, hatched) for height, _colour, hatched
+    assert [(height, hatched) for height, _color, hatched
             in lower["bars"].values()] == [(0.3, True)]
     assert lower["gates"] == [0.5]
     assert lower["texts"] == sorted(
@@ -501,7 +501,7 @@ def test_each_recorded_atom_tolerance_draws_its_own_gate_line(tmp_path,
     assert list(manifest["atom_hatched"]) == []
     assert manifest["atom_y_cap"] >= 2.0
     assert lower["gates"] == [0.5, 2.0]
-    assert [hatched for _height, _colour, hatched
+    assert [hatched for _height, _color, hatched
             in lower["bars"].values()] == [False, False]
     assert lower["ylim"] == (0.0, manifest["atom_y_cap"])
 
@@ -601,7 +601,7 @@ def test_the_potential_companion_is_drawn_only_from_measured_records(
     them. The measured records now draw a companion figure of their own,
     one bar per certificate that carries a record of its own checkpoint --
     a record of another fit is not that certificate's and draws nothing --
-    in the label colours of the main figure. The records and the CSV carry
+    in the label colors of the main figure. The records and the CSV carry
     the three summary values, empty where absent. Each certificate's
     free-atom value (0.2, 1.685, 0.3, 0.1 mHa) differs from its potential
     value (0.8, 2.5, none, none), so a figure drawn from the atom values

@@ -908,7 +908,7 @@ def main(argv=None) -> int:
     # This sweep is the run-level cross-check: it catches an architecture that
     # was pretrained under a different submission, a certificate that was
     # deleted, and a partial pretrain array that SLURM reported as complete.
-    # ``gate_certificate_from_read`` honours a run configured with
+    # ``gate_certificate_from_read`` honors a run configured with
     # ``fidelity.enforce: false`` (the workflow-verification matrix), which
     # ``validate_run``, ``merge_v4_arms`` and the figure suite still refuse.
     # The certificate directory is resolved through the ONE donor rule: a

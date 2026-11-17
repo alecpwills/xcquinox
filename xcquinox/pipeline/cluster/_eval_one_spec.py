@@ -96,7 +96,7 @@ def _spec_path(run_dir, idx, width):
 # ---------------------------------------------------------------------------
 
 def _log(idx, message):
-    """Emit one harness log line (tagged) to our stdout -- the SLURM log."""
+    """Emit one harness log line (tagged) to the task's own stdout -- the SLURM log."""
     sys.stdout.write(f"[harness idx={idx}] {message}\n")
     sys.stdout.flush()
 
@@ -722,13 +722,13 @@ def main(argv=None) -> int:
     # --- model.eqx check FIRST ---------------------------------------------
     # Done before any TestSpec construction: TestSpec.validate() hard-requires
     # model_checkpoint to be an existing file and would raise instead of
-    # letting us skip cleanly.
+    # allowing a clean skip.
     if not os.path.isfile(model_path):
         # WS6: distinguish a genuinely-never-trained spec from one whose
         # training is still IN PROGRESS. A mid-run per_molecule task leaves a
         # resume checkpoint (resume_state.pkl) and no model.eqx (and no
         # completion.json) -- mirrors train._has_resume_checkpoint. In that
-        # case eval was scheduled before training finished/resumed, so we emit a
+        # case eval was scheduled before training finished/resumed, so a
         # CLEAR "training incomplete (resume in progress)" message rather than a
         # confusing crash, and still skip cleanly (exit 0): a later resubmit
         # will continue training and re-run this eval.
@@ -882,7 +882,7 @@ def main(argv=None) -> int:
     # --- 2026-06-07: ALSO eval the best-loss checkpoint by DEFAULT ----------
     # Training saves a separate model_best.eqx (lowest trailing-mean loss); a
     # late-destabilizing run (e.g. deep_attn ss6) ends on a bad final-step
-    # model.eqx, so the best snapshot is the meaningful one. We eval BOTH so the
+    # model.eqx, so the best snapshot is the meaningful one. BOTH are evaluated so the
     # figures get a final-checkpoint set (eval_holdout/) AND a best-checkpoint
     # set (eval_holdout_best/) -- doubling the data return. Fully isolated from
     # the final pass (own checkpoint, own output dir, own _shards). No-ops

@@ -8,7 +8,7 @@ census file given: the converged species as filled markers at their cycle
 count, the unconverged as open markers crossed out at theirs, and the count
 ``converged/species`` above the column; a cell the census could not measure
 is annotated with its refusal. The columns follow the architecture order and
-colours of ``arch_style``; with several census files each file's label
+colors of ``arch_style``; with several census files each file's label
 (``--labels``, or the file's run directory name) prefixes the column.
 
 The cycle count is the census's own (``converged``, ``cycles_run``) unless
@@ -33,7 +33,7 @@ Usage::
 
 The PNG is written as ``coldstart_census.png`` beside the first census unless
 ``--out`` says otherwise, the companion as ``<stem>_steps.png``; the render
-manifest (one entry per column with its label, architecture, colour, the
+manifest (one entry per column with its label, architecture, color, the
 converged cycle counts, the unconverged species, the annotation, how the
 cycles were read and, under ``steps``, the companion's columns) is printed.
 A cell the census could not measure carries its whole refusal in the
@@ -87,7 +87,7 @@ RIGHT_MARGIN_IN = 0.15
 #: the characters of a refusal shown under ``not measured`` in a column's
 #: annotation (the whole text is in the manifest), in a monospace face at
 #: 7 pt (0.602 em per character, 1.29 in for 22), so that two annotations
-#: of neighbouring columns stay clear of each other at every column count
+#: of neighboring columns stay clear of each other at every column count
 ANNOTATION_CHARS = 22
 #: the top fraction of the companion's axis kept clear of marks, where its
 #: annotations (a refusal, the count without a step) sit above the column's
@@ -332,7 +332,7 @@ def plot_census_steps(cols: list, out_path, plain: bool = False,
               if col["step_tol"] is not None and not col["error"]]
     if drawn:
         # the marks within the lower part of the axis, the band above them
-        # for the annotations; the range a decade at least, centred on the
+        # for the annotations; the range a decade at least, centered on the
         # marks, so that the axis carries major tick labels only (below a
         # decade the minor ticks are labelled, and the wider labels push
         # the y label off the figure)

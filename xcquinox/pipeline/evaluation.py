@@ -419,7 +419,7 @@ class PBEReferenceMetric(Metric):
     ``precompute_fixed_density_data``) and combines with the
     caller-supplied ``atom_energies`` dict (PBE-consistent atomic totals)
     to produce ``AE_pbe = sum n_Z * atom_energies[Z] - E_pbe_total``.
-    Bookkeeping layer that gives comparison plots a "what if we just used
+    Bookkeeping layer that gives comparison plots a "the hypothetical of using
     PBE" line next to trained-NN bars.
 
     The ``model`` argument is accepted for API uniformity and IGNORED.

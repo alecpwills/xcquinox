@@ -73,7 +73,7 @@ def test_ensure_regenerates_only_when_stale(tmp_path, monkeypatch):
     # ``atoms`` has a default because ``ensure_pretrain_data`` hands the
     # generator the RESOLVED system list and nothing else; a fake that still
     # required the atom list would pin a duplicate argument rather than the
-    # basis behaviour this test is about.
+    # basis behavior this test is about.
     def fake_generate(out_dir, *, basis, grid_level, polarized,
                       descriptors, density_fit, atoms=None, auxbasis=None,
                       cusp_log_transform=True, **kwargs):

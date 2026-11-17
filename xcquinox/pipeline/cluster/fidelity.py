@@ -51,7 +51,7 @@ Invocation on a node::
 
 ENFORCEMENT HAS TWO LAYERS. The ON-NODE gates (the pretrain worker's exit
 code, the train task, the preflight sweep) call :func:`gate_certificate`,
-which honours the certificate's recorded ``enforced`` flag: a run configured
+which honors the certificate's recorded ``enforced`` flag: a run configured
 with ``fidelity.enforce: false`` (permitted only with a non-empty
 ``fidelity.override_reason``) still computes and writes the certificate with
 its TRUE verdict, and the gates log it and continue. That exists for the
@@ -270,14 +270,14 @@ def certificate_status_in(pretrain_dir: str) -> tuple[str, str]:
 
     ``status`` is ``"PASS"``, ``"FAIL"``, ``"MISSING"`` (no file) or
     ``"UNREADABLE"`` (file present but not a JSON object, or recording no
-    verdict this module recognises). Only ``"PASS"`` releases a gate: an
+    verdict this module recognizes). Only ``"PASS"`` releases a gate: an
     unreadable certificate is unverifiable, and an unverifiable certificate is
     refused.
 
     ``"FAIL"`` is returned only for a certificate that literally records
     ``"FAIL"``. An absent, misspelt or mis-cased verdict is UNREADABLE and not
     FAIL, because FAIL is the one status a run can waive through
-    ``enforced: false``: reading an unrecognised verdict as FAIL would let a
+    ``enforced: false``: reading an unrecognized verdict as FAIL would let a
     truncated or schema-less file be waived through an on-node gate.
 
     The classification is :func:`read_certificate_status_in`'s, so a caller

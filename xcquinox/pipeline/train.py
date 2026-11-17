@@ -443,7 +443,7 @@ def _require_fidelity_certificate(pretrain_checkpoint: str) -> None:
     verification matrix pretrains for 50 steps on two atoms, so its verdict
     FAILs by construction), while the RECORD layers -- ``validate_run``,
     ``merge_v4_arms``, the figure suite -- still require PASS. The waiver is
-    honoured only where the harness wrote the certificate, at the
+    honored only where the harness wrote the certificate, at the
     ``<run_dir>/pretrain/<arch>`` layout, because that is the only layout
     whose certificate carries the run's own waiver record; any other layout
     is held to PASS.
@@ -456,8 +456,8 @@ def _require_fidelity_certificate(pretrain_checkpoint: str) -> None:
     """
     allow = os.environ.get(_ALLOW_UNCERTIFIED_ENV)
     if allow not in (None, "", "1"):
-        # A value the gate does not recognise is a stated intent it cannot
-        # honour, so it is refused rather than ignored: "true", "yes" or
+        # A value the gate does not recognize is a stated intent it cannot
+        # honor, so it is refused rather than ignored: "true", "yes" or
         # "TRUE" would otherwise leave the gate in force while the author
         # believes it disabled, and the resulting refusal would name the
         # certificate rather than the misspelt variable.
@@ -768,7 +768,7 @@ class _BestValidationTracker:
     """Tracks the model snapshot at the minimum HELD-OUT VALIDATION metric
     (lower = better, e.g. reaction-energy MAE in kcal/mol) and drives in-loop
     early-stop. WS3 (2026-06-20): the over-capacity DFS nets overfit the tiny
-    training subset, so we periodically score a disjoint validation slice and
+    training subset, so a disjoint validation slice is scored periodically and
     keep the validation-best snapshot, stopping once it stops improving.
 
     Distinct from :class:`_BestModelTracker` (which minimizes the TRAINING loss,
@@ -1400,7 +1400,7 @@ def _atomic_serialise(path, pytree) -> None:
     :func:`_serialise_trained_model` with no ``arch`` -- the same write to a
     sibling temporary, fsync and rename, so a SIGKILL mid-write can never
     leave a half-written resume artifact that would crash the resuming run,
-    and steps 2 to 4 of that sequence (the record) are simply skipped. The
+    and steps 2 to 4 of that sequence (the record) are skipped. The
     optimizer state is deserialised into a skeleton built from the same arch
     as the model beside it, and the model file's own record is what states
     that class."""
@@ -1966,7 +1966,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
 
         ``task_key`` is captured Python-side so each kernel is a small,
         single-output forward+backward graph.  XLA caches the compile by
-        function identity; we get exactly ``n_tasks`` cached kernels,
+        function identity; exactly ``n_tasks`` cached kernels result,
         amortized across all training steps.
         """
         @eqx.filter_jit
@@ -2684,7 +2684,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     # count) -> range resumes at the NEXT epoch index without re-walking groups.
     #
     # WS5-SIG-3: the load is GUARDED. A corrupt/truncated resume_state.pkl or a
-    # missing resume_*.eqx must not crash the task -- on ANY load error we log a
+    # missing resume_*.eqx must not crash the task -- on ANY load error a line is logged
     # warning and START FRESH (treat as no resume). The whole restore is staged
     # through `restored` (one call) and applied only on success, so a failed load
     # never leaves half-restored state. A set refused for its MODEL CLASS is

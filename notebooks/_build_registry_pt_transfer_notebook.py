@@ -709,7 +709,7 @@ def build_cell_08_yaml_code():
 
 # The self-generated one-point ledger: subset-selection's schema with H2O as
 # the single size-1 point (jsd/1 = H2O). The harness consumes ledgers of this
-# shape from the subset-selection pre-process; writing our own keeps the whole
+# shape from the subset-selection pre-process; writing a local copy keeps the whole
 # run inside the work root.
 {json_dump_snippet()}
 
@@ -1903,14 +1903,14 @@ if len(_todo) < len(ARCH_NAMES):
 # gate fired on the measured numbers (33.7 h floor at the smallest arch's
 # 11.5 s/update; the attention arms measure ~33 s/update and the fleet
 # estimate was 44-60 h; a 4th worker needs a 6.1 GiB budget, under the
-# measured 7.02 GiB attention peak -- dead on this host), and the user
+# measured 7.02 GiB attention peak -- dead on this host), and the operator
 # accepted the wall at the full 60 epochs (2026-11-04). The 72 h ceiling
 # admits the accepted run and still stops a runaway projection. A firing
 # assert is a STOP for a user decision, never a knob turned silently. The
 # projection targets the FULL tier's numbers (44 archs x 60 epochs x 12
 # groups) whatever tier is running, so the smoke tier guards the real run
 # too.
-TRAIN_WORKER_GIB = 9.0  # 2 concurrent SCF workers (the user's call after
+TRAIN_WORKER_GIB = 9.0  # 2 concurrent SCF workers (set after
                         # the 3-wide compile-transient failure, smoke run
                         # 9): int(0.8 x 30.5 / 9.0) = 2, each child holding
                         # a 9 GiB budget over the measured 7.02 GiB peak

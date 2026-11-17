@@ -273,8 +273,8 @@ PRETRAIN_ATOMS = (("H", 1), ("He", 0), ("O", 2), ("N", 3))
 # Pretraining loss weighting. "unweighted" is the default (fits PBE
 # enhancement factors pointwise). "integration" weights pointwise MSE by
 # |rho * eps^LDA|; theoretically motivated but empirically under-fits the
-# high-s / Lieb-Oxford-bound region, so keep "unweighted" unless you know
-# you want that trade-off.
+# high-s / Lieb-Oxford-bound region, so keep "unweighted" unless that
+# trade-off is wanted.
 PRETRAIN_LOSS_WEIGHTING = "unweighted"
 
 # RUN_DIR namespaces every pretraining-dependent artifact under
@@ -446,7 +446,7 @@ for atom_symbol, spin in PRETRAIN_ATOMS:
         ec_lda = mf._numint.eval_xc(",LDA_C_PW", rho, spin=0)[0]
 
     # np.where-based safe division (NOT a boolean mask -- boolean masks drop points
-    # we want to keep)
+    # is to be kept)
     ex_lda_safe = np.where(np.abs(ex_lda) > 1e-12, ex_lda, 1e-12)
     ec_lda_safe = np.where(np.abs(ec_lda) > 1e-12, ec_lda, 1e-12)
     Fx_minus_1 = ex_pbe / ex_lda_safe - 1.0
@@ -768,7 +768,7 @@ else:
             # Per-tier tqdm bar so dozens-of-minutes inversions stop
             # being silent. The scipy L-BFGS-B callback fires once per
             # iteration; run_oep_inversion forwards (iter, density_error)
-            # to our cb.
+            # to the callback.
             _pbar = tqdm(
                 total=_tier_kw["max_iter"],
                 desc=f"OEP H2O {_tier_name}",
@@ -1139,7 +1139,7 @@ KCAL_PER_HA = 627.5094740631
 LOSS_NAMES = ("L1_B", "L2_C_anchor", "L3_balanced_vxc", "L4_balanced_vxc_anchor", "L5_gradnorm_vxc")
 # TrainingSpec.validate() requires a targets entry for every molecule in the
 # molecules tuple (config.py:545-547). Atom targets are never dereferenced at
-# training time but must be finite floats -- we use the Chakravorty atomic
+# training time but must be finite floats -- the Chakravorty atomic
 # totals (same anchor as atom_energies) so the placeholder values are
 # semantically consistent with the rest of the spec.
 _targets_group1 = {
@@ -1441,7 +1441,7 @@ def build_cell_21_training_loop():
         "        bar.close()\n"
         "        del _step_bars[key]\n"
         "\n"
-        "# OOM signatures we recognize as 'retry this spec on CPU'. Kept loose\n"
+        "# OOM signatures recognized as 'retry this spec on CPU'. Kept loose\n"
         "# so both XLA and CUDA-driver messages are caught.\n"
         "_GPU_OOM_MARKERS = (\n"
         "    'RESOURCE_EXHAUSTED',\n"
@@ -1616,7 +1616,7 @@ def build_cell_22_loss_curves():
     ``xcquinox.pipeline.train._save_artifacts`` -- NOT from
     ``train_metadata.json``, which only carries scalar summaries).
 
-    Group membership is inferred from ``spec.checkpoint_dir`` tail so we do
+    Group membership is inferred from the ``spec.checkpoint_dir`` tail so no
     not depend on object identity (defensive against subprocess-isolated
     training that may deserialize spec copies).
     """
@@ -1791,7 +1791,7 @@ os.makedirs(_eval_base, exist_ok=True)
 
 # PBE-consistent atomic totals for the PBEReferenceMetric baseline.
 # Cell 14 wrote {H,O,C}_metadata.json with PBE totals; transfer molecules
-# also reference N and F (NH3, NH2, HF), so we lazily compute and cache
+# also reference N and F (NH3, NH2, HF), so they are computed lazily and cached
 # any missing element here. Using these (rather than Chakravorty
 # literature anchors) gives a *fair* PBE baseline:
 #   AE_pbe = sum_Z n_Z * E_Z^PBE - E_mol^PBE
@@ -3041,7 +3041,7 @@ def _sample_fx_on_molecule(_model, _atom_str, _spin, _arch_name, _mol_name):
     # actual input layout: [rho, sigma_eff, *features]. Returns (s, F_x).
     # For the closed-shell test mols (CH4, C2H2, C2H4) the spin-scaled
     # UKS formula collapses to the RKS evaluation since
-    # rho_alpha = rho_beta = rho/2 and zeta = 0; we therefore evaluate
+    # rho_alpha = rho_beta = rho/2 and zeta = 0; the evaluation therefore
     # model.xnet at (rho, sigma_tot, features_g) per grid point.
     _rho, _s, _sigma, _features = _compute_grid_for_molecule(
         _atom_str, _spin, _arch_name, _mol_name,
@@ -3285,7 +3285,7 @@ def build_cell_39_scf_convergence():
     ``evaluation.py`` (per-cycle ``e_tot`` captured via a pyscfad SCF
     callback) and ingested into ``eval_df`` as
     ``scf_energy_residual_<i>`` rows. The plot draws one line per solver
-    (mean over cycles), with a shaded ± stddev band so the user sees both
+    (mean over cycles), with a shaded ± stddev band showing both
     the average decay rate AND the spread across runs.
     """
     source = r"""# SCF convergence trace: per-cycle |E_n - E_final| averaged across all

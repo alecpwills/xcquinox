@@ -108,7 +108,7 @@ record written before the field was added carries the other keys and not this
 one, and is read exactly as it was: such a record is accepted by a skeleton of
 either value, and a checkpoint with NO record is the legacy class whatever the
 flag (:func:`is_legacy_class` is the first two fields alone -- 26 of the 34
-registry architectures set the transform, so folding it into that judgement
+registry architectures set the transform, so folding it into that judgment
 would refuse every unrecorded v3/v4/v5 checkpoint of those architectures to
 the very skeleton that wrote it). What the flag changes, measured at identical
 leaves: on the legacy coordinates the MLPs are fed

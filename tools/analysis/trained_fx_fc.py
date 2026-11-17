@@ -145,7 +145,7 @@ BEST_CELL_COLUMN = "mae_nn_kcalmol"
 #: scale the reaction sets sample); the CSV carries every RS_VALUES entry.
 RS_FIGURE = 2.0
 #: Lightest tint of an arch's hue, as the fraction of the hue kept when the
-#: colour is blended toward white. The lightest subset-size curve must stay
+#: color is blended toward white. The lightest subset-size curve must stay
 #: legible on white, which is what sets the floor.
 SHADE_LIGHTEST = 0.32
 _PARENT_STYLE = dict(color="0.25", linestyle="--", linewidth=2.0, zorder=1)
@@ -358,7 +358,7 @@ def load_run_config(run_dir: Path):
 
 
 def load_trained_model(cfg, arch_name: str, checkpoint_path: Path):
-    """``(arch, model)`` for one trained checkpoint, class record honoured.
+    """``(arch, model)`` for one trained checkpoint, class record honored.
 
     The skeleton is built from the run's own configuration and filled by
     ``checkpoint_class.load_trained_checkpoint``, which refuses a checkpoint

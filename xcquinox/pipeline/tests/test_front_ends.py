@@ -36,7 +36,7 @@ from xcquinox.pipeline.tests.test_pretrain import tiny_pretrain_data_dir  # noqa
 
 
 def _arch_style():
-    """``tools/analysis/arch_style.py``, the figure tools' order and colour
+    """``tools/analysis/arch_style.py``, the figure tools' order and color
     table, loaded by path (the directory is not a package)."""
     path = Path(__file__).resolve().parents[3] / "tools" / "analysis" / "arch_style.py"
     spec = importlib.util.spec_from_file_location("arch_style", path)
@@ -307,7 +307,7 @@ def test_the_registry_entries_are_deep_3x16_with_one_front_end():
     from xcquinox.pipeline import arch_names, rungs
     base = C.ARCHITECTURES["deep_3x16"]
     accents = {v.lower() for v in AS.RUNG_ACCENT.values()}
-    for (name, change), word, colour in zip(
+    for (name, change), word, color in zip(
             _FRONTS.items(), ("fourier", "sine"), ("#9e9ac8", "#9ecae1")):
         entry = C.ARCHITECTURES[name]
         assert entry == dataclasses.replace(base, name=name, **change,
@@ -316,10 +316,10 @@ def test_the_registry_entries_are_deep_3x16_with_one_front_end():
         assert rungs.rung_of(name) == rungs.RUNG_GGA == AS.rung_of(name)
         assert word in arch_names.expanded_key(name).lower(), name
         assert all(entry.describe()[k] == v for k, v in change.items())
-        assert AS.arch_color(name).lower() == colour
+        assert AS.arch_color(name).lower() == color
         others = {v.lower() for k, v in AS.ARCH_COLOR.items()
                   if not k.startswith(name[:-5])}
-        assert colour not in others | accents, name
+        assert color not in others | accents, name
     # the digests are the record's statements of the draw and of the spline
     # grids, not fields
     assert all(base.describe()[k] == v for k, v in _MLP0.items()

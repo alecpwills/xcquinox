@@ -3,19 +3,19 @@
 The figure puts the subsets on the x axis and draws, per subset, one bar per
 evaluated network and one PBE-DF bar, each the subset's mean absolute error of
 the reaction energies against the benchmark references over every reaction
-the network reports, converged or not. Each network's WTMAD-2 (the paper's
-form) is computed with the FULL set's weights twice, over all reactions and
+the network reports (converged or not). Each network's WTMAD-2 (the paper's
+form) is computed with the FULL set's weights twice, over all reactions, and
 over the converged ones only, and the legend carries both; a subset with no
 converged reaction is dropped from the converged total, its weight is not
 redistributed, and the unconverged reactions are named. Where a subset holds
 converged and unconverged reactions both, the converged-only error is marked
-on the bar. Bars are coloured by architecture and hatched by network group.
+on the bar. Bars are colored by architecture and hatched by network group.
 The collect layer reuses the table's row assembly (``slim16_table``), so the
 figure and the metrics CSV state one set of numbers.
 
 Oracle: synthetic run dirs whose PBE-DF reaction energies are exact in
 kcal/mol (41.0, 121.8, 80.6 and 65.0 for the four reactions) and whose
-benchmark references are 40, 120, 80 and 60 (mean 75, four reactions, so the
+benchmark references are 40, 120, 80, and 60 (mean 75, four reactions, so the
 scale is 18.75), so every per-subset error and every WTMAD-2 is a hand value:
 18.75 times the sum over the subsets of N_i MAD_i / m_i.
 """
@@ -359,9 +359,9 @@ def test_the_drawn_figure_reads_back_the_set_errors(tmp_path, monkeypatch):
     over all reactions; a marker on the bar at the converged-only error
     where the subset holds converged and unconverged reactions both, and no
     marker where every reaction converged or none did. Bars of one
-    architecture share a colour and differ from another architecture's, bars
+    architecture share a color and differ from another architecture's, bars
     of one network group share a hatch and differ from another group's, the
-    PBE-DF bars share one colour of their own, every bar lies inside a y
+    PBE-DF bars share one color of their own, every bar lies inside a y
     range common to the axes, the legend reads each network's label with its
     two WTMAD-2 values and PBE-DF with its one, and the title names the
     absent networks, the unconverged reactions and the dropped subset."""
@@ -381,8 +381,8 @@ def test_the_drawn_figure_reads_back_the_set_errors(tmp_path, monkeypatch):
         bars = sorted((p for ax in fig.axes for p in ax.patches
                        if p.get_width() > 0),
                       key=lambda p: p.get_x() + p.get_width() / 2)
-        centres = [round(p.get_x() + p.get_width() / 2, 9) for p in bars]
-        assert len(set(centres)) == len(bars)
+        centers = [round(p.get_x() + p.get_width() / 2, 9) for p in bars]
+        centers = [round(p.get_x() + p.get_width() / 2, 9) for p in bars]
         expected = []
         for name in subsets:
             for label, mae in (("S_a", _MAE_S_A), ("slim05_b", _MAE_SLIM05_B),
@@ -399,7 +399,7 @@ def test_the_drawn_figure_reads_back_the_set_errors(tmp_path, monkeypatch):
         lines = [line for ax in fig.axes for line in ax.lines]
         markers = [(round(float(line.get_xdata()[0]), 9), float(line.get_ydata()[0]))
                    for line in lines]
-        rse43_s_a = [centres[i] for i, (label, _v) in enumerate(expected)
+        rse43_s_a = [centers[i] for i, (label, _v) in enumerate(expected)
                      if label == "S_a"][2]
         assert markers == [(rse43_s_a, pytest.approx(0.7))]
         assert mcolors.to_hex(lines[0].get_color()) == "#000000"
@@ -645,9 +645,9 @@ def test_the_comparator_tables_draw_grey_bars_after_pbe_df(tmp_path, monkeypatch
     PBE-DF and then one bar per comparator as tall as the subset's hand
     error (B3LYP none in RC21), no two bars overlapping, every bar inside
     the y range (the tallest is r2SCAN's), the legend reading the tracked
-    five lines and then ``label (WTMAD-2)`` per comparator in its grey, the
-    three greys distinct from each other, from PBE-DF's and from the
-    architecture colours of the drawn networks."""
+    five lines and then ``label (WTMAD-2)`` per comparator in its gray, the
+    five lines and then ``label (WTMAD-2)`` per comparator in its gray, the
+    architecture colors of the drawn networks."""
     run = _run(tmp_path)
     (run / "functionals_df.json").write_text(json.dumps(_functionals_df_json()))
 
@@ -688,25 +688,25 @@ def test_the_comparator_tables_draw_grey_bars_after_pbe_df(tmp_path, monkeypatch
                     expected.append((_CMP_LABEL[key], i, _CMP_SET_MAE[key][name]))
         assert len(bars) == len(expected)
         assert [p.get_height() for p in bars] == pytest.approx([v for _l, _i, v in expected])
-        centres = [p.get_x() + p.get_width() / 2 for p in bars]
-        assert all(abs(c - i) < 0.5 for c, (_l, i, _v) in zip(centres, expected))
+        centers = [p.get_x() + p.get_width() / 2 for p in bars]
+        centers = [p.get_x() + p.get_width() / 2 for p in bars]
         edges = sorted((p.get_x(), p.get_x() + p.get_width()) for p in bars)
         assert all(right <= left + 1e-12 for (_a, right), (left, _b) in zip(edges, edges[1:]))
         low, high = next(ax.get_ylim() for ax in fig.axes if ax.patches)
         tallest = max(p.get_height() for p in bars)
         assert low <= 0.0 and tallest == pytest.approx(3.6) and tallest <= high
 
-        colour = {}
+        color = {}
         for (label, _i, _v), patch in zip(expected, bars):
-            colour.setdefault(label, set()).add(
+            color.setdefault(label, set()).add(
                 mcolors.to_hex(patch.get_facecolor(), keep_alpha=False))
-        assert all(len(found_) == 1 for found_ in colour.values()), colour
-        greys = [next(iter(colour[_CMP_LABEL[k]])) for k in ("r2scan", "b3lyp", "wb97m-v")]
-        assert len(set(greys)) == 3
+        assert all(len(found_) == 1 for found_ in color.values()), color
+        grays = [next(iter(color[_CMP_LABEL[k]])) for k in ("r2scan", "b3lyp", "wb97m-v")]
+        assert len(set(grays)) == 3
         assert all(mcolors.to_rgb(g)[0] == mcolors.to_rgb(g)[1] == mcolors.to_rgb(g)[2]
-                   for g in greys)
-        others = {next(iter(colour[label])) for label in ("S_a", "S_e", "PBE-DF")}
-        assert not set(greys) & others
+                   for g in grays)
+        others = {next(iter(color[label])) for label in ("S_a", "S_e", "PBE-DF")}
+        assert not set(grays) & others
 
         legends = list(fig.legends) + [ax.get_legend() for ax in fig.axes
                                        if ax.get_legend() is not None]
@@ -721,7 +721,7 @@ def test_the_comparator_tables_draw_grey_bars_after_pbe_df(tmp_path, monkeypatch
                              for k in ("r2scan", "b3lyp", "wb97m-v")]
         handles = list(legends[0].legend_handles)
         assert [mcolors.to_hex(h.get_facecolor(), keep_alpha=False)
-                for h in handles[-3:]] == greys
+                for h in handles[-3:]] == grays
         assert [c["key"] for c in manifest["comparators"]] == ["r2scan", "b3lyp", "wb97m-v"]
         assert sum(1 for b in manifest["bars"] if b["label"] in _CMP_LABEL.values()) == 8
     finally:

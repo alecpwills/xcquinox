@@ -340,7 +340,7 @@ def _serve_documents(monkeypatch, path, documents):
 
 # Three documents, each refused on its own and each producing a DIFFERENT
 # refusal record: a FAIL stating numbers, a file that does not parse, and one
-# recording an unrecognised verdict. The last two are both UNREADABLE and are
+# recording an unrecognized verdict. The last two are both UNREADABLE and are
 # told apart by the reason the record quotes.
 _R1 = {"verdict": "FAIL",
        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7}}
