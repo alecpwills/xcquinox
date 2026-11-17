@@ -75,7 +75,7 @@ from arch_style import arch_color, display_name, key_line, stored_key  # noqa: E
 
 def _footer_with_key(footer: str, shown_names) -> str:
     """``footer`` with the expanded key of every shown name drawn appended on
-    its own line, so the names (deep_3x16 / deep0_3x16 ...) read without the
+    its own line, so the names (deep_3x16 / medium_3x16 ...) read without the
     map. The renderer's own addition: a caller's footer never carries it."""
     keys = key_line(shown_names)
     return f"{footer}\n{keys}" if keys else footer
@@ -198,13 +198,13 @@ RS_VALUES = (0.5, 2.0, 5.0)
 #: PRL 115, 036402 (2015), Fig. 1).
 ALPHA_VALUES = (0.0, 1.0)
 #: One lightness step per r_s (sequential: r_s is a magnitude), anchored to
-#: the model's arch colour via alpha; the parent counterparts are grey steps.
+#: the model's arch color via alpha; the parent counterparts are gray steps.
 RS_ALPHA = {0.5: 1.0, 2.0: 0.72, 5.0: 0.45}
 RS_GREY = {0.5: "0.15", 2.0: "0.45", 5.0: "0.65"}
 #: Linestyle per alpha slice where both share an axis (model curves; the
 #: F_c panels split by PANEL instead, one per alpha, and keep solid lines).
 ALPHA_LINESTYLE = {0.0: "-", 1.0: "-."}
-#: Parent counterparts of the two alpha slices (both grey, so the linestyle
+#: Parent counterparts of the two alpha slices (both gray, so the linestyle
 #: is what separates them).
 _PARENT_ALPHA_LINESTYLE = {0.0: "--", 1.0: ":"}
 _PARENT_STYLE = dict(color="0.25", linestyle="--", linewidth=2.0, zorder=1)
@@ -610,8 +610,8 @@ def main(argv=None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     # --archs in either spelling: the pre-training directories are the
-    # registry keys, a shown name (deep0_3x16) is mapped to its key; a name
-    # that is both (deep_3x16) is read in the shown sense, as the suite does
+    # registry keys; a shown name that is not a key (medium_3x16, deep_4x32)
+    # is mapped to its key, as the suite does
     archs = (tuple(stored_key(a.strip()) for a in args.archs.split(","))
              if args.archs else tuple(discover_archs(run_dir)))
     if not archs:

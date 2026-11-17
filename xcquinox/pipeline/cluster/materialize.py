@@ -20,7 +20,7 @@ import tempfile
 
 
 # Pinned serializer protocol. Protocol 4 (Python 3.4+) is the highest protocol
-# guaranteed available on every login/compute node we target; pinning it makes
+# guaranteed available on every login/compute node targeted; pinning it makes
 # the on-disk format forward-compatible regardless of the writer's Python.
 _SER_PROTOCOL = 4
 
@@ -90,7 +90,7 @@ def _parse_spec_index(name: str):
     """Parse the integer index out of a ``spec_<idx>.spec`` filename.
 
     Returns the index, or None if ``name`` is not a spec file with a numeric
-    index (so callers can simply skip it)."""
+    index (so callers can skip it)."""
     if not (name.startswith(_SPEC_PREFIX) and name.endswith(_SPEC_SUFFIX)):
         return None
     core = name[len(_SPEC_PREFIX):-len(_SPEC_SUFFIX)]

@@ -16,7 +16,7 @@ def pad_array(arr, max_arr, shape=None, device=jax.devices('cpu')[0]):
     :type arr: jax.Array
     :param max_arr: The array whose size is to be emulated, or an empty value if manually specifying `shape`
     :type max_arr: jax.Array
-    :param shape: The array shape you want to pad to, if known a priori, defaults to None
+    :param shape: The array shape to pad to, if known a priori; defaults to None
     :type shape: tuple of ints, optional
     :param device: Where to place the padded arrays, defaults to jax.devices('cpu')[0]
     :type device: jax.Device, optional
@@ -743,7 +743,7 @@ def pw92c_unpolarized(rho):
 def pw92c_unpolarized_scalar(rho):
     """Scalar version of the pw92c_unpolarized function.
 
-    S: I needed this for some concrete cases of the derivatives training.
+    S: added for concrete cases of the derivatives training.
     """
     # Ensure rho is a jax.numpy array
     rho = jnp.asarray(rho)

@@ -419,3 +419,37 @@ def test_multishell_column_order_is_alpha_major_then_spin():
     # volume, and the product is largest in between.
 
 
+
+
+def test_rung35_occupancy_is_clipped_to_the_declared_bounds():
+    """The contraction ``A^T P A`` lies in [0, 1] for an N-representable P
+    (Bessel), and that is what the descriptor declares and what a spline
+    grid is built on. A density matrix outside the physical domain -- here
+    the converged H2 density scaled by 10 (eigenvalue 10 in the AO metric)
+    and its negative -- pushes the raw contraction outside the bounds; the
+    descriptor saturates there and is unchanged on the physical density."""
+    from xcquinox.pipeline.rung35 import compute_projected_ao, compute_rung35_occupancy
+    mol, dm, coords, _w = _h2()
+    pts = coords[::7]
+    A = jnp.asarray(compute_projected_ao(mol, pts, ALPHA))
+    dm = jnp.asarray(dm)
+    # The 2-index reference and the descriptor's 3-index einsum sum in a
+    # different order and differ by one ulp on about half the points, so
+    # the comparisons are relative at 1e-15 rather than bit for bit.
+    raw_phys = np.asarray(jnp.einsum("gm,mn,gn->g", A, 0.5 * dm, A))
+    assert np.all(raw_phys >= 0.0) and np.all(raw_phys <= 1.0)
+    occ_phys = np.asarray(compute_rung35_occupancy(A, dm))
+    np.testing.assert_allclose(occ_phys[:, 0], raw_phys, rtol=1e-15, atol=0.0)
+    np.testing.assert_allclose(occ_phys[:, 1], raw_phys, rtol=1e-15, atol=0.0)
+    for bad in (10.0 * dm, -dm):
+        raw_bad = np.asarray(jnp.einsum("gm,mn,gn->g", A, 0.5 * bad, A))
+        assert np.any((raw_bad < 0.0) | (raw_bad > 1.0)), "premise: out of bounds"
+        occ_bad = np.asarray(compute_rung35_occupancy(A, bad))
+        assert np.all(occ_bad >= 0.0) and np.all(occ_bad <= 1.0)
+        np.testing.assert_allclose(occ_bad[:, 0], np.clip(raw_bad, 0.0, 1.0),
+                                   rtol=1e-15, atol=0.0)
+    # the multishell form is the per-width stack of the same contraction
+    from xcquinox.pipeline.rung35 import compute_rung35_multishell_occupancy
+    ms = np.asarray(compute_rung35_multishell_occupancy(jnp.stack([A, A]), 10.0 * dm))
+    assert ms.shape == (pts.shape[0], 4)
+    assert np.all(ms >= 0.0) and np.all(ms <= 1.0)

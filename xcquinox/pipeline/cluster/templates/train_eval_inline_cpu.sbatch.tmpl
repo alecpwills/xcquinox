@@ -8,6 +8,9 @@ ${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --output=${RUN_DIR}/logs/train_eval_%A_%a.out
 ${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
 set -uo pipefail
+# The node stages run at the checkout: sbatch's default working directory is
+# the submit directory, so a submit from elsewhere must not shift it.
+cd "${REPO_ROOT}"
 # NOTE: NOT `set -e` -- we intentionally tolerate eval failure so the train
 # checkpoint (already on disk from _train_task) survives a crash in
 # _eval_one_spec. See the `|| true` guard on the eval invocation below.

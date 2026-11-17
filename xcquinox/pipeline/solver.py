@@ -98,12 +98,28 @@ class SolverConfig:
     # None -> the XCQUINOX_SEED_CACHE_DIR environment fallback; "scan" with
     # both unset fails loud at supply time.
     seed_cache_dir: str | None = None
+    # Fock degeneracy noise (the executed xc-diff protocol, Dick &
+    # Fernandez-Serra 2021: |N(0,1)| * 1e-5 added to the assembled effective
+    # potential every training SCF cycle, symmetrized). Here: when std > 0,
+    # each RKS/UKS scan cycle on the DIFFERENTIABLE path (never the
+    # forward_only readout) draws n = std*|N(0,1)| of the Fock's shape from
+    # PRNGKey(fock_noise_seed) folded with the cycle counter and adds the
+    # symmetrized perturbation n + n.T between Fock assembly and the
+    # Roothaan diagonalization -- breaking exact degeneracy ties in the
+    # occupied manifold the way the published training did. Default 0.0 ->
+    # off -> byte-identical SCF (the deterministic SYM_BREAK_SHIFT stays).
+    fock_noise_std: float = 0.0
+    fock_noise_seed: int = 0
 
     def __post_init__(self):
         if self.max_cycles < 0:
             raise ValueError(f"max_cycles must be >= 0, got {self.max_cycles}")
         if self.conv_tol <= 0:
             raise ValueError(f"conv_tol must be > 0, got {self.conv_tol}")
+        if self.fock_noise_std < 0:
+            raise ValueError(
+                f"fock_noise_std must be >= 0, got {self.fock_noise_std}"
+            )
         if self.scf_loss_tail < 1:
             raise ValueError(
                 f"scf_loss_tail must be >= 1, got {self.scf_loss_tail}"
@@ -188,6 +204,8 @@ class SolverConfig:
             "orientation_lock_strength": self.orientation_lock_strength,
             "seed_source": self.seed_source,
             "seed_cache_dir": self.seed_cache_dir,
+            "fock_noise_std": self.fock_noise_std,
+            "fock_noise_seed": self.fock_noise_seed,
         }
 
 
@@ -415,6 +433,17 @@ class SCFResult:
     converged: jnp.ndarray          # bool scalar
     features_used: jnp.ndarray      # (n_grid, n_features) final cycle features
     energy_trace: jnp.ndarray | None = None  # (max_cycles,) per-cycle energies
+    # ``converged`` reports the criterion of the LAST cycle run. Without the
+    # convergence freeze every cycle advances, so an early dip below the
+    # tolerance says nothing about the final state; the latched OR over the
+    # cycles is kept apart as ``converged_ever`` (equal to ``converged`` under
+    # the freeze, where the state stops advancing once the criterion fires).
+    # Reported by the manual backend; None from the other backends.
+    converged_ever: jnp.ndarray | None = None  # bool scalar
+    # max |D_mixed - D_cur| over the AO matrix (spin channels together) of the
+    # last cycle: the density change the energy criterion does not see. A
+    # reported quantity only, never part of the criterion.
+    dm_residual: jnp.ndarray | None = None     # float scalar
 
 
 def _contract_dm_to_grid(D: jnp.ndarray, ao_deriv: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -452,6 +481,7 @@ def _reassemble_features(
     dm: jnp.ndarray,
     s_matrix: jnp.ndarray,
     cusp_features: jnp.ndarray | None = None,
+    atom_context_features: jnp.ndarray | None = None,
     n_grid: int | None = None,
     rung35_proj_ao: jnp.ndarray | None = None,
     rung35ms_proj_ao: jnp.ndarray | None = None,
@@ -459,8 +489,16 @@ def _reassemble_features(
     rho: jnp.ndarray | None = None,
     sigma: jnp.ndarray | None = None,
     spin_channel: int | None = None,
+    ao: jnp.ndarray | None = None,
+    ao_lapl: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Recompute descriptor features from the live (dm, S) + cached cusp.
+
+    ``ao`` (the AO values, (n_grid, n_ao)) and ``ao_lapl`` (the AO Laplacian
+    table, ``mol_data['ao_grid_lapl']``) are the constant tables the
+    Laplacian column (``LaplacianDescriptor``) contracts the live matrix
+    with, beside ``ao_grad`` and ``rho``; required when that descriptor is
+    present, unused otherwise.
 
     Used by REASSEMBLE policy. CuspDescriptor features are geometry-only
     (not DM-dependent) so they are passed in as the frozen precompute value.
@@ -481,8 +519,9 @@ def _reassemble_features(
     forms them, so callers should go through it rather than doubling by hand.
     """
     from xcquinox.pipeline.descriptors import (
-        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
-        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor, doubled_spin_dm)
+        AtomContextDescriptor, CuspDescriptor, DMStatisticsDescriptor,
+        DMRung35Descriptor, DMRung35MultishellDescriptor, LaplacianDescriptor,
+        MetaGGAAlphaDescriptor, doubled_spin_dm)
     if not descriptors:
         _ng = cusp_features.shape[0] if cusp_features is not None else (n_grid or 0)
         return jnp.zeros((_ng, 0))
@@ -498,6 +537,13 @@ def _reassemble_features(
                 )
             cols.append(cusp_features)
             n_grid_hint = cusp_features.shape[0]
+        elif isinstance(d, AtomContextDescriptor):
+            if atom_context_features is None:
+                raise ValueError(
+                    "atom_context_features must be provided when descriptors "
+                    "include AtomContextDescriptor"
+                )
+            cols.append(atom_context_features)
         elif isinstance(d, DMStatisticsDescriptor):
             if n_grid_hint is None:
                 raise ValueError(
@@ -527,6 +573,13 @@ def _reassemble_features(
                     "include MetaGGAAlphaDescriptor (the live tau contraction)"
                 )
             cols.append(d.compute_from_dm(ao_grad=ao_grad, rho=rho, sigma=sigma, dm=dm))
+        elif isinstance(d, LaplacianDescriptor):
+            if ao is None or ao_grad is None or ao_lapl is None or rho is None:
+                raise ValueError(
+                    "ao, ao_grad, ao_lapl (mol_data['ao_grid_lapl']) and rho "
+                    "must be provided when descriptors include "
+                    "LaplacianDescriptor (the live density Laplacian)")
+            cols.append(d.compute_from_dm(ao, ao_grad, ao_lapl, rho, dm))
         else:
             raise NotImplementedError(
                 f"_reassemble_features does not yet know how to recompute {type(d).__name__}"
@@ -539,8 +592,10 @@ def make_uks_feature_fns(descriptors: tuple,
                          s_matrix: jnp.ndarray,
                          n_grid: int,
                          cusp_features: jnp.ndarray | None = None,
+                         atom_context_features: jnp.ndarray | None = None,
                          rung35_proj_ao: jnp.ndarray | None = None,
-                         rung35ms_proj_ao: jnp.ndarray | None = None):
+                         rung35ms_proj_ao: jnp.ndarray | None = None,
+                         ao_lapl: jnp.ndarray | None = None):
     """Three closures ``P_ab -> (n_grid, n_features)``: alpha block, beta block,
     total block.
 
@@ -585,12 +640,17 @@ def make_uks_feature_fns(descriptors: tuple,
 
         return _empty, _empty, _empty
 
-    from xcquinox.pipeline.descriptors import MetaGGAAlphaDescriptor
-    # rho / sigma are consumed only by the meta-GGA iso-orbital indicator; the
-    # contraction is skipped for every other architecture, matching the cost of
-    # the pre-existing UKS feature assembly.
-    needs_rho = any(isinstance(d, MetaGGAAlphaDescriptor) for d in descriptors)
+    from xcquinox.pipeline.descriptors import (LaplacianDescriptor,
+                                               MetaGGAAlphaDescriptor)
+    # rho / sigma are consumed only by the meta-GGA iso-orbital indicator and
+    # the Laplacian column; the contraction is skipped for every other
+    # architecture, matching the cost of the pre-existing UKS feature assembly.
+    needs_rho = any(isinstance(d, (MetaGGAAlphaDescriptor, LaplacianDescriptor))
+                    for d in descriptors)
     ao_grad = ao_deriv[1:4]
+    # The AO values, the first slice of the derivative table: the Laplacian
+    # kernel's third constant beside the gradients and ``ao_lapl``.
+    ao_values = ao_deriv[0]
 
     def _rho_sigma(D):
         # The kernel the manual solvers contract with (the total block of
@@ -611,6 +671,7 @@ def make_uks_feature_fns(descriptors: tuple,
             dm=dm,
             s_matrix=s_matrix,
             cusp_features=cusp_features,
+            atom_context_features=atom_context_features,
             n_grid=n_grid,
             rung35_proj_ao=rung35_proj_ao,
             rung35ms_proj_ao=rung35ms_proj_ao,
@@ -618,6 +679,8 @@ def make_uks_feature_fns(descriptors: tuple,
             rho=rho,
             sigma=sigma,
             spin_channel=spin_channel,
+            ao=ao_values,
+            ao_lapl=ao_lapl,
         )
 
     def _features_spin(P_ab, spin_channel):

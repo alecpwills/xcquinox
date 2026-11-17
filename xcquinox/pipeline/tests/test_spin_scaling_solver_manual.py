@@ -71,7 +71,8 @@ def _live_fns(model, md):
         n_grid=int(np.asarray(md["grid_weights"]).shape[0]),
         cusp_features=md.get("cusp_features"),
         rung35_proj_ao=md.get("rung35_proj_ao"),
-        rung35ms_proj_ao=md.get("rung35ms_proj_ao"))
+        rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+        ao_lapl=md.get("ao_grid_lapl"))
 
 
 def _precompute_blocks(model, md):
@@ -538,7 +539,7 @@ def test_manual_uks_fock_at_the_li_fixed_point(monkeypatch):
     is not what does it: this same displacement applied to Li's ALPHA
     channel alone leaves the cone by -2.2e-7 and still reproduces dE/dP to
     1.2e-10. That figure is pinned as a lower bound so a change of the
-    descriptor's tail behaviour is noticed.
+    descriptor's tail behavior is noticed.
     """
     model = _model("deep_mgga_3x16")
     md = _md(model, "Li", "Li 0 0 0", 1, (("Li", 1),))
@@ -624,7 +625,7 @@ def test_manual_uks_fock_at_the_li_fixed_point(monkeypatch):
         f"the unrestricted direction reads rel={rel_u:.3e} (FD={fd_u:.10e} "
         f"analytic={an_u:.10e}); the measured 0.88 is the descriptor's tail "
         f"rank-one channel's indicator tail response. Below this bound the "
-        f"tail behaviour of the indicator has changed -- re-anchor this test")
+        f"tail behavior of the indicator has changed -- re-anchor this test")
 
 
 def test_manual_uks_frozen_refuses_a_record_without_per_spin_blocks():

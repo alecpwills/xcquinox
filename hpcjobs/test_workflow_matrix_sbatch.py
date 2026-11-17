@@ -8,7 +8,7 @@ stage count, so a knob that moves without the request moving is a failure here
 rather than a job killed at its wall with no report. The COMMAND SURFACE: every
 flag the script passes is checked against ``workflow_matrix.main``'s argparse,
 read out of the real parser, because a renamed flag turns a 30 h allocation
-into a usage error. The SHELL BEHAVIOUR: the script is EXECUTED against a stub
+into a usage error. The SHELL BEHAVIOR: the script is EXECUTED against a stub
 interpreter -- environment defaulting, the batch split, the refusals of a bad
 knob or a missing cached input, and the propagation of the matrix's exit code
 to SLURM -- since none of that can be established by reading the text.
@@ -386,7 +386,7 @@ _PROBE_HARNESS = r"""
 import sys
 import types
 
-(probe_path, behaviour, sentinel, oracle_target, stages, max_shards,
+(probe_path, behavior, sentinel, oracle_target, stages, max_shards,
  writable, drop) = sys.argv[1:9]
 
 for name in ("xcquinox", "xcquinox.pipeline", "xcquinox.pipeline.cluster"):
@@ -414,11 +414,11 @@ def _main(argv=None, **kwargs):
     def _flag(flag, default):
         return int(argv[argv.index(flag) + 1]) if flag in argv else default
 
-    if behaviour == "raises":
+    if behavior == "raises":
         raise RuntimeError("this checkout raises before it refuses anything")
-    if behaviour != "no_timeout_refusal" and _flag("--timeout-s", 1800) <= 0:
+    if behavior != "no_timeout_refusal" and _flag("--timeout-s", 1800) <= 0:
         raise SystemExit(2)
-    if behaviour != "no_shards_refusal" and not 1 <= _flag("--shards", 1) <= 4:
+    if behavior != "no_shards_refusal" and not 1 <= _flag("--shards", 1) <= 4:
         raise SystemExit(2)
     # The progress line the real main prints on its way into run_matrix.
     print("[workflow-matrix] 31 architectures, 4 shard(s), work root /x")

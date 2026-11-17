@@ -188,14 +188,19 @@ def test_the_board_generates_one_dataset_per_parent_density(monkeypatch):
 def test_the_board_runs_anchored_polarized_dfs_architectures():
     """What the board pretrains: the registry entry with polarized
     correlation, the DFS coordinates and the anchor, which is the campaign's
-    model class. The unanchored control differs in the anchor alone."""
+    model class. The unanchored control differs in the anchor alone: it
+    starts at F = 1 by the board's own setting, since no registry entry
+    zeroes its final layer, and the recorded unanchored reference was
+    measured from that start."""
     anchored_arch = board.board_arch("deep_3x16", anchor=True)
     plain = board.board_arch("deep_3x16", anchor=False)
+    assert pipeline.get_architecture("deep_3x16").zero_init_final_layer is False
     assert anchored_arch.parent_anchor is True
     assert anchored_arch.zero_init_final_layer is True
     assert anchored_arch.use_polarized_correlation is True
     assert anchored_arch.descriptor_coordinates == "dfs"
     assert plain.parent_anchor is False
+    assert plain.zero_init_final_layer is True
     assert plain.descriptor_coordinates == "dfs"
     assert plain.use_polarized_correlation is True
 

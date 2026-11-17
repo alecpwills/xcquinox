@@ -228,7 +228,7 @@ def test_pretraining_grid_rebuild_pins_the_cutoff(monkeypatch):
     2.14.0 moved that default from 1e-7 to 0, which keeps the small-density
     tail rows and makes the replayed grid a different quadrature from the
     record's. The class default is set to 0 for the second build below, which
-    poses that release's behaviour on any release; the record the second
+    poses that release's behavior on any release; the record the second
     build reads is the first build's, held by the process-level precompute
     memo (keyed on the molecule, the basis, the grid level, the parent
     functional and the lock, none of which change between the two calls), so

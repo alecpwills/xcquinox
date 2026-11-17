@@ -60,7 +60,7 @@ class OEPResult(NamedTuple):
         L-BFGS-B iteration count clipped at ``max_iter``:
         ``min(scipy.result.nit, max_iter)``. Some scipy builds
         report ``nit == max_iter + 1`` when the optimizer exits at the
-        iteration cap; the clip ensures ``n_iter`` matches the user-
+        iteration cap; the clip ensures ``n_iter`` matches the requested-
         requested cap exactly.
     lbfgs_status
         Scipy's L-BFGS-B termination message. When the
@@ -778,7 +778,7 @@ def run_oep_inversion(
             # On inner-SCF failure, write
             # +inf for density_error and -inf for F_val. The plateau
             # detector reads these as descending sentinels (won't
-            # contribute to a flat-window judgement).
+            # contribute to a flat-window judgment).
             scf_state["density_error_l2_last_eval"] = float("inf")
             scf_state["F_val_last_eval"] = float("-inf")
             return obj, grad
@@ -899,7 +899,7 @@ def run_oep_inversion(
                     )
 
         # Early-stop: when the density-L2 at the accepted iterate
-        # satisfies the user's conv_tol, abort minimize() rather than
+        # satisfies the requested conv_tol, abort minimize() rather than
         # running the full max_iter. L-BFGS-B's own stopping criteria
         # (ftol, gtol) don't react to density_error directly, so without
         # this check UKS Π-state cases plateau at the noise floor for
@@ -996,8 +996,8 @@ def run_oep_inversion(
             optimized_error = final_error
             vxc_final, dm_final = vxc_b0, dm_b0
             final_error, final_success = b0_error, b0_success
-    # Clip scipy's reported nit at our requested max_iter so
-    # n_iter never exceeds what the user asked for; documented in the
+    # Clip scipy's reported nit at the requested max_iter so
+    # n_iter never exceeds the requested bound; documented in the
     # OEPResult.n_iter docstring above.
     if early_stopped_b is not None or plateau_b is not None:
         n_iter = min(_progress_state["iter"], max_iter)
@@ -1010,7 +1010,7 @@ def run_oep_inversion(
     #   2. final_error < conv_tol, the density matches to tolerance
     #   3. final_error is finite (rules out NaN from a blown-up SCF)
     #
-    # We deliberately do NOT also require ``result.success``: that flag is
+    # ``result.success`` is deliberately NOT also required: that flag is
     # False whenever scipy exits at ``max_iter`` even if density_error
     # already passed conv_tol, which would conflate "L-BFGS-B optimizer
     # converged" with "OEP inversion converged". Hitting max_iter
@@ -1066,7 +1066,7 @@ def run_oep_inversion(
     # condition: final_success AND isfinite(final_error) AND
     # final_error < conv_tol. That is the genuine-stationarity / matches-
     # to-tolerance contract and applies uniformly to every stop path,
-    # including plateau. We deliberately do NOT re-derive ``converged``
+    # including plateau. ``converged`` is deliberately NOT re-derived
     # from the plateau median here.
     #
     # ``stop_reason`` records WHETHER this is a verified convergence and,

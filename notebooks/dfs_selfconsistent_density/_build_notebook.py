@@ -34,7 +34,8 @@ replicates Dick & Fernandez-Serra, Phys. Rev. B 104, L161109 (2021):
 - `full_3` (3-cycle) and `full_25` (25-cycle) FULL differentiable SCF; decaying mixer
   `alpha = 0.3^step + 0.3`; tail-weighted energy loss;
 - adamw with linear learning-rate decay;
-- networks pretrained to PBE before density training (they zero-initialize to LDA).
+- networks pretrained to PBE before density training (they start near LDA, from the default
+  initialization of their final layer).
 
 Architectures: two GGA-ladder networks (`deep_3x16`, `deep_rung35_3x16`) and two meta-GGA networks
 (`deep_mgga_3x16`, `deep_rung35_mgga_3x16`, which pretrain to SCAN). Change `ARCH_NAMES` in the setup
@@ -100,7 +101,7 @@ except Exception:
 _SOLVER_HATCH = {"full_3": "", "full_25": "//"}  # distinguish SCF-cycle count
 
 def _shown(arch):
-    "The shown name of a registry key (arch_names: deep_3x16 -> deep0_3x16), mapped explicitly."
+    "The shown name of a registry key (arch_names: deep -> deep_4x32, medium -> medium_3x16), mapped explicitly."
     return arch_style.display_name(arch) if arch_style is not None else arch
 
 def _nn_color(key):
@@ -250,8 +251,11 @@ print(f"integral rho_ref[{ex.name}] = {float((_z['rho_ref_grid'] * _z['grid_weig
 md(r"""
 ## 3. Pretrain to PBE
 
-The networks zero-initialize to LDA (`F_x = F_c = 1` multiply `lda_x` + PW92, the uniform-gas limit).
-The DFS recipe fits `F` to PBE first (`Fx = F_x^PBE/F_x^LDA - 1`). This runs one PBE fit per
+The GELU networks start from the default initialization of their final layer, so an untrained
+`F` sits near 1 (`F_x = F_c = 1` exactly multiplies `lda_x` + PW92, the uniform-gas limit); the
+sine network, `deep_sine_3x16`, starts from SIREN's initialization and further from 1, its sine
+hidden activations being of order one. The DFS
+recipe fits `F` to PBE first (`Fx = F_x^PBE/F_x^LDA - 1`). This runs one PBE fit per
 architecture and writes `xnet.eqx`/`cnet.eqx` used as the training warm-start.
 """)
 
@@ -271,7 +275,7 @@ if DO_PRETRAIN:
         pretrained[arch_name] = ck
         print("  wrote", ck, flush=True)
 else:
-    print("pretraining off; networks start from the LDA init")
+    print("pretraining off; networks start from the default init")
 """)
 
 # ---------------------------------------------------------------------------
@@ -280,7 +284,7 @@ md(r"""
 
 `deep_3x16` (plain GGA) and `deep_rung35_3x16` (cusp + rung-3.5 localized-DM occupancy), both with
 spin-polarized correlation. Change `ARCH_NAMES` (setup cell) or pass a custom `ArchitectureConfig` to
-`build_dfs_training_spec` to use your own.
+`build_dfs_training_spec` to use a different one.
 """)
 
 code(r"""
@@ -329,9 +333,9 @@ md(r"""
 Each architecture under each solver. Every optimizer step differentiates through the full KS SCF.
 `full_25` (25 SCF cycles) is the slow path.
 
-> **One-time reset if you trained before the orientation lock:** the lock is now on, so a fresh run
+> **One-time reset for runs from before the orientation lock:** the lock is now on, so a fresh run
 > trains against the locked OH reference. CCSD references self-heal (they carry the lock strength and
-> regenerate automatically). Training checkpoints do **not** auto-invalidate, so if you have
+> regenerate automatically). Training checkpoints do **not** auto-invalidate, so an existing
 > `runs/*__*/model.eqx` from an earlier *unlocked* run, delete them (keep `runs/pretrain/`, which is
 > orientation-invariant) to retrain consistently: `rm runs/*__*/model.eqx`.
 """)

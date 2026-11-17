@@ -192,7 +192,7 @@ def _emit_history_plot(name: str, records: list[dict],
         h = rec["result"].get("density_error_history") or []
         if not h:
             continue
-        ax.semilogy(range(1, len(h) + 1), h, lw=0.5, alpha=0.5, color="grey")
+        ax.semilogy(range(1, len(h) + 1), h, lw=0.5, alpha=0.5, color="gray")
     if winner is not None:
         h = winner["result"].get("density_error_history") or []
         if h:

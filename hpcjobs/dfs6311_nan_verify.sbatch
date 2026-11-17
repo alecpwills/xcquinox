@@ -20,7 +20,7 @@
 #                       compute_alpha gradient-freeze removal).
 #   leg 2 (measurement) converged-energy shift, corrected potential vs the
 #                       prior assembly without the feature-response term.
-#   leg 3 (measurement) convergence behaviour (energy vs cycle cap, converged
+#   leg 3 (measurement) convergence behavior (energy vs cycle cap, converged
 #                       flags), corrected vs prior.
 #
 # BLAS IS PINNED TO ONE THREAD, deliberately: at 25 unrolled cycles an

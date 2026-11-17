@@ -337,6 +337,70 @@ def compute_cusp_descriptor(grid_coords: jnp.ndarray,
     return jnp.stack([features['cusp_factor'], weighted_Z_bounded], axis=1)
 
 
+def compute_atom_context_descriptor(grid_coords: jnp.ndarray,
+                                    nuclear_coords: jnp.ndarray,
+                                    nuclear_charges: jnp.ndarray,
+                                    *,
+                                    cutoff: float = 10.0,
+                                    seed: int = 42) -> jnp.ndarray:
+    """Frozen per-atom environment attention, folded onto the grid (4 columns).
+
+    Each atom carries a frozen embedding ``h_A = tanh(W[:, Z_A])`` (W drawn
+    once from ``PRNGKey(seed)``, shape (4, 119); never trained). Its
+    environment vector mixes the embeddings of the atoms within ``cutoff``
+    under the pair weight ``s(d) = exp(-d/lambda) * cos^2(pi d / (2 cutoff))``
+    for ``d < cutoff``, exactly 0 beyond (the zero is written by ``where``,
+    not left to underflow). The decay length lambda = 4 Bohr is anchored by
+    measurement: at lambda = 1 the environment collapses to bonded neighbors
+    (an O in H2O at 1.8-Bohr bonds holds 76.6% self, and a hydrogen-bond-scale
+    neighbor at 5.7 Bohr holds 1.3e-3 of the self weight, leaving the taper
+    decorating dead weight), while at lambda = 4 the same geometry gives 46.0%
+    self / 27.0% per bonded H, 9.4% at the 5.7-Bohr scale and 0.143 at the
+    taper midpoint (cutoff/2). A grid point reads the convex combination of
+    environment vectors under ``u_A = (Z_A / r_A)`` restricted to ``r_A <
+    cutoff``, normalized; a grid point beyond cutoff of every atom reads
+    exactly 0 (the empty ``u`` sum is selected away, never divided).
+
+    Both distance matrices carry the ``sqrt(... + 1e-12)`` floor of
+    :func:`compute_cusp_distances`: a nucleus-coincident grid row gives
+    ``r = 1e-6`` rather than a division by zero, and the atom-atom diagonal
+    is 1e-6, keeping the environment denominator positive at an isolated
+    atom. Every column lies in (-1, 1): two convex combinations of tanh.
+
+    Permutation, translation and rotation invariance hold by construction
+    (Z-indexed embeddings, distance-only inputs); features are geometry-only
+    and therefore frozen through the SCF.
+
+    :param grid_coords: Grid point coordinates, shape (N, 3)
+    :param nuclear_coords: Nuclear positions, shape (M, 3)
+    :param nuclear_charges: Nuclear charges Z, shape (M,)
+    :param cutoff: Environment radius in Bohr beyond which atoms and grid
+        points see nothing of each other
+    :param seed: Draw seed of the frozen embedding table
+    :return: Environment-attention descriptors, shape (N, 4), each column
+        in (-1, 1)
+    """
+    # Frozen per-element embedding table: (4 channels, elements 0..118).
+    W = jax.random.normal(jax.random.PRNGKey(seed), (4, 119))
+    H = jnp.tanh(W[:, nuclear_charges.astype(jnp.int32)]).T          # (M, 4)
+
+    # Atom-atom distances under the cusp kernel's floor (diagonal 1e-6).
+    diff_aa = nuclear_coords[:, None, :] - nuclear_coords[None, :, :]
+    d_aa = jnp.sqrt(jnp.sum(diff_aa ** 2, axis=-1) + 1e-12)          # (M, M)
+    taper = jnp.cos(jnp.pi * d_aa / (2.0 * cutoff)) ** 2
+    s = jnp.where(d_aa < cutoff, jnp.exp(-d_aa / 4.0) * taper, 0.0)  # (M, M)
+    # The floored self term keeps the denominator positive at any atom.
+    e = s @ H / jnp.sum(s, axis=1)[:, None]                          # (M, 4)
+
+    # Grid fold-in: inverse-distance-charged weights, cut at the same radius.
+    diff_ga = grid_coords[:, None, :] - nuclear_coords[None, :, :]
+    r_ga = jnp.sqrt(jnp.sum(diff_ga ** 2, axis=-1) + 1e-12)          # (N, M)
+    u = jnp.where(r_ga < cutoff,
+                  nuclear_charges[None, :] / r_ga, 0.0)              # (N, M)
+    den = jnp.sum(u, axis=1)
+    return jnp.where(den[:, None] > 0.0, (u @ e) / den[:, None], 0.0)
+
+
 # =============================================================================
 # Extended Local Descriptors
 # =============================================================================

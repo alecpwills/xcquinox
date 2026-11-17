@@ -42,6 +42,7 @@ def test_manifest_round_trips_density_fit_flag(tmp_path):
         meta = json.load(f)
     assert meta == {"basis": "def2-tzvp", "grid_level": 2, "density_fit": True,
                     "alpha_definition": str(pdg._ALPHA_DEFINITION),
+                    "descriptor_stems": [],
                     "auxbasis": "def2-universal-jkfit",
                     "atoms": [[s, sp] for s, sp in pdg.DEFAULT_PRETRAIN_ATOMS],
                     # The pretraining-protocol identity: the system list (None
@@ -72,7 +73,7 @@ def test_ensure_regenerates_only_when_stale(tmp_path, monkeypatch):
     # ``atoms`` has a default because ``ensure_pretrain_data`` hands the
     # generator the RESOLVED system list and nothing else; a fake that still
     # required the atom list would pin a duplicate argument rather than the
-    # basis behaviour this test is about.
+    # basis behavior this test is about.
     def fake_generate(out_dir, *, basis, grid_level, polarized,
                       descriptors, density_fit, atoms=None, auxbasis=None,
                       cusp_log_transform=True, **kwargs):
@@ -143,6 +144,7 @@ def test_generator_writes_are_atomic(tmp_path, monkeypatch):
                                         "e_lda_x", "e_lda_c")} | {
             "cusp": np.ones((2, 2)), "dm": np.ones((2, 2)),
             "rung35": np.ones((2, 2)), "rung35ms": np.ones((2, 6)),
+            "lap": np.ones((2, 1)), "atom_context": np.ones((2, 4)),
             "metagga": np.ones((2, 1))}
 
     monkeypatch.setattr(pdg, "_system_columns", fake_cols)

@@ -50,7 +50,11 @@ stage and submits the stages with SLURM dependencies:
    for the run's identity and leaves an existing file in place when its manifest matches.
 2. `pretrain`, an array with one task per distinct architecture, after `datagen`. Each task
    fits the exchange and correlation networks to the parent functional and writes the
-   fidelity certificate beside the checkpoint.
+   fidelity certificate beside the checkpoint, and with it the potential record
+   `fidelity_vxc.json`: the action of the clone's exchange-correlation potential minus the
+   parent's on the occupied orbitals of the same systems, and the electrons moved and the
+   energy change in one Fock build from the parent density beyond the parent's own, recorded
+   without a gate.
 3. `preflight`, a single job after the pretrain array: the compile smoke and the cold-start
    convergence census over the training species.
 4. `train`, an array with one task per cell, after both the pretrain array and the preflight.
@@ -62,6 +66,53 @@ stage and submits the stages with SLURM dependencies:
 Without `--submit` the command is a dry run: the run directory and the rendered scripts are
 written and nothing is submitted. `--partition` is required. `--max-nodes` caps the nodes an
 array stage holds at once.
+
+## Submitting one stage group
+
+`--stages` submits the whole graph (`all`, the default) or one closed group of it:
+
+```bash
+# A pretraining suite: datagen -> pretrain array, nothing downstream.
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_slim05_allsc.yaml \
+    --stages pretrain --partition extended-40core --submit
+
+# The optimization suite that seeds from a completed pretraining run:
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_dfs_parity.yaml \
+    --stages optimize --donor-run /gpfs/scratch/awills/xcquinox_runs/.../run_<stamp> \
+    --partition extended-96core --max-nodes 4 --submit
+
+# One architecture of a suite refit at another initialization seed:
+python -m xcquinox.pipeline.cluster submit hpcjobs/configs/dfs_step8.v8_dfs_allsc.yaml \
+    --stages pretrain --archs deep_geom_3x16 --pretrain-seed 44 \
+    --partition extended-96core --submit
+```
+
+`--stages pretrain` renders and queues only datagen and the pretrain array; no preflight,
+train or eval script, command line or job record exists in the run dir. `--stages optimize`
+submits only preflight -> train -> eval (plus the benchmark-refs job when configured):
+preflight carries no dependency, because the pretraining it seeds from is already complete.
+It requires every swept architecture to be donor-backed -- `--donor-run DIR` builds that
+donor map (`<DIR>/pretrain/<arch>` per arch, into `pretrain.donor_checkpoints`, replacing
+the configuration's map) and refuses before creating the run dir unless every arch dir
+carries a certificate that releases the fidelity gate: a PASS, or a FAIL under a recorded
+waiver, the rule the preflight applies to the same directories. When the donor run releases
+only some of the swept architectures, the refusal names the `--archs` value that restricts
+the sweep to those. A refused `--stages` selection likewise leaves nothing on disk.
+`resubmit-preflight` recovers a run with the same stage group its job records show, so a
+pretraining suite never grows a train array in recovery.
+
+`--archs A[,B...]` restricts the run to the named architectures of the configuration's sweep
+(a name the sweep does not carry is refused before the run dir is created), and
+`--pretrain-seed N` replaces `pretrain.seed`, the seed the pretraining builds its networks
+from. Both are written into the run's `resolved_config.yaml`, and each
+`pretrain_metadata.json` states the seed its networks started from. Together with
+`--stages pretrain` they refit one architecture of a suite, for instance a network that failed
+its certificate, as a run of its own. The correlation network is built from the seed plus
+one, so a refit takes a seed at least two away from the fit it replaces. A run that pretrains
+nothing (`--stages optimize`, or every swept architecture donor-backed) refuses
+`--pretrain-seed`. With `--stages optimize`, `--archs` and `--donor-run` together optimize the
+architectures of one pretraining run, the donor run being asked only for the architectures the
+run sweeps.
 
 ## Following a run
 

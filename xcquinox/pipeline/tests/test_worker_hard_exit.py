@@ -11,7 +11,7 @@ SUCCEEDED``, and then aborted -- so the stage was recorded as failed with
 rc -6. In a campaign that status marks the pretrain array task FAILED and the
 train array's ``afterok`` dependency never fires.
 
-Two things are pinned here. The BEHAVIOUR, in real subprocesses with an
+Two things are pinned here. The BEHAVIOR, in real subprocesses with an
 ``atexit`` handler that calls ``os.abort()`` -- the discriminator, since the
 real teardown fault is intermittent: the status is the return code the entry
 point produced, not -6, and nothing buffered on stdout, stderr or an open log
@@ -155,7 +155,7 @@ _exit.run_and_exit(main)
 """
 
 #: The pre-change entry point, verbatim: ``sys.exit(main())``. Every
-#: behavioural assertion below is paired against this so the test would FAIL
+#: behavioral assertion below is paired against this so the test would FAIL
 #: on the code as it stood when job 2134455 ran.
 _STOCK = """\
 import atexit, os, sys
@@ -176,7 +176,7 @@ def _script(tmp_path, template, body, name="entry.py"):
 
 
 # --------------------------------------------------------------------------- #
-# Behaviour: the status is the verdict, whatever teardown does
+# Behavior: the status is the verdict, whatever teardown does
 # --------------------------------------------------------------------------- #
 
 def test_atexit_abort_does_not_hijack_the_exit_status(tmp_path, rc=7):
@@ -245,7 +245,7 @@ def test_red_a_bare_os_exit_loses_the_buffered_writes(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Behaviour: the REAL entry points, launched the way the job graph launches them
+# Behavior: the REAL entry points, launched the way the job graph launches them
 # --------------------------------------------------------------------------- #
 
 

@@ -788,7 +788,8 @@ def test_o4_h_atom_exchange_equals_the_spin_scaled_unpolarized_evaluation(
         n_grid=int(np.asarray(md["grid_weights"]).shape[0]),
         cusp_features=md.get("cusp_features"),
         rung35_proj_ao=md.get("rung35_proj_ao"),
-        rung35ms_proj_ao=md.get("rung35ms_proj_ao"))
+        rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+        ao_lapl=md.get("ao_grid_lapl"))
     P0 = jnp.asarray(md["dm_pbe"])
     doubled = doubled_spin_dm(P0, 0)
     # The channel block is the doubled system's OWN total block. Under the

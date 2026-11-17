@@ -730,7 +730,7 @@ def load_full_held_out_pools(
 #: loaders themselves -- the training-point pool and the spec builder read the
 #: same loaders (cluster/inputs.py, cluster/spec_builder.py,
 #: training_points.py), and a slice reaching them would silently shrink
-#: training. Only the held-out evaluation channel honours it
+#: training. Only the held-out evaluation channel honors it
 #: (cluster/_eval_one_spec._apply_species_slice, called from
 #: _run_held_out_eval), and a channel evaluated under a slice is marked on disk
 #: so it cannot be read as a full-pool channel.

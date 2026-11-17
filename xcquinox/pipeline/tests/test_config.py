@@ -128,7 +128,7 @@ def test_architecture_config_field_validation(field, value, exc):
 # differ from deep_mgga_3x16 in shape alone.
 def test_architectures_registry_key_set():
     from xcquinox.pipeline.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 36
+    assert len(ARCHITECTURES) == 44
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -163,6 +163,20 @@ def test_architectures_registry_key_set():
         # The v8 geometric pair: the cusp descriptor's two columns on the 3x16
         # GGA network, with and without attention.
         "deep_geom_3x16", "deep_geom_attn_3x16",
+        # The architecture screen's single-change entries of the plain 3x16
+        # network: the gradient-expansion coefficient fixed by construction,
+        # the Fourier-feature front end, the sine activation.
+        "deep_gea_3x16", "deep_ff_3x16", "deep_sine_3x16",
+        # The screen's Kolmogorov-Arnold pair: B-spline edge functions in
+        # place of the MLP at depth 2, width 6, plain and geometric.
+        "deep_kan_2x6", "deep_kan_geom_2x6",
+        # The Laplacian rung: the compressed reduced Laplacian as a column
+        # on the plain and the geometric 3x16 networks.
+        "deep_lap_3x16", "deep_lap_geom_3x16",
+        # 2026-10-21: the atom-context arm of the screen -- the sixth
+        # descriptor stem (atom_context, geometry-only) on the plain 3x16
+        # GGA network.
+        "deep_atomctx_3x16",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
 
@@ -205,12 +219,34 @@ def test_the_geometric_pair_is_the_cusp_twin_with_and_without_attention():
 
     for cfg in (plain, attn):
         assert cfg.depth == 3 and cfg.nodes == 16, cfg.name
-        assert cfg.zero_init_final_layer is True, cfg.name
+        assert cfg.zero_init_final_layer is False, cfg.name
         assert cfg.descriptor_log_transform is True, cfg.name
         assert cfg.dm_entropy_intensive is True, cfg.name
         assert [d.name for d in cfg.descriptors] == ["cusp"], cfg.name
     assert plain.attention is False
     assert attn.attention is True and attn.num_heads == 4
+
+
+def test_no_registry_architecture_zeroes_its_final_layer():
+    """No entry of the registry carries ``zero_init_final_layer``.
+
+    The field stays on ``ArchitectureConfig`` and is turned on by
+    ``config.anchored`` when a run asks for the parent anchor, where the
+    record written beside the checkpoint states it. An entry that carried it
+    would start every network of that architecture at F_x = F_c = 1, the
+    LDA/PW92 limit rather than the initialization of the published clone, on
+    a choice no run configuration could see or record.
+
+    Oracle: the flag of every entry, with the offenders named in the message
+    so a failure says which entries carry it.
+    """
+    from xcquinox.pipeline.config import ARCHITECTURES
+
+    offenders = sorted(name for name, cfg in ARCHITECTURES.items()
+                       if cfg.zero_init_final_layer)
+    assert offenders == [], (
+        f"{len(offenders)} of {len(ARCHITECTURES)} registry entries zero the "
+        f"final MLP layer: {offenders}")
 
 
 # §13.2 item (13)
@@ -545,7 +581,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.pipeline.config import ARCHITECTURES
     from xcquinox.pipeline.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 36
+    assert len(ARCHITECTURES) == 44
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)
@@ -692,32 +728,42 @@ def test_validate_bool_in_targets_rejected():
 # ---------------------------------------------------------------------------
 
 def test_get_architecture_resolves_display_name_aliases():
-    """A shown name that is not a stored key resolves to its configuration,
-    and the two shown names that ARE stored keys of other configurations keep
-    resolving to those.
+    """A shown name that is not a stored key resolves to its configuration, and
+    a key whose shown name is the key itself resolves to that key.
 
-    Kills m4 (the alias lookup removed): without it every assertion in the
-    first block raises KeyError.
+    Each architecture is named by the family word of its own key, the key's
+    remaining tokens and its size, so the fourteen keys that state no size (the
+    4x32 family, medium, medium_attn, shallow, shallow_attn) are shown under a
+    name that is not a key and are reached through the alias map, while the
+    other twenty-two are shown under their own key. No shown name is another
+    entry's key, so no name resolves into a different architecture.
+
+    Kills m4 (the alias lookup removed): the six assertions of the first block
+    raise KeyError without it, while the block after them never reaches the
+    alias map and passes either way -- so between them the two blocks say which
+    lookup answered.
     """
     from xcquinox.pipeline.config import ARCHITECTURES, get_architecture
-    assert get_architecture("deep0_3x16") is ARCHITECTURES["deep_3x16"]
-    assert get_architecture("deep0_attn_3x16") is ARCHITECTURES["deep_attn_3x16"]
-    assert get_architecture("deep0_cusp_mgga_3x16") is \
-        ARCHITECTURES["deep_cusp_mgga_3x16"]
-    assert get_architecture("deep_2x8") is ARCHITECTURES["shallow"]
-    assert get_architecture("deep_attn_2x8") is ARCHITECTURES["shallow_attn"]
-    assert get_architecture("deep0_4x32") is ARCHITECTURES["deep"]
-    # the collision: `deep_3x16` is medium's SHOWN name and another entry's
-    # stored key. The registry lookup is the storage sense and does not move.
+    assert get_architecture("deep_4x32") is ARCHITECTURES["deep"]
+    assert get_architecture("deep_cusp_attn_4x32") is \
+        ARCHITECTURES["deep_cusp_attn"]
+    assert get_architecture("medium_3x16") is ARCHITECTURES["medium"]
+    assert get_architecture("medium_attn_3x16") is ARCHITECTURES["medium_attn"]
+    assert get_architecture("shallow_2x8") is ARCHITECTURES["shallow"]
+    assert get_architecture("shallow_attn_2x8") is ARCHITECTURES["shallow_attn"]
+    # a key that already states its size is shown under itself
     assert get_architecture("deep_3x16") is ARCHITECTURES["deep_3x16"]
-    assert get_architecture("deep_attn_3x16") is ARCHITECTURES["deep_attn_3x16"]
+    assert get_architecture("deep_cusp_mgga_3x16") is \
+        ARCHITECTURES["deep_cusp_mgga_3x16"]
     assert get_architecture("medium") is ARCHITECTURES["medium"]
-    # an alias never shadows a stored key, and an unknown name still raises
+    # an alias never shadows a stored key, and a name of neither kind raises:
+    # no name states an initialization any more, so the spelling that did is
+    # not a name of anything
     assert not set(_alias_map()) & set(ARCHITECTURES)
     with pytest.raises(KeyError):
         get_architecture("nonexistent")
     with pytest.raises(KeyError):
-        get_architecture("deep0_not_an_arch")
+        get_architecture("deep0_3x16")
 
 
 def _alias_map():

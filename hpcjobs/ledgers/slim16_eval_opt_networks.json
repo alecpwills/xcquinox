@@ -1,0 +1,8 @@
+[
+  {"label": "OPTIMIZED_deep_3x16", "kind": "trained", "spec": 0,
+   "checkpoint": "model_val_best.eqx",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z"},
+  {"label": "OPTIMIZED_deep_geom_3x16", "kind": "trained", "spec": 2,
+   "checkpoint": "model_val_best.eqx",
+   "run_dir": "/gpfs/scratch/awills/xcquinox_runs/dfs_step8/v8_dfs_allsc/runs/run_20260924T143620Z"}
+]

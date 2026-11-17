@@ -227,7 +227,7 @@ def _read_manifest_cells(run_dir: Path) -> Dict[int, Dict[str, Any]]:
     The display boundary: the manifest names the STORED registry key; every
     cell handed out carries it as ``arch_stored`` and, as ``arch``, the shown
     name (``xcquinox.pipeline.arch_names.display_name``: ``medium`` ->
-    ``deep_3x16``, ``deep_3x16`` -> ``deep0_3x16``) with the protocol tag
+    ``medium_3x16``, ``deep`` -> ``deep_4x32``, ``deep_3x16`` its own) with the protocol tag
     appended when the cell (``protocol``) or the run (``parent_anchor``)
     carries one. Nothing downstream sees a bare stored key in ``arch``."""
     mpath = run_dir / "manifest.json"

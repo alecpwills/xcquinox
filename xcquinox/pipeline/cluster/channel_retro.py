@@ -9,7 +9,7 @@ runs once more under the channel's shared solver override
 (``eval_holdout.CHANNEL_OVERRIDES``). Resumable by construction (done specs
 are skipped; a pass already written is not repeated), additive (never
 touches existing channels, safe beside running arrays -- pending specs
-simply are not completed yet), and it runs on the deployed eval code, so
+are not completed yet), and it runs on the deployed eval code, so
 new rows carry the current hold-out rule.
 
 Passes per channel (``holdout_channels.override_passes``): the final

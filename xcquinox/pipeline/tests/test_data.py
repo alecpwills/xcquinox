@@ -1275,3 +1275,32 @@ def test_the_second_order_stage_refuses_a_retry_above_the_trajectory_minimum():
     assert f"cycles={info.value.cycles}" in str(info.value)
     assert "converged onto a stationary point" in str(info.value)
     assert "-75.7368945256" in str(info.value)
+
+
+def test_stamped_reference_npz_loads_and_unknown_keys_refuse(tmp_path):
+    """A benchmark_refs npz carrying the auxbasis_used stamp passes the
+    loader's unknown-key gate -- without the whitelist entry every stamped
+    reference load would raise -- while a genuinely unknown key is still
+    refused, so the acceptance is the whitelist at work, not a gate that
+    stopped firing."""
+    from xcquinox.pipeline.data import (_load_external_data,
+                                        ExternalDataSchemaError)
+
+    def _load(path):
+        return _load_external_data(
+            path, dm_pbe_shape=(3, 3), rho_pbe_shape=(3, 3),
+            vxc_pbe_shape=(3, 3), mol_name="stamped", grid_level=4,
+            orientation_lock_strength=0.0)
+
+    stamped = str(tmp_path / "stamped.npz")
+    np.savez(stamped, rho_ref_grid=np.zeros((3, 3)),
+             ref_density_method="ccsd", basis_used="def2-TZVP",
+             grid_level_used=4, orientation_lock_strength=0.0,
+             density_fit_used=True, auxbasis_used="def2-tzvp-jkfit")
+    _load(stamped)  # must not raise
+
+    control = str(tmp_path / "control.npz")
+    np.savez(control, rho_ref_grid=np.zeros((3, 3)),
+             totally_unknown_key=np.zeros((3, 3)))
+    with pytest.raises(ExternalDataSchemaError):
+        _load(control)

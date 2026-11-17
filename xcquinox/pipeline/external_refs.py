@@ -47,6 +47,34 @@ class SpeciesEntry:
                  # "probe_atom_ref", "hbpt"
 
 
+def _peak_rss_mb():
+    """The process's true resident high-water mark (VmHWM), MB, or None off
+    Linux. jobacct samples MaxRSS periodically, so a memory spike that kills
+    the process inside one sampling window records the PRE-spike value; this
+    is the number that cannot lag."""
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _ccsd_cycle_report(envs):
+    """CCSD-iteration telemetry: the iteration index and the process memory
+    high-water mark. A species whose process is KILLED mid-CCSD prints no
+    completion line and writes no FAIL record, so this callback is the only
+    reading from inside the dying computation. Touches envs only; no
+    numerical effect.
+
+    pyscf's CCSD kernel calls callback(locals()) with the loop counter
+    under "istep" (0-based), not "cycle"."""
+    it = envs.get("istep") if isinstance(envs, dict) else envs
+    print(f"    ccsd iter {it}: peakRSS={_peak_rss_mb()}MB", flush=True)
+
+
 def _fsync_dir(dir_path) -> None:
     """fsync a directory entry for durability after an atomic os.replace.
 
@@ -169,7 +197,7 @@ def _converge_scf_tiered(base_builder, *, dm0=None, is_uks: bool,
         return mf
 
     def _kernel(mf, fresh=False):
-        # fresh=True IGNORES dm0 (minao guess). We only escalate because the plain
+        # fresh=True IGNORES dm0 (minao guess). The escalation exists because the plain
         # SCF diverged, so its dm0 can be garbage and poison the robust tiers.
         if dm0 is not None and not fresh:
             mf.kernel(dm0=dm0)
@@ -508,8 +536,10 @@ def run_scf_with_cache(
     pinned to the system size by the same module) and
     reference_small_rho_cutoff (the density threshold the grid was pruned
     with at the first cycle, held at 1e-7 by the same module where pyscf
-    2.14's class default is 0); all four are None when read from a cache
-    written before the stamps existed. The stamps are
+    2.14's class default is 0), and the two VV10 stamps reference_nlc_applied
+    (whether the mean field applied a VV10 term, its do_nlc()) and
+    reference_nlc_grid_level (the level of its VV10 grid); all six are None
+    when read from a cache written before the stamps existed. The stamps are
     metadata: they are not part of the cache identity, so an older cache is
     still a hit.
 
@@ -570,6 +600,12 @@ def run_scf_with_cache(
                 "reference_small_rho_cutoff": (
                     float(z["reference_small_rho_cutoff"])
                     if "reference_small_rho_cutoff" in z.files else None),
+                "reference_nlc_applied": (bool(z["reference_nlc_applied"])
+                                          if "reference_nlc_applied" in z.files
+                                          else None),
+                "reference_nlc_grid_level": (int(z["reference_nlc_grid_level"])
+                                             if "reference_nlc_grid_level" in z.files
+                                             else None),
             }
         _require_electron_count(payload["dm"], mol, cache_path)
         return payload
@@ -669,6 +705,11 @@ def run_scf_with_cache(
         "reference_blas_threads": int(reference_pins.threads),
         "reference_eri_path": str(reference_pins.eri_path),
         "reference_small_rho_cutoff": float(reference_pins.small_rho_cutoff),
+        # The VV10 stamps, from the mean field that converged: whether it
+        # applied a VV10 term (false for a functional without one) and the
+        # level of its VV10 grid. Metadata like the four above.
+        "reference_nlc_applied": bool(mf.do_nlc()),
+        "reference_nlc_grid_level": int(mf.nlcgrids.level),
     }
 
     # Atomic write: temp file + os.replace so an interrupted SCF cannot
@@ -860,6 +901,9 @@ def run_ccsd_with_cache(
     else:
         from pyscf.cc import ccsd
         mycc = ccsd.RCCSD(mf_hf)
+    # Per-cycle telemetry (see _ccsd_cycle_report): attached before the
+    # kernel so every iteration prints, including the ones before a kill.
+    mycc.callback = _ccsd_cycle_report
     mycc.kernel()
     _require_ccsd_converged(mycc, spec.name)
     # the multireference diagnostic, taken here where the amplitudes exist
@@ -868,7 +912,7 @@ def run_ccsd_with_cache(
     dm_cc = np.asarray(mycc.make_rdm1(ao_repr=True))
 
     # Spin-sum the AO-basis DM for grid evaluation.  The unrestricted DM
-    # may be (2, n_ao, n_ao); we keep both spin channels in dm_ao for
+    # may be (2, n_ao, n_ao); both spin channels are kept in dm_ao for
     # the V_xc shape contract but build a SCALAR grid density via the
     # spin-summed total (data.py:296-299 pattern).
     if is_uks and dm_cc.ndim == 3:
@@ -1322,7 +1366,7 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     # (POSIX rename is atomic per-file but not durable until parent fsync).
     # Only catch AttributeError (Windows lacks O_DIRECTORY); let real
     # OSErrors (ENOSPC, EIO) bubble, durability failures should fail
-    # loudly so the user can intervene before SCF results land in a
+    # loudly so intervention is possible before SCF results land in a
     # broken filesystem state.
     if hasattr(os, "O_DIRECTORY"):
         dir_fd = os.open(str(inter), os.O_DIRECTORY)

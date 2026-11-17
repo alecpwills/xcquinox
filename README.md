@@ -30,6 +30,7 @@ Full documentation: <https://xcquinox.readthedocs.io/en/latest/>.
 git clone https://github.com/alecpwills/xcquinox.git
 cd xcquinox
 pip install .
+git config core.hooksPath .githooks   # run the registry fan-out guards on push
 ```
 
 Python 3.12 or newer. The install brings the runtime stack with it; the floors are the pins
@@ -77,7 +78,7 @@ If this work is useful to you, cite it with the metadata in
 
 ## Copyright
 
-Copyright (c) 2024-2026, Alec Wills. Released under the MIT licence; see
+Copyright (c) 2024-2026, Alec Wills. Released under the MIT licens; see
 [LICENSE](LICENSE).
 
 #### Acknowledgements

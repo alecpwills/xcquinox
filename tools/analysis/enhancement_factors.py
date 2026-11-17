@@ -202,7 +202,7 @@ def model_fx_curve(model, s_grid: np.ndarray, rho: float = 1.0,
     anchored/DFS classes invert the column exactly, so writing the raw value
     instead is misread there (a raw 0.0 is recovered as alpha ~ 1 through
     the inverse's positivity guard, 1.74e-1 off in F_x, measured). Left None
-    the behaviour is the historical zero-descriptor slice: every extra
+    the behavior is the historical zero-descriptor slice: every extra
     column 0, a value no ``compute_alpha`` output can produce (its floor is
     width/2 = 5e-6) and which the inverting classes read as alpha ~ 1.
 
@@ -359,8 +359,9 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
     reference it was PRETRAINED to (PBE for the GGA archs, SCAN for the
     meta-GGA ones), plus an alpha sweep for the meta-GGA family."""
     reps = representative_specs(run_dir)
-    # stored keys in ARCH_ORDER's (shown-name) order; a stored key that is
-    # also a shown name (deep_3x16) is mapped explicitly, never by inspection
+    # stored keys in ARCH_ORDER's (shown-name) order; every key is mapped
+    # explicitly through display_name (a self-named key maps to itself),
+    # never by inspection
     shown_of = {a: sib.display_name(a) for a in reps}
     archs = [a for s in ARCH_ORDER for a in reps if shown_of[a] == s]
     s_grid = np.linspace(1e-3, s_max, n_points)
@@ -408,7 +409,7 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
         # through the encoded column (a raw zero column is NOT that slice:
         # the model classes that invert the stored encoding read it as
         # alpha ~ 1) -- the single-orbital corner. Their representative
-        # behaviour is in the alpha panel; this one is kept so all archs
+        # behavior is in the alpha panel; this one is kept so all archs
         # appear on one axis, and the caption says which slice it is.
         for arch in archs:
             if arch in fx_curves:
@@ -493,7 +494,7 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
                     "meta_gga archs); every other arch clones PBE -- read each "
                     "against its own reference. F_x panel is the alpha=0 "
                     "(single-orbital) slice for the meta-GGA archs; their "
-                    "representative behaviour is the alpha panel.")
+                    "representative behavior is the alpha panel.")
         # The pretrain-target sentence makes this caption long; wrap it and
         # give the band room rather than letting it run off the canvas.
         fig.text(0.5, 0.055 if mgga_alpha else 0.028, cov, ha="center",

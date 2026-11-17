@@ -81,7 +81,7 @@ def _build_pyscfad_mf(mol, mol_data: dict):
     ``dm.ndim == 2``. That means pyscfad's UKS grid retains more points
     than pyscf's post-SCF grid, and the precomputed FROZEN features (which
     were assembled on pyscf's post-prune grid) would mismatch pyscfad's
-    rho at eval_xc time. To fix this, for UKS we pre-build and prune
+    rho at eval_xc time. To fix this, the UKS path pre-builds and prunes
     pyscfad's grid using the total DM stashed in ``mol_data`` before
     ``mf.kernel`` runs. The RKS path is left untouched so pyscfad's usual
     initialization flow (including ``non0tab`` bookkeeping inside
@@ -199,7 +199,7 @@ def _reassemble_features_on_grid(
     pyscfad's actual grid coords. DM-statistics features are grid-
     agnostic (tiled), so they are recomputed at ``len(grid_coords)``.
 
-    For UKS, ``dm`` may have shape ``(2, nao, nao)``. We pass the
+    For UKS, ``dm`` may have shape ``(2, nao, nao)``. The
     spin-resolved DM unchanged to ``DMStatisticsDescriptor.compute_from_dm``
     so the underlying ``compute_dm_features`` picks its UKS branch
     (Pople-Nesbet 1954: D_sigma S D_sigma = D_sigma per spin). Summing
@@ -212,9 +212,11 @@ def _reassemble_features_on_grid(
     scaling evaluates; correlation keeps ``spin_channel=None``.
     """
     from xcquinox.pipeline.descriptors import (
-        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
-        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor)
-    from xcquinox.features import compute_cusp_descriptor
+        AtomContextDescriptor, CuspDescriptor, DMStatisticsDescriptor,
+        DMRung35Descriptor, DMRung35MultishellDescriptor,
+        MetaGGAAlphaDescriptor)
+    from xcquinox.features import (compute_atom_context_descriptor,
+                                   compute_cusp_descriptor)
 
     dm_arr = jnp.asarray(dm)
     if spin_channel is not None:
@@ -244,6 +246,16 @@ def _reassemble_features_on_grid(
             cols.append(compute_cusp_descriptor(
                 grid_coords, nuclear_coords, nuclear_charges,
                 log_transform=bool(getattr(d, "log_transform", False)),
+            ))
+        elif isinstance(d, AtomContextDescriptor):
+            # Same kernel, same instance kwargs as the data.py precompute:
+            # the environment is geometry-only, so recomputing it on the
+            # pyscfad grid reproduces the training columns (one
+            # parameterization per architecture; the kernel is pure).
+            cols.append(compute_atom_context_descriptor(
+                grid_coords, nuclear_coords, nuclear_charges,
+                cutoff=float(getattr(d, "cutoff", 10.0)),
+                seed=int(getattr(d, "seed", 42)),
             ))
         elif isinstance(d, DMStatisticsDescriptor):
             cols.append(d.compute_from_dm(
@@ -707,7 +719,7 @@ def _reject_dm_dependent_descriptors(model, policy) -> None:
         "assembles V_xc through a per-point libxc-style eval_xc callback that "
         "cannot carry the de/dfeatures . dfeatures/dP term. The returned V_xc "
         "would not be the functional derivative of E_xc, so the SCF would "
-        "converge a density that does not minimise its own energy. Use "
+        "converge a density that does not minimize its own energy. Use "
         "SolverBackend.MANUAL, which assembles this term exactly, or "
         "FeaturePolicy.FROZEN, where the term vanishes by construction."
     )
@@ -753,8 +765,8 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     # so descriptor features must live on pyscfad's actual grid. We
     # install a ``feature_holder`` closure shared with the eval_xc
     # callback. For UKS, _build_pyscfad_mf already built + pruned
-    # mf.grids. For RKS we eagerly call initialize_grids here so
-    # mf.grids.coords is populated before we wrap get_veff.
+    # mf.grids. For RKS initialize_grids is called eagerly here so
+    # mf.grids.coords is populated before get_veff is wrapped.
     #
     # FROZEN: features are computed once from dm_pbe on pyscfad's grid
     #         and never updated.
@@ -872,7 +884,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     # pyscfad's SCF kernel does not persist the actual iteration count on
     # the mean-field object (``mf.cycles`` is the input parameter that
     # pyscfad reads as an upper bound, not a tracker, it stays at its
-    # initial value 0 after kernel()). We install a callback into pyscfad's
+    # initial value 0 after kernel()). A callback is installed into pyscfad's
     # inner _scf loop to count iterations directly. The callback runs once
     # per cycle and sees the loop-local ``cycle`` index in its ``envs`` dict.
     cycle_counter = [0]
@@ -883,7 +895,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         # count so that a successful single-iteration convergence reports 1.
         cycle_counter[0] = int(envs.get("cycle", cycle_counter[0] - 1)) + 1
         # Capture per-cycle total energy when pyscfad exposes it. Different
-        # pyscfad/pyscf versions key this as ``e_tot`` or ``etot``; we accept
+        # pyscfad/pyscf versions key this as ``e_tot`` or ``etot``; both are accepted
         # either and silently skip if neither is present (the metric falls
         # back to a degenerate trace in that case).
         e_step = envs.get("e_tot", envs.get("etot"))
@@ -905,10 +917,15 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     cycles_run = jnp.int32(cycle_counter[0])
     converged = jnp.bool_(bool(mf.converged))
     features_used = assemble_descriptor_features(descriptors, mol_data)
-    # Pad the history to ``max_cycles`` with NaNs so callers can stack
-    # traces from different SCFs into a fixed-shape array. The length of
-    # ``energy_history`` corresponds to the actual cycles executed; trailing
-    # NaNs mark cycles that never ran (early convergence).
+    # Pad the history to ``max_cycles`` so callers can stack traces from
+    # different SCFs into a fixed-shape array. The length of
+    # ``energy_history`` is the number of cycles executed; the cycles that
+    # never ran (early convergence) are filled FORWARD with the last recorded
+    # energy: a converged SCF's energy holds for every cycle it did not need,
+    # which is the trace the manual backend's frozen state reports, so the
+    # tail reducer (oneshot.tail_weighted_mean_energy) sees a flat tail at the
+    # converged value rather than a NaN that would propagate into the mean.
+    # ``cycles_run`` still states how many cycles were executed.
     # SolverConfig always defines ``max_cycles``; a
     # ``getattr(config, "max_cycles", ...)`` default branch would be
     # unreachable. Use the field directly so a missing attribute fails
@@ -920,7 +937,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         # the suite's ``jax_enable_x64=True`` default a pin changes
         # nothing, but under x32 it would force a silent dtype
         # promotion that breaks downstream metric reductions.
-        trace_arr = jnp.full((pad_len,), jnp.nan)
+        trace_arr = jnp.full((pad_len,), energy_history[-1])
         trace_arr = trace_arr.at[: len(energy_history)].set(jnp.asarray(energy_history))
     else:
         trace_arr = None

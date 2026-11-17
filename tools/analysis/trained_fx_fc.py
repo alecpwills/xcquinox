@@ -110,7 +110,7 @@ from xcquinox.pipeline.holdout_channels import resolve_channel  # noqa: E402
 
 def _footer_with_key(footer: str, shown_names) -> str:
     """``footer`` with the expanded key of every shown name drawn appended on
-    its own line, so the names (deep_3x16 / deep0_3x16 ...) read without the
+    its own line, so the names (deep_3x16 / medium_3x16 ...) read without the
     map. The renderer's own addition: a caller's footer never carries it."""
     keys = key_line(shown_names)
     return f"{footer}\n{keys}" if keys else footer
@@ -145,7 +145,7 @@ BEST_CELL_COLUMN = "mae_nn_kcalmol"
 #: scale the reaction sets sample); the CSV carries every RS_VALUES entry.
 RS_FIGURE = 2.0
 #: Lightest tint of an arch's hue, as the fraction of the hue kept when the
-#: colour is blended toward white. The lightest subset-size curve must stay
+#: color is blended toward white. The lightest subset-size curve must stay
 #: legible on white, which is what sets the floor.
 SHADE_LIGHTEST = 0.32
 _PARENT_STYLE = dict(color="0.25", linestyle="--", linewidth=2.0, zorder=1)
@@ -343,20 +343,12 @@ def arch_from_config(cfg, arch_name: str):
 
     The registry entry patched with the run-level polarized-correlation
     override and the run's ``model:`` block (the parent anchor, the descriptor
-    coordinates), exactly as ``cluster.fidelity.build_certified_model`` and the
-    training stage resolve it -- so the skeleton built here is the class the
-    checkpoint was trained as.
+    coordinates), through ``config.apply_run_config``, the resolver
+    ``cluster.fidelity.build_certified_model`` and the training stage use --
+    so the skeleton built here is the class the checkpoint was trained as.
     """
-    import dataclasses
-
-    from xcquinox.pipeline.config import apply_model_block, get_architecture
-    arch = get_architecture(arch_name)
-    if getattr(cfg, "use_polarized_correlation", False):
-        arch = dataclasses.replace(arch, use_polarized_correlation=True)
-    model_block = getattr(cfg, "model", None)
-    if model_block is not None:
-        arch = apply_model_block(arch, model_block)
-    return arch
+    from xcquinox.pipeline.config import apply_run_config, get_architecture
+    return apply_run_config(get_architecture(arch_name), cfg)
 
 
 def load_run_config(run_dir: Path):
@@ -366,7 +358,7 @@ def load_run_config(run_dir: Path):
 
 
 def load_trained_model(cfg, arch_name: str, checkpoint_path: Path):
-    """``(arch, model)`` for one trained checkpoint, class record honoured.
+    """``(arch, model)`` for one trained checkpoint, class record honored.
 
     The skeleton is built from the run's own configuration and filled by
     ``checkpoint_class.load_trained_checkpoint``, which refuses a checkpoint

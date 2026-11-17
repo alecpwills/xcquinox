@@ -151,7 +151,7 @@ class xcTrainer(eqx.Module):
                 BEST_LOSS = epoch_loss.item()
 
             # this will persist until next pass
-            # the inp_model output just now is fed into get the loss next time, so if better we want to save this
+            # the inp_model output just computed feeds the next loss evaluation, so a better one is worth saving
             # not the updated one.
             start_model = inp_model
 
@@ -351,7 +351,7 @@ class Pretrainer_deriv(eqx.Module):
         self.print_every = print_every
         self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array))
 
-        # We see how many imputs does loss need, and fix the references.
+        # The loss's input count is inspected, and the references fixed.
         params_loss = len(inspect.signature(loss).parameters)
         if params_loss == 3:
             print('Pretrainer prepared to train using values')

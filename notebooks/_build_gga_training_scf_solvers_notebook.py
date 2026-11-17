@@ -14,7 +14,7 @@ this module.
 
 Naming convention: each builder returns an ``nbformat.notebooknode.NotebookNode``
 (a code cell or a markdown cell). Cell-index order in ``main()`` is the order
-the notebook presents to the user.
+the notebook presents.
 """
 import os
 
@@ -203,7 +203,7 @@ RERUN_EVAL = False
 # The result: NN saturates around F_x ~ 1.3 at target F_x = 1.8, producing
 # visible parity-plot under-fitting for descriptor-rich architectures
 # (deep_cusp, deep_combined, and their attn variants). Set to
-# "integration" only if you understand this trade-off and have enough
+# "integration" only with this trade-off understood and enough
 # training steps / network capacity to compensate.
 PRETRAIN_LOSS_WEIGHTING = "unweighted"
 
@@ -629,7 +629,7 @@ Fc_target = _data["Fc_all"]
 # Build per-architecture descriptor input inline. Column order MUST match
 # the library's private _assemble_pretrain_descriptors helper:
 #   [rho, sigma, dm_all columns (if use_dm), cusp_all[:, 0:2] (if use_cusp)]
-# dm comes BEFORE cusp. The helper is private -- we reproduce the logic here.
+# dm comes BEFORE cusp. The helper is private; its logic is reproduced here.
 def _build_input_array(arch):
     cols = [_rho, _sigma]
     _use_dm = any(s.name == "dm_statistics" for s in arch.descriptors)
@@ -748,7 +748,7 @@ atom_energies_literature = {"H": -0.5, "O": -75.0673}
 
 # targets dict: validator requires an entry for every molecule in TrainingSpec.molecules
 # (config.py:523-525). Atom entries are never dereferenced at training time but must be
-# finite floats -- we set them to the literature atomic totals for consistency.
+# finite floats -- they are set to the literature atomic totals for consistency.
 # The H2O entry is the POSITIVE-for-bound atomization energy in Hartree:
 #   AE = E_atoms_sum - E_mol > 0 for a bound molecule
 # Literature: AE(H2O) ~ 974.94 kJ/mol = 974.94 / 2625.5 Ha.
@@ -795,7 +795,7 @@ _mols = [
 ]
 
 # Accumulates PBE atomic total energies (one entry per element symbol) so
-# that at the end of this cell we can bind `atom_energies` to a
+# so that `atom_energies` can be bound at the end of this cell to a
 # PBE-consistent dict. Using PBE here rather than literature values keeps
 # the NN's required XC correction on the order of single kcal/mol in the
 # post-hoc fixed-density framework; literature anchors would demand a
@@ -1159,7 +1159,7 @@ def build_cell_19_training_loop():
         "        # (e.g. SIGABRT from glibc heap corruption during JAX/PySCF\n"
         "        # teardown -- a long-standing C-extension cleanup issue) is\n"
         "        # benign: the training iterations all ran and the model is\n"
-        "        # safely on disk. We only raise if the checkpoint is missing.\n"
+        "        # safely on disk. An error is raised only if the checkpoint is missing.\n"
         "        _model_path = os.path.join(spec.checkpoint_dir, \"model.eqx\")\n"
         "        if rc != 0 and not os.path.isfile(_model_path):\n"
         "            raise RuntimeError(\n"
@@ -1347,7 +1347,7 @@ BAL_LOSS_NAMES = (
 BAL_SOLVER = "oneshot"
 BAL_ARCH = "deep_combined"
 
-# V_xc matching variants. Each variant is swept across SOLVER_LABELS so we can
+# V_xc matching variants. Each variant is swept across SOLVER_LABELS so the sweep can
 # observe how SCF depth interacts with V_xc-based supervision.
 VXC_VARIANTS = {
     "static_vxc": (
@@ -1435,7 +1435,7 @@ def build_cell_23_balancing_loop():
 
     Each balancing spec (especially two_phase + loss_dm + deep_combined +
     attention) has a peak jit-compilation footprint that can single-handedly
-    OOM a parent kernel. We invoke ``_run_training_isolated`` (defined in
+    OOM a parent kernel. ``_run_training_isolated`` is invoked (defined in
     cell 19) to run each spec in a child process that dies cleanly after
     training, so memory is hard-reclaimed by the OS between specs.
     """
@@ -1810,7 +1810,7 @@ not seen during training:
 | **OH** | New element, never seen during training | Total energy error, density RMSE |
 | **CH4** | New element (C), 5 atoms, tetrahedral geometry | AE error, density RMSE |
 
-For each, we compute PBE/HF/CCSD reference data, then sweep all checkpoints.
+For each, PBE/HF/CCSD reference data are computed, then all checkpoints are swept.
 """
     return new_markdown_cell(source)
 
@@ -2330,7 +2330,7 @@ else:
 def build_cell_47_transfer_aggregate():
     """Section 7 Cell 47 -- cross-molecule MAE/RMSE per (arch, treatment).
 
-    Per-molecule bars (cell 46) tell us how each treatment performs on a
+    Per-molecule bars (cell 46) show how each treatment performs on a
     specific transfer target. But the more interesting scientific question
     is transferability across the set: for each (arch, loss, treatment)
     combination, aggregate AE error across the 3 test molecules (H2, OH,
@@ -2339,7 +2339,7 @@ def build_cell_47_transfer_aggregate():
 
     1. AE error aggregation (MAE across molecules vs RMSE across molecules)
        per loss family -- same x-axis layout as cell 46 (BAL_ARCH wider).
-    2. A top-10 ranked-table text print per loss family so the user can
+    2. A top-10 ranked-table text print per loss family, for
        immediately see which treatments transfer best.
     """
     source = (
@@ -2527,7 +2527,7 @@ def build_cell_48_fx_drift_md():
 
 The aggregate plot above shows that CH4 is where fine-tuned models lose most
 to the pretrained baselines, despite never entering training. This cell tests
-the mechanism directly: for every trained model we evaluate the exchange
+the mechanism directly: for every trained model the exchange
 enhancement ``F_x(rho, sigma, features)`` at CH4's grid points (from a PBE
 SCF on CH4), then plot ``F_x`` vs reduced gradient ``s = |grad rho| / (2 k_F rho)``
 aggregated over all models in each group.
@@ -2569,7 +2569,7 @@ def _reduced_gradient(rho, sigma):
     sig_s = np.maximum(np.asarray(sigma), 0.0)
     return np.sqrt(sig_s) / (2.0 * _KF_PREFAC * rho_s ** (4.0 / 3.0))
 
-# CH4 descriptors: we only need the spec. Build one mol_data per arch so
+# CH4 descriptors: only the spec is needed. One mol_data per arch is built so
 # each arch's descriptor set is materialized correctly.
 _ch4_item = next((t for t in test_molecules if t['name'] == 'CH4'), None)
 if _ch4_item is None:
@@ -2748,7 +2748,7 @@ def build_cell_49_closing_md():
 
 The F_x(s) figure above (Cell 51, sampled at CH4 grid points across 105
 trained models) is an unusually clean confirmation of why fine-tuned
-models transfer worse than the pretrained baseline on CH4. We lock in the
+models transfer worse than the pretrained baseline on CH4. The choice locks in the
 reading here so step 6 can act on it.
 
 ### What the figure shows
@@ -2811,7 +2811,7 @@ Ordered by expected information gain:
 1. **Add a carbon-containing species (or C atom) to the training set,**
    with meaningful atomic regularization weight. The F_x curve in the
    CH4-sampled plot should immediately pull back up toward PBE at
-   `s >~ 1`. If it does, the mechanism is nailed and we know the fix
+   `s >~ 1`. If it does, the mechanism is nailed and the fix is known:
    generalizes to any out-of-sample element.
 
 2. **Add a PBE-anchor term to the loss at unvisited `(rho, s)`** --
@@ -2824,7 +2824,7 @@ Ordered by expected information gain:
    transfer molecules are also training molecules. Then the "transfer
    gap" is no longer meaningful for those molecules -- but the new
    `{H2, OH, CH4}` gap on a different test set (e.g. NH3, H2CO, HF)
-   tells us whether the overfitting pattern survives enlarging from
+   tells whether the overfitting pattern survives enlarging from
    one molecule to four. This is the cleanest way to separate the
    "molecule count" axis from the "density regime coverage" axis.
 
@@ -3078,9 +3078,9 @@ PBE_AE_err_kcalmol = abs(_ae_pbe_Ha * 627.509 - _AE_expt_kcalmol)
 _ae_ccsd_Ha = 2 * _E_ref["H"]["E_ccsd_total"] + _E_ref["O"]["E_ccsd_total"] - _E_ref["H2O"]["E_ccsd_total"]
 CCSD_AE_err_kcalmol = abs(_ae_ccsd_Ha * 627.509 - _AE_expt_kcalmol)
 
-# Layout: one subplot per loss family. Within each subplot, per arch, we show
+# Layout: one subplot per loss family. Within each subplot, per arch is shown
 # 3 base solvers (oneshot, fixed_j_3, full_3). For deep_combined (BAL_ARCH),
-# we ALSO show the balancing and V_xc variants that share this loss family.
+# the balancing and V_xc variants sharing this loss family are also shown.
 # deep_combined therefore gets visibly more horizontal space (2x) than other
 # archs because it has more bars; this is done by assigning it two x-slots.
 
@@ -3142,7 +3142,7 @@ for col_idx, loss_name in enumerate(LOSS_NAMES):
         is_bal = (arch_name == BAL_ARCH) and _n_bal_extras > 0
         slots = 2 if is_bal else 1
         # Base treatments: 3 solvers + 2 baselines (pretrained + random) so
-        # the user can see how trained models compare against the NN's
+        # trained models are comparable against the NN's
         # PBE-mimicking starting point and a random-weights control on the
         # same chart.
         base_trs = [(s, f"{eval_dir}/{arch_name}/{loss_name}/{s}")
@@ -3436,7 +3436,7 @@ for _arch_name in ARCH_NAMES:
         _n_completed += 1
 
 # Aggregate to mean/std per cycle. Different runs may have different
-# energy_trace lengths (e.g. if SCF converged early), so we align by cycle
+# energy_trace lengths (e.g. if SCF converged early), so traces are aligned by cycle
 # index and take cycle-wise statistics only over runs that have data at
 # that cycle.
 def _aggregate_deltas(list_of_arrays, n_cycles):

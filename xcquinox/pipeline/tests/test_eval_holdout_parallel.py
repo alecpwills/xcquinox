@@ -28,7 +28,9 @@ from xcquinox.pipeline.workers import eval_holdout_worker as ehw
 # ---------------------------------------------------------------------------
 
 def test_eval_worker_ladder_24():
-    assert par.eval_worker_ladder(24) == [(24, 1), (12, 2), (6, 4)]
+    # the RAM cap (half the cores, 40-worker ceiling, 2026-11-04): a
+    # 24-core node opens 12 workers, not 24 -- workers are whole processes
+    assert par.eval_worker_ladder(24) == [(12, 2), (6, 4), (3, 8)]
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +49,8 @@ def test_worker_main_writes_shard_and_prints_success(tmp_path, monkeypatch, caps
     monkeypatch.setattr(
         ehw, "compute_shard",
         lambda rd, idx, names, basis, gl, model_name="model.eqx",
-        channel=None, pools=("bh76", "w411"): {
+        channel=None, pools=("bh76", "w411"), dump_densities=None,
+        solver_footing=None: {
             "energies": {"h2": -1.17}, "pbe_energies": {"h2": -1.16},
             "mol_records": [{"molecule": "h2"}]})
 
@@ -122,9 +125,12 @@ def test_escalation_retries_only_failed_names_at_lower_tier(tmp_path, monkeypatc
                             AssertionError("serial fallback should not run")))
 
     out_dir = tmp_path / "eval_holdout"
+    # total_cpus=16/top=8 keeps >=2 ladder tiers under the RAM cap
+    # (8 -> 4 -> 2), so the failed name retries at a lower tier; a tiny
+    # 4-cpu ladder would collapse to one tier and fall to serial.
     summary = hp.run_holdout_with_escalation(
         "/run", 0, _FakeSpec(), object(), [], full_specs, out_dir,
-        basis="def2-svp", grid_level=1, n_workers_top=4, total_cpus=4)
+        basis="def2-svp", grid_level=1, n_workers_top=8, total_cpus=16)
 
     assert summary["n_species"] == 4
     assert _molecules_in_per_molecule_json(out_dir) == {"a", "b", "c", "d"}
@@ -313,7 +319,7 @@ def test_the_worker_and_the_driver_carry_qualified_names(tmp_path, monkeypatch):
                         refs_dir=None: (dict(pool), []))
     captured = {}
 
-    def _fake_compute(ts, model, subset):
+    def _fake_compute(ts, model, subset, dump_densities=None):
         captured["subset"] = dict(subset)
         return {"energies": {n: -1.0 for n in subset},
                 "pbe_energies": {n: -0.9 for n in subset},
@@ -352,7 +358,7 @@ def test_the_worker_refuses_a_shard_name_its_pools_do_not_carry(monkeypatch):
         lambda names, basis, grid_level: (
             {"bh76@h2": "s1", "w411@h2": "s2"}, []))
     monkeypatch.setattr(eh, "compute_holdout_per_molecule",
-                        lambda ts, m, subset: {
+                        lambda ts, m, subset, dump_densities=None: {
                             "energies": {}, "pbe_energies": {},
                             "mol_records": []})
 

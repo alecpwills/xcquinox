@@ -923,7 +923,7 @@ def test_oracle_selector_selects_this_architecture_only(arch,
 
     Checking one architecture would leave the other 30 selectors unmeasured,
     and the failures this catches are per-name: a registry entry that is a
-    substring of another, an architecture the module does not parametrise
+    substring of another, an architecture the module does not parametrize
     over, an oracle function named after an architecture.
     """
     expr = _compile_k(wm.oracle_selector(arch))

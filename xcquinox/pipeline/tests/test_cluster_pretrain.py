@@ -245,6 +245,39 @@ def test_main_selects_arch_by_index(run_dir, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Donor warm-starts: the array index maps through the donor-less list
+# ---------------------------------------------------------------------------
+
+def test_main_selects_arch_from_the_donorless_list(tmp_path, monkeypatch):
+    """A donor arch never runs in this run's pretrain array, so the array
+    index must map through the donor-LESS list: a two-arch sweep with a donor
+    for ``medium`` has a one-task array whose index 0 is ``deep``, and the
+    index the full list would have assigned ``medium`` is out of range."""
+    run_dir = tmp_path / "run_donor"
+    run_dir.mkdir()
+    data_dir = tmp_path / "pretrain_data"
+    data_dir.mkdir()
+    cfg = _config_dict(archs=("medium", "deep"), data_dir=str(data_dir))
+    cfg["pretrain"]["donor_checkpoints"] = {
+        "medium": "/gpfs/donors/run_1/pretrain/medium"}
+    _write_config(str(run_dir), cfg)
+
+    seen = []
+
+    def fake_run_pretrain(spec, progress_callback=None):
+        seen.append(spec.arch.name)
+        os.makedirs(spec.checkpoint_dir, exist_ok=True)
+        open(os.path.join(spec.checkpoint_dir, "xnet.eqx"), "wb").close()
+        open(os.path.join(spec.checkpoint_dir, "cnet.eqx"), "wb").close()
+        return {}
+
+    monkeypatch.setattr(pt, "_run_pretrain", fake_run_pretrain)
+    assert pt.main([str(run_dir), "0"]) == 0
+    assert seen == ["deep"]
+    assert pt.main([str(run_dir), "1"]) != 0
+
+
+# ---------------------------------------------------------------------------
 # out-of-range arch_idx
 # ---------------------------------------------------------------------------
 
@@ -298,6 +331,8 @@ def test_pretrain_template_renders_with_no_leftover_placeholders():
         "ARRAY_MAX": 2,
         "THROTTLE": 3,
         "RUN_DIR": "/scratch/run",
+        # The checkout every node stage pins itself to (submit-anywhere).
+        "REPO_ROOT": "/scratch/checkout",
         "CONDA_ACTIVATION": "conda activate xcq",
         "MAIL_USER_LINE": "",
         "MAIL_TYPE_LINE": "",

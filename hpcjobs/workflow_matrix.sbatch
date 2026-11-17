@@ -5,7 +5,7 @@
 # wall above the 4 h cap of the short-* queues and the 12 h cap of the
 # medium-* queues; the node is held whole (--exclusive).
 #SBATCH --partition=long-96core-shared
-#SBATCH --time=30:00:00
+#SBATCH --time=34:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=96
@@ -66,10 +66,11 @@
 # kills any one of them at --timeout-s, so the cap taken as an UPPER BOUND is:
 #
 #     per architecture  11 stages x 1800 s               = 19800 s = 5.5 h
-#     per shard         ceil(17 archs / 4 shards) = 5    -> 5 x 5.5 h = 27.5 h
-#     bound                                                        27.5 h
-#     margin (74 MB reference copy, interpreter starts, slack)  +   2.5 h
-#     request           bound + margin                              30 h
+#     per batch         ceil(41 archs / 2 batches) = 21
+#     per shard         ceil(21 archs / 4 shards) = 6    -> 6 x 5.5 h = 33 h
+#     bound                                                          33 h
+#     margin (74 MB reference copy, interpreter starts, slack)  +     1 h
+#     request           bound + margin                              34 h
 #
 # The same arithmetic is recomputed AT RUN TIME below from the stage list the
 # installed module reports and from the knobs this job was given, and compared
@@ -83,7 +84,7 @@
 # and a 48 h MaxWall on every long-* QOS (shared included; sacctmgr,
 # 2026-08-27). Verify it before the first submission --
 #   sinfo -o "%20P %10l" -p long-96core-shared
-# -- and if it caps below 30 h, no other long-* queue helps, since the 48 h is a
+# -- and if it caps below 34 h, no other long-* queue helps, since the 48 h is a
 # QOS cap they share: raise MATRIX_BATCHES (each submission then covers fewer
 # architectures and bounds lower) or move to an extended-* partition, whose cap
 # is 7 days. An over-cap request is rejected at submission, not after a queue
@@ -101,7 +102,7 @@
 # 51.8), an order of magnitude inside the cap. The tail is what the two caps
 # disagree about: the same logs record a FAILED N2O attempt at 2558 s (and
 # F2O at 11623 s, not in this pool), which would be killed at 1800 s and
-# survive at 3600 s. That is the intended behaviour -- a non-converging OEP
+# survive at 3600 s. That is the intended behavior -- a non-converging OEP
 # cascade is the hang this cap detects -- and the signal is rc 124 on
 # `preflight` for the first architecture of a work root. If a preflight
 # genuinely needs longer, raise MATRIX_TIMEOUT_S and the --time request
@@ -117,7 +118,7 @@
 # queue admits the hours it needs. A single-architecture run
 # (MATRIX_ARCHS=<name>) bounds at 11 x 1800 s = 5.5 h and takes the whole
 # allocation (shards drop to 1), so submit it with --time=06:00:00 rather than
-# paying the 30 h request in queue time.
+# paying the 34 h request in queue time.
 #
 # ENVIRONMENT KNOBS (all optional; every one is echoed into the log):
 #   MATRIX_ARCHS      'all' (default) or a comma-separated list. A list is

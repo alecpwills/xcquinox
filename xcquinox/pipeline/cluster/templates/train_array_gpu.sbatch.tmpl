@@ -9,6 +9,9 @@ ${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --output=${RUN_DIR}/logs/train_%A_%a.out
 ${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
 set -euo pipefail
+# The node stages run at the checkout: sbatch's default working directory is
+# the submit directory, so a submit from elsewhere must not shift it.
+cd "${REPO_ROOT}"
 
 # --- conda activation ------------------------------------------------------
 ${CONDA_ACTIVATION}

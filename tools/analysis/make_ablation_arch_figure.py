@@ -35,7 +35,7 @@ Figures written (PNG):
   D. ``holdout_energy_mae_vs_subset.png``-- MAE vs subset_size, one line per arch.
   E. ``holdout_w411_ae_parity.png``    -- HELD-OUT atomization-energy parity (W4-11,
      the held-out set's atomization-energy pool): predicted vs reference AE with
-     PBE drawn as the baseline (grey × + dashed). Panel (a) by architecture,
+     PBE drawn as the baseline (gray × + dashed). Panel (a) by architecture,
      panel (b) colored by training-subset size with an NN-MAE-vs-subset inset.
      The AE analog of the held-out reaction parity (A).
 
@@ -163,6 +163,7 @@ NEW_OUTPUTS: Tuple[str, ...] = ("insample_by_pool_3x3", "training_loss_channels"
 # long for a heatmap gutter or a 1-arch-tall rung span).
 _RUNG_SHORT: Dict[str, str] = {
     arch_style.RUNG_GGA: "GGA",
+    arch_style.RUNG_LAP: "Lap",
     arch_style.RUNG_MGGA: "mGGA",
     arch_style.RUNG_R35: "r3.5",
     arch_style.RUNG_R35_MGGA: "r3.5+m",
@@ -189,7 +190,7 @@ def _provenance_text(provenance: Optional[str]) -> str:
     """The provenance line every figure prints: ``provenance`` (or the base
     banner), followed by the expanded key of every architecture drawn when
     :data:`_KEY_LINE_ARCHS` is set, so the shown names (deep_3x16 /
-    deep0_3x16 ...) never need the map to be read."""
+    medium_3x16 ...) never need the map to be read."""
     return provenance or _PROVENANCE_BASE
 
 
@@ -411,7 +412,7 @@ def assert_channel_not_sliced(spec_dir: Path, eval_subdir: str) -> None:
     BH76 + W4-11 pool the architectures are compared on, so its MAE is a
     different quantity and averaging one into a figure would redefine the
     metric silently. Every reader of a held-out channel -- this suite, the
-    merge / parity / re-eval drivers, the diagnosis scripts -- honours the
+    merge / parity / re-eval drivers, the diagnosis scripts -- honors the
     same two on-disk marks through that one implementation, and the two
     loaders below call this before their first read of a channel.
 
@@ -704,6 +705,26 @@ def _certificate_status_label(status: str, cert) -> str:
     return status
 
 
+def _pretrain_dir_for(run_dir: Path, key: str) -> str:
+    """The arch's pretrain directory through the run's resolved config: the
+    config's DONOR for a donated arch, the run's own pretrain product
+    otherwise -- the one resolution rule every consumer shares
+    (``merge_v4_arms._arm_pretrain_dir`` resolves identically).
+
+    A config that does not load keeps the run-local product: the analysis
+    layer also runs beside runs with no readable config, and this resolution
+    must not open a second refusal path for them.
+    """
+    from xcquinox.pipeline.cluster.grid_config import (
+        load_resolved_run_config, pretrain_checkpoint_dir,
+        pretrain_checkpoint_for)
+    try:
+        cfg = load_resolved_run_config(str(run_dir))
+    except Exception:  # noqa: BLE001 -- no readable config: run-local product
+        return pretrain_checkpoint_dir(str(run_dir), key)
+    return pretrain_checkpoint_for(cfg, str(run_dir), key)
+
+
 def _arch_certificate_status(run_dir: Path, arch: str) -> Optional[str]:
     """``arch``'s record-layer certificate status under ``run_dir``.
 
@@ -712,23 +733,28 @@ def _arch_certificate_status(run_dir: Path, arch: str) -> Optional[str]:
     the registry does not know (legacy display name, test fixture), matching
     ``merge_v4_arms._arm_certificate_statuses`` -- or when the package is not
     importable, since the analysis layer also runs without it.
+
+    The certificate directory is resolved through the run's resolved config
+    (:func:`_pretrain_dir_for`): a donor-backed architecture certifies on its
+    DONOR's certificate, every other architecture on the run's own pretrain
+    product. A merged view's config carries no donors, so its slots resolve
+    to the linked directories as before.
     """
     try:
         from xcquinox.pipeline.config import get_architecture
         from xcquinox.pipeline.cluster.fidelity import read_certificate_status_in
-        from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
     except ImportError:      # the analysis layer runs without the package
         return None
     # the rows hold shown names; the certificate sits in pretrain/<stored key>
-    # (pretrain/deep_3x16 is the directory of deep0_3x16, never of the shown
-    # deep_3x16, which is pretrain/medium)
+    # (pretrain/medium is the directory of medium_3x16; a key that states its
+    # size, deep_3x16, is its own shown name)
     key = stored_key(arch)
     try:
         get_architecture(key)
     except KeyError:
         return None
     status, _reason, cert = read_certificate_status_in(
-        pretrain_checkpoint_dir(str(run_dir), key))
+        _pretrain_dir_for(run_dir, key))
     return _certificate_status_label(status, cert)
 
 
@@ -788,7 +814,11 @@ def fidelity_summary(run_dir: Path,
     :func:`uncertified_statuses`: a name the registry does not know carries no
     certificate expectation, so it is neither counted nor read. The
     certificate is located by directory, and without that scoping a directory
-    under any name at all could move the bound the footer discloses.
+    under any name at all could move the bound the footer discloses. The
+    directory itself resolves through the donor rule
+    (:func:`_pretrain_dir_for`): a donor-backed architecture's numbers are
+    its donor's certificate's, so the footer discloses the bound the run's
+    networks actually warm-started under.
 
     ``n_archs`` counts the architectures a figure may say it is bounding: the
     ones whose certificate states BOTH numbers. One that states neither (a
@@ -819,7 +849,6 @@ def fidelity_summary(run_dir: Path,
         from xcquinox.pipeline.config import get_architecture
         from xcquinox.pipeline.cluster.fidelity import (VERDICT_PASS,
                                                     read_certificate_status_in)
-        from xcquinox.pipeline.cluster.grid_config import pretrain_checkpoint_dir
     except ImportError:
         return None
     if archs is None:
@@ -840,8 +869,12 @@ def fidelity_summary(run_dir: Path,
             # know would otherwise move the disclosed worst (measured: a
             # foreign PASS stating 99.0 / 88.0 replaced a run's 0.31 / 0.62).
             continue
+        # The donor rule (:func:`_pretrain_dir_for`): a donor-backed arch's
+        # numbers are its DONOR's, so a run whose pretrain product was never
+        # generated still discloses the bound its certificates carry, and a
+        # bound is never dropped from the footer by bookkeeping.
         status, _reason, cert = read_certificate_status_in(
-            pretrain_checkpoint_dir(str(run_dir), key))
+            _pretrain_dir_for(run_dir, key))
         if not cert:
             n_unreadable += 1
             continue
@@ -903,7 +936,7 @@ def _validate_archs(archs) -> Optional[Tuple[str, ...]]:
     """Normalize an architecture restriction to an ordered, deduplicated tuple.
 
     ``None`` passes through as ``None`` (no restriction). Every name must be in
-    :data:`ARCH_ORDER`: the per-arch plots order and colour by it, so a name
+    :data:`ARCH_ORDER`: the per-arch plots order and color by it, so a name
     outside it renders nothing at all, and an unchecked typo would produce a
     silently empty figure set rather than a refusal. An empty restriction is
     refused for the same reason."""
@@ -924,7 +957,7 @@ def _validate_archs(archs) -> Optional[Tuple[str, ...]]:
     if unknown:
         raise ValueError(
             f"unknown architecture name(s) in archs: {unknown}; the per-arch "
-            "figures order and colour by ARCH_ORDER, so a name outside it "
+            "figures order and color by ARCH_ORDER, so a name outside it "
             "renders nothing. Known names: " + ", ".join(ARCH_ORDER))
     return tuple(ordered)
 
@@ -1905,16 +1938,20 @@ def _report_scan_coverage(scan_baseline: Optional[Dict[str, Any]],
 
 
 def arch_reference_kinds(archs) -> Dict[str, str]:
-    """``"pbe"`` for pure-GGA architectures, ``"scan"`` for any architecture
-    carrying beyond-GGA information (meta-GGA, rung-3.5, and their stacks).
+    """``"pbe"`` for the GGA and Laplacian rungs, ``"scan"`` for any
+    architecture carrying orbital-dependent information (meta-GGA, rung-3.5,
+    and their stacks).
 
     The green beats marker claims improvement over the arch's OWN-RUNG
     nonempirical reference; crediting a beyond-GGA architecture for merely
-    beating PBE overstates it. The rung-3.5 families have no same-rung
-    nonempirical reference (nonlocal DM information but no tau, so neither
-    PBE's nor SCAN's input set contains theirs); they are held to SCAN, the
+    beating PBE overstates it. The Laplacian rung has no nonempirical
+    Laplacian-level reference in the pipeline and its parent is PBE, so it is
+    held to PBE. The rung-3.5 families have no same-rung nonempirical
+    reference (nonlocal DM information but no tau, so neither PBE's nor
+    SCAN's input set contains theirs); they are held to SCAN, the
     conservative assignment."""
-    return {a: ("pbe" if arch_style.rung_of(a) == arch_style.RUNG_GGA
+    return {a: ("pbe" if arch_style.rung_of(a) in (arch_style.RUNG_GGA,
+                                                  arch_style.RUNG_LAP)
                 else "scan") for a in archs}
 
 
@@ -1927,7 +1964,7 @@ def arch_reference_kinds(archs) -> Dict[str, str]:
 # must carry _CELL_ROWS_GLYPH_NOTE.
 _CELL_ROWS_GLYPH_NOTE = (
     "Capped horizontal spans across each subset-size group mark the "
-    "group's cell-slice reference value (black = PBE, grey = SCAN, "
+    "group's cell-slice reference value (black = PBE, gray = SCAN, "
     "reduced over the cell's full test slice -- every slice reaction "
     "with a finite comparator leg, independent of NN convergence); a "
     "group whose cells disagree (a degraded comparator) shows per-bar "
@@ -1953,7 +1990,7 @@ def _group_span_points(by_cell: Optional[Dict[Tuple[str, int], float]],
     every present cell agrees within :data:`_GROUP_ANCHOR_REL_TOL`
     (relative); the drawn value is the first present cell's own value,
     never a synthetic mean. A disagreeing group falls back to per-bar
-    spans (bar-width, slightly shrunk so neighbours stay separable), so a
+    spans (bar-width, slightly shrunk so neighbors stay separable), so a
     divergent anchor stays visible instead of being averaged away.
     ``(xs, ys, half_widths)`` for ``ax.errorbar(..., xerr=half_widths)``."""
     xs_out: List[float] = []
@@ -2439,7 +2476,7 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
             xs_b += list(xx); ys_b += list(yy)
             axb.scatter(xx, yy, s=14, alpha=0.55, color=arch_color(arch),
                         edgecolor="none", zorder=3, label=arch)
-        # PBE-vs-ref as a single grey baseline series (same for every arch).
+        # PBE-vs-ref as a single gray baseline series (same for every arch).
         pbe_pts = [(r["ref_kcalmol"], r["de_pbe_kcalmol"]) for r in sel
                    if _is_num(r.get("ref_kcalmol"))
                    and _is_num(r.get("de_pbe_kcalmol"))]
@@ -2767,7 +2804,7 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
             # distinction stated where they are read.
             ref_note = ("Reference lines: reduced over this figure's own "
                         "deduped held-out rows (PBE always; SCAN when "
-                        "row-matched); the grey footer's PBE/SCAN values "
+                        "row-matched); the gray footer's PBE/SCAN values "
                         "are full-pool.")
             note = (note + "  " + ref_note) if note else ref_note
         if _is_num(pbe_vs_ref):
@@ -2959,9 +2996,11 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
 # Figure D (bonus) -- MAE vs subset_size, one line per arch
 # ---------------------------------------------------------------------------
 
-_RUNG_LS: Dict[str, str] = {
+_RUNG_LS: Dict[str, object] = {
     arch_style.RUNG_GGA: "-", arch_style.RUNG_MGGA: "--",
     arch_style.RUNG_R35: "-.", arch_style.RUNG_R35_MGGA: ":",
+    # the Laplacian rung: dash-dot-dot, the fifth pattern the four above leave
+    arch_style.RUNG_LAP: (0, (3, 1, 1, 1, 1, 1)),
 }
 
 
@@ -3081,7 +3120,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
     NN-vs-PBE comparison is explicit.
 
     Panel (a) colors points by architecture (each arch's largest-subset spec),
-    overlays PBE as grey ×, and shows a per-arch NN-vs-ref MAE inset with the
+    overlays PBE as gray ×, and shows a per-arch NN-vs-ref MAE inset with the
     PBE-vs-ref MAE as the dashed baseline. Panel (b) colors every held-out
     W4-11 point by training-subset size with an NN-MAE-vs-subset inset that
     also draws the PBE baseline."""
@@ -3193,7 +3232,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
             fontsize=11, y=0.985)
         fig.text(0.5, 0.925,
                  "W4-11 (held-out): each reaction is a molecule->atoms "
-                 "atomization energy. PBE (grey ×, dashed baseline) is the bar "
+                 "atomization energy. PBE (gray ×, dashed baseline) is the bar "
                  "to beat; points above/below the diagonal over/under-bind.",
                  ha="center", fontsize=7.5, style="italic", color="#444444")
         top = _stamp_provenance(fig, 0.016, provenance, fontsize=6,
@@ -3232,7 +3271,7 @@ def _present_subsets(rows: List[Dict[str, Any]]) -> List[int]:
 def _pool_parity_limits(rows: List[Dict[str, Any]], pool: str
                         ) -> Optional[Tuple[float, float]]:
     """Robust square parity window for ONE pool, over ref + de_nn + de_pbe (so
-    the grey PBE cloud stays on-frame). Each pool gets its own scale -- the fix
+    the gray PBE cloud stays on-frame). Each pool gets its own scale -- the fix
     for BH76 (+-150 kcal/mol) being crushed by W4-11 (0..1300)."""
     pr = [r for r in rows if r.get("pool") == pool]
     vals: List[Any] = []
@@ -3246,7 +3285,7 @@ def _parity_scatter(ax, panel_rows: List[Dict[str, Any]], *, color_by: str,
                     subset_values: Optional[List[int]] = None,
                     draw_pbe: bool = True, point_size: float = 11.0):
     """Draw one parity panel: NN de_nn (y) vs reference (x), colored by ``arch``
-    (discrete ``ARCH_COLOR``) or ``subset`` (viridis ``Normalize``). PBE grey-x
+    (discrete ``ARCH_COLOR``) or ``subset`` (viridis ``Normalize``). PBE gray-x
     drawn once. y=x clipped to ``limits`` via :func:`_diagonal`; off-axis count
     annotated. Returns ``(n_out, mappable)`` -- ``mappable`` is the viridis
     scatter (for a colorbar) or None."""
@@ -3340,7 +3379,7 @@ def plot_parity_by_class(reaction_rows: List[Dict[str, Any]], out_path: Path,
                          dataset: Optional[str] = None) -> Path:
     """Held-out parity split by reaction class -- W4-11 atomization | BH76
     barriers | total -- predicted vs benchmark reference. Top row: by
-    architecture (each arch's largest-subset spec, PBE as grey x); bottom
+    architecture (each arch's largest-subset spec, PBE as gray x); bottom
     row: every cell's points colored by training subset_size with one
     shared colorbar. Each class column carries its own square limits
     (:func:`_pool_parity_limits` -- the fix for BH76's +-150 kcal/mol being
@@ -5614,7 +5653,7 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     cells disagree -- shows the anchor while the dash-dot pooled line stays
     for cross-cell scale. Cells score training-subset-dependent slices, so
     the pooled line alone over- or under-states PBE on individual cells.
-    ``scan_by_cell`` draws the SCAN twins as grey capped spans
+    ``scan_by_cell`` draws the SCAN twins as gray capped spans
     (coverage-gated per cell by the caller) and relabels the pooled dotted
     line "SCAN (pooled)". Bars whose cell is in ``incomplete_cells`` (the
     NN scored fewer reactions than the cell's slice) carry a star above the
@@ -5821,8 +5860,8 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
     comparable). The subset trend is the x-axis. WTMAD-2 here = 2-subset, NOT
     full GMTKN55. Green beats markers are judged against each architecture's
     OWN-RUNG reference's cell-slice anchor (black capped spans for GGA
-    archs' PBE anchors, grey spans for meta-GGA/rung-3.5's SCAN anchors;
-    ``scan_errors`` supplies the per-reaction SCAN errors behind the grey
+    archs' PBE anchors, gray spans for meta-GGA/rung-3.5's SCAN anchors;
+    archs' PBE anchors, gray spans for meta-GGA/rung-3.5's SCAN anchors;
     spans; bars whose NN scored fewer reactions than the cell's slice carry
     the incomplete-eval star), and a dotted SCAN full-pool reference line is
     added to the MAE panel when ``scan_baseline`` carries a finite combined
@@ -5918,7 +5957,7 @@ def _insample_density_lines_panel(ax, density_rows: List[Dict[str, Any]], *,
                                                 "(per arch)"),
                                   pbe_label: str = "PBE vs CCSD") -> None:
     """Per-arch mean in-sample density error vs subset_size (n annotated:
-    trained species in the cell), with the grey dashed PBE-vs-CCSD line
+    trained species in the cell), with the gray dashed PBE-vs-CCSD line
     over subset_size when the model-free ``pbe_key`` column is present.
     Panel body shared by ``plot_insample_density_ccsd`` and
     ``plot_insample_overview``. The keyword defaults are the strings the
@@ -5940,7 +5979,7 @@ def _insample_density_lines_panel(ax, density_rows: List[Dict[str, Any]], *,
                             color=arch_color(a), xytext=(0, 4),
                             textcoords="offset points")
     # PBE-vs-CCSD baseline (arch-independent): the species-mean over the
-    # molecules present at each subset_size, grey dashed
+    # molecules present at each subset_size, gray dashed
     pbe_by_s: Dict[int, Dict[str, List[float]]] = {}
     for r in density_rows:
         if _is_num(r.get(pbe_key)) and r.get("subset_size") is not None:
@@ -5999,7 +6038,7 @@ def _insample_density_strip_panel(ax, density_rows: List[Dict[str, Any]], *,
                                                     "{n} trained species)")
                                   ) -> None:
     """Per-molecule in-sample density strip (every point, arch-jittered) with
-    one grey PBE x per species when the ``pbe_key`` column is present. Panel
+    one gray PBE x per species when the ``pbe_key`` column is present. Panel
     body shared by ``plot_insample_density_ccsd`` and
     ``plot_insample_overview``. The keyword defaults are the strings the
     shipped figures carry; ``title_fmt`` receives the species count as
@@ -6017,7 +6056,7 @@ def _insample_density_strip_panel(ax, density_rows: List[Dict[str, Any]], *,
         ax.scatter(mol_x[cf] + jit, r[key], s=18,
                    alpha=0.75, color=ARCH_COLOR.get(r.get("arch"), "0.5"),
                    edgecolor="none")
-    # PBE baseline per species (arch-independent -> one grey x each)
+    # PBE baseline per species (arch-independent -> one gray x each)
     pbe_by_mol: Dict[str, List[float]] = {}
     for r in density_rows:
         cf = _mol_cf(r.get("molecule"))
@@ -6091,7 +6130,7 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
     NN/PBE ratio -- the in-sample counterpart of the held-out family's parity
     reading. Labeled IN-SAMPLE. Rows carrying ``density_rmse_pbe`` (the
     model-free PBE-vs-CCSD baseline on the same grid; emitted by newer
-    evals) add a grey dashed PBE baseline to the first two panels and the
+    evals) add a gray dashed PBE baseline to the first two panels and the
     ratio line to the third; older runs without the column render the ratio
     panel empty. When every needed row carries the DFS Eq. 20 eps columns
     (``density_eps_l1`` and ``density_eps_l1_pbe``, any row), the same
@@ -6174,7 +6213,7 @@ def _holdout_density_lines_panel(ax, density_rows: List[Dict[str, Any]],
                                  scan_records: Optional[
                                      Dict[str, Dict[str, Any]]] = None) -> None:
     """Per-arch mean held-out density RMSE vs subset_size (n annotated) with
-    the grey dashed PBE pool-mean line, and -- when a SCAN density cache is
+    the gray dashed PBE pool-mean line, and -- when a SCAN density cache is
     present -- the dotted SCAN meta-GGA line over the SAME species. Panel body
     shared by ``plot_holdout_density_ccsd`` and
     ``plot_density_energy_overview``. The SCAN line is the comparator the
@@ -6298,7 +6337,7 @@ def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
                                   Dict[str, Dict[str, Any]]] = None,
                               dataset: Optional[str] = None) -> Path:
     """HELD-OUT density error vs CCSD on the W4-11+BH76 benchmark species:
-    (left) per-arch weighted-mean grid RMSE vs subset_size with the grey
+    (left) per-arch weighted-mean grid RMSE vs subset_size with the gray
     dashed PBE-vs-CCSD pool baseline; (right) per-species NN-vs-PBE parity
     (log-log; below the diagonal = the NN density is closer to CCSD than PBE
     is). The PBE channel is model-free and shared across every spec --
@@ -6507,7 +6546,7 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str,
 def _ed_decomposition_panel(ax, summary: Dict[str, Any]) -> None:
     """Per-cell decomposition in the (E, gamma*D) plane, log-log: dotted y=x
     self-calibration locus (PBE sits on it exactly under self-calibration,
-    off it under a fixed gamma -- the label branches on ``gamma_mode``; grey
+    off it under a fixed gamma -- the label branches on ``gamma_mode``; gray
     x), thin iso-ED harmonic contours at {0.5, 1, 2} x the PBE ED,
     subset_size digits on the cell points; below the locus =
     density-limited, above = energy-limited. Panel body shared by
@@ -6785,7 +6824,7 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
     such), (C) the genuine 2-subset WTMAD-2, (D) per-species NN-vs-PBE density
     parity, (E) the per-cell (E, gamma*D) iso-ED decomposition, (F) the DFS
     Eq. 21 ED headline. (E)/(F) take ``ed_summary`` (a ``combined_ed_by_cell``
-    output) and degrade to grey placeholders when it is missing/empty. The
+    output) and degrade to gray placeholders when it is missing/empty. The
     per-arch density-vs-subset trend lives in its own figure
     (``plot_holdout_density_per_arch``) and in the left panel of
     ``plot_holdout_density_ccsd``. Panel bodies are the same ax-level helpers
@@ -6951,7 +6990,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
     deduplicated anchor; overlap species contribute to both single-pool
     columns, stated in the caveat); row 3 = the DFS Eq. 21 combined metric
     per channel as bars (PBE dashed at its own combined value, the gamma
-    stamp in-panel). Channels missing data render grey placeholders. The
+    stamp in-panel). Channels missing data render gray placeholders. The
     per-species parity view lives in its own figure,
     :func:`plot_density_parity_by_channel`.
 
@@ -7211,7 +7250,7 @@ def plot_insample_overview(ae_rows: List[Dict[str, Any]],
     no in-sample ED exists: no PBE energy anchor to self-calibrate gamma);
     (B) per-molecule |AE error| strip; (C) in-sample density RMSE vs
     subset_size with the PBE dashed line when the model-free column is
-    present; (D) per-molecule density strip with one grey PBE x per molecule.
+    present; (D) per-molecule density strip with one gray PBE x per molecule.
     ``eval/`` has no val-best variant, so the panels are identical in the
     final-step and val-best output dirs -- only the title's checkpoint stamp
     differs (stated in the caveat). Panel bodies are the same ax-level
@@ -7745,7 +7784,7 @@ def _heldout_pbe_ratio(cell: Dict[str, Any]) -> Optional[float]:
     the per-cell PBE -- NOT a cohort mean -- is the honest denominator and the one
     :func:`_classify_cell` uses. ``> 1`` <=> worse than PBE (a failure);
     ``<= 1`` <=> beats PBE (pass), so the ratio's side of 1.0 matches the cell's
-    pass/fail colour exactly. None if either MAE is missing or PBE <= 0."""
+    pass/fail color exactly. None if either MAE is missing or PBE <= 0."""
     hm, pm = cell.get("heldout_mae"), cell.get("pbe_mae")
     return hm / pm if _is_num(hm) and _is_num(pm) and pm > 0 else None
 
@@ -7855,7 +7894,7 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
 
         # --- Panel A: decoupling scatter. y = each cell's held-out MAE RELATIVE
         # TO ITS OWN PBE (per-cell, since the held-out set differs per spec), so
-        # PBE parity is a single exact line at 1.0 and the pass/fail COLOUR matches
+        # PBE parity is a single exact line at 1.0 and the pass/fail COLOR matches
         # the point's side of the line (green below, orange/red above). A cohort
         # mean-PBE line was misleading: a cell can sit below the mean yet still
         # lose to its own (lower) PBE. ---
@@ -7908,7 +7947,7 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
         present = {c["arch"] for c in cells}
         archs = arch_style.order_known(present)
         archs += sorted(present - set(archs))
-        # GLOBAL ss scale (over BOTH bases) so the viridis subset colours match
+        # GLOBAL ss scale (over BOTH bases) so the viridis subset colors match
         # between the two sub-panels.
         ss_vals = sorted({c["subset_size"] for c in cells
                           if _is_num(c.get("subset_size"))})
@@ -9799,9 +9838,9 @@ def _build_all_inner(run_dir: Path, outdir: Path, eval_subdir: str,
         raise ValueError(
             f"archs {list(archs)} match no evaluated cell of {run_dir.name} "
             f"(its architectures: {present}); an empty figure set would "
-            "render. The two names that are both a registry key and a shown "
-            "name are read in the shown sense: deep_3x16 is the registry's "
-            "medium, and the registry's deep_3x16 is selected as deep0_3x16.")
+            "render. A name is read in the shown sense: medium is selected as "
+            "medium_3x16 and deep as deep_4x32; a key that states its size, "
+            "deep_3x16, is its own shown name.")
     # the footer's key line names every architecture the collected rows
     # carry, so every figure of the set explains the shown names it draws;
     # the scope opened by build_all restores the previous value on exit
@@ -9856,7 +9895,7 @@ def _build_all_inner(run_dir: Path, outdir: Path, eval_subdir: str,
         prov = prov + " " + restriction
     # These five figures stamp their footers with bespoke fig.text stacks (no
     # _stamp_parity_footer dataset slot), so the dataset sentence rides the
-    # grey provenance line instead of a dedicated line.
+    # gray provenance line instead of a dedicated line.
     ds_e = _holdout_eval_note(reaction_rows, [])
     if ds_e:
         prov = prov + " " + ds_e
@@ -9907,19 +9946,39 @@ def _basis_fig_alias(basis: str) -> str:
     return basis.replace("_grid2", "")
 
 
-def _newest_run_per_basis(results_root: Path,
-                          bases: Tuple[str, ...] = _BH76W411_BASES,
-                          domain: str = "bh76w411_repr") -> Dict[str, Path]:
-    """Map each basis -> its newest ``run_*`` dir under
-    ``<results_root>/<domain>/<basis>/runs/``. ISO-Z timestamps sort
-    lexicographically, so the last ``sorted`` entry is the latest pull."""
+def _run_per_basis(results_root: Path,
+                   bases: Tuple[str, ...] = _BH76W411_BASES,
+                   domain: str = "bh76w411_repr",
+                   named: Optional[Dict[str, str]] = None) -> Dict[str, Path]:
+    """Map each basis -> the run the suite draws for it: the ``run_*`` dir
+    ``named`` for the basis, else the newest under
+    ``<results_root>/<domain>/<basis>/runs/`` (ISO-Z timestamps sort
+    lexicographically, so the last ``sorted`` entry is the latest pull).
+
+    The newest run of a basis is not always the one that carries cells: a
+    pretraining suite is a run of its own with no checkpoints, and it can
+    postdate the run whose cells are evaluated. A name for a basis outside
+    ``bases`` and a name that is not a pulled run directory are refused."""
+    named = dict(named or {})
+    unknown = sorted(set(named) - set(bases))
+    if unknown:
+        raise ValueError(
+            f"a run is named for {unknown}, not among the bases {list(bases)}")
     out: Dict[str, Path] = {}
     for basis in bases:
         runs_dir = Path(results_root) / domain / basis / "runs"
-        runs = sorted(runs_dir.glob("run_*"))
+        runs = sorted(r for r in runs_dir.glob("run_*") if r.is_dir())
         if not runs:
             raise FileNotFoundError(f"no run_* dir under {runs_dir}")
-        out[basis] = runs[-1]
+        if basis in named:
+            by_name = {r.name: r for r in runs}
+            if named[basis] not in by_name:
+                raise FileNotFoundError(
+                    f"no run dir {named[basis]} under {runs_dir}; pulled: "
+                    f"{', '.join(by_name)}")
+            out[basis] = by_name[named[basis]]
+        else:
+            out[basis] = runs[-1]
     return out
 
 
@@ -9929,7 +9988,7 @@ def figure_cell_coverage(run_dir: Path,
     """What the figures will actually render for a run: every held-out (arch,
     subset_size) cell, plus a guard list ``archs_not_in_order`` of archs present
     in the data but absent from ``ARCH_ORDER`` (the per-arch plots cannot
-    order/colour those, so they would be silently dropped). ``archs``
+    order/color those, so they would be silently dropped). ``archs``
     restricts the report to the architectures a restricted build renders."""
     restriction = _validate_archs(archs)
     mae = reaction_mae_by_arch_subset(filter_rows_by_arch(
@@ -9958,9 +10017,12 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                          bases: Tuple[str, ...] = _BH76W411_BASES,
                          domain: str = "bh76w411_repr",
                          comparison_archs: Optional[Tuple[str, ...]] = None,
-                         archs=None) -> List[Path]:
-    """Regenerate EVERY figure family for ``domain`` from the newest run per
-    basis, so a fresh spec pull lands on all figures in one call. Per basis: the
+                         archs=None,
+                         named_runs: Optional[Dict[str, str]] = None
+                         ) -> List[Path]:
+    """Regenerate EVERY figure family for ``domain`` from one run per basis
+    (the run ``named_runs`` names for it, else its newest), so a fresh spec
+    pull lands on all figures in one call. Per basis: the
     arch-aware ablation set (:func:`build_all`), the held-out energy/density set
     (:func:`build_density_energy_figures`), the five parity-layout variants
     (:func:`build_parity_variants`) and the per-run size-consistency/training-loss
@@ -9995,14 +10057,19 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
 
     ``archs`` restricts every rendered figure to the named architectures (see
     :func:`build_all`); the certificate refusal is then scoped to them too, a
-    withheld architecture's certificate bearing on no figure of the set."""
+    withheld architecture's certificate bearing on no figure of the set.
+
+    ``named_runs`` maps a basis to the name of the ``run_*`` dir to draw for
+    it (:func:`_run_per_basis`): the newest run of a basis can be a
+    pretraining suite, which carries no cell."""
     archs = _validate_archs(archs)
     results_root = Path(results_root) if results_root else _DEFAULT_LOCAL_ROOT
     outroot = Path(outroot) if outroot else Path(__file__).resolve().parent
     prefix = "" if domain == "bh76w411_repr" else f"{domain}_"
-    runs = _newest_run_per_basis(results_root, bases, domain=domain)
+    runs = _run_per_basis(results_root, bases, domain=domain, named=named_runs)
     written: List[Path] = []
     n_sets = 0
+    drawn: Set[str] = set()
     # one set per channel of the vocabulary's figure list, every set gated on
     # having cells: a basis renders exactly the channels it carries
     for eval_subdir in FIGURE_CHANNELS:
@@ -10061,6 +10128,7 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                                                  eval_subdir=eval_subdir,
                                                  archs=archs)
             n_sets += 1
+            drawn.add(basis)
         if not ordered_runs:
             print(f"   (no {eval_subdir}/ data found -- skipping the "
                   f"{_ckpt_label(eval_subdir)} figure set)")
@@ -10086,8 +10154,35 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
             f"{[str(r) for r in runs.values()]}: none of {FIGURE_CHANNELS} "
             "carries a per_reaction.json for a rendered architecture, so the "
             "pull holds no held-out evaluation to draw (re-pull the run with "
-            "the summaries profile, or widen --archs)")
+            "the summaries profile, or widen --archs; where the newest run "
+            "of a base is a pretraining suite, name the run that carries the "
+            "cells with --runs BASE=RUN_NAME)")
+    # A base whose run carries no cell under any channel is skipped channel
+    # by channel above; beside bases that were drawn it would otherwise be
+    # left out of the output without a word.
+    for basis in bases:
+        if basis not in drawn:
+            print(f"   ({basis}: {runs[basis].name} carries no evaluated cell "
+                  "under any channel and is not drawn; where it is a "
+                  f"pretraining suite, name the run with --runs "
+                  f"{basis}=RUN_NAME)")
     return written
+
+
+def _parse_named_runs(values) -> Dict[str, str]:
+    """``--runs BASE=RUN_NAME`` values as ``{base: run_name}``. A value
+    without ``=`` or with an empty side is refused, and so is a base named
+    twice: the second name would otherwise replace the first in silence."""
+    named: Dict[str, str] = {}
+    for value in values or ():
+        basis, sep, run_name = value.partition("=")
+        basis, run_name = basis.strip(), run_name.strip()
+        if not sep or not basis or not run_name:
+            raise ValueError(f"--runs takes BASE=RUN_NAME, got {value!r}")
+        if basis in named:
+            raise ValueError(f"--runs names the base {basis!r} twice")
+        named[basis] = run_name
+    return named
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -10101,9 +10196,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="output directory for PNGs (single-run mode)")
     p.add_argument("--suite", action="store_true",
                    help="regenerate ALL figure families for --domain (every "
-                        "--bases basis) from the newest run per basis, into "
+                        "--bases basis) from one run per basis (its newest, "
+                        "or the one --runs names), into "
                         "figures_<basis>/ + figures_basis_comparison/ under "
                         "--outroot")
+    p.add_argument("--runs", action="append", default=None,
+                   metavar="BASE=RUN_NAME",
+                   help="for --suite: draw the named run_* dir of a base "
+                        "instead of its newest; repeat per base. Needed "
+                        "where a base's newest run carries no cells (a "
+                        "pretraining suite submitted after the run whose "
+                        "cells are evaluated)")
     p.add_argument("--results-root", default=None,
                    help="results runs root for --suite "
                         f"(default: {_DEFAULT_LOCAL_ROOT})")
@@ -10139,6 +10242,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = p.parse_args(argv)
     archs = (tuple(a.strip() for a in args.archs.split(",") if a.strip())
              if args.archs else None)
+    try:
+        named_runs = _parse_named_runs(args.runs)
+    except ValueError as exc:
+        p.error(str(exc))
+    if named_runs and not args.suite:
+        p.error("--runs names the run of a base for --suite; the single-run "
+                "mode takes --run-dir")
 
     if args.suite:
         bases = tuple(b.strip() for b in args.bases.split(",") if b.strip())
@@ -10150,7 +10260,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                        bases=bases,
                                        domain=args.domain,
                                        comparison_archs=cmp_archs,
-                                       archs=archs)
+                                       archs=archs,
+                                       named_runs=named_runs)
         for pth in written:
             print(f"  wrote {pth}")
         return 0
